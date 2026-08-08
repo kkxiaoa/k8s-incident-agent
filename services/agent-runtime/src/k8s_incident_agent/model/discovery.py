@@ -73,6 +73,7 @@ async def _request_models(
 async def _discover_models(
     settings: Settings,
     client: httpx.AsyncClient,
+    expected_model: str,
 ) -> tuple[str, ...]:
     url = _models_url(settings)
     attempt = 0
@@ -109,7 +110,7 @@ async def _discover_models(
         del response
         if model_ids is None:
             raise _error(ModelErrorCode.PROVIDER_CONTRACT_INVALID)
-        if settings.model_name not in model_ids:
+        if expected_model not in model_ids:
             raise _error(ModelErrorCode.MODEL_NOT_FOUND)
         return model_ids
 
@@ -117,10 +118,12 @@ async def _discover_models(
 async def discover_models(
     settings: Settings,
     *,
+    expected_model: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> tuple[str, ...]:
+    resolved_model = settings.model_name if expected_model is None else expected_model
     if client is not None:
-        return await _discover_models(settings, client)
+        return await _discover_models(settings, client, resolved_model)
 
     async with httpx.AsyncClient() as owned_client:
-        return await _discover_models(settings, owned_client)
+        return await _discover_models(settings, owned_client, resolved_model)

@@ -8,6 +8,9 @@ class ModelErrorCode(StrEnum):
     PROVIDER_RATE_LIMITED = "provider_rate_limited"
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     PROVIDER_CONTRACT_INVALID = "provider_contract_invalid"
+    TOOL_ARGUMENTS_INVALID = "tool_arguments_invalid"
+    STRUCTURED_OUTPUT_INVALID = "structured_output_invalid"
+    REASONING_ROUNDTRIP_FAILED = "reasoning_roundtrip_failed"
 
 
 class ModelError(RuntimeError):

@@ -132,6 +132,26 @@ async def test_missing_configured_model_is_not_retried_and_is_sanitized(
     )
 
 
+async def test_explicit_probe_model_can_be_checked_without_changing_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = make_settings(monkeypatch)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "deepseek-v4-pro"}]})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        model_ids = await discover_models(
+            settings,
+            expected_model="deepseek-v4-pro",
+            client=client,
+        )
+
+    assert model_ids == ("deepseek-v4-pro",)
+    assert settings.model_name == "deepseek-v4-flash"
+
+
 @pytest.mark.parametrize(
     "payload",
     INVALID_MODEL_PAYLOADS,
