@@ -7,6 +7,7 @@ import {
   evaluateExactVersion,
   parseKubectlClientVersion,
   parseSemanticVersion,
+  pythonFindArguments,
   validateVersionContract,
 } from "./doctor.mjs";
 
@@ -91,6 +92,18 @@ test("classifyCommandFailure keeps missing commands distinct from Docker downtim
     classifyCommandFailure("kind", { code: 1 }),
     "command_failed",
   );
+});
+
+test("pythonFindArguments keeps doctor lookup offline and cacheless", () => {
+  assert.deepEqual(pythonFindArguments("3.13.15"), [
+    "python",
+    "find",
+    "3.13.15",
+    "--no-cache",
+    "--no-project",
+    "--managed-python",
+    "--no-python-downloads",
+  ]);
 });
 
 test("validateVersionContract rejects drift between duplicated consumer files", () => {

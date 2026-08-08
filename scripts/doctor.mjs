@@ -93,6 +93,18 @@ export function classifyCommandFailure(tool, failure) {
   return "command_failed";
 }
 
+export function pythonFindArguments(expected) {
+  return [
+    "python",
+    "find",
+    expected,
+    "--no-cache",
+    "--no-project",
+    "--managed-python",
+    "--no-python-downloads",
+  ];
+}
+
 export function validateVersionContract(contract) {
   for (const key of [
     "node",
@@ -302,12 +314,7 @@ async function checkExactVersion(label, expected, command, args, parser) {
 async function checkPython(expected) {
   try {
     const interpreter = (
-      await execute("uv", [
-        "python",
-        "find",
-        expected,
-        "--no-python-downloads",
-      ])
+      await execute("uv", pythonFindArguments(expected))
     ).trim();
     if (!path.isAbsolute(interpreter)) {
       throw new VersionContractError(
