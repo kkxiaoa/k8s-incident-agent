@@ -1,11 +1,14 @@
-from typing import ClassVar, Literal, Self
+from typing import Literal, Self
 
-from pydantic import Field, HttpUrl, SecretStr, model_validator
+from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from k8s_incident_agent.model.errors import ModelError, ModelErrorCode
 
-class ConfigurationInvalidError(RuntimeError):
-    code: ClassVar[Literal["configuration_invalid"]] = "configuration_invalid"
+
+class ConfigurationInvalidError(ModelError):
+    def __init__(self, message: str) -> None:
+        super().__init__(ModelErrorCode.CONFIGURATION_INVALID, message)
 
 
 class Settings(BaseSettings):
@@ -25,12 +28,19 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr | None = Field(default=None, repr=False)
     deepseek_base_url: HttpUrl = HttpUrl("https://api.deepseek.com")
 
+    @field_validator("deepseek_base_url")
+    @classmethod
+    def reject_sensitive_url_components(cls, value: HttpUrl) -> HttpUrl:
+        if value.username or value.password or value.query or value.fragment:
+            raise ValueError(
+                "DEEPSEEK_BASE_URL must not contain credentials, query, or fragment"
+            )
+        return value
+
     @model_validator(mode="after")
     def validate_certified_runtime_configuration(self) -> Self:
         if self.model_name != "deepseek-v4-flash":
-            raise ValueError(
-                f"model {self.model_name!r} is not certified for the Runtime"
-            )
+            raise ValueError("configured model is not certified for the Runtime")
         if self.model_thinking:
             raise ValueError("thinking mode is not certified for the Runtime")
         return self

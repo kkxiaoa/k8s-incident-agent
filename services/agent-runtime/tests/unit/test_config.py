@@ -107,6 +107,24 @@ def test_invalid_base_url_is_rejected(
         settings_without_dotenv()
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://user:password@provider.example",
+        "https://provider.example?api_key=test-value",
+        "https://provider.example#fragment",
+    ],
+)
+def test_base_url_rejects_embedded_credentials_query_or_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
 def test_api_key_uses_secret_type_and_is_redacted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
