@@ -5,6 +5,8 @@ description = "Python agent runtime for K8s Incident Agent"
 requires-python = ">=3.13.15,<3.14"
 dependencies = [
     "httpx>=0.28,<1",
+    "langchain==1.3.14",
+    "langchain-deepseek==1.1.0",
     "pydantic>=2.12,<3",
     "pydantic-settings>=2.12,<3",
 ]
