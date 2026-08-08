@@ -4,14 +4,17 @@ version = "0.1.0"
 description = "Python agent runtime for K8s Incident Agent"
 requires-python = ">=3.13.15,<3.14"
 dependencies = [
+    "fastapi>=0.139,<1",
     "httpx>=0.28,<1",
     "langchain==1.3.14",
     "langchain-deepseek==1.1.0",
     "pydantic>=2.12,<3",
     "pydantic-settings>=2.12,<3",
+    "uvicorn>=0.51,<1",
 ]
 
 [project.scripts]
+agent-runtime = "k8s_incident_agent.api:main"
 model-compat = "k8s_incident_agent.model.compatibility:main"
 
 [build-system]
