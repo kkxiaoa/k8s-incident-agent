@@ -3,7 +3,10 @@ name = "k8s-incident-agent-runtime"
 version = "0.1.0"
 description = "Python agent runtime for K8s Incident Agent"
 requires-python = ">=3.13.15,<3.14"
-dependencies = []
+dependencies = [
+    "pydantic>=2.12,<3",
+    "pydantic-settings>=2.12,<3",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
@@ -43,7 +46,7 @@ target-version = "py313"
 select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pyright]
-include = ["src"]
+include = ["src", "tests"]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
 venvPath = "."
