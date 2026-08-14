@@ -263,11 +263,25 @@ def _report(
     )
 
 
+def _classify_agent_failure(error: Exception) -> ModelErrorCode:
+    status_code = getattr(error, "status_code", None)
+    if not isinstance(status_code, int):
+        return ModelErrorCode.PROVIDER_UNAVAILABLE
+    if status_code in (401, 403):
+        return ModelErrorCode.AUTHENTICATION_FAILED
+    if status_code == 429:
+        return ModelErrorCode.PROVIDER_RATE_LIMITED
+    if 400 <= status_code <= 499:
+        return ModelErrorCode.PROVIDER_CONTRACT_INVALID
+    return ModelErrorCode.PROVIDER_UNAVAILABLE
+
+
 def _failed_agent_flow(
     config: ProbeConfig,
     observer: _ProbeObserver,
     *,
     structured_output_error: bool,
+    agent_error_code: ModelErrorCode | None = None,
 ) -> _AgentFlowResult:
     reached_follow_up = (
         observer.saw_tool_call and observer.llm_calls + observer.llm_errors >= 2
@@ -276,7 +290,7 @@ def _failed_agent_flow(
         _outcome(
             ProbeName.TOOL_CALLING,
             reached_follow_up,
-            ModelErrorCode.TOOL_ARGUMENTS_INVALID,
+            agent_error_code or ModelErrorCode.TOOL_ARGUMENTS_INVALID,
         )
     ]
 
@@ -285,10 +299,13 @@ def _failed_agent_flow(
         and reached_follow_up
         and observer.saw_reasoning_content
     )
+
     if reasoning_failed:
         structured_error_code = ModelErrorCode.REASONING_ROUNDTRIP_FAILED
     elif structured_output_error:
         structured_error_code = ModelErrorCode.STRUCTURED_OUTPUT_INVALID
+    elif agent_error_code is not None:
+        structured_error_code = agent_error_code
     else:
         structured_error_code = ModelErrorCode.PROVIDER_UNAVAILABLE
     outcomes.append(
@@ -346,17 +363,19 @@ async def _run_agent_flow(
             {"messages": [{"role": "user", "content": _USER_PROMPT}]},
             config={"callbacks": [observer]},
         )
+
     except StructuredOutputError:
         return _failed_agent_flow(
             config,
             observer,
             structured_output_error=True,
         )
-    except Exception:
+    except Exception as error:
         return _failed_agent_flow(
             config,
             observer,
             structured_output_error=False,
+            agent_error_code=_classify_agent_failure(error),
         )
 
     state = raw_state

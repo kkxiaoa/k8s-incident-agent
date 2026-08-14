@@ -254,6 +254,61 @@ async def test_non_thinking_probe_uses_real_agent_tool_and_structured_output_pat
     assert "probe-evidence-ready" not in rendered
 
 
+@pytest.mark.parametrize(
+    ("status_code", "expected_error_code"),
+    [
+        (400, ModelErrorCode.PROVIDER_CONTRACT_INVALID),
+        (401, ModelErrorCode.AUTHENTICATION_FAILED),
+        (403, ModelErrorCode.AUTHENTICATION_FAILED),
+        (404, ModelErrorCode.PROVIDER_CONTRACT_INVALID),
+        (429, ModelErrorCode.PROVIDER_RATE_LIMITED),
+        (500, ModelErrorCode.PROVIDER_UNAVAILABLE),
+    ],
+)
+async def test_chat_provider_errors_keep_their_failure_category(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    expected_error_code: ModelErrorCode,
+) -> None:
+    settings = make_settings(monkeypatch)
+    config = ProbeConfig(
+        model_name="deepseek-v4-flash",
+        thinking=ThinkingMode.DISABLED,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "deepseek-v4-flash"}]},
+            )
+        return httpx.Response(
+            status_code,
+            json={"error": {"message": "sanitized provider error"}},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as sync_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as async_client:
+            report = await run_compatibility_probe(
+                settings,
+                config,
+                discovery_client=async_client,
+                http_client=sync_client,
+                http_async_client=async_client,
+            )
+
+    assert not report.passed
+    agent_outcomes = [
+        outcome for outcome in report.probes if outcome.name is not ProbeName.DISCOVERY
+    ]
+    assert len(agent_outcomes) == 2
+    assert all(outcome.status is ProbeStatus.FAIL for outcome in agent_outcomes)
+    assert all(outcome.error_code is expected_error_code for outcome in agent_outcomes)
+    assert "sanitized provider error" not in report.model_dump_json(by_alias=True)
+
+
 async def test_missing_reasoning_replay_uses_distinct_failure_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
