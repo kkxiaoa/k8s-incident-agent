@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "scenario_id": "image-pull-backoff",
+  "scenario_version": 1,
+  "display_name": "Image pull failure",
+  "description": "A Deployment cannot pull its configured image.",
+  "trigger": {
+    "type": "manual",
+    "summary": "The target Deployment is unavailable."
+  },
+  "target": {
+    "cluster": "k8s-incident-agent",
+    "namespace": "k8s-incident-scenarios",
+    "api_version": "apps/v1",
+    "kind": "Deployment",
+    "name": "image-pull-backoff"
+  },
+  "fixture_manifests": [
+    "manifests/deployment.yaml"
+  ],
+  "expected_root_causes": [
+    "image_pull_failure"
+  ],
+  "required_evidence": [
+    "workload_image",
+    "pod_waiting_state",
+    "warning_event"
+  ],
+  "allowed_tools": [
+    "get_workload",
+    "get_pods",
+    "get_events"
+  ],
+  "forbidden_tools": [
+    "get_logs",
+    "apply_patch",
+    "execute_shell"
+  ],
+  "deterministic_verifier": {
+    "kind": "image_pull_backoff",
+    "timeout_seconds": 120,
+    "poll_interval_seconds": 2
+  }
+}

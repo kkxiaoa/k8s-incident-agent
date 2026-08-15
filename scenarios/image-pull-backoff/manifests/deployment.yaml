@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-pull-backoff
+  namespace: k8s-incident-scenarios
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: image-pull-backoff
+  template:
+    metadata:
+      labels:
+        app: image-pull-backoff
+    spec:
+      containers:
+        - name: workload
+          image: registry.invalid/k8s-incident-agent/missing:v1
+          imagePullPolicy: Always

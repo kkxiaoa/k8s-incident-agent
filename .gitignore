@@ -39,6 +39,9 @@ htmlcov/
 .DS_Store
 *.pem
 
+# editor
+/.vscode/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
