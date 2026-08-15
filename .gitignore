@@ -32,6 +32,9 @@ htmlcov/
 # production
 /build
 
+# local runtime data and credentials
+/.runtime/
+
 # misc
 .DS_Store
 *.pem

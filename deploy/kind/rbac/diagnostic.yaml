@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-incident-scenarios
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: diagnostic-agent
+  namespace: k8s-incident-scenarios
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: diagnostic-agent-read
+  namespace: k8s-incident-scenarios
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: diagnostic-agent-read
+  namespace: k8s-incident-scenarios
+subjects:
+  - kind: ServiceAccount
+    name: diagnostic-agent
+    namespace: k8s-incident-scenarios
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: diagnostic-agent-read

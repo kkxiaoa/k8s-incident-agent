@@ -106,15 +106,7 @@ export function pythonFindArguments(expected) {
 }
 
 export function validateVersionContract(contract) {
-  for (const key of [
-    "node",
-    "npm",
-    "python",
-    "uv",
-    "kind",
-    "kubernetes",
-    "kubectl",
-  ]) {
+  for (const key of ["node", "npm", "python", "uv"]) {
     parseSemanticVersion(contract[key]);
   }
 
@@ -134,11 +126,22 @@ export function validateVersionContract(contract) {
     );
   }
 
-  const expectedImagePrefix = `kindest/node:v${contract.kubernetes}@sha256:`;
-  const digest = contract.nodeImage?.slice(expectedImagePrefix.length);
+  return validateKindVersionContract(contract);
+}
+
+function validateKindVersionContract(contract) {
+  const normalized = {
+    ...contract,
+    kind: parseSemanticVersion(contract.kind),
+    kubernetes: parseSemanticVersion(contract.kubernetes),
+    kubectl: parseSemanticVersion(contract.kubectl),
+  };
+
+  const expectedImagePrefix = `kindest/node:v${normalized.kubernetes}@sha256:`;
+  const digest = normalized.nodeImage?.slice(expectedImagePrefix.length);
   if (
-    typeof contract.nodeImage !== "string" ||
-    !contract.nodeImage.startsWith(expectedImagePrefix) ||
+    typeof normalized.nodeImage !== "string" ||
+    !normalized.nodeImage.startsWith(expectedImagePrefix) ||
     !/^[a-f0-9]{64}$/.test(digest ?? "")
   ) {
     throw new VersionContractError(
@@ -146,13 +149,27 @@ export function validateVersionContract(contract) {
     );
   }
 
-  if (!classifyKubectlSkew(contract.kubectl, contract.kubernetes).ok) {
+  if (!classifyKubectlSkew(normalized.kubectl, normalized.kubernetes).ok) {
     throw new VersionContractError(
       "Pinned kubectl version is outside the supported Kubernetes skew",
     );
   }
 
-  return contract;
+  return normalized;
+}
+
+export async function loadKindVersionContract(repositoryRoot) {
+  const kindFile = await readFile(
+    path.join(repositoryRoot, "deploy", "kind", "versions.json"),
+    "utf8",
+  );
+  const document = parseJson(kindFile, "deploy/kind/versions.json");
+  return validateKindVersionContract({
+    kind: document.kind,
+    kubernetes: document.kubernetes,
+    kubectl: document.kubectl,
+    nodeImage: document.nodeImage,
+  });
 }
 
 export async function loadVersionContract(repositoryRoot) {
@@ -197,9 +214,9 @@ export async function loadVersionContract(repositoryRoot) {
     python: parseSemanticVersion(pythonFile),
     requiresPython,
     uv: parseSemanticVersion(requiredUv.slice(2)),
-    kind: parseSemanticVersion(kindDocument.kind),
-    kubernetes: parseSemanticVersion(kindDocument.kubernetes),
-    kubectl: parseSemanticVersion(kindDocument.kubectl),
+    kind: kindDocument.kind,
+    kubernetes: kindDocument.kubernetes,
+    kubectl: kindDocument.kubectl,
     nodeImage: kindDocument.nodeImage,
   });
 }
