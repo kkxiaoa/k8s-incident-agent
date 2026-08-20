@@ -1,9 +1,11 @@
-from typing import Literal, Self
+from pathlib import Path
+from typing import Annotated, Literal, Self
 
 from pydantic import Field, HttpUrl, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from k8s_incident_agent.model.errors import ModelError, ModelErrorCode
+from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
 
 class ConfigurationInvalidError(ModelError):
@@ -27,6 +29,19 @@ class Settings(BaseSettings):
     model_max_retries: int = Field(default=2, ge=0)
     deepseek_api_key: SecretStr | None = Field(default=None, repr=False)
     deepseek_base_url: HttpUrl = HttpUrl("https://api.deepseek.com")
+    runtime_paths: Annotated[RuntimePaths, NoDecode] = Field(
+        default_factory=lambda: RuntimePaths.prepare(REPOSITORY_ROOT / ".runtime"),
+        validation_alias="RUNTIME_DATA_DIR",
+        exclude=True,
+        repr=False,
+    )
+
+    @field_validator("runtime_paths", mode="before")
+    @classmethod
+    def prepare_runtime_paths(cls, value: RuntimePaths | Path | str) -> RuntimePaths:
+        if isinstance(value, RuntimePaths):
+            return value
+        return RuntimePaths.prepare(Path(value))
 
     @field_validator("deepseek_base_url")
     @classmethod

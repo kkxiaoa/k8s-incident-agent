@@ -1,10 +1,14 @@
+from pathlib import Path
+
 import pytest
 from pydantic import SecretStr, ValidationError
 
+import k8s_incident_agent.config as config_module
 from k8s_incident_agent.config import (
     ConfigurationInvalidError,
     Settings,
 )
+from k8s_incident_agent.runtime.paths import RuntimePaths
 
 MODEL_ENVIRONMENT_VARIABLES = (
     "MODEL_PROVIDER",
@@ -14,6 +18,7 @@ MODEL_ENVIRONMENT_VARIABLES = (
     "MODEL_MAX_RETRIES",
     "DEEPSEEK_API_KEY",
     "DEEPSEEK_BASE_URL",
+    "RUNTIME_DATA_DIR",
 )
 
 
@@ -22,12 +27,16 @@ def settings_without_dotenv() -> Settings:
 
 
 @pytest.fixture(autouse=True)
-def clear_model_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def isolate_settings_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     for variable in MODEL_ENVIRONMENT_VARIABLES:
         monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(config_module, "REPOSITORY_ROOT", tmp_path)
 
 
-def test_settings_use_certified_runtime_defaults() -> None:
+def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     settings = settings_without_dotenv()
 
     assert settings.model_provider == "deepseek"
@@ -37,6 +46,26 @@ def test_settings_use_certified_runtime_defaults() -> None:
     assert settings.model_max_retries == 2
     assert settings.deepseek_api_key is None
     assert str(settings.deepseek_base_url) == "https://api.deepseek.com/"
+    assert settings.runtime_paths.root == tmp_path / ".runtime"
+
+
+def test_runtime_data_dir_is_projected_once_to_runtime_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("RUNTIME_DATA_DIR", str(runtime_root))
+
+    settings = settings_without_dotenv()
+
+    assert settings.runtime_paths == RuntimePaths(
+        root=runtime_root,
+        business_database=runtime_root / "incidents.sqlite3",
+        checkpoint_database=runtime_root / "checkpoints.sqlite3",
+        diagnostic_kubeconfig=runtime_root / "diagnostic.kubeconfig",
+        runtime_lock=runtime_root / "runtime.lock",
+        run_artifacts=runtime_root / "runs",
+    )
 
 
 def test_thinking_true_is_parsed_then_rejected_as_uncertified(
