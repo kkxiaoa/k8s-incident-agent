@@ -11,6 +11,8 @@ from sqlalchemy.engine import URL
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.pool import ConnectionPoolEntry
@@ -31,6 +33,7 @@ class DatabaseSchemaNotCurrentError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class BusinessDatabase:
     engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession]
 
     async def dispose(self) -> None:
         await self.engine.dispose()
@@ -95,7 +98,10 @@ async def create_business_database(paths: RuntimePaths) -> BusinessDatabase:
         )
     )
     configure_sqlite_engine(engine.sync_engine, paths)
-    database = BusinessDatabase(engine=engine)
+    database = BusinessDatabase(
+        engine=engine,
+        session_factory=async_sessionmaker(engine, expire_on_commit=False),
+    )
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
