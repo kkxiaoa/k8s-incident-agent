@@ -4,12 +4,14 @@ version = "0.1.0"
 description = "Python agent runtime for K8s Incident Agent"
 requires-python = ">=3.13.15,<3.14"
 dependencies = [
+    "aiohttp==3.14.3",
     "aiosqlite==0.22.1",
     "alembic==1.18.5",
     "fastapi>=0.139,<1",
     "httpx>=0.28,<1",
     "langchain==1.3.14",
     "langchain-deepseek==1.1.0",
+    "kubernetes==36.0.3",
     "pydantic>=2.12,<3",
     "pydantic-settings>=2.12,<3",
     "sqlalchemy[asyncio]==2.0.51",
@@ -40,12 +42,13 @@ required-version = "==0.12.3"
 module-name = "k8s_incident_agent"
 
 [tool.pytest.ini_options]
-addopts = ["-m", "not live_model"]
+addopts = ["-m", "not live_model and not live_kind"]
 asyncio_mode = "auto"
 strict_config = true
 strict_markers = true
 testpaths = ["tests"]
 markers = [
+    "live_kind: tests that explicitly call the fixed local Kind cluster",
     "live_model: tests that explicitly call the configured model provider",
 ]
 
