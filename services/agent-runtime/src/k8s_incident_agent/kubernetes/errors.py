@@ -10,9 +10,11 @@ from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingT
 class KubernetesErrorCode(StrEnum):
     AUTHENTICATION_FAILED = "authentication_failed"
     PERMISSION_DENIED = "permission_denied"
+    RESOURCE_NOT_FOUND = "resource_not_found"
     REQUEST_TIMEOUT = "request_timeout"
     UPSTREAM_UNAVAILABLE = "upstream_unavailable"
     UPSTREAM_CONTRACT_INVALID = "upstream_contract_invalid"
+    RESULT_BUDGET_EXCEEDED = "result_budget_exceeded"
 
 
 _RETRYABLE_CODES = {
@@ -23,10 +25,14 @@ _RETRYABLE_CODES = {
 _SAFE_MESSAGES = {
     KubernetesErrorCode.AUTHENTICATION_FAILED: "Kubernetes authentication failed",
     KubernetesErrorCode.PERMISSION_DENIED: "Kubernetes access was denied",
+    KubernetesErrorCode.RESOURCE_NOT_FOUND: "Kubernetes resource was not found",
     KubernetesErrorCode.REQUEST_TIMEOUT: "Kubernetes request timed out",
     KubernetesErrorCode.UPSTREAM_UNAVAILABLE: "Kubernetes API is unavailable",
     KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID: (
         "Kubernetes API returned an unsupported response"
+    ),
+    KubernetesErrorCode.RESULT_BUDGET_EXCEEDED: (
+        "Kubernetes result exceeded the configured budget"
     ),
 }
 
@@ -42,7 +48,11 @@ class KubernetesBoundaryError(RuntimeError):
         super().__init__(_SAFE_MESSAGES[code])
 
 
-def map_kubernetes_exception(error: Exception) -> KubernetesBoundaryError:
+def map_kubernetes_exception(
+    error: Exception,
+    *,
+    resource_not_found: bool = False,
+) -> KubernetesBoundaryError:
     if isinstance(error, KubernetesBoundaryError):
         return error
     if isinstance(error, TimeoutError):
@@ -53,6 +63,8 @@ def map_kubernetes_exception(error: Exception) -> KubernetesBoundaryError:
             code = KubernetesErrorCode.AUTHENTICATION_FAILED
         elif status == 403:
             code = KubernetesErrorCode.PERMISSION_DENIED
+        elif status == 404 and resource_not_found:
+            code = KubernetesErrorCode.RESOURCE_NOT_FOUND
         elif (
             status == 0
             or status == 429
