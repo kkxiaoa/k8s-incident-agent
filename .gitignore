@@ -67,3 +67,7 @@ next-env.d.ts
 
 # CLAUDE.md
 /CLAUDE.md
+
+# Local Codex workflow and logs
+/.codex/
+/.codex-log/
