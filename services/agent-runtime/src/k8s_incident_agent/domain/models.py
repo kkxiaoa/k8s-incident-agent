@@ -88,6 +88,13 @@ class RunRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentRunSnapshot:
+    id: UUID
+    started_at: datetime
+    timeout_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceRecord:
     run_id: UUID
     tool_call_id: str

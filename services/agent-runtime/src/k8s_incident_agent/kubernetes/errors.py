@@ -15,6 +15,7 @@ class KubernetesErrorCode(StrEnum):
     UPSTREAM_UNAVAILABLE = "upstream_unavailable"
     UPSTREAM_CONTRACT_INVALID = "upstream_contract_invalid"
     RESULT_BUDGET_EXCEEDED = "result_budget_exceeded"
+    RECOVERY_CONSISTENCY_ERROR = "recovery_consistency_error"
 
 
 _RETRYABLE_CODES = {
@@ -33,6 +34,9 @@ _SAFE_MESSAGES = {
     ),
     KubernetesErrorCode.RESULT_BUDGET_EXCEEDED: (
         "Kubernetes result exceeded the configured budget"
+    ),
+    KubernetesErrorCode.RECOVERY_CONSISTENCY_ERROR: (
+        "Persisted tool state is inconsistent"
     ),
 }
 

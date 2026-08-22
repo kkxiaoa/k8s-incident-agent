@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, cast
 from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import select
@@ -10,6 +11,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from k8s_incident_agent.domain.models import (
+    AgentRunSnapshot,
     CreatedIncident,
     DiagnosisOutcome,
     EvidenceRecord,
@@ -99,6 +101,70 @@ class IncidentRepository:
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._session_factory = session_factory
+
+    async def get_agent_run_snapshot(self, run_id: UUID) -> AgentRunSnapshot:
+        try:
+            async with self._session_factory() as session:
+                run, incident = await _load_run_context(session, run_id)
+                _require_active_run(run, incident)
+                if run.started_at is None or run.timeout_seconds <= 0:
+                    raise RecoveryConsistencyError
+                return AgentRunSnapshot(
+                    id=run_id,
+                    started_at=_database_datetime(run.started_at),
+                    timeout_seconds=run.timeout_seconds,
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def get_tool_outcome(
+        self,
+        run_id: UUID,
+        tool_call_id: str,
+        tool_name: str,
+    ) -> PersistedEvidence | ToolFailureRecord | None:
+        try:
+            async with self._session_factory() as session:
+                _, incident = await _load_run_context(session, run_id)
+                incident_id = UUID(incident.id)
+                evidence = await _evidence_by_tool_call(session, run_id, tool_call_id)
+                failure = await _event_by_key(
+                    session, run_id, f"tool:{tool_call_id}:failed"
+                )
+                if evidence is None and failure is None:
+                    return None
+                if evidence is not None and failure is not None:
+                    raise RecoveryConsistencyError
+
+                await _require_matching_tool_started(
+                    session,
+                    incident_id,
+                    run_id,
+                    tool_call_id,
+                    tool_name,
+                )
+                if evidence is not None:
+                    return await _existing_evidence_outcome(
+                        session,
+                        evidence,
+                        incident_id,
+                        run_id,
+                        tool_call_id,
+                        tool_name,
+                    )
+                return _existing_failure_outcome(
+                    cast(RunEventRow, failure),
+                    incident_id,
+                    run_id,
+                    tool_call_id,
+                    tool_name,
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
 
     async def create_incident_and_run(
         self,
@@ -195,6 +261,7 @@ class IncidentRepository:
     async def _start_run_once(self, run_id: UUID, started_at: datetime) -> RunRecord:
         async with self._session_factory() as session, session.begin():
             run, incident = await _load_run_context(session, run_id)
+            incident_id = UUID(incident.id)
             existing = await _event_by_key(session, run_id, "run.started")
             if existing is not None:
                 return _replayed_start(run, incident, existing, started_at)
@@ -206,20 +273,13 @@ class IncidentRepository:
             run.status = RunStatus.RUNNING
             run.started_at = started_at
             run.updated_at = started_at
-            payload = _base_payload(UUID(incident.id), run_id, started_at)
-            payload.update(
-                {
-                    "incidentStatus": IncidentStatus.TRIAGING.value,
-                    "runStatus": RunStatus.RUNNING.value,
-                }
-            )
             event_row = _new_event_row(
-                incident_id=UUID(incident.id),
+                incident_id=incident_id,
                 run_id=run_id,
                 event_key="run.started",
                 event_type="run.started",
                 occurred_at=started_at,
-                payload=payload,
+                payload=_run_started_event_payload(incident_id, run_id, started_at),
             )
             session.add(event_row)
             await session.flush()
@@ -256,24 +316,29 @@ class IncidentRepository:
             incident_id = UUID(incident.id)
             existing = await _event_by_key(session, run_id, event_key)
             if existing is not None:
-                return _replayed_tool_started(
+                _require_matching_tool_started_event(
                     existing,
                     incident_id,
                     run_id,
                     tool_call_id,
                     tool_name,
                 )
+                return _event_from_row(existing)
             _require_active_run(run, incident)
             occurred_at = datetime.now(UTC)
-            payload = _base_payload(incident_id, run_id, occurred_at)
-            payload.update({"toolCallId": tool_call_id, "toolName": tool_name})
             event_row = _new_event_row(
                 incident_id=incident_id,
                 run_id=run_id,
                 event_key=event_key,
                 event_type="tool.started",
                 occurred_at=occurred_at,
-                payload=payload,
+                payload=_tool_started_event_payload(
+                    incident_id,
+                    run_id,
+                    tool_call_id,
+                    tool_name,
+                    occurred_at,
+                ),
             )
             session.add(event_row)
             await session.flush()
@@ -292,26 +357,19 @@ class IncidentRepository:
             )
             if event_row is None:
                 raise RecoveryConsistencyError
-            return _replayed_tool_started(
+            _require_matching_tool_started_event(
                 event_row,
                 UUID(incident.id),
                 run_id,
                 tool_call_id,
                 tool_name,
             )
+            return _event_from_row(event_row)
 
     async def record_evidence(self, evidence: EvidenceRecord) -> PersistedEvidence:
-        observed_at = _require_aware_datetime(evidence.observed_at)
-        normalized = EvidenceRecord(
-            run_id=evidence.run_id,
-            tool_call_id=evidence.tool_call_id,
-            tool_name=evidence.tool_name,
-            evidence_kind=evidence.evidence_kind,
-            target_ref=evidence.target_ref,
-            observed_at=observed_at,
-            payload=evidence.payload,
-            truncated=evidence.truncated,
-            redacted=evidence.redacted,
+        normalized = replace(
+            evidence,
+            observed_at=_require_aware_datetime(evidence.observed_at),
         )
         return await _execute_with_replay(
             lambda: self._record_evidence_once(normalized),
@@ -356,25 +414,18 @@ class IncidentRepository:
                 redacted=evidence.redacted,
             )
             occurred_at = datetime.now(UTC)
-            payload = _base_payload(incident_id, evidence.run_id, occurred_at)
-            payload.update(
-                {
-                    "evidenceId": str(persisted_id),
-                    "toolCallId": evidence.tool_call_id,
-                    "toolName": evidence.tool_name,
-                    "evidenceKind": evidence.evidence_kind,
-                    "observedAt": _rfc3339(evidence.observed_at),
-                    "truncated": evidence.truncated,
-                    "redacted": evidence.redacted,
-                }
-            )
             event_row = _new_event_row(
                 incident_id=incident_id,
                 run_id=evidence.run_id,
                 event_key=f"tool:{evidence.tool_call_id}:evidence",
                 event_type="evidence.recorded",
                 occurred_at=occurred_at,
-                payload=payload,
+                payload=_evidence_event_payload(
+                    evidence_row,
+                    incident_id,
+                    evidence.run_id,
+                    occurred_at,
+                ),
             )
             session.add_all((evidence_row, event_row))
             await session.flush()
@@ -400,14 +451,9 @@ class IncidentRepository:
             )
 
     async def record_tool_failure(self, failure: ToolFailureRecord) -> RunEvent:
-        occurred_at = _require_aware_datetime(failure.occurred_at)
-        normalized = ToolFailureRecord(
-            run_id=failure.run_id,
-            tool_call_id=failure.tool_call_id,
-            tool_name=failure.tool_name,
-            error_code=failure.error_code,
-            retryable=failure.retryable,
-            occurred_at=occurred_at,
+        normalized = replace(
+            failure,
+            occurred_at=_require_aware_datetime(failure.occurred_at),
         )
         return await _execute_with_replay(
             lambda: self._record_tool_failure_once(normalized),
@@ -431,22 +477,13 @@ class IncidentRepository:
                     incident_id,
                 )
             _require_active_run(run, incident)
-            payload = _base_payload(incident_id, failure.run_id, failure.occurred_at)
-            payload.update(
-                {
-                    "toolCallId": failure.tool_call_id,
-                    "toolName": failure.tool_name,
-                    "errorCode": failure.error_code,
-                    "retryable": failure.retryable,
-                }
-            )
             event_row = _new_event_row(
                 incident_id=incident_id,
                 run_id=failure.run_id,
                 event_key=event_key,
                 event_type="tool.failed",
                 occurred_at=failure.occurred_at,
-                payload=payload,
+                payload=_tool_failure_event_payload(failure, incident_id),
             )
             session.add(event_row)
             await session.flush()
@@ -471,21 +508,9 @@ class IncidentRepository:
             )
 
     async def persist_terminal(self, terminal: TerminalRecord) -> PersistedTerminal:
-        completed_at = _require_aware_datetime(terminal.completed_at)
-        normalized = TerminalRecord(
-            run_id=terminal.run_id,
-            completed_at=completed_at,
-            outcome=terminal.outcome,
-            summary=terminal.summary,
-            root_causes=terminal.root_causes,
-            missing_information=terminal.missing_information,
-            redacted=terminal.redacted,
-            error_code=terminal.error_code,
-            error_retryable=terminal.error_retryable,
-            model_calls=terminal.model_calls,
-            tool_calls=terminal.tool_calls,
-            input_tokens=terminal.input_tokens,
-            output_tokens=terminal.output_tokens,
+        normalized = replace(
+            terminal,
+            completed_at=_require_aware_datetime(terminal.completed_at),
         )
         return await _execute_with_replay(
             lambda: self._persist_terminal_once(normalized),
@@ -649,8 +674,15 @@ def _event_from_row(row: RunEventRow) -> RunEvent:
             event_key=row.event_key,
             event_type=row.event_type,
             occurred_at=_database_datetime(row.occurred_at),
-            payload=parse_json_object(row.payload_json),
+            payload=_event_payload(row),
         )
+    except (TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+
+
+def _event_payload(row: RunEventRow) -> dict[str, JsonValue]:
+    try:
+        return parse_json_object(row.payload_json)
     except (TypeError, ValueError):
         raise RecoveryConsistencyError from None
 
@@ -664,6 +696,33 @@ def _base_payload(
         "runId": str(run_id),
         "occurredAt": _rfc3339(occurred_at),
     }
+
+
+def _tool_started_event_payload(
+    incident_id: UUID,
+    run_id: UUID,
+    tool_call_id: str,
+    tool_name: str,
+    occurred_at: datetime,
+) -> dict[str, JsonValue]:
+    payload = _base_payload(incident_id, run_id, occurred_at)
+    payload.update({"toolCallId": tool_call_id, "toolName": tool_name})
+    return payload
+
+
+def _run_started_event_payload(
+    incident_id: UUID,
+    run_id: UUID,
+    started_at: datetime,
+) -> dict[str, JsonValue]:
+    payload = _base_payload(incident_id, run_id, started_at)
+    payload.update(
+        {
+            "incidentStatus": IncidentStatus.TRIAGING.value,
+            "runStatus": RunStatus.RUNNING.value,
+        }
+    )
+    return payload
 
 
 def _event_matches(
@@ -710,13 +769,6 @@ def _replayed_start(
 ) -> RunRecord:
     incident_id = UUID(incident.id)
     run_id = UUID(run.id)
-    payload = _base_payload(incident_id, run_id, started_at)
-    payload.update(
-        {
-            "incidentStatus": IncidentStatus.TRIAGING.value,
-            "runStatus": RunStatus.RUNNING.value,
-        }
-    )
     if (
         run.status is not RunStatus.RUNNING
         or incident.status is not IncidentStatus.TRIAGING
@@ -731,23 +783,40 @@ def _replayed_start(
             event_key="run.started",
             event_type="run.started",
             occurred_at=started_at,
-            payload=payload,
+            payload=_run_started_event_payload(incident_id, run_id, started_at),
         )
     ):
         raise RecoveryConsistencyError
     return _started_run(run, incident, event_row)
 
 
-def _replayed_tool_started(
+async def _require_matching_tool_started(
+    session: AsyncSession,
+    incident_id: UUID,
+    run_id: UUID,
+    tool_call_id: str,
+    tool_name: str,
+) -> None:
+    event_row = await _event_by_key(session, run_id, f"tool:{tool_call_id}:started")
+    if event_row is None:
+        raise RecoveryConsistencyError
+    _require_matching_tool_started_event(
+        event_row,
+        incident_id,
+        run_id,
+        tool_call_id,
+        tool_name,
+    )
+
+
+def _require_matching_tool_started_event(
     event_row: RunEventRow,
     incident_id: UUID,
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
-) -> RunEvent:
+) -> None:
     occurred_at = _database_datetime(event_row.occurred_at)
-    payload = _base_payload(incident_id, run_id, occurred_at)
-    payload.update({"toolCallId": tool_call_id, "toolName": tool_name})
     if not _event_matches(
         event_row,
         incident_id=incident_id,
@@ -755,10 +824,15 @@ def _replayed_tool_started(
         event_key=f"tool:{tool_call_id}:started",
         event_type="tool.started",
         occurred_at=occurred_at,
-        payload=payload,
+        payload=_tool_started_event_payload(
+            incident_id,
+            run_id,
+            tool_call_id,
+            tool_name,
+            occurred_at,
+        ),
     ):
         raise RecoveryConsistencyError
-    return _event_from_row(event_row)
 
 
 async def _resolve_evidence_replay(
@@ -852,14 +926,78 @@ def _persisted_evidence(
         raise RecoveryConsistencyError from None
 
 
-def _resolve_failure_replay(
-    failure: ToolFailureRecord,
-    evidence: EvidenceRow | None,
-    existing: RunEventRow | None,
+async def _existing_evidence_outcome(
+    session: AsyncSession,
+    evidence_row: EvidenceRow,
     incident_id: UUID,
-) -> RunEvent:
-    if evidence is not None or existing is None:
+    run_id: UUID,
+    tool_call_id: str,
+    tool_name: str,
+) -> PersistedEvidence:
+    event_row = await _event_by_key(session, run_id, f"tool:{tool_call_id}:evidence")
+    if event_row is None:
         raise RecoveryConsistencyError
+    occurred_at = _database_datetime(event_row.occurred_at)
+    if (
+        evidence_row.id != str(evidence_id(run_id, tool_call_id))
+        or evidence_row.tool_name != tool_name
+        or not _event_matches(
+            event_row,
+            incident_id=incident_id,
+            run_id=run_id,
+            event_key=f"tool:{tool_call_id}:evidence",
+            event_type="evidence.recorded",
+            occurred_at=occurred_at,
+            payload=_evidence_event_payload(
+                evidence_row,
+                incident_id,
+                run_id,
+                occurred_at,
+            ),
+        )
+    ):
+        raise RecoveryConsistencyError
+    return _persisted_evidence(evidence_row, event_row)
+
+
+def _existing_failure_outcome(
+    event_row: RunEventRow,
+    incident_id: UUID,
+    run_id: UUID,
+    tool_call_id: str,
+    tool_name: str,
+) -> ToolFailureRecord:
+    event_payload = _event_payload(event_row)
+    error_code = event_payload.get("errorCode")
+    retryable = event_payload.get("retryable")
+    if not isinstance(error_code, str) or not isinstance(retryable, bool):
+        raise RecoveryConsistencyError
+    occurred_at = _database_datetime(event_row.occurred_at)
+    failure = ToolFailureRecord(
+        run_id=run_id,
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        error_code=error_code,
+        retryable=retryable,
+        occurred_at=occurred_at,
+    )
+    if not _event_matches(
+        event_row,
+        incident_id=incident_id,
+        run_id=run_id,
+        event_key=f"tool:{tool_call_id}:failed",
+        event_type="tool.failed",
+        occurred_at=occurred_at,
+        payload=_tool_failure_event_payload(failure, incident_id),
+    ):
+        raise RecoveryConsistencyError
+    return failure
+
+
+def _tool_failure_event_payload(
+    failure: ToolFailureRecord,
+    incident_id: UUID,
+) -> dict[str, JsonValue]:
     payload = _base_payload(incident_id, failure.run_id, failure.occurred_at)
     payload.update(
         {
@@ -869,6 +1007,17 @@ def _resolve_failure_replay(
             "retryable": failure.retryable,
         }
     )
+    return payload
+
+
+def _resolve_failure_replay(
+    failure: ToolFailureRecord,
+    evidence: EvidenceRow | None,
+    existing: RunEventRow | None,
+    incident_id: UUID,
+) -> RunEvent:
+    if evidence is not None or existing is None:
+        raise RecoveryConsistencyError
     if not _event_matches(
         existing,
         incident_id=incident_id,
@@ -876,7 +1025,7 @@ def _resolve_failure_replay(
         event_key=f"tool:{failure.tool_call_id}:failed",
         event_type="tool.failed",
         occurred_at=failure.occurred_at,
-        payload=payload,
+        payload=_tool_failure_event_payload(failure, incident_id),
     ):
         raise RecoveryConsistencyError
     return _event_from_row(existing)
