@@ -133,6 +133,13 @@ class ToolFailureRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosisValidationSnapshot:
+    evidence_ids: frozenset[UUID]
+    tool_failures: tuple[ToolFailureRecord, ...]
+    unresolved_tool_failures: tuple[ToolFailureRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RootCauseRecord:
     code: str
     statement: str

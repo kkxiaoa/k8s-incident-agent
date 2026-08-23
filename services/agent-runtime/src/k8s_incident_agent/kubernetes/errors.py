@@ -52,6 +52,22 @@ class KubernetesBoundaryError(RuntimeError):
         super().__init__(_SAFE_MESSAGES[code])
 
 
+def validate_kubernetes_failure_contract(
+    error_code: str,
+    *,
+    retryable: bool,
+) -> KubernetesErrorCode:
+    try:
+        code = KubernetesErrorCode(error_code)
+    except ValueError:
+        raise ValueError(
+            "Kubernetes failure contract has an invalid error code"
+        ) from None
+    if (code in _RETRYABLE_CODES) is not retryable:
+        raise ValueError("Kubernetes failure contract has invalid retryability")
+    return code
+
+
 def map_kubernetes_exception(
     error: Exception,
     *,

@@ -24,6 +24,7 @@ from k8s_incident_agent.kubernetes.credentials import require_credential_ttl
 from k8s_incident_agent.kubernetes.errors import (
     KubernetesBoundaryError,
     KubernetesErrorCode,
+    validate_kubernetes_failure_contract,
 )
 from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
 
@@ -233,14 +234,14 @@ async def _record_failure(
 
 def _replay_failure(failure: ToolFailureRecord) -> dict[str, JsonValue]:
     try:
-        code = KubernetesErrorCode(failure.error_code)
+        code = validate_kubernetes_failure_contract(
+            failure.error_code,
+            retryable=failure.retryable,
+        )
     except ValueError:
         raise FatalDiagnosticToolError(
             KubernetesErrorCode.RECOVERY_CONSISTENCY_ERROR
         ) from None
-    expected_retryable = KubernetesBoundaryError(code).retryable
-    if failure.retryable is not expected_retryable:
-        raise FatalDiagnosticToolError(KubernetesErrorCode.RECOVERY_CONSISTENCY_ERROR)
     return _failure_output(code, failure.retryable)
 
 

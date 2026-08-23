@@ -14,6 +14,7 @@ from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     CreatedIncident,
     DiagnosisOutcome,
+    DiagnosisValidationSnapshot,
     EvidenceRecord,
     IncidentStatus,
     JsonValue,
@@ -119,6 +120,37 @@ class IncidentRepository:
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
+    async def get_diagnosis_validation_snapshot(
+        self,
+        run_id: UUID,
+    ) -> DiagnosisValidationSnapshot:
+        try:
+            async with self._session_factory() as session:
+                run, incident = await _load_run_context(session, run_id)
+                _require_active_run(run, incident)
+                evidence_rows = list(
+                    await session.scalars(
+                        select(EvidenceRow).where(EvidenceRow.run_id == str(run_id))
+                    )
+                )
+                event_rows = list(
+                    await session.scalars(
+                        select(RunEventRow)
+                        .where(RunEventRow.run_id == str(run_id))
+                        .order_by(RunEventRow.id)
+                    )
+                )
+                return _diagnosis_validation_snapshot(
+                    evidence_rows,
+                    event_rows,
+                    incident_id=UUID(incident.id),
+                    run_id=run_id,
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
     async def get_tool_outcome(
         self,
         run_id: UUID,
@@ -145,6 +177,7 @@ class IncidentRepository:
                     tool_call_id,
                     tool_name,
                 )
+
                 if evidence is not None:
                     return await _existing_evidence_outcome(
                         session,
@@ -154,8 +187,10 @@ class IncidentRepository:
                         tool_call_id,
                         tool_name,
                     )
+                failure_row = cast(RunEventRow, failure)
                 return _existing_failure_outcome(
-                    cast(RunEventRow, failure),
+                    failure_row,
+                    _event_payload(failure_row),
                     incident_id,
                     run_id,
                     tool_call_id,
@@ -937,6 +972,24 @@ async def _existing_evidence_outcome(
     event_row = await _event_by_key(session, run_id, f"tool:{tool_call_id}:evidence")
     if event_row is None:
         raise RecoveryConsistencyError
+    return _existing_evidence_outcome_from_event(
+        evidence_row,
+        event_row,
+        incident_id,
+        run_id,
+        tool_call_id,
+        tool_name,
+    )
+
+
+def _existing_evidence_outcome_from_event(
+    evidence_row: EvidenceRow,
+    event_row: RunEventRow,
+    incident_id: UUID,
+    run_id: UUID,
+    tool_call_id: str,
+    tool_name: str,
+) -> PersistedEvidence:
     occurred_at = _database_datetime(event_row.occurred_at)
     if (
         evidence_row.id != str(evidence_id(run_id, tool_call_id))
@@ -962,12 +1015,12 @@ async def _existing_evidence_outcome(
 
 def _existing_failure_outcome(
     event_row: RunEventRow,
+    event_payload: dict[str, JsonValue],
     incident_id: UUID,
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
 ) -> ToolFailureRecord:
-    event_payload = _event_payload(event_row)
     error_code = event_payload.get("errorCode")
     retryable = event_payload.get("retryable")
     if not isinstance(error_code, str) or not isinstance(retryable, bool):
@@ -992,6 +1045,160 @@ def _existing_failure_outcome(
     ):
         raise RecoveryConsistencyError
     return failure
+
+
+def _diagnosis_validation_snapshot(
+    evidence_rows: list[EvidenceRow],
+    event_rows: list[RunEventRow],
+    *,
+    incident_id: UUID,
+    run_id: UUID,
+) -> DiagnosisValidationSnapshot:
+    evidence_events = [
+        event_row for event_row in event_rows if _is_evidence_outcome_event(event_row)
+    ]
+    failure_events = [
+        event_row for event_row in event_rows if _is_failure_outcome_event(event_row)
+    ]
+    started_events = [
+        event_row for event_row in event_rows if _is_tool_started_event(event_row)
+    ]
+    evidence_events_by_key = {
+        event_row.event_key: event_row for event_row in evidence_events
+    }
+    all_events_by_key = {event_row.event_key: event_row for event_row in event_rows}
+
+    matched_evidence_event_ids: set[int] = set()
+    matched_started_event_ids: set[int] = set()
+    successes: list[tuple[int, str, str]] = []
+    persisted_ids: set[UUID] = set()
+    success_call_ids: set[str] = set()
+    for evidence_row in evidence_rows:
+        event_row = evidence_events_by_key.get(
+            f"tool:{evidence_row.tool_call_id}:evidence"
+        )
+        if event_row is None:
+            raise RecoveryConsistencyError
+        persisted = _existing_evidence_outcome_from_event(
+            evidence_row,
+            event_row,
+            incident_id,
+            run_id,
+            evidence_row.tool_call_id,
+            evidence_row.tool_name,
+        )
+        matched_started_event_ids.add(
+            _require_earlier_matching_tool_started(
+                all_events_by_key,
+                event_row,
+                incident_id,
+                run_id,
+                persisted.tool_call_id,
+                persisted.tool_name,
+            )
+        )
+        if persisted.id in persisted_ids or persisted.tool_call_id in success_call_ids:
+            raise RecoveryConsistencyError
+        persisted_ids.add(persisted.id)
+        success_call_ids.add(persisted.tool_call_id)
+        matched_evidence_event_ids.add(event_row.id)
+        successes.append((event_row.id, persisted.tool_call_id, persisted.tool_name))
+
+    if matched_evidence_event_ids != {event_row.id for event_row in evidence_events}:
+        raise RecoveryConsistencyError
+
+    failures: list[tuple[int, ToolFailureRecord]] = []
+    failure_call_ids: set[str] = set()
+    for event_row in failure_events:
+        payload = _event_payload(event_row)
+        tool_call_id = payload.get("toolCallId")
+        tool_name = payload.get("toolName")
+        if not isinstance(tool_call_id, str) or not isinstance(tool_name, str):
+            raise RecoveryConsistencyError
+        if tool_call_id in failure_call_ids or tool_call_id in success_call_ids:
+            raise RecoveryConsistencyError
+        failure_call_ids.add(tool_call_id)
+        failure = _existing_failure_outcome(
+            event_row,
+            payload,
+            incident_id,
+            run_id,
+            tool_call_id,
+            tool_name,
+        )
+        matched_started_event_ids.add(
+            _require_earlier_matching_tool_started(
+                all_events_by_key,
+                event_row,
+                incident_id,
+                run_id,
+                failure.tool_call_id,
+                failure.tool_name,
+            )
+        )
+        failures.append((event_row.id, failure))
+
+    if matched_started_event_ids != {event_row.id for event_row in started_events}:
+        raise RecoveryConsistencyError
+
+    unresolved = tuple(
+        failure
+        for failure_event_id, failure in failures
+        if not failure.retryable
+        or not any(
+            success_event_id > failure_event_id
+            and success_call_id != failure.tool_call_id
+            and success_tool_name == failure.tool_name
+            for success_event_id, success_call_id, success_tool_name in successes
+        )
+    )
+    return DiagnosisValidationSnapshot(
+        evidence_ids=frozenset(persisted_ids),
+        tool_failures=tuple(failure for _, failure in failures),
+        unresolved_tool_failures=unresolved,
+    )
+
+
+def _is_evidence_outcome_event(event_row: RunEventRow) -> bool:
+    return event_row.event_type == "evidence.recorded" or (
+        event_row.event_key.startswith("tool:")
+        and event_row.event_key.endswith(":evidence")
+    )
+
+
+def _is_failure_outcome_event(event_row: RunEventRow) -> bool:
+    return event_row.event_type == "tool.failed" or (
+        event_row.event_key.startswith("tool:")
+        and event_row.event_key.endswith(":failed")
+    )
+
+
+def _is_tool_started_event(event_row: RunEventRow) -> bool:
+    return event_row.event_type == "tool.started" or (
+        event_row.event_key.startswith("tool:")
+        and event_row.event_key.endswith(":started")
+    )
+
+
+def _require_earlier_matching_tool_started(
+    events_by_key: dict[str, RunEventRow],
+    outcome_event: RunEventRow,
+    incident_id: UUID,
+    run_id: UUID,
+    tool_call_id: str,
+    tool_name: str,
+) -> int:
+    started_event = events_by_key.get(f"tool:{tool_call_id}:started")
+    if started_event is None or started_event.id >= outcome_event.id:
+        raise RecoveryConsistencyError
+    _require_matching_tool_started_event(
+        started_event,
+        incident_id,
+        run_id,
+        tool_call_id,
+        tool_name,
+    )
+    return started_event.id
 
 
 def _tool_failure_event_payload(
