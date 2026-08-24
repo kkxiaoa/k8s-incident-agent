@@ -364,10 +364,22 @@ async def test_gate_rejects_context_target_mismatch_before_network_access() -> N
 
 
 @pytest.mark.asyncio
-async def test_gate_rejects_non_deployment_stage_one_target() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cluster", "another-cluster"),
+        ("namespace", "default"),
+        ("api_version", "apps/v2"),
+        ("kind", "StatefulSet"),
+    ],
+)
+async def test_gate_rejects_target_outside_stage_one_scope(
+    field: str,
+    value: str,
+) -> None:
     version_api = _ScriptedVersionApi(_version())
     authorization_api = _ScriptedAuthorizationApi()
-    target = TARGET.model_copy(update={"kind": "StatefulSet"})
+    target = TARGET.model_copy(update={field: value})
 
     async with _clients(version_api, authorization_api) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:

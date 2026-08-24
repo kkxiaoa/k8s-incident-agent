@@ -16,10 +16,10 @@ from k8s_incident_agent.kubernetes.errors import (
     KubernetesErrorCode,
     map_kubernetes_exception,
 )
-from k8s_incident_agent.scenarios.contracts import ScenarioTarget
-
-_CLUSTER_NAME = "k8s-incident-agent"
-_NAMESPACE = "k8s-incident-scenarios"
+from k8s_incident_agent.scenarios.contracts import (
+    ScenarioTarget,
+    validate_stage_one_target,
+)
 
 
 class _VersionApiView(Protocol):
@@ -66,13 +66,11 @@ async def verify_stage_one_access(
     clients: KubernetesClients,
     target: ScenarioTarget,
 ) -> None:
-    if (
-        target.cluster != _CLUSTER_NAME
-        or target.namespace != _NAMESPACE
-        or target.api_version != "apps/v1"
-        or target.kind != "Deployment"
-        or clients.context_name != f"kind-{target.cluster}"
-    ):
+    try:
+        validate_stage_one_target(target)
+    except ValueError:
+        raise _contract_invalid() from None
+    if clients.context_name != f"kind-{target.cluster}":
         raise _contract_invalid()
 
     try:

@@ -6,6 +6,8 @@ from enum import StrEnum
 from typing import Final, Literal
 from uuid import UUID
 
+from k8s_incident_agent.scenarios.contracts import ScenarioTarget
+
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
 
@@ -92,6 +94,18 @@ class AgentRunSnapshot:
     id: UUID
     started_at: datetime
     timeout_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRunSnapshot:
+    id: UUID
+    incident_id: UUID
+    run_status: RunStatus
+    trigger_summary: str
+    target: ScenarioTarget
+    model: ModelSnapshot
+    budget: RunBudget
+    started_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)

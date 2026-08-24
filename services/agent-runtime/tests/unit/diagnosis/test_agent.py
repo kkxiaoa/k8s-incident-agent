@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast, override
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, cast, override
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,14 +21,22 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import PrivateAttr
 
 from k8s_incident_agent.diagnosis.agent import (
+    DiagnosticDeadlineExceededError,
     StructuredDiagnosisError,
     build_diagnostic_agent,
 )
+from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
+from k8s_incident_agent.domain.models import AgentRunSnapshot
+from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
+from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
 from k8s_incident_agent.kubernetes.errors import KubernetesErrorCode
 from k8s_incident_agent.kubernetes.tools import FatalDiagnosticToolError
+from k8s_incident_agent.persistence.repositories import IncidentRepository
+from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 TOOL_NAMES = ("get_workload", "get_pods", "get_events")
+NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 
 
 def _new_bound_tool_names() -> list[tuple[str, ...]]:
@@ -102,14 +113,62 @@ def _tool_name(candidate: dict[str, Any] | type | Callable[..., Any] | BaseTool)
     return str(getattr(named_candidate, "__name__", type(named_candidate).__name__))
 
 
-class _AgentRunner(Protocol):
-    checkpointer: object | None
+class _AgentRunner:
+    def __init__(self, graph: object) -> None:
+        self._graph = cast(Any, graph)
 
-    async def ainvoke(self, input: dict[str, object]) -> dict[str, Any]: ...
+    @property
+    def checkpointer(self) -> object | None:
+        return cast(object | None, self._graph.checkpointer)
+
+    async def ainvoke(
+        self,
+        input: dict[str, object],
+        *,
+        context: DiagnosticToolContext | None = None,
+    ) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            await self._graph.ainvoke(
+                input,
+                context=context or _context(),
+            ),
+        )
 
 
 def _runner(graph: object) -> _AgentRunner:
-    return cast(_AgentRunner, graph)
+    return _AgentRunner(graph)
+
+
+def _context(
+    *,
+    now: datetime = NOW,
+    timeout_seconds: int = 180,
+) -> DiagnosticToolContext:
+    return DiagnosticToolContext(
+        run=AgentRunSnapshot(
+            id=uuid4(),
+            started_at=NOW,
+            timeout_seconds=timeout_seconds,
+        ),
+        target=ScenarioTarget(
+            cluster="k8s-incident-agent",
+            namespace="k8s-incident-scenarios",
+            api_version="apps/v1",
+            kind="Deployment",
+            name="image-pull-backoff",
+        ),
+        credential=DiagnosticCredential(
+            kubeconfig_path=Path("/unused/diagnostic.kubeconfig"),
+            context_name="kind-k8s-incident-agent",
+            server_url="https://127.0.0.1:6443",
+            expires_at=NOW + timedelta(hours=1),
+            _kubeconfig={},
+        ),
+        adapter=cast(KubernetesEvidenceAdapter, object()),
+        repository=cast(IncidentRepository, object()),
+        now=lambda: now,
+    )
 
 
 def _tool_call(name: str, call_id: str) -> AIMessage:
@@ -227,6 +286,8 @@ async def test_agent_executes_different_read_tool_trajectories_and_returns_schem
     assert result["structured_response"] == _diagnosed_candidate(
         evidence_id
     ).model_dump(mode="json")
+    assert result["model_calls"] == 4
+    assert result["tool_calls"] == 4
     assert agent.checkpointer is None
     assert model.capture.bound_tool_names
     assert set(model.capture.bound_tool_names[-1]) == {
@@ -252,6 +313,51 @@ async def test_fatal_tool_failure_propagates_without_model_retry() -> None:
     assert error.value.code is KubernetesErrorCode.PERMISSION_DENIED
     assert calls == ["get_workload"]
     assert len(model.capture.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_absolute_deadline_cancels_inflight_tool_call() -> None:
+    entered = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    @tool("get_workload")
+    async def get_workload() -> dict[str, object]:
+        """Block while reading workload evidence."""
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("blocking tool unexpectedly completed")
+
+    @tool("get_pods")
+    async def get_pods() -> dict[str, object]:
+        """Read pod evidence."""
+        return {"evidenceId": "00000000-0000-0000-0000-000000000002"}
+
+    @tool("get_events")
+    async def get_events() -> dict[str, object]:
+        """Read event evidence."""
+        return {"evidenceId": "00000000-0000-0000-0000-000000000003"}
+
+    model = _ToolCallingFakeModel(
+        responses=[_tool_call("get_workload", "call-workload")]
+    )
+    agent = _runner(build_diagnostic_agent(model, (get_workload, get_pods, get_events)))
+
+    with pytest.raises(DiagnosticDeadlineExceededError):
+        async with asyncio.timeout(1):
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": "Diagnose."}]},
+                context=_context(
+                    now=NOW + timedelta(milliseconds=900),
+                    timeout_seconds=1,
+                ),
+            )
+
+    assert entered.is_set()
+    assert cancelled.is_set()
 
 
 @pytest.mark.asyncio

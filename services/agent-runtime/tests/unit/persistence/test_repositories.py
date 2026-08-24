@@ -1,3 +1,4 @@
+import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -10,15 +11,20 @@ from sqlalchemy import event, func, select
 from sqlalchemy.exc import OperationalError
 
 from k8s_incident_agent.domain.models import (
+    DiagnosisOutcome,
     EvidenceRecord,
     ModelSnapshot,
+    RootCauseRecord,
     RunBudget,
+    RunStatus,
+    TerminalRecord,
 )
 from k8s_incident_agent.persistence.database import (
     BusinessDatabase,
     create_business_database,
 )
 from k8s_incident_agent.persistence.models import (
+    DiagnosisRow,
     EvidenceRow,
     IncidentRow,
     RunEventRow,
@@ -27,6 +33,7 @@ from k8s_incident_agent.persistence.models import (
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     PersistenceOperationError,
+    RecoveryConsistencyError,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
 from k8s_incident_agent.scenarios.contracts import (
@@ -272,3 +279,227 @@ async def test_evidence_rolls_back_when_its_event_insert_fails(tmp_path: Path) -
 
         assert await _row_count(database, EvidenceRow) == 0
         assert await _row_count(database, RunEventRow) == 2
+
+
+@pytest.mark.asyncio
+async def test_workflow_snapshot_and_recoverable_scan_use_persisted_run_state(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        queued = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        running = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        await repository.start_run(running.run_id, NOW)
+
+        queued_snapshot = await repository.get_workflow_run_snapshot(queued.run_id)
+        running_snapshot = await repository.get_workflow_run_snapshot(running.run_id)
+
+        assert queued_snapshot.run_status is RunStatus.QUEUED
+        assert queued_snapshot.started_at is None
+        assert queued_snapshot.trigger_summary == _scenario().trigger.summary
+        assert queued_snapshot.target == _scenario().target
+        assert queued_snapshot.model == _model()
+        assert queued_snapshot.budget == _budget()
+        assert running_snapshot.run_status is RunStatus.RUNNING
+        assert running_snapshot.started_at == NOW
+        assert await repository.list_recoverable_run_ids() == (
+            queued.run_id,
+            running.run_id,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "tampered", "run_updated_at", "incident_updated_at"],
+)
+async def test_workflow_snapshot_requires_matching_run_started_event(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        await repository.start_run(created.run_id, NOW)
+
+        async with database.session_factory() as session, session.begin():
+            start_event = await session.scalar(
+                select(RunEventRow).where(
+                    RunEventRow.run_id == str(created.run_id),
+                    RunEventRow.event_key == "run.started",
+                )
+            )
+            assert start_event is not None
+            if mutation == "missing":
+                await session.delete(start_event)
+            elif mutation == "tampered":
+                start_event.payload_json = "{}"
+            elif mutation == "run_updated_at":
+                run = await session.get(RunRow, str(created.run_id))
+                assert run is not None
+                run.updated_at = NOW.replace(second=1)
+            else:
+                incident = await session.get(
+                    IncidentRow,
+                    str(created.incident_id),
+                )
+                assert incident is not None
+                incident.updated_at = NOW.replace(second=1)
+
+        with pytest.raises(RecoveryConsistencyError):
+            await repository.get_workflow_run_snapshot(created.run_id)
+
+
+@pytest.mark.asyncio
+async def test_workflow_snapshot_validates_completed_diagnosis_and_terminal_event(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        await repository.start_run(created.run_id, NOW)
+        await repository.record_tool_started(
+            created.run_id,
+            "call-workload",
+            "get_workload",
+        )
+        evidence = await repository.record_evidence(
+            EvidenceRecord(
+                run_id=created.run_id,
+                tool_call_id="call-workload",
+                tool_name="get_workload",
+                evidence_kind="workload",
+                target_ref={"kind": "Deployment", "name": "image-pull-backoff"},
+                observed_at=NOW,
+                payload={"availableReplicas": 0},
+                truncated=False,
+                redacted=False,
+            )
+        )
+        completed_at = NOW.replace(minute=1)
+        await repository.persist_terminal(
+            TerminalRecord(
+                run_id=created.run_id,
+                completed_at=completed_at,
+                outcome=DiagnosisOutcome.DIAGNOSED,
+                summary="The Deployment has no available replicas.",
+                root_causes=(
+                    RootCauseRecord(
+                        code="deployment_unavailable",
+                        statement="The workload observation reports zero availability.",
+                        confidence="high",
+                        evidence_ids=(evidence.id,),
+                    ),
+                ),
+                missing_information=(),
+                redacted=False,
+                error_code=None,
+                error_retryable=None,
+                model_calls=2,
+                tool_calls=2,
+                input_tokens=None,
+                output_tokens=None,
+            )
+        )
+
+        snapshot = await repository.get_workflow_run_snapshot(created.run_id)
+
+        assert snapshot.run_status is RunStatus.COMPLETED
+        assert snapshot.started_at == NOW
+        assert await repository.list_recoverable_run_ids() == ()
+
+        async with database.session_factory() as session, session.begin():
+            terminal_event = await session.scalar(
+                select(RunEventRow).where(
+                    RunEventRow.run_id == str(created.run_id),
+                    RunEventRow.event_key == "run:terminal",
+                )
+            )
+            assert terminal_event is not None
+            terminal_event.payload_json = "{}"
+
+        with pytest.raises(RecoveryConsistencyError):
+            await repository.get_workflow_run_snapshot(created.run_id)
+
+
+@pytest.mark.asyncio
+async def test_workflow_snapshot_reuses_strict_diagnosis_contract(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        await repository.start_run(created.run_id, NOW)
+        await repository.record_tool_started(
+            created.run_id,
+            "call-workload",
+            "get_workload",
+        )
+        evidence = await repository.record_evidence(
+            EvidenceRecord(
+                run_id=created.run_id,
+                tool_call_id="call-workload",
+                tool_name="get_workload",
+                evidence_kind="workload",
+                target_ref={"kind": "Deployment", "name": "image-pull-backoff"},
+                observed_at=NOW,
+                payload={"availableReplicas": 0},
+                truncated=False,
+                redacted=False,
+            )
+        )
+        await repository.persist_terminal(
+            TerminalRecord(
+                run_id=created.run_id,
+                completed_at=NOW.replace(minute=1),
+                outcome=DiagnosisOutcome.DIAGNOSED,
+                summary="The Deployment has no available replicas.",
+                root_causes=(
+                    RootCauseRecord(
+                        code="deployment_unavailable",
+                        statement="The workload observation reports zero availability.",
+                        confidence="high",
+                        evidence_ids=(evidence.id,),
+                    ),
+                ),
+                missing_information=(),
+                redacted=False,
+                error_code=None,
+                error_retryable=None,
+                model_calls=2,
+                tool_calls=2,
+                input_tokens=None,
+                output_tokens=None,
+            )
+        )
+
+        async with database.session_factory() as session, session.begin():
+            diagnosis = await session.scalar(
+                select(DiagnosisRow).where(DiagnosisRow.run_id == str(created.run_id))
+            )
+            assert diagnosis is not None
+            diagnosis.root_causes_json = json.dumps(
+                [
+                    {
+                        "code": "deployment_unavailable",
+                        "statement": (
+                            "The workload observation reports zero availability."
+                        ),
+                        "confidence": "high",
+                        "evidence_ids": [str(evidence.id), str(evidence.id)],
+                    }
+                ]
+            )
+
+        with pytest.raises(RecoveryConsistencyError):
+            await repository.get_workflow_run_snapshot(created.run_id)

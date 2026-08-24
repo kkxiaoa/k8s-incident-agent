@@ -26,3 +26,13 @@ class PublicScenario(_ImmutableContract):
     display_name: str = Field(min_length=1)
     trigger: ScenarioTrigger
     target: ScenarioTarget
+
+
+def validate_stage_one_target(target: ScenarioTarget) -> None:
+    if (
+        target.cluster != "k8s-incident-agent"
+        or target.namespace != "k8s-incident-scenarios"
+        or target.api_version != "apps/v1"
+        or target.kind != "Deployment"
+    ):
+        raise ValueError("Target is outside the Stage 1 diagnostic scope")

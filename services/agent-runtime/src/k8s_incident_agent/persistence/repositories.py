@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Final, cast
 from uuid import UUID, uuid4, uuid5
 
-from sqlalchemy import select
+from pydantic import ValidationError
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
+from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     CreatedIncident,
@@ -28,6 +32,7 @@ from k8s_incident_agent.domain.models import (
     RunStatus,
     TerminalRecord,
     ToolFailureRecord,
+    WorkflowRunSnapshot,
 )
 from k8s_incident_agent.persistence.canonical import canonical_json, parse_json_object
 from k8s_incident_agent.persistence.models import (
@@ -37,7 +42,7 @@ from k8s_incident_agent.persistence.models import (
     RunEventRow,
     RunRow,
 )
-from k8s_incident_agent.scenarios.contracts import PublicScenario
+from k8s_incident_agent.scenarios.contracts import PublicScenario, ScenarioTarget
 
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
 _SCHEMA_VERSION: Final = 1
@@ -102,6 +107,77 @@ class IncidentRepository:
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._session_factory = session_factory
+
+    async def get_workflow_run_snapshot(
+        self,
+        run_id: UUID,
+    ) -> WorkflowRunSnapshot:
+        try:
+            async with self._session_factory() as session:
+                start_event_row = aliased(RunEventRow)
+                terminal_event_row = aliased(RunEventRow)
+                row = (
+                    await session.execute(
+                        select(
+                            RunRow,
+                            IncidentRow,
+                            DiagnosisRow,
+                            start_event_row,
+                            terminal_event_row,
+                        )
+                        .join(IncidentRow, IncidentRow.id == RunRow.incident_id)
+                        .outerjoin(
+                            DiagnosisRow,
+                            DiagnosisRow.run_id == RunRow.id,
+                        )
+                        .outerjoin(
+                            start_event_row,
+                            and_(
+                                start_event_row.run_id == RunRow.id,
+                                start_event_row.event_key == "run.started",
+                            ),
+                        )
+                        .outerjoin(
+                            terminal_event_row,
+                            and_(
+                                terminal_event_row.run_id == RunRow.id,
+                                terminal_event_row.event_key == "run:terminal",
+                            ),
+                        )
+                        .where(RunRow.id == str(run_id))
+                    )
+                ).one_or_none()
+                if row is None:
+                    raise RecoveryConsistencyError
+                run, incident, diagnosis, start_event, terminal_event = row
+                return _workflow_run_snapshot(
+                    run,
+                    incident,
+                    diagnosis,
+                    start_event,
+                    terminal_event,
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def list_recoverable_run_ids(self) -> tuple[UUID, ...]:
+        try:
+            async with self._session_factory() as session:
+                values = await session.scalars(
+                    select(RunRow.id)
+                    .where(RunRow.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)))
+                    .order_by(RunRow.created_at, RunRow.id)
+                )
+                try:
+                    return tuple(UUID(value) for value in values)
+                except ValueError:
+                    raise RecoveryConsistencyError from None
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
 
     async def get_agent_run_snapshot(self, run_id: UUID) -> AgentRunSnapshot:
         try:
@@ -652,6 +728,276 @@ async def _load_run_context(
     return run, incident
 
 
+def _workflow_run_snapshot(
+    run: RunRow,
+    incident: IncidentRow,
+    diagnosis: DiagnosisRow | None,
+    start_event: RunEventRow | None,
+    terminal_event: RunEventRow | None,
+) -> WorkflowRunSnapshot:
+    try:
+        run_id = UUID(run.id)
+        incident_id = UUID(incident.id)
+        target = ScenarioTarget(
+            cluster=incident.cluster,
+            namespace=incident.namespace,
+            api_version=incident.api_version,
+            kind=incident.kind,
+            name=incident.resource_name,
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+    if run.incident_id != incident.id or not _valid_workflow_snapshot_values(
+        run, incident
+    ):
+        raise RecoveryConsistencyError
+
+    started_at = (
+        _database_datetime(run.started_at) if run.started_at is not None else None
+    )
+    completed_at = (
+        _database_datetime(run.completed_at) if run.completed_at is not None else None
+    )
+    if run.status is RunStatus.RUNNING:
+        if started_at is None:
+            raise RecoveryConsistencyError
+        _require_active_start_consistency(
+            run,
+            incident,
+            start_event,
+            expected_started_at=started_at,
+        )
+    else:
+        _require_start_event_consistency(
+            run,
+            incident,
+            start_event,
+            started_at,
+        )
+    if run.status is RunStatus.QUEUED:
+        if (
+            incident.status is not IncidentStatus.RECEIVED
+            or started_at is not None
+            or completed_at is not None
+            or not _has_empty_terminal_fields(run, diagnosis, terminal_event)
+        ):
+            raise RecoveryConsistencyError
+    elif run.status is RunStatus.RUNNING:
+        if (
+            incident.status is not IncidentStatus.TRIAGING
+            or completed_at is not None
+            or not _has_empty_terminal_fields(run, diagnosis, terminal_event)
+        ):
+            raise RecoveryConsistencyError
+    else:
+        terminal = _terminal_record_from_rows(
+            run,
+            diagnosis,
+            terminal_event,
+        )
+        _resolve_terminal_replay(terminal, run, incident, diagnosis, terminal_event)
+        completed_at = terminal.completed_at
+        if run.status is RunStatus.COMPLETED and started_at is None:
+            raise RecoveryConsistencyError
+
+    return WorkflowRunSnapshot(
+        id=run_id,
+        incident_id=incident_id,
+        run_status=run.status,
+        trigger_summary=incident.trigger_summary,
+        target=target,
+        model=ModelSnapshot(
+            provider=run.model_provider,
+            model_id=run.model_id,
+            thinking_mode=run.thinking_mode,
+            prompt_version=run.prompt_version,
+        ),
+        budget=RunBudget(
+            max_model_calls=run.max_model_calls,
+            max_tool_calls=run.max_tool_calls,
+            timeout_seconds=run.timeout_seconds,
+        ),
+        started_at=started_at,
+    )
+
+
+def _require_start_event_consistency(
+    run: RunRow,
+    incident: IncidentRow,
+    start_event: RunEventRow | None,
+    started_at: datetime | None,
+) -> None:
+    if started_at is None:
+        if start_event is not None:
+            raise RecoveryConsistencyError
+        return
+    if start_event is None:
+        raise RecoveryConsistencyError
+    incident_id = UUID(incident.id)
+    run_id = UUID(run.id)
+    if not _event_matches(
+        start_event,
+        incident_id=incident_id,
+        run_id=run_id,
+        event_key="run.started",
+        event_type="run.started",
+        occurred_at=started_at,
+        payload=_run_started_event_payload(incident_id, run_id, started_at),
+    ):
+        raise RecoveryConsistencyError
+
+
+def _require_active_start_consistency(
+    run: RunRow,
+    incident: IncidentRow,
+    start_event: RunEventRow | None,
+    expected_started_at: datetime,
+) -> None:
+    if (
+        run.started_at is None
+        or _database_datetime(run.started_at) != expected_started_at
+        or _database_datetime(run.updated_at) != expected_started_at
+        or _database_datetime(incident.updated_at) != expected_started_at
+    ):
+        raise RecoveryConsistencyError
+    _require_start_event_consistency(
+        run,
+        incident,
+        start_event,
+        expected_started_at,
+    )
+
+
+def _valid_workflow_snapshot_values(run: RunRow, incident: IncidentRow) -> bool:
+    text_values: tuple[object, ...] = (
+        incident.trigger_summary,
+        run.model_provider,
+        run.model_id,
+        run.prompt_version,
+    )
+    budget_values: tuple[object, ...] = (
+        run.max_model_calls,
+        run.max_tool_calls,
+        run.timeout_seconds,
+    )
+    thinking_mode: object = run.thinking_mode
+    return (
+        all(_is_non_empty_string(value) for value in text_values)
+        and _is_boolean(thinking_mode)
+        and all(_is_positive_integer(value) for value in budget_values)
+    )
+
+
+def _is_non_empty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _is_boolean(value: object) -> bool:
+    return isinstance(value, bool)
+
+
+def _is_positive_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _has_empty_terminal_fields(
+    run: RunRow,
+    diagnosis: DiagnosisRow | None,
+    terminal_event: RunEventRow | None,
+) -> bool:
+    return (
+        diagnosis is None
+        and terminal_event is None
+        and run.model_calls is None
+        and run.tool_calls is None
+        and run.input_tokens is None
+        and run.output_tokens is None
+        and run.error_code is None
+        and run.error_retryable is None
+    )
+
+
+def _terminal_record_from_rows(
+    run: RunRow,
+    diagnosis: DiagnosisRow | None,
+    terminal_event: RunEventRow | None,
+) -> TerminalRecord:
+    if run.completed_at is None or terminal_event is None:
+        raise RecoveryConsistencyError
+    completed_at = _database_datetime(run.completed_at)
+    if run.status is RunStatus.COMPLETED:
+        if (
+            diagnosis is None
+            or run.error_code is not None
+            or run.error_retryable is not None
+        ):
+            raise RecoveryConsistencyError
+        validated = _validated_diagnosis_from_row(diagnosis)
+        return TerminalRecord(
+            run_id=UUID(run.id),
+            completed_at=completed_at,
+            outcome=DiagnosisOutcome(validated.outcome),
+            summary=validated.summary,
+            root_causes=tuple(
+                RootCauseRecord(
+                    code=root_cause.code,
+                    statement=root_cause.statement,
+                    confidence=root_cause.confidence,
+                    evidence_ids=tuple(root_cause.evidence_ids),
+                )
+                for root_cause in validated.root_causes
+            ),
+            missing_information=tuple(validated.missing_information),
+            redacted=validated.redacted,
+            error_code=None,
+            error_retryable=None,
+            model_calls=run.model_calls,
+            tool_calls=run.tool_calls,
+            input_tokens=run.input_tokens,
+            output_tokens=run.output_tokens,
+        )
+    if (
+        run.status is not RunStatus.FAILED
+        or diagnosis is not None
+        or not isinstance(run.error_code, str)
+        or not run.error_code
+        or not isinstance(run.error_retryable, bool)
+    ):
+        raise RecoveryConsistencyError
+    return TerminalRecord(
+        run_id=UUID(run.id),
+        completed_at=completed_at,
+        outcome=None,
+        summary=None,
+        root_causes=(),
+        missing_information=(),
+        redacted=False,
+        error_code=run.error_code,
+        error_retryable=run.error_retryable,
+        model_calls=run.model_calls,
+        tool_calls=run.tool_calls,
+        input_tokens=run.input_tokens,
+        output_tokens=run.output_tokens,
+    )
+
+
+def _validated_diagnosis_from_row(
+    diagnosis: DiagnosisRow,
+) -> ValidatedDiagnosis:
+    try:
+        return ValidatedDiagnosis.model_validate(
+            {
+                "outcome": diagnosis.outcome.value,
+                "summary": diagnosis.summary,
+                "root_causes": json.loads(diagnosis.root_causes_json),
+                "missing_information": json.loads(diagnosis.missing_information_json),
+                "redacted": diagnosis.redacted,
+            }
+        )
+    except (AttributeError, TypeError, json.JSONDecodeError, ValidationError):
+        raise RecoveryConsistencyError from None
+
+
 async def _event_by_key(
     session: AsyncSession, run_id: UUID, event_key: str
 ) -> RunEventRow | None:
@@ -802,26 +1148,17 @@ def _replayed_start(
     event_row: RunEventRow,
     started_at: datetime,
 ) -> RunRecord:
-    incident_id = UUID(incident.id)
-    run_id = UUID(run.id)
     if (
         run.status is not RunStatus.RUNNING
         or incident.status is not IncidentStatus.TRIAGING
-        or run.started_at is None
-        or _database_datetime(run.started_at) != started_at
-        or _database_datetime(run.updated_at) != started_at
-        or _database_datetime(incident.updated_at) != started_at
-        or not _event_matches(
-            event_row,
-            incident_id=incident_id,
-            run_id=run_id,
-            event_key="run.started",
-            event_type="run.started",
-            occurred_at=started_at,
-            payload=_run_started_event_payload(incident_id, run_id, started_at),
-        )
     ):
         raise RecoveryConsistencyError
+    _require_active_start_consistency(
+        run,
+        incident,
+        event_row,
+        expected_started_at=started_at,
+    )
     return _started_run(run, incident, event_row)
 
 

@@ -1,3 +1,6 @@
+DIAGNOSTIC_PROMPT_VERSION = "stage1-v1"
+
+
 def build_diagnostic_system_prompt(
     *,
     max_model_calls: int,
