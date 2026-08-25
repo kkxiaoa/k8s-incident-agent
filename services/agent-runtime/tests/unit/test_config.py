@@ -16,6 +16,7 @@ MODEL_ENVIRONMENT_VARIABLES = (
     "MODEL_THINKING",
     "MODEL_TIMEOUT_SECONDS",
     "MODEL_MAX_RETRIES",
+    "RUNTIME_RETENTION_DAYS",
     "DEEPSEEK_API_KEY",
     "DEEPSEEK_BASE_URL",
     "RUNTIME_DATA_DIR",
@@ -44,6 +45,7 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     assert settings.model_thinking is False
     assert settings.model_timeout_seconds == 60
     assert settings.model_max_retries == 2
+    assert settings.runtime_retention_days == 7
     assert settings.deepseek_api_key is None
     assert str(settings.deepseek_base_url) == "https://api.deepseek.com/"
     assert settings.runtime_paths.root == tmp_path / ".runtime"
@@ -122,6 +124,17 @@ def test_negative_retry_count_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MODEL_MAX_RETRIES", "-1")
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+@pytest.mark.parametrize("value", ["0", "31"])
+def test_retention_days_outside_safe_range_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("RUNTIME_RETENTION_DAYS", value)
 
     with pytest.raises(ValidationError):
         settings_without_dotenv()

@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Final, cast
 from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
-from sqlalchemy import and_, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.dml import Delete
 
 from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
 from k8s_incident_agent.domain.models import (
@@ -46,6 +48,16 @@ from k8s_incident_agent.scenarios.contracts import PublicScenario, ScenarioTarge
 
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
 _SCHEMA_VERSION: Final = 1
+
+
+@dataclass(frozen=True, slots=True)
+class PruneTarget:
+    incident_id: UUID
+    run_id: UUID
+    artifact_directory: Path
+    event_rows: int
+    evidence_rows: int
+    diagnosis_rows: int
 
 
 class RepositoryError(RuntimeError):
@@ -174,6 +186,106 @@ class IncidentRepository:
                     return tuple(UUID(value) for value in values)
                 except ValueError:
                     raise RecoveryConsistencyError from None
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def list_prune_targets(
+        self,
+        cutoff: datetime,
+        artifact_root: Path,
+    ) -> tuple[PruneTarget, ...]:
+        cutoff = _require_aware_datetime(cutoff)
+        try:
+            async with self._session_factory() as session:
+                rows = (
+                    await session.execute(
+                        select(RunRow, IncidentRow)
+                        .join(IncidentRow, IncidentRow.id == RunRow.incident_id)
+                        .where(
+                            RunRow.status.in_((RunStatus.COMPLETED, RunStatus.FAILED)),
+                            RunRow.completed_at.is_not(None),
+                            RunRow.completed_at < cutoff,
+                        )
+                        .order_by(RunRow.completed_at, RunRow.id)
+                    )
+                ).all()
+                return tuple(
+                    [
+                        await _prune_target_from_rows(
+                            session,
+                            run,
+                            incident,
+                            artifact_root,
+                        )
+                        for run, incident in rows
+                    ]
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def delete_prune_target(
+        self,
+        target: PruneTarget,
+        cutoff: datetime,
+        artifact_root: Path,
+    ) -> bool:
+        cutoff = _require_aware_datetime(cutoff)
+        try:
+            async with self._session_factory() as session, session.begin():
+                run = await session.get(RunRow, str(target.run_id))
+                if run is None:
+                    return False
+                incident = await session.get(IncidentRow, run.incident_id)
+                if (
+                    incident is None
+                    or run.completed_at is None
+                    or run.status not in (RunStatus.COMPLETED, RunStatus.FAILED)
+                    or _database_datetime(run.completed_at) >= cutoff
+                ):
+                    raise RecoveryConsistencyError
+                current = await _prune_target_from_rows(
+                    session,
+                    run,
+                    incident,
+                    artifact_root,
+                )
+                if current != target:
+                    raise RecoveryConsistencyError
+
+                await _delete_exact_rows(
+                    session,
+                    delete(RunEventRow).where(RunEventRow.run_id == str(target.run_id)),
+                    target.event_rows,
+                )
+                await _delete_exact_rows(
+                    session,
+                    delete(EvidenceRow).where(EvidenceRow.run_id == str(target.run_id)),
+                    target.evidence_rows,
+                )
+                await _delete_exact_rows(
+                    session,
+                    delete(DiagnosisRow).where(
+                        DiagnosisRow.run_id == str(target.run_id)
+                    ),
+                    target.diagnosis_rows,
+                )
+                await _delete_exact_rows(
+                    session,
+                    delete(RunRow).where(RunRow.id == str(target.run_id)),
+                    1,
+                )
+                await _delete_exact_rows(
+                    session,
+                    delete(IncidentRow).where(
+                        IncidentRow.id == str(target.incident_id)
+                    ),
+                    1,
+                )
+                return True
         except RepositoryError:
             raise
         except SQLAlchemyError:
@@ -726,6 +838,73 @@ async def _load_run_context(
     if incident is None:
         raise RecoveryConsistencyError
     return run, incident
+
+
+async def _prune_target_from_rows(
+    session: AsyncSession,
+    run: RunRow,
+    incident: IncidentRow,
+    artifact_root: Path,
+) -> PruneTarget:
+    try:
+        run_id = UUID(run.id)
+    except (TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+    diagnosis = await _diagnosis_by_run(session, run_id)
+    start_event = await _event_by_key(session, run_id, "run.started")
+    terminal_event = await _event_by_key(session, run_id, "run:terminal")
+    snapshot = _workflow_run_snapshot(
+        run,
+        incident,
+        diagnosis,
+        start_event,
+        terminal_event,
+    )
+    if snapshot.run_status not in (RunStatus.COMPLETED, RunStatus.FAILED):
+        raise RecoveryConsistencyError
+
+    event_rows = await session.scalar(
+        select(func.count())
+        .select_from(RunEventRow)
+        .where(RunEventRow.run_id == run.id)
+    )
+    evidence_rows = await session.scalar(
+        select(func.count())
+        .select_from(EvidenceRow)
+        .where(EvidenceRow.run_id == run.id)
+    )
+    diagnosis_rows = await session.scalar(
+        select(func.count())
+        .select_from(DiagnosisRow)
+        .where(DiagnosisRow.run_id == run.id)
+    )
+    if (
+        not isinstance(event_rows, int)
+        or event_rows < 0
+        or not isinstance(evidence_rows, int)
+        or evidence_rows < 0
+        or not isinstance(diagnosis_rows, int)
+        or diagnosis_rows < 0
+    ):
+        raise RecoveryConsistencyError
+    return PruneTarget(
+        incident_id=snapshot.incident_id,
+        run_id=snapshot.id,
+        artifact_directory=artifact_root / str(snapshot.id),
+        event_rows=event_rows,
+        evidence_rows=evidence_rows,
+        diagnosis_rows=diagnosis_rows,
+    )
+
+
+async def _delete_exact_rows(
+    session: AsyncSession,
+    statement: Delete,
+    expected_rows: int,
+) -> None:
+    result = await session.execute(statement)
+    if getattr(result, "rowcount", None) != expected_rows:
+        raise RecoveryConsistencyError
 
 
 def _workflow_run_snapshot(

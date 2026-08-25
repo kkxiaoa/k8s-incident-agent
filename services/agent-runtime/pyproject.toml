@@ -22,6 +22,7 @@ dependencies = [
 [project.scripts]
 agent-runtime = "k8s_incident_agent.api:main"
 model-compat = "k8s_incident_agent.model.compatibility:main"
+runtime = "k8s_incident_agent.runtime.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]

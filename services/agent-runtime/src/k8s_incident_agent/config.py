@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     model_thinking: bool = False
     model_timeout_seconds: float = Field(default=60, gt=0)
     model_max_retries: int = Field(default=2, ge=0)
+    runtime_retention_days: int = Field(default=7, ge=1, le=30)
     deepseek_api_key: SecretStr | None = Field(default=None, repr=False)
     deepseek_base_url: HttpUrl = HttpUrl("https://api.deepseek.com")
     runtime_paths: Annotated[RuntimePaths, NoDecode] = Field(

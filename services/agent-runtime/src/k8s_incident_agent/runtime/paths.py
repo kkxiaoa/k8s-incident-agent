@@ -3,6 +3,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
+from uuid import UUID
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 PRIVATE_DIRECTORY_MODE = 0o700
@@ -17,6 +18,14 @@ class RuntimePaths:
     diagnostic_kubeconfig: Path
     runtime_lock: Path
     run_artifacts: Path
+
+    def run_artifact_directory(self, run_id: UUID) -> Path:
+        expected_artifact_root = self.root / "runs"
+        if self.run_artifacts != expected_artifact_root:
+            raise ValueError(
+                "Runtime artifact directory does not match the fixed layout"
+            )
+        return self.run_artifacts / str(run_id)
 
     @classmethod
     def prepare(cls, root: Path) -> Self:
