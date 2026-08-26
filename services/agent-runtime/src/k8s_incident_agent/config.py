@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
@@ -28,8 +29,19 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=60, gt=0)
     model_max_retries: int = Field(default=2, ge=0)
     runtime_retention_days: int = Field(default=7, ge=1, le=30)
+    kubernetes_timeout_seconds: float = Field(
+        default=10,
+        gt=0,
+        allow_inf_nan=False,
+    )
+    agent_max_model_calls: int = Field(default=8, ge=1)
+    agent_max_tool_calls: int = Field(default=6, ge=1)
+    agent_timeout_seconds: int = Field(default=180, ge=1)
     deepseek_api_key: SecretStr | None = Field(default=None, repr=False)
     deepseek_base_url: HttpUrl = HttpUrl("https://api.deepseek.com")
+    scenario_catalog_dir: Path = Field(
+        default_factory=lambda: REPOSITORY_ROOT / "scenarios",
+    )
     runtime_paths: Annotated[RuntimePaths, NoDecode] = Field(
         default_factory=lambda: RuntimePaths.prepare(REPOSITORY_ROOT / ".runtime"),
         validation_alias="RUNTIME_DATA_DIR",
@@ -43,6 +55,21 @@ class Settings(BaseSettings):
         if isinstance(value, RuntimePaths):
             return value
         return RuntimePaths.prepare(Path(value))
+
+    @field_validator("scenario_catalog_dir", mode="before")
+    @classmethod
+    def validate_scenario_catalog_dir(cls, value: Path | str) -> Path:
+        path = Path(value)
+        if not path.is_absolute():
+            raise ValueError("SCENARIO_CATALOG_DIR must be absolute")
+        normalized = Path(os.path.normpath(path))
+        if normalized in {
+            Path(normalized.anchor),
+            Path(os.path.normpath(Path.home())),
+            REPOSITORY_ROOT,
+        }:
+            raise ValueError("SCENARIO_CATALOG_DIR must be a dedicated directory")
+        return normalized
 
     @field_validator("deepseek_base_url")
     @classmethod

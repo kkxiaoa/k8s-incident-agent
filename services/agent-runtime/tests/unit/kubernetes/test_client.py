@@ -25,6 +25,7 @@ from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingT
     ApiException,
 )
 
+import k8s_incident_agent.kubernetes.client as client_module
 from k8s_incident_agent.kubernetes.client import (
     create_kubernetes_clients,
     enforce_direct_kubernetes_transport,
@@ -75,13 +76,19 @@ def _encode_segment(value: dict[str, object]) -> str:
     return encoded.rstrip(b"=").decode()
 
 
-def _credential(paths: RuntimePaths) -> DiagnosticCredential:
+def _credential(
+    paths: RuntimePaths,
+    *,
+    ca_data: str | None = None,
+) -> DiagnosticCredential:
     expires_at = NOW + timedelta(hours=1)
     token = (
         f"{_encode_segment({'alg': 'none'})}."
         f"{_encode_segment({'exp': int(expires_at.timestamp())})}.signature"
     )
-    ca_data = base64.b64encode(Path(certifi.where()).read_bytes()).decode()
+    resolved_ca_data = (
+        ca_data or base64.b64encode(Path(certifi.where()).read_bytes()).decode()
+    )
     document = {
         "apiVersion": "v1",
         "kind": "Config",
@@ -90,7 +97,7 @@ def _credential(paths: RuntimePaths) -> DiagnosticCredential:
                 "name": "k8s-incident-agent",
                 "cluster": {
                     "server": "https://127.0.0.1:6443",
-                    "certificate-authority-data": ca_data,
+                    "certificate-authority-data": resolved_ca_data,
                 },
             }
         ],
@@ -162,6 +169,7 @@ async def test_factory_creates_scoped_direct_clients_without_mutating_proxy_env(
             assert isinstance(clients.events_api, EventsV1Api)
             assert isinstance(clients.version_api, VersionApi)
             assert isinstance(clients.authorization_api, AuthorizationV1Api)
+            assert list(paths.root.glob(".k8s-ca-*")) == []
             assert {
                 variable: os.environ[variable]
                 for variable in PROXY_ENVIRONMENT_VARIABLES
@@ -170,6 +178,67 @@ async def test_factory_creates_scoped_direct_clients_without_mutating_proxy_env(
             await clients.close()
     finally:
         rest_logger.setLevel(previous_level)
+
+
+@pytest.mark.asyncio
+async def test_factory_removes_owned_ca_file_when_client_construction_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    credential = _credential(paths)
+
+    def fail_client_construction(_configuration: object) -> ApiClient:
+        raise RuntimeError("constructor failed")
+
+    monkeypatch.setattr(client_module, "ApiClient", fail_client_construction)
+
+    with pytest.raises(KubernetesBoundaryError):
+        await create_kubernetes_clients(credential, timeout_seconds=10)
+
+    assert list(paths.root.glob(".k8s-ca-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_factory_maps_malformed_ca_data_to_authentication_failure(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    credential = _credential(paths, ca_data="not-valid-base64!")
+
+    with pytest.raises(KubernetesBoundaryError) as captured:
+        await create_kubernetes_clients(credential, timeout_seconds=10)
+
+    assert captured.value.code is KubernetesErrorCode.AUTHENTICATION_FAILED
+    assert list(paths.root.glob(".k8s-ca-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_factory_removes_owned_ca_file_when_kubeconfig_load_is_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    credential = _credential(paths)
+    load_started = asyncio.Event()
+
+    async def block_kubeconfig_load(*_args: object, **_kwargs: object) -> object:
+        assert list(paths.root.glob(".k8s-ca-*")) != []
+        load_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(client_module, "_load_kube_config", block_kubeconfig_load)
+    factory_task = asyncio.create_task(
+        create_kubernetes_clients(credential, timeout_seconds=10)
+    )
+    await load_started.wait()
+    factory_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await factory_task
+
+    assert list(paths.root.glob(".k8s-ca-*")) == []
 
 
 @pytest.mark.asyncio

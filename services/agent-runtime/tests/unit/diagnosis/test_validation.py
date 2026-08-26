@@ -74,6 +74,7 @@ def _scenario(name: str) -> PublicScenario:
         scenario_id=name,
         scenario_version=1,
         display_name="Public incident",
+        description="A Deployment cannot pull its configured image.",
         trigger=ScenarioTrigger(type="manual", summary="Deployment unavailable"),
         target=ScenarioTarget(
             cluster="k8s-incident-agent",

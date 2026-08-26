@@ -85,9 +85,12 @@ def _supervisor(
         repository=cast(IncidentRepository, repository),
         checkpointer=cast(AsyncSqliteSaver, object()),
         model=cast(BaseChatModel, object()),
-        model_provider="deepseek",
-        model_id="deepseek-v4-flash",
-        thinking_mode=False,
+        model_snapshot=ModelSnapshot(
+            provider="deepseek",
+            model_id="deepseek-v4-flash",
+            thinking_mode=False,
+            prompt_version="stage1-v1",
+        ),
         credential=DiagnosticCredential(
             kubeconfig_path=Path("/unused/diagnostic.kubeconfig"),
             context_name="kind-k8s-incident-agent",

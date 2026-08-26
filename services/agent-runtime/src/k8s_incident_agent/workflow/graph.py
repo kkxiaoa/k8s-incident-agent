@@ -37,7 +37,6 @@ from k8s_incident_agent.diagnosis.contracts import (
     DiagnosisCandidate,
     ValidatedDiagnosis,
 )
-from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
 from k8s_incident_agent.diagnosis.validation import (
     DiagnosisValidationError,
     UnresolvedToolFailuresError,
@@ -99,21 +98,10 @@ class GraphDependencies:
     repository: IncidentRepository
     checkpointer: AsyncSqliteSaver
     model: BaseChatModel
-    model_provider: str
-    model_id: str
-    thinking_mode: bool
+    model_snapshot: ModelSnapshot
     credential: DiagnosticCredential
     adapter: KubernetesEvidenceAdapter
     now: Callable[[], datetime]
-
-    @property
-    def model_snapshot(self) -> ModelSnapshot:
-        return ModelSnapshot(
-            provider=self.model_provider,
-            model_id=self.model_id,
-            thinking_mode=self.thinking_mode,
-            prompt_version=DIAGNOSTIC_PROMPT_VERSION,
-        )
 
 
 def build_incident_graph(

@@ -9,7 +9,7 @@ from typing import Final, cast
 from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
-from sqlalchemy import and_, delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
@@ -58,6 +58,74 @@ class PruneTarget:
     event_rows: int
     evidence_rows: int
     diagnosis_rows: int
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentListRecord:
+    id: UUID
+    scenario_id: str
+    scenario_version: int
+    display_name: str
+    target: ScenarioTarget
+    status: IncidentStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentListPage:
+    items: tuple[IncidentListRecord, ...]
+    has_more: bool
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentRunDetail:
+    id: UUID
+    status: RunStatus
+    model: ModelSnapshot
+    budget: RunBudget
+    model_calls: int | None
+    tool_calls: int | None
+    input_tokens: int | None
+    output_tokens: int | None
+    error_code: str | None
+    error_retryable: bool | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentEvidenceDetail:
+    id: UUID
+    tool_call_id: str
+    tool_name: str
+    evidence_kind: str
+    target_ref: dict[str, JsonValue]
+    observed_at: datetime
+    payload: dict[str, JsonValue]
+    truncated: bool
+    redacted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentDiagnosisDetail:
+    id: UUID
+    outcome: DiagnosisOutcome
+    summary: str
+    root_causes: tuple[RootCauseRecord, ...]
+    missing_information: tuple[str, ...]
+    redacted: bool
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentDetailRecord:
+    incident: IncidentListRecord
+    trigger_summary: str
+    run: IncidentRunDetail
+    evidence: tuple[IncidentEvidenceDetail, ...]
+    diagnosis: IncidentDiagnosisDetail | None
 
 
 class RepositoryError(RuntimeError):
@@ -119,6 +187,114 @@ class IncidentRepository:
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._session_factory = session_factory
+
+    async def list_incident_records(
+        self,
+        *,
+        limit: int,
+        cursor: tuple[datetime, UUID] | None,
+    ) -> IncidentListPage:
+        if limit < 1 or limit > 100:
+            raise ValueError("Incident list limit must be between 1 and 100")
+        try:
+            async with self._session_factory() as session:
+                statement = select(IncidentRow)
+                if cursor is not None:
+                    cursor_created_at = _require_aware_datetime(cursor[0])
+                    cursor_id = str(cursor[1])
+                    statement = statement.where(
+                        or_(
+                            IncidentRow.created_at < cursor_created_at,
+                            and_(
+                                IncidentRow.created_at == cursor_created_at,
+                                IncidentRow.id < cursor_id,
+                            ),
+                        )
+                    )
+                rows = list(
+                    await session.scalars(
+                        statement.order_by(
+                            IncidentRow.created_at.desc(),
+                            IncidentRow.id.desc(),
+                        ).limit(limit + 1)
+                    )
+                )
+                return IncidentListPage(
+                    items=tuple(_incident_list_record(row) for row in rows[:limit]),
+                    has_more=len(rows) > limit,
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def get_incident_detail(
+        self,
+        incident_id: UUID,
+    ) -> IncidentDetailRecord | None:
+        try:
+            async with self._session_factory() as session:
+                start_event_row = aliased(RunEventRow)
+                terminal_event_row = aliased(RunEventRow)
+                row = (
+                    await session.execute(
+                        select(
+                            IncidentRow,
+                            RunRow,
+                            DiagnosisRow,
+                            start_event_row,
+                            terminal_event_row,
+                        )
+                        .outerjoin(RunRow, RunRow.incident_id == IncidentRow.id)
+                        .outerjoin(DiagnosisRow, DiagnosisRow.run_id == RunRow.id)
+                        .outerjoin(
+                            start_event_row,
+                            and_(
+                                start_event_row.run_id == RunRow.id,
+                                start_event_row.event_key == "run.started",
+                            ),
+                        )
+                        .outerjoin(
+                            terminal_event_row,
+                            and_(
+                                terminal_event_row.run_id == RunRow.id,
+                                terminal_event_row.event_key == "run:terminal",
+                            ),
+                        )
+                        .where(IncidentRow.id == str(incident_id))
+                    )
+                ).one_or_none()
+                if row is None:
+                    return None
+                incident, run, diagnosis, start_event, terminal_event = row
+                if run is None:
+                    raise RecoveryConsistencyError
+                workflow, terminal = _workflow_run_projection(
+                    run,
+                    incident,
+                    diagnosis,
+                    start_event,
+                    terminal_event,
+                )
+                evidence_rows = list(
+                    await session.scalars(
+                        select(EvidenceRow)
+                        .where(EvidenceRow.run_id == run.id)
+                        .order_by(EvidenceRow.observed_at, EvidenceRow.id)
+                    )
+                )
+                return _incident_detail_record(
+                    incident,
+                    run,
+                    diagnosis,
+                    evidence_rows,
+                    workflow,
+                    terminal,
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
 
     async def get_workflow_run_snapshot(
         self,
@@ -907,6 +1083,146 @@ async def _delete_exact_rows(
         raise RecoveryConsistencyError
 
 
+def _incident_list_record(row: IncidentRow) -> IncidentListRecord:
+    try:
+        if (
+            not _is_non_empty_string(row.scenario_id)
+            or not _is_positive_integer(row.scenario_version)
+            or not _is_non_empty_string(row.display_name)
+        ):
+            raise ValueError
+        return IncidentListRecord(
+            id=UUID(row.id),
+            scenario_id=row.scenario_id,
+            scenario_version=row.scenario_version,
+            display_name=row.display_name,
+            target=ScenarioTarget(
+                cluster=row.cluster,
+                namespace=row.namespace,
+                api_version=row.api_version,
+                kind=row.kind,
+                name=row.resource_name,
+            ),
+            status=row.status,
+            created_at=_database_datetime(row.created_at),
+            updated_at=_database_datetime(row.updated_at),
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+
+
+def _incident_detail_record(
+    incident: IncidentRow,
+    run: RunRow,
+    diagnosis: DiagnosisRow | None,
+    evidence_rows: list[EvidenceRow],
+    workflow: WorkflowRunSnapshot,
+    terminal: TerminalRecord | None,
+) -> IncidentDetailRecord:
+    incident_record = _incident_list_record(incident)
+    try:
+        run_id = UUID(run.id)
+        if (
+            incident_record.id != workflow.incident_id
+            or run_id != workflow.id
+            or run.status is not workflow.run_status
+            or not _is_non_empty_string(incident.trigger_summary)
+        ):
+            raise ValueError
+        usage: tuple[object, ...] = (
+            run.model_calls,
+            run.tool_calls,
+            run.input_tokens,
+            run.output_tokens,
+        )
+        if any(not _is_optional_non_negative_integer(value) for value in usage):
+            raise ValueError
+        completed_at = (
+            _database_datetime(run.completed_at)
+            if run.completed_at is not None
+            else None
+        )
+        if terminal is None:
+            if (
+                diagnosis is not None
+                or completed_at is not None
+                or run.error_code is not None
+                or run.error_retryable is not None
+            ):
+                raise ValueError
+            diagnosis_detail = None
+        elif terminal.outcome is None:
+            if diagnosis is not None or terminal.completed_at != completed_at:
+                raise ValueError
+            diagnosis_detail = None
+        else:
+            if diagnosis is None or terminal.completed_at != completed_at:
+                raise ValueError
+            diagnosis_detail = IncidentDiagnosisDetail(
+                id=UUID(diagnosis.id),
+                outcome=terminal.outcome,
+                summary=cast(str, terminal.summary),
+                root_causes=terminal.root_causes,
+                missing_information=terminal.missing_information,
+                redacted=terminal.redacted,
+                created_at=_database_datetime(diagnosis.created_at),
+            )
+        return IncidentDetailRecord(
+            incident=incident_record,
+            trigger_summary=incident.trigger_summary,
+            run=IncidentRunDetail(
+                id=run_id,
+                status=run.status,
+                model=workflow.model,
+                budget=workflow.budget,
+                model_calls=run.model_calls,
+                tool_calls=run.tool_calls,
+                input_tokens=run.input_tokens,
+                output_tokens=run.output_tokens,
+                error_code=run.error_code,
+                error_retryable=run.error_retryable,
+                created_at=_database_datetime(run.created_at),
+                started_at=workflow.started_at,
+                completed_at=completed_at,
+            ),
+            evidence=tuple(
+                _incident_evidence_detail(row, run_id) for row in evidence_rows
+            ),
+            diagnosis=diagnosis_detail,
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+
+
+def _incident_evidence_detail(
+    row: EvidenceRow,
+    run_id: UUID,
+) -> IncidentEvidenceDetail:
+    try:
+        if (
+            UUID(row.run_id) != run_id
+            or not _is_non_empty_string(row.tool_call_id)
+            or not _is_non_empty_string(row.tool_name)
+            or not _is_non_empty_string(row.evidence_kind)
+            or type(cast(object, row.truncated)) is not bool
+            or type(cast(object, row.redacted)) is not bool
+        ):
+            raise ValueError
+        return IncidentEvidenceDetail(
+            id=UUID(row.id),
+            tool_call_id=row.tool_call_id,
+            tool_name=row.tool_name,
+            evidence_kind=row.evidence_kind,
+            target_ref=parse_json_object(row.target_ref_json),
+            observed_at=_database_datetime(row.observed_at),
+            payload=parse_json_object(row.payload_json),
+            truncated=row.truncated,
+            redacted=row.redacted,
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+
+
 def _workflow_run_snapshot(
     run: RunRow,
     incident: IncidentRow,
@@ -914,6 +1230,23 @@ def _workflow_run_snapshot(
     start_event: RunEventRow | None,
     terminal_event: RunEventRow | None,
 ) -> WorkflowRunSnapshot:
+    snapshot, _ = _workflow_run_projection(
+        run,
+        incident,
+        diagnosis,
+        start_event,
+        terminal_event,
+    )
+    return snapshot
+
+
+def _workflow_run_projection(
+    run: RunRow,
+    incident: IncidentRow,
+    diagnosis: DiagnosisRow | None,
+    start_event: RunEventRow | None,
+    terminal_event: RunEventRow | None,
+) -> tuple[WorkflowRunSnapshot, TerminalRecord | None]:
     try:
         run_id = UUID(run.id)
         incident_id = UUID(incident.id)
@@ -953,6 +1286,7 @@ def _workflow_run_snapshot(
             start_event,
             started_at,
         )
+    terminal: TerminalRecord | None = None
     if run.status is RunStatus.QUEUED:
         if (
             incident.status is not IncidentStatus.RECEIVED
@@ -979,7 +1313,7 @@ def _workflow_run_snapshot(
         if run.status is RunStatus.COMPLETED and started_at is None:
             raise RecoveryConsistencyError
 
-    return WorkflowRunSnapshot(
+    snapshot = WorkflowRunSnapshot(
         id=run_id,
         incident_id=incident_id,
         run_status=run.status,
@@ -998,6 +1332,7 @@ def _workflow_run_snapshot(
         ),
         started_at=started_at,
     )
+    return snapshot, terminal
 
 
 def _require_start_event_consistency(
@@ -1077,6 +1412,12 @@ def _is_boolean(value: object) -> bool:
 
 def _is_positive_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_optional_non_negative_integer(value: object) -> bool:
+    return value is None or (
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    )
 
 
 def _has_empty_terminal_fields(

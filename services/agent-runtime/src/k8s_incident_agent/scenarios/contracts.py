@@ -1,15 +1,20 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class _ImmutableContract(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class ScenarioTrigger(_ImmutableContract):
     type: Literal["manual"]
     summary: str = Field(min_length=1)
+
+    @field_validator("summary")
+    @classmethod
+    def require_normalized_summary(cls, value: str) -> str:
+        return _normalized_string(value)
 
 
 class ScenarioTarget(_ImmutableContract):
@@ -19,13 +24,24 @@ class ScenarioTarget(_ImmutableContract):
     kind: str = Field(min_length=1)
     name: str = Field(min_length=1)
 
+    @field_validator("cluster", "namespace", "api_version", "kind", "name")
+    @classmethod
+    def require_normalized_target_value(cls, value: str) -> str:
+        return _normalized_string(value)
+
 
 class PublicScenario(_ImmutableContract):
     scenario_id: str = Field(min_length=1)
     scenario_version: int = Field(ge=1)
     display_name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
     trigger: ScenarioTrigger
     target: ScenarioTarget
+
+    @field_validator("scenario_id", "display_name", "description")
+    @classmethod
+    def require_normalized_scenario_value(cls, value: str) -> str:
+        return _normalized_string(value)
 
 
 def validate_stage_one_target(target: ScenarioTarget) -> None:
@@ -36,3 +52,11 @@ def validate_stage_one_target(target: ScenarioTarget) -> None:
         or target.kind != "Deployment"
     ):
         raise ValueError("Target is outside the Stage 1 diagnostic scope")
+
+
+def _normalized_string(value: str) -> str:
+    if value != value.strip() or any(
+        ord(character) < 0x20 or ord(character) == 0x7F for character in value
+    ):
+        raise ValueError("Scenario text must be normalized")
+    return value

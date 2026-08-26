@@ -59,6 +59,7 @@ def _scenario() -> PublicScenario:
         scenario_id="image-pull-backoff",
         scenario_version=1,
         display_name="Image pull failure",
+        description="A Deployment cannot pull its configured image.",
         trigger=ScenarioTrigger(type="manual", summary="Deployment unavailable"),
         target=ScenarioTarget(
             cluster="k8s-incident-agent",

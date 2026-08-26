@@ -17,9 +17,14 @@ MODEL_ENVIRONMENT_VARIABLES = (
     "MODEL_TIMEOUT_SECONDS",
     "MODEL_MAX_RETRIES",
     "RUNTIME_RETENTION_DAYS",
+    "KUBERNETES_TIMEOUT_SECONDS",
+    "AGENT_MAX_MODEL_CALLS",
+    "AGENT_MAX_TOOL_CALLS",
+    "AGENT_TIMEOUT_SECONDS",
     "DEEPSEEK_API_KEY",
     "DEEPSEEK_BASE_URL",
     "RUNTIME_DATA_DIR",
+    "SCENARIO_CATALOG_DIR",
 )
 
 
@@ -46,9 +51,14 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     assert settings.model_timeout_seconds == 60
     assert settings.model_max_retries == 2
     assert settings.runtime_retention_days == 7
+    assert settings.kubernetes_timeout_seconds == 10
+    assert settings.agent_max_model_calls == 8
+    assert settings.agent_max_tool_calls == 6
+    assert settings.agent_timeout_seconds == 180
     assert settings.deepseek_api_key is None
     assert str(settings.deepseek_base_url) == "https://api.deepseek.com/"
     assert settings.runtime_paths.root == tmp_path / ".runtime"
+    assert settings.scenario_catalog_dir == tmp_path / "scenarios"
 
 
 def test_runtime_data_dir_is_projected_once_to_runtime_paths(
@@ -135,6 +145,37 @@ def test_retention_days_outside_safe_range_are_rejected(
     value: str,
 ) -> None:
     monkeypatch.setenv("RUNTIME_RETENTION_DAYS", value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("KUBERNETES_TIMEOUT_SECONDS", "0"),
+        ("AGENT_MAX_MODEL_CALLS", "0"),
+        ("AGENT_MAX_TOOL_CALLS", "0"),
+        ("AGENT_TIMEOUT_SECONDS", "0"),
+    ],
+)
+def test_task_11_budgets_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+@pytest.mark.parametrize("value", ["relative/scenarios", "/"])
+def test_scenario_catalog_dir_must_be_absolute_and_dedicated(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("SCENARIO_CATALOG_DIR", value)
 
     with pytest.raises(ValidationError):
         settings_without_dotenv()

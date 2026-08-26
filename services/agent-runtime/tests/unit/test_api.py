@@ -1,126 +1,130 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import cast
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi.routing import APIRoute
 
 from k8s_incident_agent import api
+from k8s_incident_agent.api import RuntimeContainer
+from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
-from k8s_incident_agent.model.errors import ModelError, ModelErrorCode
+from k8s_incident_agent.routes.incidents import router as incidents_router
+from k8s_incident_agent.routes.scenarios import router as scenarios_router
+from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
 
-def make_settings(
+class _UnusedService:
+    pass
+
+
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(
+        runtime_paths=RuntimePaths.prepare(tmp_path / "runtime"),
+        scenario_catalog_dir=REPOSITORY_ROOT / "scenarios",
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+    )
+
+
+@pytest.mark.asyncio
+async def test_settings_and_runtime_context_are_entered_only_during_lifespan(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    api_key: str | None = "test-startup-key",
-) -> Settings:
-    if api_key is None:
-        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    else:
-        monkeypatch.setenv("DEEPSEEK_API_KEY", api_key)
-    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://provider.example/api")
-    return Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
+) -> None:
+    settings = _settings(tmp_path)
+    events: list[str] = []
 
+    def settings_factory() -> Settings:
+        events.append("settings")
+        return settings
 
-@asynccontextmanager
-async def lifespan_client(app: FastAPI) -> AsyncGenerator[httpx.AsyncClient]:
+    @asynccontextmanager
+    async def runtime_context(received: Settings) -> AsyncGenerator[RuntimeContainer]:
+        assert received is settings
+        events.append("runtime.open")
+        try:
+            yield RuntimeContainer(
+                incidents=cast(IncidentApplicationService, _UnusedService())
+            )
+        finally:
+            assert cast(bool, app.state.ready) is False
+            events.append("runtime.close")
+
+    monkeypatch.setattr(api, "Settings", settings_factory)
+    app = api.create_app(runtime_context_factory=runtime_context)
+
+    assert events == []
+    assert cast(bool, app.state.ready) is False
+    assert not hasattr(app.state, "container")
+
     async with app.router.lifespan_context(app):
+        assert events == ["settings", "runtime.open"]
+        assert cast(bool, app.state.ready) is True
+        assert hasattr(app.state, "container")
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://testserver",
         ) as client:
-            yield client
+            response = await client.get("/healthz")
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+            for unavailable_path in ("/", "/docs", "/openapi.json", "/redoc"):
+                unavailable = await client.get(unavailable_path)
+                assert unavailable.status_code == 404
 
-
-async def test_discovery_runs_in_lifespan_before_minimal_healthz_is_ready(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = make_settings(monkeypatch)
-    discovery_calls = 0
-
-    async def fake_discovery(received_settings: Settings) -> tuple[str, ...]:
-        nonlocal discovery_calls
-        discovery_calls += 1
-        assert received_settings is settings
-        return ("deepseek-v4-flash", "sensitive-unconfigured-model")
-
-    app = api.create_app(settings=settings, discovery=fake_discovery)
-
-    assert discovery_calls == 0
+    assert events == ["settings", "runtime.open", "runtime.close"]
     assert cast(bool, app.state.ready) is False
-
-    async with lifespan_client(app) as client:
-        assert discovery_calls == 1
-        assert cast(bool, app.state.ready) is True
-
-        response = await client.get("/healthz")
-
-        assert response.status_code == 200
-        assert cast(object, response.json()) == {"status": "ok"}
-        assert set(response.headers) >= {"content-length", "content-type"}
-        assert "test-startup-key" not in response.text
-        assert "sensitive-unconfigured-model" not in response.text
-
-        for unavailable_path in ("/", "/docs", "/openapi.json", "/redoc"):
-            unavailable_response = await client.get(unavailable_path)
-            assert unavailable_response.status_code == 404
-
-    assert cast(bool, app.state.ready) is False
+    assert not hasattr(app.state, "container")
 
 
-async def test_missing_key_prevents_startup_without_network(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.asyncio
+async def test_runtime_context_failure_never_publishes_ready_container(
+    tmp_path: Path,
 ) -> None:
-    settings = make_settings(monkeypatch, api_key=None)
+    settings = _settings(tmp_path)
 
-    async def fail_network(*_: object, **__: object) -> httpx.Response:
-        raise AssertionError("missing-key startup must not access the network")
+    @asynccontextmanager
+    async def failing_context(
+        _settings: Settings,
+    ) -> AsyncGenerator[RuntimeContainer]:
+        raise RuntimeError("startup failed")
+        yield  # pragma: no cover
 
-    monkeypatch.setattr(httpx.AsyncClient, "get", fail_network)
-    app = api.create_app(settings=settings)
+    app = api.create_app(
+        settings=settings,
+        runtime_context_factory=failing_context,
+    )
 
-    with pytest.raises(ConfigurationInvalidError) as error:
+    with pytest.raises(RuntimeError, match="startup failed"):
         async with app.router.lifespan_context(app):
             pass
 
-    assert error.value.code is ModelErrorCode.CONFIGURATION_INVALID
     assert cast(bool, app.state.ready) is False
+    assert not hasattr(app.state, "container")
 
 
-@pytest.mark.parametrize(
-    "error_code",
-    [
-        ModelErrorCode.AUTHENTICATION_FAILED,
-        ModelErrorCode.MODEL_NOT_FOUND,
-        ModelErrorCode.PROVIDER_UNAVAILABLE,
-    ],
-)
-async def test_discovery_failure_prevents_ready_without_exposing_details(
-    monkeypatch: pytest.MonkeyPatch,
-    error_code: ModelErrorCode,
-) -> None:
-    settings = make_settings(monkeypatch)
-    sensitive_detail = "sensitive upstream response body"
+def test_route_table_contains_only_task_11_endpoints() -> None:
+    app = api.create_app()
+    routes: set[tuple[str, str]] = set()
+    for route in (*app.routes, *scenarios_router.routes, *incidents_router.routes):
+        if isinstance(route, APIRoute):
+            assert route.methods is not None
+            routes.update((method, route.path) for method in route.methods)
 
-    async def fake_discovery(_: Settings) -> tuple[str, ...]:
-        raise ModelError(error_code, sensitive_detail)
-
-    app = api.create_app(settings=settings, discovery=fake_discovery)
-
-    with pytest.raises(ModelError) as error:
-        async with app.router.lifespan_context(app):
-            pass
-
-    assert error.value.code is error_code
-    assert cast(bool, app.state.ready) is False
-    assert not hasattr(app.state, "models")
-    assert not hasattr(app.state, "error")
+    assert routes == {
+        ("GET", "/healthz"),
+        ("GET", "/api/v1/scenarios"),
+        ("POST", "/api/v1/incidents"),
+        ("GET", "/api/v1/incidents"),
+        ("GET", "/api/v1/incidents/{incident_id}"),
+    }
+    assert all(method not in {"PUT", "PATCH", "DELETE"} for method, _path in routes)
 
 
-def test_runtime_entrypoint_uses_uvicorn_app_factory(
+def test_runtime_entrypoint_freezes_loopback_single_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -136,4 +140,32 @@ def test_runtime_entrypoint_uses_uvicorn_app_factory(
     assert captured == {
         "app_target": "k8s_incident_agent.api:create_app",
         "factory": True,
+        "host": "127.0.0.1",
+        "workers": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_settings_failure_prevents_runtime_context_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = False
+
+    def settings_factory() -> Settings:
+        raise ConfigurationInvalidError("invalid runtime configuration")
+
+    @asynccontextmanager
+    async def runtime_context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
+        nonlocal entered
+        entered = True
+        yield cast(RuntimeContainer, object())
+
+    monkeypatch.setattr(api, "Settings", settings_factory)
+    app = api.create_app(runtime_context_factory=runtime_context)
+
+    with pytest.raises(ConfigurationInvalidError):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert entered is False
+    assert cast(bool, app.state.ready) is False
