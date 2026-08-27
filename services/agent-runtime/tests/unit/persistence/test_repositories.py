@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from alembic import command
@@ -136,6 +137,11 @@ async def test_create_incident_run_and_event_are_one_transaction(
 async def test_create_rolls_back_all_rows_when_event_insert_fails(
     tmp_path: Path,
 ) -> None:
+    notifications: list[UUID] = []
+
+    async def notify(incident_id: UUID) -> None:
+        notifications.append(incident_id)
+
     def fail_event_insert(
         _mapper: object, _connection: object, _target: object
     ) -> None:
@@ -146,7 +152,10 @@ async def test_create_rolls_back_all_rows_when_event_insert_fails(
         )
 
     async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
+        repository = IncidentRepository(
+            database.session_factory,
+            on_event_committed=notify,
+        )
         event.listen(RunEventRow, "before_insert", fail_event_insert)
         try:
             with pytest.raises(PersistenceOperationError) as error:
@@ -161,6 +170,91 @@ async def test_create_rolls_back_all_rows_when_event_insert_fails(
         assert await _row_count(database, IncidentRow) == 0
         assert await _row_count(database, RunRow) == 0
         assert await _row_count(database, RunEventRow) == 0
+        assert notifications == []
+
+
+@pytest.mark.asyncio
+async def test_replay_queries_filter_incident_in_sql_and_preserve_global_gaps(
+    tmp_path: Path,
+) -> None:
+    notifications: list[UUID] = []
+
+    async def notify(incident_id: UUID) -> None:
+        notifications.append(incident_id)
+
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(
+            database.session_factory,
+            on_event_committed=notify,
+        )
+        first = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        second = await repository.create_incident_and_run(
+            _scenario().model_copy(update={"scenario_id": "another-scenario"}),
+            _model(),
+            _budget(),
+        )
+        started = await repository.start_run(first.run_id, NOW)
+
+        first_events = await repository.list_incident_events(
+            first.incident_id,
+            after_id=0,
+            limit=100,
+        )
+        after_created = await repository.list_incident_events(
+            first.incident_id,
+            after_id=first.event.id,
+            limit=100,
+        )
+
+        assert [event.id for event in first_events] == [
+            first.event.id,
+            started.event.id,
+        ]
+        assert second.event.id not in {event.id for event in first_events}
+        assert started.event.id - first.event.id == 2
+        assert after_created == (started.event,)
+        assert (
+            await repository.get_incident_event(
+                first.incident_id,
+                first.event.id,
+            )
+            == first.event
+        )
+        assert (
+            await repository.get_incident_event(
+                first.incident_id,
+                second.event.id,
+            )
+            is None
+        )
+        assert notifications == [
+            first.incident_id,
+            second.incident_id,
+            first.incident_id,
+        ]
+
+
+@pytest.mark.asyncio
+async def test_notifier_failure_does_not_reclassify_committed_write_as_failure(
+    tmp_path: Path,
+) -> None:
+    async def fail_notification(_incident_id: UUID) -> None:
+        raise RuntimeError("notifier unavailable")
+
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(
+            database.session_factory,
+            on_event_committed=fail_notification,
+        )
+
+        created = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+
+        assert await repository.incident_exists(created.incident_id)
+        assert await _row_count(database, RunEventRow) == 1
 
 
 @pytest.mark.asyncio

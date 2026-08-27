@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from starlette.types import ExceptionHandler
 
 from k8s_incident_agent.api_contracts import ErrorDetail, ErrorResponse
+from k8s_incident_agent.application.events import InvalidLastEventIdError
 from k8s_incident_agent.application.incidents import (
     IncidentNotFoundError,
     InvalidCursorError,
@@ -35,6 +36,11 @@ _INCIDENT_NOT_FOUND = _ErrorContract(
     "Incident was not found.",
 )
 _INVALID_CURSOR = _ErrorContract(400, "invalid_cursor", "Cursor is invalid.")
+_INVALID_LAST_EVENT_ID = _ErrorContract(
+    400,
+    "invalid_last_event_id",
+    "Last-Event-ID is invalid.",
+)
 _RUNTIME_NOT_READY = _ErrorContract(
     503,
     "runtime_not_ready",
@@ -73,6 +79,12 @@ def install_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return _response(_INVALID_CURSOR)
 
+    async def invalid_last_event_id_handler(
+        _request: Request,
+        _error: InvalidLastEventIdError,
+    ) -> JSONResponse:
+        return _response(_INVALID_LAST_EVENT_ID)
+
     async def runtime_not_ready_handler(
         _request: Request,
         _error: RuntimeNotReadyError,
@@ -100,6 +112,10 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         InvalidCursorError,
         cast(ExceptionHandler, invalid_cursor_handler),
+    )
+    app.add_exception_handler(
+        InvalidLastEventIdError,
+        cast(ExceptionHandler, invalid_last_event_id_handler),
     )
     app.add_exception_handler(
         RuntimeNotReadyError,

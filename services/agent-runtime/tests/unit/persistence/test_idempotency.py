@@ -378,6 +378,46 @@ async def test_terminal_replay_rejects_different_terminal_content(
                 replace(terminal, summary="Different terminal content")
             )
 
+        with pytest.raises(RecoveryConsistencyError):
+            await repository.persist_terminal(
+                TerminalRecord(
+                    run_id=created.run_id,
+                    completed_at=terminal.completed_at,
+                    outcome=DiagnosisOutcome.INSUFFICIENT_EVIDENCE,
+                    summary="The available evidence is insufficient.",
+                    root_causes=(),
+                    missing_information=("Pod status is unavailable.",),
+                    redacted=False,
+                    error_code=None,
+                    error_retryable=None,
+                    model_calls=3,
+                    tool_calls=2,
+                    input_tokens=100,
+                    output_tokens=50,
+                )
+            )
+
+        with pytest.raises(RecoveryConsistencyError):
+            await repository.persist_terminal(
+                TerminalRecord(
+                    run_id=created.run_id,
+                    completed_at=terminal.completed_at,
+                    outcome=None,
+                    summary=None,
+                    root_causes=(),
+                    missing_information=(),
+                    redacted=False,
+                    error_code="agent_timeout",
+                    error_retryable=True,
+                    model_calls=3,
+                    tool_calls=2,
+                    input_tokens=100,
+                    output_tokens=50,
+                )
+            )
+
+        assert await _event_count(database) == 4
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("corrupted_owner", ["run", "incident"])

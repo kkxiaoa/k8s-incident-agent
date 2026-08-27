@@ -8,6 +8,11 @@ import uvicorn
 from fastapi import FastAPI
 
 from k8s_incident_agent.api_errors import install_exception_handlers
+from k8s_incident_agent.application.events import (
+    EventDependencies,
+    IncidentEventService,
+    RunEventNotifier,
+)
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
@@ -26,6 +31,7 @@ from k8s_incident_agent.persistence.database import (
     require_alembic_head,
 )
 from k8s_incident_agent.persistence.repositories import IncidentRepository
+from k8s_incident_agent.routes.events import router as events_router
 from k8s_incident_agent.routes.incidents import router as incidents_router
 from k8s_incident_agent.routes.scenarios import router as scenarios_router
 from k8s_incident_agent.runtime.lock import RuntimeLock
@@ -37,6 +43,7 @@ from k8s_incident_agent.workflow.supervisor import RunSupervisor
 @dataclass(frozen=True, slots=True)
 class RuntimeContainer:
     incidents: IncidentApplicationService
+    events: IncidentEventService
 
 
 type RuntimeContextFactory = Callable[
@@ -79,6 +86,7 @@ def create_app(
     app.add_api_route("/healthz", healthz, methods=["GET"])
     app.include_router(scenarios_router)
     app.include_router(incidents_router)
+    app.include_router(events_router)
     return app
 
 
@@ -134,7 +142,11 @@ async def build_runtime_container(
             http_client=sync_http_client,
             http_async_client=async_http_client,
         )
-        repository = IncidentRepository(database.session_factory)
+        event_notifier = RunEventNotifier()
+        repository = IncidentRepository(
+            database.session_factory,
+            on_event_committed=event_notifier.notify,
+        )
         adapter = KubernetesEvidenceAdapter(kubernetes_clients)
         model_snapshot = ModelSnapshot(
             provider=settings.model_provider,
@@ -163,7 +175,13 @@ async def build_runtime_container(
                 model=model_snapshot,
                 budget=budget,
                 now=now,
-            )
+            ),
+            events=IncidentEventService(
+                EventDependencies(
+                    repository=repository,
+                    notifier=event_notifier,
+                )
+            ),
         )
 
 
@@ -173,4 +191,5 @@ def main() -> None:
         factory=True,
         host="127.0.0.1",
         workers=1,
+        timeout_graceful_shutdown=5,
     )

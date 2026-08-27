@@ -203,6 +203,7 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
 
     async with api.build_runtime_container(_settings(tmp_path)) as container:
         assert container.incidents is not None
+        assert container.events is not None
         assert events == [
             "lock.acquire",
             "discovery",

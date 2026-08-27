@@ -27,12 +27,12 @@ from k8s_incident_agent.persistence.repositories import (
     RecoveryConsistencyError,
 )
 from k8s_incident_agent.scenarios.contracts import ScenarioTarget
+from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 from k8s_incident_agent.workflow.graph import (
     GraphDependencies,
     IncidentGraph,
     build_incident_graph,
     classify_diagnosis_failure,
-    require_terminal_error_contract,
 )
 
 _SHUTDOWN_GRACE_SECONDS: Final = 5.0

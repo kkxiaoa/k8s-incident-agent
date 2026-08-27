@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
 from k8s_incident_agent.api_contracts import CreateIncidentRequest
+from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import (
     IncidentApplicationService,
     IncidentNotFoundError,
@@ -54,7 +55,8 @@ def _app(tmp_path: Path) -> FastAPI:
     @asynccontextmanager
     async def runtime_context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
-            incidents=cast(IncidentApplicationService, _FailingService())
+            incidents=cast(IncidentApplicationService, _FailingService()),
+            events=cast(IncidentEventService, object()),
         )
 
     return api.create_app(

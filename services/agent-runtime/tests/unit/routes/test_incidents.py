@@ -22,6 +22,7 @@ from k8s_incident_agent.api_contracts import (
     RunUsageResponse,
     ScenarioTargetResponse,
 )
+from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import IncidentStatus, RunStatus
@@ -133,7 +134,10 @@ async def _client(
 
     @asynccontextmanager
     async def runtime_context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
-        yield RuntimeContainer(incidents=cast(IncidentApplicationService, service))
+        yield RuntimeContainer(
+            incidents=cast(IncidentApplicationService, service),
+            events=cast(IncidentEventService, object()),
+        )
 
     app = api.create_app(
         settings=settings,

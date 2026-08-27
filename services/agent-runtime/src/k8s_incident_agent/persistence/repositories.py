@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -185,8 +186,67 @@ class IncidentRepository:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
+        *,
+        on_event_committed: Callable[[UUID], Awaitable[None]] | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._on_event_committed = on_event_committed
+
+    async def incident_exists(self, incident_id: UUID) -> bool:
+        try:
+            async with self._session_factory() as session:
+                return await session.get(IncidentRow, str(incident_id)) is not None
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def get_incident_event(
+        self,
+        incident_id: UUID,
+        event_id: int,
+    ) -> RunEvent | None:
+        if event_id <= 0:
+            raise ValueError("Event ID must be positive")
+        try:
+            async with self._session_factory() as session:
+                row = await session.scalar(
+                    select(RunEventRow).where(
+                        RunEventRow.id == event_id,
+                        RunEventRow.incident_id == str(incident_id),
+                    )
+                )
+                return None if row is None else _event_from_row(row)
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def list_incident_events(
+        self,
+        incident_id: UUID,
+        *,
+        after_id: int,
+        limit: int,
+    ) -> tuple[RunEvent, ...]:
+        if after_id < 0:
+            raise ValueError("Event cursor must be non-negative")
+        if limit < 1 or limit > 100:
+            raise ValueError("Event replay limit must be between 1 and 100")
+        try:
+            async with self._session_factory() as session:
+                rows = await session.scalars(
+                    select(RunEventRow)
+                    .where(
+                        RunEventRow.incident_id == str(incident_id),
+                        RunEventRow.id > after_id,
+                    )
+                    .order_by(RunEventRow.id)
+                    .limit(limit)
+                )
+                return tuple(_event_from_row(row) for row in rows)
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
 
     async def list_incident_records(
         self,
@@ -642,20 +702,24 @@ class IncidentRepository:
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
-        return CreatedIncident(
+        created = CreatedIncident(
             incident_id=incident_id,
             run_id=run_id,
             incident_status=IncidentStatus.RECEIVED,
             run_status=RunStatus.QUEUED,
             event=run_event,
         )
+        await self._notify_committed_event(created.event)
+        return created
 
     async def start_run(self, run_id: UUID, started_at: datetime) -> RunRecord:
         started_at = _require_aware_datetime(started_at)
-        return await _execute_with_replay(
+        result = await _execute_with_replay(
             lambda: self._start_run_once(run_id, started_at),
             lambda: self._replay_start_run(run_id, started_at),
         )
+        await self._notify_committed_event(result.event)
+        return result
 
     async def _start_run_once(self, run_id: UUID, started_at: datetime) -> RunRecord:
         async with self._session_factory() as session, session.begin():
@@ -698,10 +762,12 @@ class IncidentRepository:
         tool_call_id: str,
         tool_name: str,
     ) -> RunEvent:
-        return await _execute_with_replay(
+        result = await _execute_with_replay(
             lambda: self._record_tool_started_once(run_id, tool_call_id, tool_name),
             lambda: self._replay_tool_started(run_id, tool_call_id, tool_name),
         )
+        await self._notify_committed_event(result)
+        return result
 
     async def _record_tool_started_once(
         self,
@@ -770,10 +836,12 @@ class IncidentRepository:
             evidence,
             observed_at=_require_aware_datetime(evidence.observed_at),
         )
-        return await _execute_with_replay(
+        result = await _execute_with_replay(
             lambda: self._record_evidence_once(normalized),
             lambda: self._replay_evidence(normalized),
         )
+        await self._notify_committed_event(result.event)
+        return result
 
     async def _record_evidence_once(
         self, evidence: EvidenceRecord
@@ -854,10 +922,12 @@ class IncidentRepository:
             failure,
             occurred_at=_require_aware_datetime(failure.occurred_at),
         )
-        return await _execute_with_replay(
+        result = await _execute_with_replay(
             lambda: self._record_tool_failure_once(normalized),
             lambda: self._replay_tool_failure(normalized),
         )
+        await self._notify_committed_event(result)
+        return result
 
     async def _record_tool_failure_once(self, failure: ToolFailureRecord) -> RunEvent:
         event_key = f"tool:{failure.tool_call_id}:failed"
@@ -911,10 +981,12 @@ class IncidentRepository:
             terminal,
             completed_at=_require_aware_datetime(terminal.completed_at),
         )
-        return await _execute_with_replay(
+        result = await _execute_with_replay(
             lambda: self._persist_terminal_once(normalized),
             lambda: self._replay_terminal(normalized),
         )
+        await self._notify_committed_event(result.event)
+        return result
 
     async def _persist_terminal_once(
         self, terminal: TerminalRecord
@@ -1002,6 +1074,12 @@ class IncidentRepository:
             return _resolve_terminal_replay(
                 terminal, run, incident, diagnosis, terminal_event
             )
+
+    async def _notify_committed_event(self, event: RunEvent) -> None:
+        if self._on_event_committed is None:
+            return
+        with suppress(Exception):
+            await self._on_event_committed(event.incident_id)
 
 
 async def _load_run_context(
@@ -1568,6 +1646,8 @@ def _new_event_row(
 
 def _event_from_row(row: RunEventRow) -> RunEvent:
     try:
+        if row.schema_version != _SCHEMA_VERSION:
+            raise RecoveryConsistencyError
         return RunEvent(
             id=row.id,
             incident_id=UUID(row.incident_id),

@@ -14,6 +14,7 @@ from k8s_incident_agent.api_contracts import (
     ScenarioTargetResponse,
     ScenarioTriggerResponse,
 )
+from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
@@ -57,7 +58,8 @@ async def test_scenario_route_returns_only_versioned_public_projection(
     @asynccontextmanager
     async def runtime_context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
-            incidents=cast(IncidentApplicationService, _ScenarioService())
+            incidents=cast(IncidentApplicationService, _ScenarioService()),
+            events=cast(IncidentEventService, object()),
         )
 
     app = api.create_app(

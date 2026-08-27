@@ -1,16 +1,20 @@
-from collections.abc import AsyncGenerator
+import asyncio
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast
 
 import httpx
 import pytest
+from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
+from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
+from k8s_incident_agent.routes.events import router as events_router
 from k8s_incident_agent.routes.incidents import router as incidents_router
 from k8s_incident_agent.routes.scenarios import router as scenarios_router
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
@@ -46,7 +50,8 @@ async def test_settings_and_runtime_context_are_entered_only_during_lifespan(
         events.append("runtime.open")
         try:
             yield RuntimeContainer(
-                incidents=cast(IncidentApplicationService, _UnusedService())
+                incidents=cast(IncidentApplicationService, _UnusedService()),
+                events=cast(IncidentEventService, _UnusedService()),
             )
         finally:
             assert cast(bool, app.state.ready) is False
@@ -106,10 +111,15 @@ async def test_runtime_context_failure_never_publishes_ready_container(
     assert not hasattr(app.state, "container")
 
 
-def test_route_table_contains_only_task_11_endpoints() -> None:
+def test_route_table_contains_only_stage_one_read_and_create_endpoints() -> None:
     app = api.create_app()
     routes: set[tuple[str, str]] = set()
-    for route in (*app.routes, *scenarios_router.routes, *incidents_router.routes):
+    for route in (
+        *app.routes,
+        *scenarios_router.routes,
+        *incidents_router.routes,
+        *events_router.routes,
+    ):
         if isinstance(route, APIRoute):
             assert route.methods is not None
             routes.update((method, route.path) for method in route.methods)
@@ -120,6 +130,7 @@ def test_route_table_contains_only_task_11_endpoints() -> None:
         ("POST", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents/{incident_id}"),
+        ("GET", "/api/v1/incidents/{incident_id}/events"),
     }
     assert all(method not in {"PUT", "PATCH", "DELETE"} for method, _path in routes)
 
@@ -142,7 +153,73 @@ def test_runtime_entrypoint_freezes_loopback_single_worker(
         "factory": True,
         "host": "127.0.0.1",
         "workers": 1,
+        "timeout_graceful_shutdown": 5,
     }
+
+
+@pytest.mark.asyncio
+async def test_uvicorn_timeout_cancels_active_sse_and_closes_lifespan() -> None:
+    stream_entered = asyncio.Event()
+    stream_cancelled = asyncio.Event()
+    lifespan_closed = asyncio.Event()
+
+    @asynccontextmanager
+    async def lifespan(_app: object) -> AsyncGenerator[None]:
+        try:
+            yield
+        finally:
+            lifespan_closed.set()
+
+    test_app = api.FastAPI(lifespan=lifespan)
+
+    async def endless_stream() -> AsyncIterator[bytes]:
+        stream_entered.set()
+        try:
+            yield b": ready\n\n"
+            await asyncio.Future[None]()
+        finally:
+            stream_cancelled.set()
+
+    async def events() -> StreamingResponse:
+        return StreamingResponse(endless_stream(), media_type="text/event-stream")
+
+    test_app.add_api_route("/events", events, methods=["GET"])
+    server = api.uvicorn.Server(
+        api.uvicorn.Config(
+            test_app,
+            host="127.0.0.1",
+            port=0,
+            log_level="critical",
+            timeout_graceful_shutdown=1,
+        )
+    )
+    server_task = asyncio.create_task(server.serve())
+    try:
+        async with asyncio.timeout(3):
+            while not server.started:
+                await asyncio.sleep(0.01)
+        sockets = server.servers[0].sockets
+        assert sockets
+        port = cast(tuple[str, int], sockets[0].getsockname())[1]
+        async with (
+            httpx.AsyncClient(timeout=3) as client,
+            client.stream("GET", f"http://127.0.0.1:{port}/events") as response,
+        ):
+            assert response.status_code == 200
+            chunks = response.aiter_bytes()
+            assert await anext(chunks) == b": ready\n\n"
+            await asyncio.wait_for(stream_entered.wait(), 1)
+
+            server.should_exit = True
+
+            await asyncio.wait_for(server_task, 3)
+            await asyncio.wait_for(stream_cancelled.wait(), 1)
+    finally:
+        server.should_exit = True
+        if not server_task.done():
+            await asyncio.wait_for(server_task, 3)
+
+    assert lifespan_closed.is_set()
 
 
 @pytest.mark.asyncio

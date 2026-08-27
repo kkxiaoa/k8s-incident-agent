@@ -56,10 +56,7 @@ from k8s_incident_agent.kubernetes.credentials import (
     DiagnosticCredential,
     require_credential_ttl,
 )
-from k8s_incident_agent.kubernetes.errors import (
-    KubernetesBoundaryError,
-    validate_kubernetes_failure_contract,
-)
+from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.kubernetes.tools import (
     FatalDiagnosticToolError,
     build_diagnostic_tools,
@@ -73,17 +70,11 @@ from k8s_incident_agent.scenarios.contracts import (
     ScenarioTarget,
     validate_stage_one_target,
 )
+from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 from k8s_incident_agent.workflow.state import IncidentGraphInput, IncidentGraphState
 
 _RECOVERY_ERROR: Final = "recovery_consistency_error"
 _AGENT_TIMEOUT: Final = "agent_timeout"
-_WORKFLOW_FAILURE_RETRYABILITY: Final = {
-    _AGENT_TIMEOUT: True,
-    "model_call_limit_exceeded": False,
-    "tool_call_limit_exceeded": False,
-    "structured_output_invalid": False,
-    "model_upstream_failed": True,
-}
 
 type IncidentGraph = CompiledStateGraph[
     IncidentGraphState,
@@ -408,19 +399,6 @@ def classify_diagnosis_failure(error: BaseException) -> tuple[str, bool] | None:
     if isinstance(error, FatalDiagnosticToolError):
         return error.code.value, error.retryable
     return None
-
-
-def require_terminal_error_contract(code: str, retryable: bool) -> None:
-    try:
-        validate_kubernetes_failure_contract(code, retryable=retryable)
-        return
-    except ValueError:
-        pass
-    if (
-        code not in _WORKFLOW_FAILURE_RETRYABILITY
-        or _WORKFLOW_FAILURE_RETRYABILITY[code] is not retryable
-    ):
-        raise RecoveryConsistencyError
 
 
 def _state_run_id(state: IncidentGraphState) -> UUID:

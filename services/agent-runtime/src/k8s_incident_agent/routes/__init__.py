@@ -2,6 +2,7 @@ from typing import cast
 
 from fastapi import Request
 
+from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import (
     IncidentApplicationService,
     RuntimeNotReadyError,
@@ -16,3 +17,13 @@ def incident_service(request: Request) -> IncidentApplicationService:
     except AttributeError:
         raise RuntimeNotReadyError from None
     return cast(IncidentApplicationService, service)
+
+
+def event_service(request: Request) -> IncidentEventService:
+    if request.app.state.ready is not True:
+        raise RuntimeNotReadyError
+    try:
+        service = request.app.state.container.events
+    except AttributeError:
+        raise RuntimeNotReadyError from None
+    return cast(IncidentEventService, service)

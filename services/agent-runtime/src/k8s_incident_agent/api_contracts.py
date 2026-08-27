@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
@@ -15,6 +15,12 @@ from k8s_incident_agent.domain.models import (
 def _to_camel(value: str) -> str:
     head, *tail = value.split("_")
     return head + "".join(part.capitalize() for part in tail)
+
+
+def _require_utc_datetime(value: datetime, field_name: str) -> datetime:
+    if value.utcoffset() != timedelta(0):
+        raise ValueError(f"{field_name} must use UTC")
+    return value
 
 
 class _ApiContract(BaseModel):
@@ -173,6 +179,77 @@ class IncidentDetailResponse(_ApiContract):
     run: RunResponse
     evidence: tuple[EvidenceResponse, ...]
     diagnosis: DiagnosisResponse | None
+
+
+class RunEventPayload(_ApiContract):
+    schema_version: Literal[1]
+    incident_id: UUID
+    run_id: UUID
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def require_utc_occurred_at(cls, value: datetime) -> datetime:
+        return _require_utc_datetime(value, "occurredAt")
+
+
+class IncidentCreatedEventPayload(RunEventPayload):
+    scenario_id: str
+    incident_status: Literal["RECEIVED"]
+    run_status: Literal["QUEUED"]
+
+
+class RunStartedEventPayload(RunEventPayload):
+    incident_status: Literal["TRIAGING"]
+    run_status: Literal["RUNNING"]
+
+
+class ToolStartedEventPayload(RunEventPayload):
+    tool_call_id: str
+    tool_name: str
+
+
+class EvidenceRecordedEventPayload(RunEventPayload):
+    evidence_id: UUID
+    tool_call_id: str
+    tool_name: str
+    evidence_kind: str
+    observed_at: datetime
+    truncated: bool
+    redacted: bool
+
+    @field_validator("observed_at")
+    @classmethod
+    def require_utc_observed_at(cls, value: datetime) -> datetime:
+        return _require_utc_datetime(value, "observedAt")
+
+
+class ToolFailedEventPayload(RunEventPayload):
+    tool_call_id: str
+    tool_name: str
+    error_code: str
+    retryable: bool
+
+
+class DiagnosisCompletedEventPayload(RunEventPayload):
+    diagnosis_id: UUID
+    outcome: Literal["diagnosed"]
+    incident_status: Literal["DIAGNOSED"]
+    run_status: Literal["COMPLETED"]
+
+
+class DiagnosisInsufficientEventPayload(RunEventPayload):
+    diagnosis_id: UUID
+    outcome: Literal["insufficient_evidence"]
+    incident_status: Literal["INSUFFICIENT_EVIDENCE"]
+    run_status: Literal["COMPLETED"]
+
+
+class RunFailedEventPayload(RunEventPayload):
+    error_code: str
+    retryable: bool
+    incident_status: Literal["FAILED"]
+    run_status: Literal["FAILED"]
 
 
 class ErrorDetail(_ApiContract):
