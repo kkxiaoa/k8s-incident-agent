@@ -7,6 +7,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI
 
+from k8s_incident_agent.api_contracts import HealthResponse, error_responses
 from k8s_incident_agent.api_errors import install_exception_handlers
 from k8s_incident_agent.application.events import (
     EventDependencies,
@@ -72,6 +73,8 @@ def create_app(
                 del app.state.container
 
     app = FastAPI(
+        title="K8s Incident Agent Runtime",
+        version="0.1.0",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -80,10 +83,16 @@ def create_app(
     app.state.ready = False
     install_exception_handlers(app)
 
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+    async def healthz() -> HealthResponse:
+        return HealthResponse()
 
-    app.add_api_route("/healthz", healthz, methods=["GET"])
+    app.add_api_route(
+        "/healthz",
+        healthz,
+        methods=["GET"],
+        response_model=HealthResponse,
+        responses=error_responses(500),
+    )
     app.include_router(scenarios_router)
     app.include_router(incidents_router)
     app.include_router(events_router)

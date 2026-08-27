@@ -1,8 +1,15 @@
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    WithJsonSchema,
+    field_validator,
+)
 
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
@@ -32,6 +39,18 @@ class _ApiContract(BaseModel):
         serialize_by_alias=True,
         strict=True,
     )
+
+
+# Evidence bodies stay recursively validated, but no current web consumer interprets
+# their evidence-kind-specific fields.
+_JsonObject = Annotated[
+    dict[str, JsonValue],
+    WithJsonSchema({"type": "object", "additionalProperties": True}),
+]
+
+
+class HealthResponse(_ApiContract):
+    status: Literal["ok"] = "ok"
 
 
 class ScenarioTriggerResponse(_ApiContract):
@@ -149,9 +168,9 @@ class EvidenceResponse(_ApiContract):
     tool_call_id: str
     tool_name: str
     evidence_kind: str
-    target_ref: dict[str, JsonValue]
+    target_ref: _JsonObject
     observed_at: datetime
-    payload: dict[str, JsonValue]
+    payload: _JsonObject
     truncated: bool
     redacted: bool
 
@@ -252,6 +271,72 @@ class RunFailedEventPayload(RunEventPayload):
     run_status: Literal["FAILED"]
 
 
+class IncidentCreatedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["incident.created"]
+    data: IncidentCreatedEventPayload
+
+
+class RunStartedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["run.started"]
+    data: RunStartedEventPayload
+
+
+class ToolStartedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["tool.started"]
+    data: ToolStartedEventPayload
+
+
+class EvidenceRecordedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["evidence.recorded"]
+    data: EvidenceRecordedEventPayload
+
+
+class ToolFailedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["tool.failed"]
+    data: ToolFailedEventPayload
+
+
+class DiagnosisCompletedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["diagnosis.completed"]
+    data: DiagnosisCompletedEventPayload
+
+
+class DiagnosisInsufficientStreamEvent(_ApiContract):
+    id: str
+    event: Literal["diagnosis.insufficient"]
+    data: DiagnosisInsufficientEventPayload
+
+
+class RunFailedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["run.failed"]
+    data: RunFailedEventPayload
+
+
+class RunEventStreamItem(
+    RootModel[
+        Annotated[
+            IncidentCreatedStreamEvent
+            | RunStartedStreamEvent
+            | ToolStartedStreamEvent
+            | EvidenceRecordedStreamEvent
+            | ToolFailedStreamEvent
+            | DiagnosisCompletedStreamEvent
+            | DiagnosisInsufficientStreamEvent
+            | RunFailedStreamEvent,
+            Field(discriminator="event"),
+        ]
+    ]
+):
+    pass
+
+
 class ErrorDetail(_ApiContract):
     code: str
     message: str
@@ -260,3 +345,7 @@ class ErrorDetail(_ApiContract):
 
 class ErrorResponse(_ApiContract):
     error: ErrorDetail
+
+
+def error_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
+    return {status_code: {"model": ErrorResponse} for status_code in status_codes}

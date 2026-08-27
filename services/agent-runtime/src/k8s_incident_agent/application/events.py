@@ -7,13 +7,10 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from k8s_incident_agent.api_contracts import (
-    DiagnosisCompletedEventPayload,
-    DiagnosisInsufficientEventPayload,
     EvidenceRecordedEventPayload,
-    IncidentCreatedEventPayload,
     RunEventPayload,
+    RunEventStreamItem,
     RunFailedEventPayload,
-    RunStartedEventPayload,
     ToolFailedEventPayload,
     ToolStartedEventPayload,
 )
@@ -33,16 +30,6 @@ _HEARTBEAT_SECONDS: Final = 15.0
 _TERMINAL_EVENT_TYPES: Final = frozenset(
     {"diagnosis.completed", "diagnosis.insufficient", "run.failed"}
 )
-_PAYLOAD_TYPES: Final[dict[str, type[RunEventPayload]]] = {
-    "incident.created": IncidentCreatedEventPayload,
-    "run.started": RunStartedEventPayload,
-    "tool.started": ToolStartedEventPayload,
-    "evidence.recorded": EvidenceRecordedEventPayload,
-    "tool.failed": ToolFailedEventPayload,
-    "diagnosis.completed": DiagnosisCompletedEventPayload,
-    "diagnosis.insufficient": DiagnosisInsufficientEventPayload,
-    "run.failed": RunFailedEventPayload,
-}
 
 
 class InvalidLastEventIdError(RuntimeError):
@@ -169,14 +156,20 @@ def _serialize_event(event: RunEvent) -> bytes:
 
 
 def _validated_event_json(event: RunEvent) -> str:
-    payload_type = _PAYLOAD_TYPES.get(event.event_type)
-    if payload_type is None:
-        raise RecoveryConsistencyError
     document = canonical_json(event.payload)
     try:
-        payload = payload_type.model_validate_json(document)
+        stream_item = RunEventStreamItem.model_validate_json(
+            canonical_json(
+                {
+                    "id": str(event.id),
+                    "event": event.event_type,
+                    "data": event.payload,
+                }
+            )
+        )
     except ValidationError:
         raise RecoveryConsistencyError from None
+    payload = stream_item.root.data
     if isinstance(payload, ToolFailedEventPayload):
         try:
             validate_kubernetes_failure_contract(

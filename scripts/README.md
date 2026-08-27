@@ -32,6 +32,8 @@ npm run doctor
 | `npm run scenario -- apply <scenario-id>` | `scenario.mjs` | 安装指定 catalog fixture | 是 |
 | `npm run scenario -- verify <scenario-id>` | `scenario.mjs` | 等待并验证场景的确定性证据条件 | 否 |
 | `npm run scenario -- cleanup <scenario-id>` | `scenario.mjs` | 删除该场景 manifest 声明的对象 | 是 |
+| `npm run openapi:generate` | `openapi-types.mjs` | 更新固定 OpenAPI artifact 与生成的 TypeScript types | 否，仅修改仓库内产物 |
+| `npm run openapi:check` | `openapi-types.mjs` | 检查 OpenAPI artifact 与 TypeScript types 是否漂移 | 否 |
 
 ## `doctor.mjs`
 
@@ -118,6 +120,21 @@ npm run scenario -- cleanup image-pull-backoff
 
 `verify` 使用 120 秒 absolute deadline，`kubectl` 查询和轮询等待都计入该预算；单次查询最多 30 秒，并在剩余预算不足时自动收窄。成功结果只包含安全的对象 identity 和 reason，不包含原始 Event note；超时失败只输出最后一个静态 unmet-condition reason。
 
+## `openapi-types.mjs`
+
+```bash
+npm run openapi:generate
+npm run openapi:check
+```
+
+`generate` 先通过本地 `agent-runtime-openapi` 从生产 FastAPI app 离线导出
+`contracts/agent-runtime.openapi.json`，再用锁定的本地 `openapi-typescript`
+生成 `src/lib/agent-runtime/generated.ts`。两个产物都先写入同目录临时文件，生成成功且内容变化时才原子替换。
+
+`check` 重新生成临时产物并按字节比较，不修改 tracked 文件。脚本只接受
+`generate` 或 `check`，schema input 和 TypeScript output 均固定在仓库内，不接受
+路径或 URL 参数；执行前需要先在 `services/agent-runtime` 完成 `uv sync --locked`。
+
 ## 测试与静态检查
 
 默认测试入口会运行本目录全部 `*.test.mjs`：
@@ -132,6 +149,7 @@ npm run lint
 ```bash
 node --test scripts/doctor.test.mjs
 node --test scripts/kind-cluster.test.mjs
+node --test scripts/openapi-types.test.mjs
 node --test scripts/scenario.test.mjs
 ```
 
@@ -140,6 +158,7 @@ node --test scripts/scenario.test.mjs
 ## 安全约束
 
 - 所有外部命令都通过参数数组执行，不启用 shell；
+- OpenAPI 生成只使用本地 FastAPI exporter、固定本地 artifact 和固定本地 TypeScript output；
 - 集群、context 和 Namespace 身份固定，脚本不会连接任意用户输入的目标；
 - 场景 ID 必须来自已经校验的 catalog，不能作为文件路径或额外命令参数；
 - `up`、`bootstrap-access`、`down`、`scenario apply` 和 `scenario cleanup` 有明确副作用，运行前应确认目标状态；
