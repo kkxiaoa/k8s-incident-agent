@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test \"scripts/*.test.mjs\"",
+    "test": "node --test \"scripts/*.test.mjs\" && vitest run",
     "cluster": "node scripts/kind-cluster.mjs",
     "doctor": "node scripts/doctor.mjs",
     "openapi:check": "node scripts/openapi-types.mjs check",
@@ -21,18 +21,23 @@
   "dependencies": {
     "next": "16.3.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "server-only": "0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "6.0.4",
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "js-yaml": "4.3.1",
+    "jsdom": "30.0.1",
     "openapi-typescript": "7.13.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
   }
 }
