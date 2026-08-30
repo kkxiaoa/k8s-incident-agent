@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import pytest
 from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
+    Configuration,
     EventsV1Event,
     EventsV1EventList,
     EventsV1EventSeries,
@@ -73,10 +74,17 @@ def _deployment() -> V1Deployment:
     )
 
 
-def _replica_set(name: str, uid: str, owner_uid: str) -> V1ReplicaSet:
+def _replica_set(
+    name: str,
+    uid: str,
+    owner_uid: str,
+    *,
+    api_version: str | None = "apps/v1",
+    kind: str | None = "ReplicaSet",
+) -> V1ReplicaSet:
     return V1ReplicaSet(
-        api_version="apps/v1",
-        kind="ReplicaSet",
+        api_version=api_version,
+        kind=kind,
         metadata=V1ObjectMeta(
             namespace=TARGET.namespace,
             name=name,
@@ -87,10 +95,17 @@ def _replica_set(name: str, uid: str, owner_uid: str) -> V1ReplicaSet:
     )
 
 
-def _pod(name: str, uid: str, owner_uid: str) -> V1Pod:
+def _pod(
+    name: str,
+    uid: str,
+    owner_uid: str,
+    *,
+    api_version: str | None = "v1",
+    kind: str | None = "Pod",
+) -> V1Pod:
     return V1Pod(
-        api_version="v1",
-        kind="Pod",
+        api_version=api_version,
+        kind=kind,
         metadata=V1ObjectMeta(
             namespace=TARGET.namespace,
             name=name,
@@ -106,16 +121,20 @@ def _event(
     name: str,
     uid: str,
     regarding: V1ObjectReference,
-    event_time: datetime,
+    event_time: datetime | None,
     *,
+    api_version: str | None = "events.k8s.io/v1",
+    kind: str | None = "Event",
     note: str | None = None,
     series_count: int | None = None,
     deprecated_count: int | None = None,
     include_optional_scalars: bool = True,
 ) -> EventsV1Event:
+    configuration = Configuration()
+    configuration.client_side_validation = event_time is not None
     return EventsV1Event(
-        api_version="events.k8s.io/v1",
-        kind="Event",
+        api_version=api_version,
+        kind=kind,
         metadata=V1ObjectMeta(
             namespace=TARGET.namespace,
             name=name,
@@ -138,6 +157,7 @@ def _event(
             else None
         ),
         deprecated_count=deprecated_count,
+        local_vars_configuration=configuration,
     )
 
 
@@ -286,6 +306,48 @@ async def test_read_events_rebuilds_associations_filters_and_sorts() -> None:
     assert observation.payload.events[1].event_time == "2026-08-21T08:00:00Z"
     assert observation.payload.events[1].note == "token=[REDACTED]"
     assert observation.redacted is True
+
+
+@pytest.mark.asyncio
+async def test_read_events_accepts_captured_nullable_list_item_fields() -> None:
+    owned_rs = _replica_set(
+        "rs-owned",
+        "rs-uid",
+        "deployment-uid",
+        api_version=None,
+        kind=None,
+    )
+    owned_pod = _pod(
+        "pod-owned",
+        "pod-uid",
+        "rs-uid",
+        api_version=None,
+        kind=None,
+    )
+    event = _event(
+        "pull-failed",
+        "event-uid",
+        _reference("Pod", "pod-owned", "pod-uid"),
+        None,
+        api_version=None,
+        kind=None,
+        deprecated_count=1,
+    )
+    events_api = _EventsApi(
+        {None: EventsV1EventList(metadata=V1ListMeta(), items=[event])}
+    )
+
+    observation = await _adapter(
+        _AppsApi([owned_rs]),
+        _CoreApi([owned_pod]),
+        events_api,
+    ).read_events(TARGET)
+
+    normalized = observation.payload.events[0]
+    assert normalized.api_version == "events.k8s.io/v1"
+    assert normalized.kind == "Event"
+    assert normalized.event_time is None
+    assert normalized.series_count == 1
 
 
 @pytest.mark.asyncio

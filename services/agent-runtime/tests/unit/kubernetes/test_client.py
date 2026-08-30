@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Protocol, cast
 
 import aiohttp
@@ -19,6 +20,8 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     Configuration,
     CoreV1Api,
     EventsV1Api,
+    EventsV1Event,
+    EventsV1EventList,
     VersionApi,
 )
 from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingTypeStubs]
@@ -55,6 +58,7 @@ PROXY_ENVIRONMENT_VARIABLES = (
 class _ConfigurationView(Protocol):
     proxy: object | None
     debug: bool
+    client_side_validation: bool
 
 
 class _RestClientView(Protocol):
@@ -69,6 +73,16 @@ class _RestClientView(Protocol):
 class _ApiClientView(Protocol):
     configuration: object
     rest_client: _RestClientView
+
+    def deserialize(self, response: object, response_type: str) -> object: ...
+
+
+class _EventsListView(Protocol):
+    items: object
+
+
+class _EventView(Protocol):
+    event_time: object
 
 
 def _encode_segment(value: dict[str, object]) -> str:
@@ -161,6 +175,7 @@ async def test_factory_creates_scoped_direct_clients_without_mutating_proxy_env(
             assert _transport_session(clients.api_client).trust_env is False
             assert configuration.proxy is None
             assert configuration.debug is False
+            assert configuration.client_side_validation is False
             assert rest_logger.level == logging.WARNING
             assert clients.timeout_seconds == 10
             assert clients.context_name == "kind-k8s-incident-agent"
@@ -178,6 +193,63 @@ async def test_factory_creates_scoped_direct_clients_without_mutating_proxy_env(
             await clients.close()
     finally:
         rest_logger.setLevel(previous_level)
+
+
+@pytest.mark.asyncio
+async def test_factory_deserializes_captured_event_with_null_event_time(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    credential = _credential(paths)
+    clients = await create_kubernetes_clients(credential, timeout_seconds=10)
+    response = SimpleNamespace(
+        data=json.dumps(
+            {
+                "apiVersion": "events.k8s.io/v1",
+                "kind": "EventList",
+                "metadata": {},
+                "items": [
+                    {
+                        "metadata": {
+                            "name": "image-pull-event",
+                            "namespace": "k8s-incident-scenarios",
+                            "resourceVersion": "42",
+                            "uid": "event-uid",
+                        },
+                        "eventTime": None,
+                        "deprecatedCount": 1,
+                        "deprecatedFirstTimestamp": "2026-08-29T17:25:28Z",
+                        "reason": "Failed",
+                        "regarding": {
+                            "apiVersion": "v1",
+                            "kind": "Pod",
+                            "name": "image-pull-pod",
+                            "namespace": "k8s-incident-scenarios",
+                            "uid": "pod-uid",
+                        },
+                        "reportingController": "kubelet",
+                        "reportingInstance": "kind-control-plane",
+                        "type": "Warning",
+                    }
+                ],
+            }
+        )
+    )
+    try:
+        deserialized = cast(_ApiClientView, clients.api_client).deserialize(
+            response,
+            "EventsV1EventList",
+        )
+    finally:
+        await clients.close()
+
+    assert isinstance(deserialized, EventsV1EventList)
+    items = cast(_EventsListView, deserialized).items
+    assert isinstance(items, list)
+    item_values = cast(list[object], items)
+    assert len(item_values) == 1
+    assert isinstance(item_values[0], EventsV1Event)
+    assert cast(_EventView, item_values[0]).event_time is None
 
 
 @pytest.mark.asyncio

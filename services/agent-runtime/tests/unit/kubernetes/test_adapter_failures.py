@@ -304,6 +304,36 @@ async def test_events_reject_a_pod_with_incompatible_type_fields() -> None:
     assert error.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("api_version", "v1"), ("kind", "Secret")),
+)
+@pytest.mark.asyncio
+async def test_events_reject_incompatible_nonempty_type_meta(
+    field: str,
+    value: str,
+) -> None:
+    event = _event(0)
+    setattr(cast(Any, event), field, value)
+    apps_api = _AppsApi(
+        replica_sets=V1ReplicaSetList(
+            metadata=V1ListMeta(),
+            items=[_replica_set(0)],
+        )
+    )
+    core_api = _CoreApi(V1PodList(metadata=V1ListMeta(), items=[_pod(0)]))
+    events_api = _EventsApi(EventsV1EventList(metadata=V1ListMeta(), items=[event]))
+
+    with pytest.raises(KubernetesBoundaryError) as error:
+        await _adapter(
+            apps_api,
+            core_api=core_api,
+            events_api=events_api,
+        ).read_events(TARGET)
+
+    assert error.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
 @pytest.mark.asyncio
 async def test_malformed_controller_owner_reference_is_rejected() -> None:
     replica_set = _replica_set(0)

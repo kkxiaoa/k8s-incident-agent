@@ -74,10 +74,17 @@ def _owner(
     )
 
 
-def _replica_set(name: str, uid: str, owner_uid: str) -> V1ReplicaSet:
+def _replica_set(
+    name: str,
+    uid: str,
+    owner_uid: str,
+    *,
+    api_version: str | None = "apps/v1",
+    kind: str | None = "ReplicaSet",
+) -> V1ReplicaSet:
     return V1ReplicaSet(
-        api_version="apps/v1",
-        kind="ReplicaSet",
+        api_version=api_version,
+        kind=kind,
         metadata=V1ObjectMeta(
             namespace=TARGET.namespace,
             name=name,
@@ -110,10 +117,12 @@ def _pod(
     owner_uid: str,
     *,
     container_statuses: list[V1ContainerStatus] | None = None,
+    api_version: str | None = "v1",
+    kind: str | None = "Pod",
 ) -> V1Pod:
     return V1Pod(
-        api_version="v1",
-        kind="Pod",
+        api_version=api_version,
+        kind=kind,
         metadata=V1ObjectMeta(
             namespace=TARGET.namespace,
             name=name,
@@ -255,6 +264,42 @@ async def test_read_pods_paginates_filters_owner_uids_and_sorts_results() -> Non
     assert observation.payload.source_workload.resource_version == "42"
     assert observation.truncated is False
     assert observation.redacted is False
+
+
+@pytest.mark.asyncio
+async def test_read_pods_accepts_list_items_without_type_meta() -> None:
+    replica_set = _replica_set(
+        "rs-owned",
+        "rs-uid",
+        "deployment-uid",
+        api_version=None,
+        kind=None,
+    )
+    pod = _pod(
+        "pod-owned",
+        "pod-uid",
+        "rs-uid",
+        container_statuses=[],
+        api_version=None,
+        kind=None,
+    )
+    apps_api = _AppsApi(
+        {
+            None: V1ReplicaSetList(
+                metadata=V1ListMeta(),
+                items=[replica_set],
+            )
+        }
+    )
+    core_api = _CoreApi({None: V1PodList(metadata=V1ListMeta(), items=[pod])})
+
+    observation = await _adapter(apps_api, core_api).read_pods(TARGET)
+
+    normalized = observation.payload.pods[0]
+    assert normalized.api_version == "v1"
+    assert normalized.kind == "Pod"
+    assert normalized.owner.api_version == "apps/v1"
+    assert normalized.owner.kind == "ReplicaSet"
 
 
 @pytest.mark.asyncio

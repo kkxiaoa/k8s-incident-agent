@@ -440,11 +440,12 @@ class KubernetesEvidenceAdapter:
         replica_set_uids: set[str] = set()
         for replica_set in replica_sets:
             replica_set_view = cast(_ReplicaSetView, replica_set)
-            if (
-                replica_set_view.api_version != "apps/v1"
-                or replica_set_view.kind != "ReplicaSet"
-            ):
-                raise _contract_error()
+            _validate_list_item_type_meta(
+                replica_set_view.api_version,
+                replica_set_view.kind,
+                expected_api_version="apps/v1",
+                expected_kind="ReplicaSet",
+            )
             metadata = _metadata(replica_set_view.metadata)
             if _required_string(metadata.namespace) != target.namespace:
                 raise _contract_error()
@@ -472,8 +473,12 @@ class KubernetesEvidenceAdapter:
         associated_pods: list[_AssociatedPod] = []
         for pod in pods:
             pod_view = cast(_PodView, pod)
-            if pod_view.api_version != "v1" or pod_view.kind != "Pod":
-                raise _contract_error()
+            _validate_list_item_type_meta(
+                pod_view.api_version,
+                pod_view.kind,
+                expected_api_version="v1",
+                expected_kind="Pod",
+            )
             metadata = _metadata(pod_view.metadata)
             if _required_string(metadata.namespace) != target.namespace:
                 raise _contract_error()
@@ -878,8 +883,6 @@ def _project_pod(
 ) -> PodSummary:
     pod = associated.pod
     pod_view = cast(_PodView, pod)
-    if pod_view.api_version != "v1" or pod_view.kind != "Pod":
-        raise _contract_error()
     metadata = _metadata(pod_view.metadata)
     status = pod_view.status
     if status is not None and not isinstance(status, V1PodStatus):
@@ -1025,8 +1028,12 @@ def _project_event(
     state: _SanitizationState,
 ) -> EventSummary:
     event_view = cast(_EventView, event)
-    if event_view.api_version != "events.k8s.io/v1" or event_view.kind != "Event":
-        raise _contract_error()
+    _validate_list_item_type_meta(
+        event_view.api_version,
+        event_view.kind,
+        expected_api_version="events.k8s.io/v1",
+        expected_kind="Event",
+    )
     metadata = _metadata(event_view.metadata)
     namespace = _required_string(metadata.namespace)
     if namespace != expected_namespace:
@@ -1095,6 +1102,22 @@ def _metadata(value: object) -> _MetadataView:
 
 def _validate_target(target: DeploymentTarget) -> None:
     if target.api_version != "apps/v1" or target.kind != "Deployment":
+        raise _contract_error()
+
+
+def _validate_list_item_type_meta(
+    api_version: object,
+    kind: object,
+    *,
+    expected_api_version: str,
+    expected_kind: str,
+) -> None:
+    # List endpoints and their SDK item classes establish GVK when Kubernetes
+    # omits TypeMeta; a conflicting value still indicates contract drift.
+    if api_version not in (None, expected_api_version) or kind not in (
+        None,
+        expected_kind,
+    ):
         raise _contract_error()
 
 

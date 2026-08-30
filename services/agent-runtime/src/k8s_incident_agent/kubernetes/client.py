@@ -47,6 +47,7 @@ class _ConfigurationView(Protocol):
     ssl_ca_cert: object | None
     verify_ssl: bool
     debug: bool
+    client_side_validation: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +113,9 @@ async def create_kubernetes_clients(
             raise KubernetesBoundaryError(KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID)
 
         configuration_view.debug = False
+        # Kubernetes 1.36 can return converted events with eventTime=null, while
+        # SDK 36.0.3 rejects that response before the adapter can normalize it.
+        configuration_view.client_side_validation = False
         logging.getLogger(_REST_LOGGER_NAME).setLevel(logging.WARNING)
         try:
             api_client = ApiClient(configuration)
