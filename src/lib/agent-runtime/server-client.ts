@@ -6,6 +6,11 @@ import { getAgentRuntimeBaseUrl } from "./server-config";
 type ErrorResponse = components["schemas"]["ErrorResponse"];
 type RuntimePath = keyof paths;
 
+interface RuntimeJsonResult {
+  response: Response;
+  value: unknown | null;
+}
+
 const SCENARIOS_PATH = "/api/v1/scenarios" satisfies RuntimePath;
 const INCIDENTS_PATH = "/api/v1/incidents" satisfies RuntimePath;
 const INCIDENT_PATH = "/api/v1/incidents/{incident_id}" satisfies RuntimePath;
@@ -126,6 +131,10 @@ function unavailableResponse(): Response {
   return errorResponse(502, UPSTREAM_UNAVAILABLE);
 }
 
+function unavailableResult(): RuntimeJsonResult {
+  return { response: unavailableResponse(), value: null };
+}
+
 function runtimeUrl(path: string): URL {
   const url = getAgentRuntimeBaseUrl();
   const prefix = url.pathname === "/" ? "" : url.pathname.replace(/\/+$/, "");
@@ -227,11 +236,11 @@ async function normalizeJsonResponse(
   upstream: Response,
   expectedSuccessStatus: number,
   allowedErrorCodes: readonly RuntimeErrorCode[],
-): Promise<Response> {
+): Promise<RuntimeJsonResult> {
   const contentType = upstream.headers.get("content-type");
   if (!isJsonContentType(contentType)) {
     await discardBody(upstream);
-    return unavailableResponse();
+    return unavailableResult();
   }
 
   let bytes: ArrayBuffer;
@@ -240,17 +249,20 @@ async function normalizeJsonResponse(
     bytes = await upstream.arrayBuffer();
     parsed = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
-    return unavailableResponse();
+    return unavailableResult();
   }
 
   if (upstream.status === expectedSuccessStatus) {
-    return new Response(bytes, {
-      status: upstream.status,
-      headers: {
-        "cache-control": "no-store",
-        "content-type": contentType,
-      },
-    });
+    return {
+      response: new Response(bytes, {
+        status: upstream.status,
+        headers: {
+          "cache-control": "no-store",
+          "content-type": contentType,
+        },
+      }),
+      value: parsed,
+    };
   }
 
   const runtimeError = runtimeErrorResponse(
@@ -259,10 +271,13 @@ async function normalizeJsonResponse(
     allowedErrorCodes,
   );
   if (runtimeError !== null) {
-    return errorResponse(upstream.status, runtimeError, contentType);
+    return {
+      response: errorResponse(upstream.status, runtimeError, contentType),
+      value: null,
+    };
   }
 
-  return unavailableResponse();
+  return unavailableResult();
 }
 
 async function requestRest(
@@ -271,7 +286,7 @@ async function requestRest(
   allowedErrorCodes: readonly RuntimeErrorCode[],
   init: RequestInit,
   searchParams?: URLSearchParams,
-): Promise<Response> {
+): Promise<RuntimeJsonResult> {
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
@@ -296,13 +311,13 @@ async function requestRest(
       allowedErrorCodes,
     );
   } catch {
-    return unavailableResponse();
+    return unavailableResult();
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export function fetchScenarios(): Promise<Response> {
+export function fetchScenarios(): Promise<RuntimeJsonResult> {
   return requestRest(SCENARIOS_PATH, 200, SCENARIO_ERROR_CODES, {
     method: "GET",
   });
@@ -310,7 +325,7 @@ export function fetchScenarios(): Promise<Response> {
 
 export function fetchIncidents(
   searchParams: URLSearchParams,
-): Promise<Response> {
+): Promise<RuntimeJsonResult> {
   const forwarded = new URLSearchParams();
   for (const [name, value] of searchParams) {
     if (name === "limit" || name === "cursor") {
@@ -339,17 +354,21 @@ export async function createIncident(request: Request): Promise<Response> {
     return errorResponse(422, INVALID_REQUEST);
   }
 
-  return requestRest(INCIDENTS_PATH, 202, INCIDENT_CREATE_ERROR_CODES, {
+  const result = await requestRest(INCIDENTS_PATH, 202, INCIDENT_CREATE_ERROR_CODES, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body,
   });
+  return result.response;
 }
 
-export function fetchIncident(incidentId: string): Promise<Response> {
+export function fetchIncident(incidentId: string): Promise<RuntimeJsonResult> {
   const path = incidentPath(INCIDENT_PATH, incidentId);
   if (path === null) {
-    return Promise.resolve(errorResponse(422, INVALID_REQUEST));
+    return Promise.resolve({
+      response: errorResponse(422, INVALID_REQUEST),
+      value: null,
+    });
   }
 
   return requestRest(path, 200, INCIDENT_DETAIL_ERROR_CODES, {
@@ -411,11 +430,12 @@ export async function streamIncidentEvents(
 
     try {
       if (upstream.status >= 400) {
-        return await normalizeJsonResponse(
+        const result = await normalizeJsonResponse(
           upstream,
           Number.NaN,
           INCIDENT_EVENT_ERROR_CODES,
         );
+        return result.response;
       }
       await discardBody(upstream);
       return unavailableResponse();

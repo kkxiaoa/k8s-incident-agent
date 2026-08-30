@@ -35,7 +35,7 @@ describe("fixed REST helpers", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await fetchScenarios();
+    const { response } = await fetchScenarios();
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
@@ -102,7 +102,7 @@ describe("fixed REST helpers", () => {
     };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(envelope, 404)));
 
-    const response = await fetchIncident(INCIDENT_ID);
+    const { response } = await fetchIncident(INCIDENT_ID);
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual(envelope);
@@ -177,7 +177,7 @@ describe("fixed REST helpers", () => {
   ])("maps %s to a safe unavailable response", async (_case, upstream) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(upstream));
 
-    const response = await fetchScenarios();
+    const { response } = await fetchScenarios();
     const serialized = await response.text();
 
     expect(response.status).toBe(502);
@@ -197,7 +197,7 @@ describe("fixed REST helpers", () => {
       vi.fn().mockRejectedValue(new Error(`connect failed: ${RUNTIME_URL}/secret`)),
     );
 
-    const response = await fetchScenarios();
+    const { response } = await fetchScenarios();
     const serialized = await response.text();
 
     expect(response.status).toBe(502);
@@ -213,7 +213,7 @@ describe("fixed REST helpers", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await fetchScenarios();
+    const { response } = await fetchScenarios();
     const serialized = await response.text();
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -236,7 +236,7 @@ describe("fixed REST helpers", () => {
       ),
     );
 
-    const response = await fetchScenarios();
+    const { response } = await fetchScenarios();
     const serialized = await response.text();
 
     expect(response.status).toBe(500);
@@ -263,7 +263,7 @@ describe("fixed REST helpers", () => {
 
     const responsePromise = fetchScenarios();
     await vi.advanceTimersByTimeAsync(15_000);
-    const response = await responsePromise;
+    const { response } = await responsePromise;
 
     expect(upstreamSignal?.aborted).toBe(true);
     expect(response.status).toBe(502);
@@ -295,7 +295,7 @@ describe("fixed REST helpers", () => {
 
     const responsePromise = fetchScenarios();
     await vi.advanceTimersByTimeAsync(15_000);
-    const response = await responsePromise;
+    const { response } = await responsePromise;
 
     expect(upstreamSignal?.aborted).toBe(true);
     expect(response.status).toBe(502);
@@ -305,7 +305,7 @@ describe("fixed REST helpers", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await fetchIncident("../secrets");
+    const { response } = await fetchIncident("../secrets");
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(response.status).toBe(422);

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>K8s Incident Agent</title>
+  <defs>
+    <linearGradient id="brand-gradient" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#19b7a8" />
+      <stop offset="1" stop-color="#082b45" />
+    </linearGradient>
+  </defs>
+  <path
+    d="M18 2h40a4 4 0 0 1 4 4v40a16 16 0 0 1-16 16H6a4 4 0 0 1-4-4V18A16 16 0 0 1 18 2Z"
+    fill="url(#brand-gradient)"
+  />
+  <path
+    d="M22 16v32M43 16 22 32l21 16"
+    fill="none"
+    stroke="#fff"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="7"
+  />
+</svg>

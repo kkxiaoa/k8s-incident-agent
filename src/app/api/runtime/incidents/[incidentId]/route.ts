@@ -9,5 +9,5 @@ export async function GET(
   context: IncidentRouteContext,
 ): Promise<Response> {
   const { incidentId } = await context.params;
-  return fetchIncident(incidentId);
+  return (await fetchIncident(incidentId)).response;
 }

@@ -12,6 +12,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --test \"scripts/*.test.mjs\" && vitest run",
+    "test:e2e": "playwright test",
     "cluster": "node scripts/kind-cluster.mjs",
     "doctor": "node scripts/doctor.mjs",
     "openapi:check": "node scripts/openapi-types.mjs check",
@@ -25,7 +26,12 @@
     "server-only": "0.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

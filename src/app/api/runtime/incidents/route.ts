@@ -3,8 +3,8 @@ import {
   fetchIncidents,
 } from "@/lib/agent-runtime/server-client";
 
-export function GET(request: Request): Promise<Response> {
-  return fetchIncidents(new URL(request.url).searchParams);
+export async function GET(request: Request): Promise<Response> {
+  return (await fetchIncidents(new URL(request.url).searchParams)).response;
 }
 
 export function POST(request: Request): Promise<Response> {
