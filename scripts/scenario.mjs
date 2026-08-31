@@ -10,6 +10,10 @@ import { fileURLToPath } from "node:url";
 
 import { loadAll } from "js-yaml";
 
+import {
+  DeploymentContractError,
+  verifyDeploymentStatus,
+} from "./deployment.mjs";
 import { runClusterCommand } from "./kind-cluster.mjs";
 
 const CLUSTER_NAME = "k8s-incident-agent";
@@ -23,6 +27,10 @@ const COMMAND_TIMEOUT_MILLISECONDS = 30_000;
 const EXPECTED_IMAGE = "registry.invalid/k8s-incident-agent/missing:v1";
 const WAITING_REASONS = new Set(["ErrImagePull", "ImagePullBackOff"]);
 const VALID_ACTIONS = new Set(["list", "apply", "verify", "cleanup"]);
+const VALID_EXECUTION_PROFILES = new Set([
+  "kind-evaluation",
+  "k3s-evaluation",
+]);
 const NOOP_LOGGER = { info() {}, error() {} };
 
 class ScenarioCommandError extends Error {
@@ -93,32 +101,121 @@ export async function runScenarioCommand(
     );
   }
 
+  const target = resolveExecutionTarget(
+    dependencies.profile,
+    dependencies.context,
+  );
+
   const execute = dependencies.execute ?? executeExternalCommand;
-  try {
-    await runClusterCommand("status", {
-      repositoryRoot,
-      execute,
-      logger: NOOP_LOGGER,
-    });
-  } catch {
-    throw new ScenarioCommandError(
-      "cluster_precondition_failed",
-      "The fixed Kind cluster does not match the required baseline",
-    );
-  }
+  await requireExecutionTargetReady(
+    target,
+    repositoryRoot,
+    execute,
+  );
 
   if (action === "apply" || action === "cleanup") {
-    await mutateFixture(action, entry, execute);
+    await mutateFixture(action, entry, target.context, execute);
     return {
       status: action === "apply" ? "applied" : "cleaned_up",
       scenario_id: entry.definition.scenario_id,
     };
   }
 
-  return verifyScenario(entry, execute, {
+  return verifyScenario(entry, target.context, execute, {
     now: dependencies.now ?? Date.now,
     sleep: dependencies.sleep ?? defaultSleep,
   });
+}
+
+function resolveExecutionTarget(profile, context) {
+  const normalizedProfile = profile ?? "kind-evaluation";
+  if (!VALID_EXECUTION_PROFILES.has(normalizedProfile)) {
+    throw invalidArguments(
+      "Scenario execution requires kind-evaluation or k3s-evaluation",
+    );
+  }
+  if (normalizedProfile === "kind-evaluation") {
+    if (context !== undefined) {
+      throw invalidArguments(
+        "Kind evaluation uses only the fixed project context",
+      );
+    }
+    return { profile: normalizedProfile, context: CONTEXT_NAME };
+  }
+  return {
+    profile: normalizedProfile,
+    context: requireExplicitContext(context),
+  };
+}
+
+function requireExplicitContext(value) {
+  if (
+    typeof value !== "string" ||
+    value === "" ||
+    value !== value.trim() ||
+    value.startsWith("-") ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw invalidArguments(
+      "K3s evaluation requires a normalized explicit context",
+    );
+  }
+  return value;
+}
+
+async function requireExecutionTargetReady(
+  target,
+  repositoryRoot,
+  execute,
+) {
+  if (target.profile === "kind-evaluation") {
+    try {
+      await runClusterCommand("status", {
+        repositoryRoot,
+        execute,
+        logger: NOOP_LOGGER,
+      });
+    } catch {
+      throw new ScenarioCommandError(
+        "cluster_precondition_failed",
+        "The fixed Kind cluster does not match the required baseline",
+      );
+    }
+    return;
+  }
+
+  try {
+    await verifyDeploymentStatus(target.profile, target.context, {
+      repositoryRoot,
+      execute: adaptDeploymentExecutor(execute),
+    });
+  } catch (error) {
+    if (error instanceof DeploymentContractError) {
+      throw new ScenarioCommandError(error.code, error.message);
+    }
+    throw new ScenarioCommandError(
+      "deployment_precondition_failed",
+      "The fixed K3s evaluation deployment does not match the required baseline",
+    );
+  }
+}
+
+function adaptDeploymentExecutor(execute) {
+  return async (command, args, options) => {
+    try {
+      const stdout = await execute(command, args, options);
+      if (typeof stdout !== "string") throw new Error("invalid command result");
+      return { stdout, exitCode: 0 };
+    } catch (error) {
+      if (
+        Number.isInteger(error?.exitCode) &&
+        typeof error?.stdout === "string"
+      ) {
+        return { stdout: error.stdout, exitCode: error.exitCode };
+      }
+      throw error;
+    }
+  };
 }
 
 function resolveCatalogDirectory(repositoryRoot, environment) {
@@ -322,11 +419,11 @@ function publicScenario(definition) {
   };
 }
 
-async function mutateFixture(action, entry, execute) {
+async function mutateFixture(action, entry, context, execute) {
   const verb = action === "apply" ? "apply" : "delete";
   const args = [
     "--context",
-    CONTEXT_NAME,
+    context,
     "--namespace",
     NAMESPACE,
     verb,
@@ -347,7 +444,7 @@ async function mutateFixture(action, entry, execute) {
   await executeKubectl(execute, args);
 }
 
-async function verifyScenario(entry, execute, clock) {
+async function verifyScenario(entry, context, execute, clock) {
   const verifier = entry.definition.deterministic_verifier;
   const startedAt = normalizeTimestamp(clock.now());
   const deadline = startedAt + verifier.timeout_seconds * 1000;
@@ -383,7 +480,7 @@ async function verifyScenario(entry, execute, clock) {
 
   while (true) {
     try {
-      return await verifyOnce(entry.definition, executeBeforeDeadline);
+      return await verifyOnce(entry.definition, context, executeBeforeDeadline);
     } catch (error) {
       if (!(error instanceof VerificationPending)) throw error;
       lastReason = error.reason;
@@ -400,11 +497,11 @@ async function verifyScenario(entry, execute, clock) {
   }
 }
 
-async function verifyOnce(definition, executeKubectlQuery) {
+async function verifyOnce(definition, context, executeKubectlQuery) {
   const deploymentRaw = await executeKubectlQuery(
     [
       "--context",
-      CONTEXT_NAME,
+      context,
       "--namespace",
       NAMESPACE,
       "get",
@@ -434,7 +531,7 @@ async function verifyOnce(definition, executeKubectlQuery) {
     await executeKubectlQuery(
       [
         "--context",
-        CONTEXT_NAME,
+        context,
         "--namespace",
         NAMESPACE,
         "get",
@@ -469,7 +566,7 @@ async function verifyOnce(definition, executeKubectlQuery) {
     await executeKubectlQuery(
       [
         "--context",
-        CONTEXT_NAME,
+        context,
         "--namespace",
         NAMESPACE,
         "get",
@@ -514,7 +611,7 @@ async function verifyOnce(definition, executeKubectlQuery) {
     await executeKubectlQuery(
       [
         "--context",
-        CONTEXT_NAME,
+        context,
         "--namespace",
         NAMESPACE,
         "get",
@@ -685,22 +782,31 @@ function executeExternalCommand(command, args, options) {
       reject(new Error("invalid command contract"));
       return;
     }
-    execFile(command, args, {
-      shell: false,
-      encoding: "utf8",
-      timeout: options.timeoutMilliseconds,
-      maxBuffer: options.maxBufferBytes,
-    }, (error, stdout, stderr) => {
-      if (error !== null) {
-        reject(Object.assign(new Error("external command failed"), {
-          code: error.code,
-          timedOut: error.killed === true && error.signal !== null,
-          stderr: typeof stderr === "string" ? stderr : "",
-        }));
-        return;
-      }
-      resolve(stdout);
-    });
+    execFile(
+      command,
+      args,
+      {
+        shell: false,
+        encoding: "utf8",
+        timeout: options.timeoutMilliseconds,
+        maxBuffer: options.maxBufferBytes,
+      },
+      (error, stdout, stderr) => {
+        if (error !== null) {
+          reject(
+            Object.assign(new Error("external command failed"), {
+              code: error.code,
+              exitCode: Number.isInteger(error.code) ? error.code : undefined,
+              stdout: typeof stdout === "string" ? stdout : "",
+              timedOut: error.killed === true && error.signal !== null,
+              stderr: typeof stderr === "string" ? stderr : "",
+            }),
+          );
+          return;
+        }
+        resolve(stdout);
+      },
+    );
   });
 }
 
@@ -866,6 +972,10 @@ function assertAction(action) {
   }
 }
 
+function invalidArguments(message) {
+  return new ScenarioCommandError("invalid_arguments", message);
+}
+
 function normalizeRepositoryRoot(repositoryRoot) {
   if (typeof repositoryRoot !== "string" || repositoryRoot.trim() === "") {
     throw new ScenarioCommandError(
@@ -885,28 +995,54 @@ const isMainModule =
   fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 
 if (isMainModule) {
-  const [action, ...argumentsAfterAction] = process.argv.slice(2);
-  const validArgumentCount =
-    (action === "list" && argumentsAfterAction.length === 0) ||
-    (action !== "list" && argumentsAfterAction.length === 1);
-  if (!validArgumentCount) {
-    console.error(
-      "FAIL invalid_arguments list accepts no identifier; other actions require exactly one scenario identifier",
+  try {
+    const request = parseCliRequest(process.argv.slice(2));
+    const result = await runScenarioCommand(
+      request.action,
+      request.scenarioId,
+      request.dependencies,
     );
+    console.info(JSON.stringify(result, null, 2));
+  } catch (error) {
+    const knownError = error instanceof ScenarioCommandError;
+    const code = knownError ? error.code : "scenario_command_failed";
+    const message = knownError ? error.message : "Scenario command failed";
+    console.error(`FAIL ${code} ${message}`);
     process.exitCode = 1;
-  } else {
-    try {
-      const result = await runScenarioCommand(
-        action,
-        argumentsAfterAction[0],
-      );
-      console.info(JSON.stringify(result, null, 2));
-    } catch (error) {
-      const knownError = error instanceof ScenarioCommandError;
-      const code = knownError ? error.code : "scenario_command_failed";
-      const message = knownError ? error.message : "Scenario command failed";
-      console.error(`FAIL ${code} ${message}`);
-      process.exitCode = 1;
-    }
   }
+}
+
+function parseCliRequest(argv) {
+  if (!Array.isArray(argv) || argv.length === 0) {
+    throw invalidArguments(
+      "Expected list or one scenario action with a scenario identifier",
+    );
+  }
+  const [action, scenarioId, ...optionValues] = argv;
+  if (action === "list") {
+    if (scenarioId !== undefined) {
+      throw invalidArguments("The list action does not accept arguments");
+    }
+    return { action, scenarioId: undefined, dependencies: {} };
+  }
+  if (scenarioId === undefined || optionValues.length % 2 !== 0) {
+    throw invalidArguments(
+      "Scenario actions require an identifier and complete profile options",
+    );
+  }
+  const dependencies = {};
+  for (let index = 0; index < optionValues.length; index += 2) {
+    const option = optionValues[index];
+    const value = optionValues[index + 1];
+    if (option === "--profile" && dependencies.profile === undefined) {
+      dependencies.profile = value;
+      continue;
+    }
+    if (option === "--context" && dependencies.context === undefined) {
+      dependencies.context = value;
+      continue;
+    }
+    throw invalidArguments("Scenario profile options are invalid or repeated");
+  }
+  return { action, scenarioId, dependencies };
 }

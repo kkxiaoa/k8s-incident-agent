@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -14,7 +14,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { load } from "js-yaml";
+import { load, loadAll } from "js-yaml";
 
 import { runScenarioCommand } from "./scenario.mjs";
 
@@ -23,9 +23,12 @@ const REPOSITORY_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
+const APPLICATION_ROOT = path.join(REPOSITORY_ROOT, "deploy", "application");
+const KUBECTL_BINARY = process.env.KUBECTL_BINARY ?? "kubectl";
 const SCENARIO_ID = "image-pull-backoff";
 const CLUSTER_NAME = "k8s-incident-agent";
 const CONTEXT_NAME = "kind-k8s-incident-agent";
+const K3S_CONTEXT_NAME = "k3s-k8s-incident-agent";
 const NAMESPACE = "k8s-incident-scenarios";
 const NODE_IMAGE =
   "kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5";
@@ -222,6 +225,216 @@ function eventList(type = "Warning", regardingUid = "pod-uid") {
   });
 }
 
+let cachedK3sStatusFixtures;
+
+function k3sStatusFixtures() {
+  if (cachedK3sStatusFixtures !== undefined) return cachedK3sStatusFixtures;
+  const renderedYaml = execFileSync(
+    KUBECTL_BINARY,
+    ["kustomize", path.join(APPLICATION_ROOT, "overlays", "k3s-evaluation")],
+    { cwd: REPOSITORY_ROOT, encoding: "utf8" },
+  );
+  const resources = new Map();
+  loadAll(renderedYaml, (resource) => {
+    if (resource === undefined || resource === null) return;
+    resources.set(`${resource.kind}/${resource.metadata?.name}`, resource);
+  });
+  cachedK3sStatusFixtures = { renderedYaml, resources };
+  return cachedK3sStatusFixtures;
+}
+
+function requireRenderedResource(fixtures, kind, name) {
+  const resource = fixtures.resources.get(`${kind}/${name}`);
+  assert.notEqual(resource, undefined, `missing ${kind}/${name}`);
+  return structuredClone(resource);
+}
+
+function readyApplicationDeployment(fixtures, name) {
+  const deployment = requireRenderedResource(fixtures, "Deployment", name);
+  deployment.metadata.generation = 3;
+  deployment.status = {
+    observedGeneration: 3,
+    replicas: 1,
+    updatedReplicas: 1,
+    availableReplicas: 1,
+  };
+  return deployment;
+}
+
+function k3sStatusResponse(args, options, fixtures) {
+  if (args.join(" ") === "version --client --output=json") {
+    return {
+      clientVersion: {
+        gitVersion: options.k3sClientVersion ?? "v1.36.2",
+      },
+    };
+  }
+  if (args[0] === "kustomize") return fixtures.renderedYaml;
+
+  const contextIndex = args.indexOf("--context");
+  if (
+    contextIndex === -1 ||
+    args[contextIndex + 1] !== K3S_CONTEXT_NAME
+  ) {
+    return undefined;
+  }
+  const commandArgs = args.slice(contextIndex + 2);
+  const key = commandArgs.join(" ");
+  if (key === "version --output=json") {
+    return { serverVersion: { gitVersion: "v1.36.3+k3s1" } };
+  }
+  const component = key.match(
+    /^get deployment (coredns|traefik|local-path-provisioner) --namespace kube-system --output=json$/,
+  );
+  if (component !== null) {
+    const versions = {
+      coredns: "1.14.6",
+      traefik: "3.7.8",
+      "local-path-provisioner": "0.0.36",
+    };
+    return {
+      metadata: { generation: 2 },
+      spec: {
+        replicas: 1,
+        template: {
+          spec: {
+            containers: [
+              {
+                image: `registry.example/${component[1]}:${versions[component[1]]}`,
+              },
+            ],
+          },
+        },
+      },
+      status: {
+        observedGeneration: 2,
+        replicas: 1,
+        updatedReplicas: 1,
+        availableReplicas:
+          options.k3sUnavailableComponent === component[1] ? 0 : 1,
+      },
+    };
+  }
+  if (key === "get storageclass local-path --output=json") {
+    return {
+      metadata: {
+        annotations: {
+          "storageclass.kubernetes.io/is-default-class": "true",
+        },
+      },
+      provisioner: "rancher.io/local-path",
+    };
+  }
+  if (
+    key ===
+    'get secret agent-runtime-model --namespace k8s-incident-agent --output=go-template={{if index .data "api-key"}}present{{else}}missing{{end}}'
+  ) {
+    return "present\n";
+  }
+  if (
+    key ===
+    "get deployment agent-runtime --namespace k8s-incident-agent --output=json"
+  ) {
+    return readyApplicationDeployment(fixtures, "agent-runtime");
+  }
+  if (
+    key ===
+    "get deployment incident-console --namespace k8s-incident-agent --output=json"
+  ) {
+    return readyApplicationDeployment(fixtures, "incident-console");
+  }
+  if (
+    key ===
+    "get pods --namespace k8s-incident-agent --selector=app.kubernetes.io/part-of=k8s-incident-agent --output=json"
+  ) {
+    return {
+      kind: "PodList",
+      items: ["agent-runtime", "incident-console"].map((name) => ({
+        metadata: {
+          name: `${name}-current`,
+          labels: {
+            "app.kubernetes.io/name": name,
+            "app.kubernetes.io/part-of": "k8s-incident-agent",
+          },
+        },
+        status: {
+          phase: "Running",
+          containerStatuses: [{ ready: true }],
+        },
+      })),
+    };
+  }
+  const service = key.match(
+    /^get service (agent-runtime|incident-console) --namespace k8s-incident-agent --output=json$/,
+  );
+  if (service !== null) {
+    const document = requireRenderedResource(fixtures, "Service", service[1]);
+    document.spec.clusterIP = "10.43.0.20";
+    return document;
+  }
+  if (
+    key ===
+    "get persistentvolumeclaim runtime-data --namespace k8s-incident-agent --output=json"
+  ) {
+    const pvc = requireRenderedResource(
+      fixtures,
+      "PersistentVolumeClaim",
+      "runtime-data",
+    );
+    pvc.spec.volumeName = "pvc-volume";
+    pvc.status = { phase: "Bound" };
+    return pvc;
+  }
+  const configMap = key.match(
+    /^get configmap (agent-runtime-config|incident-console-config) --namespace k8s-incident-agent --output=json$/,
+  );
+  if (configMap !== null) {
+    return requireRenderedResource(fixtures, "ConfigMap", configMap[1]);
+  }
+  if (
+    key ===
+    "get networkpolicies --namespace k8s-incident-agent --output=json"
+  ) {
+    return {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicyList",
+      items: [...fixtures.resources.values()]
+        .filter((resource) => resource.kind === "NetworkPolicy")
+        .map((resource) => structuredClone(resource)),
+    };
+  }
+  if (
+    key ===
+    "get ingress incident-console --namespace k8s-incident-agent --output=json"
+  ) {
+    const ingress = requireRenderedResource(
+      fixtures,
+      "Ingress",
+      "incident-console",
+    );
+    ingress.status = { loadBalancer: { ingress: [{ ip: "192.0.2.10" }] } };
+    return ingress;
+  }
+  if (key.startsWith("auth can-i ")) {
+    const denied = [
+      " get secrets ",
+      " create pods --subresource=exec ",
+      " create deployments.apps ",
+      " update deployments.apps ",
+      " patch deployments.apps ",
+      " delete deployments.apps ",
+    ];
+    if (denied.some((needle) => ` ${key} `.includes(needle))) {
+      throw Object.assign(new Error("expected RBAC deny"), {
+        exitCode: 1,
+        stdout: "no\n",
+      });
+    }
+    return "yes\n";
+  }
+  return undefined;
+}
+
 function mutateFirstListItem(rawJson, mutate) {
   const document = JSON.parse(rawJson);
   mutate(document.items[0]);
@@ -230,6 +443,7 @@ function mutateFirstListItem(rawJson, mutate) {
 
 function createExecutor(options = {}) {
   const calls = [];
+  const installation = options.k3sStatus ? k3sStatusFixtures() : undefined;
   const outputs = {
     deployment: deployment(),
     replicaSets: replicaSetList(),
@@ -244,6 +458,15 @@ function createExecutor(options = {}) {
     const resource = getIndex === -1 ? undefined : args[getIndex + 1];
     const injectedFailure = options.failure?.({ command, args, resource });
     if (injectedFailure !== undefined) throw injectedFailure;
+
+    if (command === "kubectl" && installation !== undefined) {
+      const statusOutput = k3sStatusResponse(args, options, installation);
+      if (statusOutput !== undefined) {
+        return typeof statusOutput === "string"
+          ? statusOutput
+          : JSON.stringify(statusOutput);
+      }
+    }
 
     if (command === "kind" && args.join(" ") === "version") {
       return "kind v0.32.0 go1.24.4 darwin/arm64\n";
@@ -483,6 +706,160 @@ test("apply and cleanup use only the catalog manifest and fixed target", async (
   );
 });
 
+test("K3s evaluation uses its explicit context without calling Kind", async (t) => {
+  const { environment, manifestPath } = createCatalog(t);
+  const { calls, execute } = createExecutor({ k3sStatus: true });
+  const dependencies = {
+    repositoryRoot: REPOSITORY_ROOT,
+    environment,
+    execute,
+    profile: "k3s-evaluation",
+    context: K3S_CONTEXT_NAME,
+  };
+
+  await runScenarioCommand("apply", SCENARIO_ID, dependencies);
+  const verified = await runScenarioCommand("verify", SCENARIO_ID, dependencies);
+
+  assert.equal(verified.status, "verified");
+  assert.equal(calls.some(({ command }) => command === "kind"), false);
+  const kubectlCalls = calls.filter(({ command }) => command === "kubectl");
+  assert.notEqual(kubectlCalls.length, 0);
+  assert.equal(
+    kubectlCalls
+      .filter(({ args }) => args.includes("--context"))
+      .every(
+      ({ args }) => args[args.indexOf("--context") + 1] === K3S_CONTEXT_NAME,
+      ),
+    true,
+  );
+  assert.equal(
+    kubectlCalls.some(({ args }) =>
+      args.includes("local-path-provisioner")),
+    true,
+  );
+  assert.equal(
+    kubectlCalls.some(({ args }) => args.includes("agent-runtime")),
+    true,
+  );
+  assert.equal(
+    kubectlCalls.some(({ args }) => args.includes("auth")),
+    true,
+  );
+  const mutation = kubectlCalls.find(({ args }) => args.includes("apply"));
+  assert.equal(mutation.args[mutation.args.indexOf("--filename") + 1], manifestPath);
+});
+
+test("K3s evaluation rejects missing or option-shaped contexts before commands", async (t) => {
+  const { environment } = createCatalog(t);
+
+  for (const context of [undefined, "", " --context", "--context"]) {
+    const { calls, execute } = createExecutor();
+    await assert.rejects(
+      runScenarioCommand("apply", SCENARIO_ID, {
+        repositoryRoot: REPOSITORY_ROOT,
+        environment,
+        execute,
+        profile: "k3s-evaluation",
+        context,
+      }),
+      (error) => error?.code === "invalid_arguments",
+    );
+    assert.equal(calls.length, 0);
+  }
+});
+
+test("scenario execution rejects online and unknown deployment profiles", async (t) => {
+  const { environment } = createCatalog(t);
+
+  for (const profile of ["k3s-online", "other-evaluation"]) {
+    const { calls, execute } = createExecutor();
+    await assert.rejects(
+      runScenarioCommand("apply", SCENARIO_ID, {
+        repositoryRoot: REPOSITORY_ROOT,
+        environment,
+        execute,
+        profile,
+        context: K3S_CONTEXT_NAME,
+      }),
+      (error) => error?.code === "invalid_arguments",
+    );
+    assert.equal(calls.length, 0);
+  }
+});
+
+test("K3s deployment preflight failure is safe and never falls back to Kind", async (t) => {
+  const { environment } = createCatalog(t);
+  const { calls, execute } = createExecutor();
+  const missingRepositoryRoot = path.join(
+    environment.SCENARIO_CATALOG_DIR,
+    "missing-repository",
+  );
+
+  await assert.rejects(
+    runScenarioCommand("apply", SCENARIO_ID, {
+      repositoryRoot: missingRepositoryRoot,
+      environment,
+      execute,
+      profile: "k3s-evaluation",
+      context: K3S_CONTEXT_NAME,
+    }),
+    (error) => {
+      assert.equal(error?.code, "deployment_precondition_failed");
+      assert.equal(String(error).includes("private"), false);
+      return true;
+    },
+  );
+  assert.equal(calls.some(({ command }) => command === "kind"), false);
+  assert.equal(calls.length, 0);
+});
+
+test("K3s evaluation preserves known deployment failure categories", async (t) => {
+  const { environment } = createCatalog(t);
+  const cases = [
+    {
+      name: "kubectl version",
+      options: { k3sStatus: true, k3sClientVersion: "v1.35.0" },
+      code: "client_version_mismatch",
+      message: "installed kubectl does not match the fixed deployment baseline",
+    },
+    {
+      name: "component readiness",
+      options: {
+        k3sStatus: true,
+        k3sUnavailableComponent: "coredns",
+      },
+      code: "component_not_ready",
+      message: "coredns is not available at its current generation",
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const { calls, execute } = createExecutor(scenario.options);
+      await assert.rejects(
+        runScenarioCommand("apply", SCENARIO_ID, {
+          repositoryRoot: REPOSITORY_ROOT,
+          environment,
+          execute,
+          profile: "k3s-evaluation",
+          context: K3S_CONTEXT_NAME,
+        }),
+        (error) => {
+          assert.equal(error?.code, scenario.code);
+          assert.equal(error?.message, scenario.message);
+          return true;
+        },
+      );
+      assert.equal(calls.some(({ command }) => command === "kind"), false);
+      assert.equal(
+        calls.some(({ command, args }) =>
+          command === "kubectl" && args.includes("apply")),
+        false,
+      );
+    });
+  }
+});
+
 test("scenario selection cannot become a path or arbitrary kubectl arguments", async (t) => {
   const { environment } = createCatalog(t);
   const { calls, execute } = createExecutor();
@@ -515,6 +892,30 @@ test("scenario selection cannot become a path or arbitrary kubectl arguments", a
       return true;
     },
   );
+
+  for (const extraArguments of [
+    ["--profile", "k3s-evaluation"],
+    ["--profile", "k3s-online", "--context", K3S_CONTEXT_NAME],
+    ["--profile", "k3s-evaluation", "--context", "--namespace"],
+  ]) {
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [
+          path.join(REPOSITORY_ROOT, "scripts", "scenario.mjs"),
+          "apply",
+          SCENARIO_ID,
+          ...extraArguments,
+        ],
+        { cwd: REPOSITORY_ROOT, timeout: 5_000 },
+      ),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /invalid_arguments|profile|context/i);
+        return true;
+      },
+    );
+  }
 });
 
 test("verifier proves the Deployment to ReplicaSet to Pod owner chain", async (t) => {

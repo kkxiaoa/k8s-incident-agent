@@ -112,16 +112,27 @@ SCENARIO_CATALOG_DIR=/absolute/path/to/scenarios npm run scenario -- list
 
 ### 安装、验证与清理
 
+Kind evaluation 保持原有固定入口：
+
 ```bash
 npm run scenario -- apply image-pull-backoff
 npm run scenario -- verify image-pull-backoff
 npm run scenario -- cleanup image-pull-backoff
 ```
 
+固定 K3s evaluation 安装完成后使用显式 context：
+
+```bash
+npm run scenario -- apply image-pull-backoff --profile k3s-evaluation --context <context>
+npm run scenario -- verify image-pull-backoff --profile k3s-evaluation --context <context>
+npm run scenario -- cleanup image-pull-backoff --profile k3s-evaluation --context <context>
+```
+
 - `apply` 只应用 catalog 中已经校验的 manifest；
 - `verify` 使用 Deployment UID → ReplicaSet owner UID → Pod owner UID 证明对象关联，再检查 `ErrImagePull` / `ImagePullBackOff` 和关联 Warning Event；
 - `cleanup` 只删除该场景 manifest 声明的对象，不删除 Namespace 或 Kind 集群；
-- 三个命令都会先验证固定 Kind 集群基线，不接受额外的 `kubectl` 参数。
+- 默认命令先验证固定 Kind 集群基线；K3s命令只接受`k3s-evaluation`和显式context，并复用`deployment status`对固定kubectl、K3s/Kubernetes版本、bundled components、安装对象、镜像、Secret、RBAC与readiness的只读门禁；
+- `k3s-online`、未知profile、缺失或option形context以及额外kubectl参数都会在执行前拒绝。K3s路径不调用Kind CLI或固定Kind context。
 
 `verify` 使用 120 秒 absolute deadline，`kubectl` 查询和轮询等待都计入该预算；单次查询最多 30 秒，并在剩余预算不足时自动收窄。成功结果只包含安全的对象 identity 和 reason，不包含原始 Event note；超时失败只输出最后一个静态 unmet-condition reason。
 

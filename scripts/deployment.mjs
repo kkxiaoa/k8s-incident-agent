@@ -45,7 +45,7 @@ const PROFILE_DEFINITIONS = Object.freeze({
   }),
 });
 
-class DeploymentContractError extends Error {
+export class DeploymentContractError extends Error {
   constructor(code, message) {
     super(message);
     this.name = "DeploymentContractError";
@@ -92,11 +92,40 @@ async function main() {
   }
 
   if (request.action === "status") {
-    printJson(await readInstallationStatus(contract, request, execute));
+    printJson(
+      await verifyDeploymentStatus(request.profile.name, request.context, {
+        repositoryRoot,
+        contract,
+        execute,
+      }),
+    );
     return;
   }
 
   printJson(await runPurge(contract, request, execute));
+}
+
+export async function verifyDeploymentStatus(
+  profileName,
+  context,
+  dependencies = {},
+) {
+  const repositoryRoot = path.resolve(
+    dependencies.repositoryRoot ?? path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+    ),
+  );
+  const profile = requireProfile(profileName);
+  const normalizedContext = requireContextValue(context);
+  const contract =
+    dependencies.contract ?? await loadDeploymentContract(repositoryRoot);
+  const execute = dependencies.execute ?? executeExternalCommand;
+  return readInstallationStatus(
+    contract,
+    { action: "status", profile, context: normalizedContext },
+    execute,
+  );
 }
 
 function parseArguments(argv) {
@@ -1542,13 +1571,19 @@ function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-try {
-  await main();
-} catch (error) {
-  if (error instanceof DeploymentContractError) {
-    process.stderr.write(`FAIL ${error.code} ${error.message}\n`);
-  } else {
-    process.stderr.write("FAIL unexpected deployment lifecycle failed\n");
+const isMainModule =
+  process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+if (isMainModule) {
+  try {
+    await main();
+  } catch (error) {
+    if (error instanceof DeploymentContractError) {
+      process.stderr.write(`FAIL ${error.code} ${error.message}\n`);
+    } else {
+      process.stderr.write("FAIL unexpected deployment lifecycle failed\n");
+    }
+    process.exitCode = 1;
   }
-  process.exitCode = 1;
 }
