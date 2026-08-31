@@ -53,8 +53,8 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import (
-    DiagnosticCredential,
-    require_credential_ttl,
+    DiagnosticCredentialLease,
+    require_credential_window,
 )
 from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.kubernetes.tools import (
@@ -90,7 +90,7 @@ class GraphDependencies:
     checkpointer: AsyncSqliteSaver
     model: BaseChatModel
     model_snapshot: ModelSnapshot
-    credential: DiagnosticCredential
+    credential: DiagnosticCredentialLease
     adapter: KubernetesEvidenceAdapter
     now: Callable[[], datetime]
 
@@ -179,7 +179,7 @@ def _start_run_node(
                 + 60
             )
             try:
-                require_credential_ttl(
+                require_credential_window(
                     dependencies.credential,
                     required_ttl,
                     now,

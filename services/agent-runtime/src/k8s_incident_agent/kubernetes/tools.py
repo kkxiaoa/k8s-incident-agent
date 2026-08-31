@@ -20,7 +20,7 @@ from k8s_incident_agent.kubernetes.contracts import (
     PodsObservation,
     WorkloadObservation,
 )
-from k8s_incident_agent.kubernetes.credentials import require_credential_ttl
+from k8s_incident_agent.kubernetes.credentials import require_credential_window
 from k8s_incident_agent.kubernetes.errors import (
     KubernetesBoundaryError,
     KubernetesErrorCode,
@@ -136,7 +136,7 @@ async def _execute_tool(
     boundary_now = context.now()
     required_ttl_seconds = _required_credential_ttl(context, boundary_now)
     try:
-        require_credential_ttl(
+        require_credential_window(
             context.credential,
             required_ttl_seconds,
             boundary_now,

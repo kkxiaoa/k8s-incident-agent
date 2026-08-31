@@ -19,7 +19,10 @@ from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingT
     ApiException,
 )
 
-from k8s_incident_agent.kubernetes.access import verify_stage_one_access
+from k8s_incident_agent.kubernetes.access import (
+    require_stage_one_target_scope,
+    verify_stage_one_access,
+)
 from k8s_incident_agent.kubernetes.client import KubernetesClients
 from k8s_incident_agent.kubernetes.errors import (
     KubernetesBoundaryError,
@@ -52,7 +55,7 @@ REQUIRED_DEPLOYMENT_GET: AccessKey = (
     None,
     "get",
     TARGET.namespace,
-    TARGET.name,
+    None,
 )
 FORBIDDEN_SECRET_GET: AccessKey = (
     "",
@@ -102,7 +105,7 @@ EXPECTED_DENIED: frozenset[AccessKey] = frozenset(
                 None,
                 verb,
                 TARGET.namespace,
-                TARGET.name,
+                None,
             )
             for verb in ("create", "update", "patch", "delete")
         },
@@ -220,7 +223,8 @@ async def _clients(
     version_api: _ScriptedVersionApi,
     authorization_api: _ScriptedAuthorizationApi,
     *,
-    context_name: str = "kind-k8s-incident-agent",
+    cluster_id: str = TARGET.cluster,
+    diagnostic_namespace: str = TARGET.namespace,
 ) -> AsyncGenerator[KubernetesClients]:
     api_client = ApiClient(Configuration())
     clients = KubernetesClients(
@@ -231,7 +235,8 @@ async def _clients(
         version_api=cast(VersionApi, version_api),
         authorization_api=cast(AuthorizationV1Api, authorization_api),
         timeout_seconds=10,
-        context_name=context_name,
+        cluster_id=cluster_id,
+        diagnostic_namespace=diagnostic_namespace,
     )
     try:
         yield clients
@@ -245,7 +250,7 @@ async def test_gate_checks_exact_version_and_fixed_allow_deny_matrix() -> None:
     authorization_api = _ScriptedAuthorizationApi()
 
     async with _clients(version_api, authorization_api) as clients:
-        await verify_stage_one_access(clients, TARGET)
+        await verify_stage_one_access(clients)
 
     assert version_api.timeouts == [10]
     assert {key for key, _ in authorization_api.calls} == (
@@ -270,7 +275,7 @@ async def test_gate_rejects_unsupported_version_contract(
         _ScriptedVersionApi(version_result), authorization_api
     ) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients, TARGET)
+            await verify_stage_one_access(clients)
 
     assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
     assert authorization_api.calls == []
@@ -293,7 +298,7 @@ async def test_gate_fails_when_fixed_permission_expectation_is_not_met(
 
     async with _clients(_ScriptedVersionApi(_version()), authorization_api) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients, TARGET)
+            await verify_stage_one_access(clients)
 
     assert captured.value.code is KubernetesErrorCode.PERMISSION_DENIED
 
@@ -318,7 +323,7 @@ async def test_gate_rejects_malformed_authorization_status(status: object) -> No
 
     async with _clients(_ScriptedVersionApi(_version()), authorization_api) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients, TARGET)
+            await verify_stage_one_access(clients)
 
     assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
     assert "sensitive authorizer detail" not in str(captured.value)
@@ -340,30 +345,11 @@ async def test_gate_preserves_typed_upstream_failure_categories(
 
     async with _clients(_ScriptedVersionApi(_version()), authorization_api) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients, TARGET)
+            await verify_stage_one_access(clients)
 
     assert captured.value.code is expected_code
 
 
-@pytest.mark.asyncio
-async def test_gate_rejects_context_target_mismatch_before_network_access() -> None:
-    version_api = _ScriptedVersionApi(_version())
-    authorization_api = _ScriptedAuthorizationApi()
-
-    async with _clients(
-        version_api,
-        authorization_api,
-        context_name="kind-another-cluster",
-    ) as clients:
-        with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients, TARGET)
-
-    assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
-    assert version_api.timeouts == []
-    assert authorization_api.calls == []
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -373,18 +359,17 @@ async def test_gate_rejects_context_target_mismatch_before_network_access() -> N
         ("kind", "StatefulSet"),
     ],
 )
-async def test_gate_rejects_target_outside_stage_one_scope(
+def test_target_scope_rejects_catalog_target_outside_configured_scope(
     field: str,
     value: str,
 ) -> None:
-    version_api = _ScriptedVersionApi(_version())
-    authorization_api = _ScriptedAuthorizationApi()
     target = TARGET.model_copy(update={field: value})
 
-    async with _clients(version_api, authorization_api) as clients:
-        with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients, target)
+    with pytest.raises(KubernetesBoundaryError) as captured:
+        require_stage_one_target_scope(
+            target,
+            cluster_id=TARGET.cluster,
+            diagnostic_namespace=TARGET.namespace,
+        )
 
     assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
-    assert version_api.timeouts == []
-    assert authorization_api.calls == []

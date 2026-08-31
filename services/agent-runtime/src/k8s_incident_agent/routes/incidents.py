@@ -13,6 +13,7 @@ from k8s_incident_agent.api_contracts import (
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.routes import incident_service
 
+manual_router = APIRouter(prefix="/api/v1")
 router = APIRouter(prefix="/api/v1")
 
 _IncidentService = Annotated[
@@ -21,7 +22,7 @@ _IncidentService = Annotated[
 ]
 
 
-@router.post(
+@manual_router.post(
     "/incidents",
     response_model=CreateIncidentResponse,
     status_code=status.HTTP_202_ACCEPTED,

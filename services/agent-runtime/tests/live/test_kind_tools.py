@@ -18,7 +18,7 @@ from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.client import create_kubernetes_clients
 from k8s_incident_agent.kubernetes.credentials import (
     load_diagnostic_credential,
-    require_credential_ttl,
+    require_credential_window,
 )
 from k8s_incident_agent.kubernetes.tools import build_diagnostic_tools
 from k8s_incident_agent.persistence.database import create_business_database
@@ -89,8 +89,13 @@ async def test_fixed_kind_tools_persist_three_fresh_observations(
     settings = Settings()  # pyright: ignore[reportCallIssue]
     started_at = datetime.now(UTC)
     credential = load_diagnostic_credential(settings.runtime_paths, started_at)
-    require_credential_ttl(credential, 240, started_at)
-    clients = await create_kubernetes_clients(credential, timeout_seconds=10)
+    require_credential_window(credential, 240, started_at)
+    clients = await create_kubernetes_clients(
+        credential,
+        timeout_seconds=settings.kubernetes_timeout_seconds,
+        cluster_id=settings.kubernetes_cluster_id,
+        diagnostic_namespace=settings.kubernetes_diagnostic_namespace,
+    )
     try:
         paths = RuntimePaths.prepare(tmp_path / "runtime")
         command.upgrade(_alembic_config(paths), "head")

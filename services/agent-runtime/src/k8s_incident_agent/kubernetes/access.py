@@ -64,15 +64,7 @@ class _AccessCheck:
 
 async def verify_stage_one_access(
     clients: KubernetesClients,
-    target: ScenarioTarget,
 ) -> None:
-    try:
-        validate_stage_one_target(target)
-    except ValueError:
-        raise _contract_invalid() from None
-    if clients.context_name != f"kind-{target.cluster}":
-        raise _contract_invalid()
-
     try:
         version = await cast(_VersionApiView, clients.version_api).get_code(
             _request_timeout=clients.timeout_seconds
@@ -85,19 +77,32 @@ async def verify_stage_one_access(
     if version_view.major != "1" or version_view.minor != "36":
         raise _contract_invalid()
 
-    for check in _stage_one_checks(target):
+    for check in _stage_one_checks(clients.diagnostic_namespace):
         await _verify_access_check(clients, check)
 
 
-def _stage_one_checks(target: ScenarioTarget) -> tuple[_AccessCheck, ...]:
+def require_stage_one_target_scope(
+    target: ScenarioTarget,
+    *,
+    cluster_id: str,
+    diagnostic_namespace: str,
+) -> None:
+    try:
+        validate_stage_one_target(target)
+    except ValueError:
+        raise _contract_invalid() from None
+    if target.cluster != cluster_id or target.namespace != diagnostic_namespace:
+        raise _contract_invalid()
+
+
+def _stage_one_checks(namespace: str) -> tuple[_AccessCheck, ...]:
     return (
         _AccessCheck(
             group="apps",
             version="v1",
             resource="deployments",
             verb="get",
-            namespace=target.namespace,
-            name=target.name,
+            namespace=namespace,
             expected_allowed=True,
         ),
         _AccessCheck(
@@ -105,7 +110,7 @@ def _stage_one_checks(target: ScenarioTarget) -> tuple[_AccessCheck, ...]:
             version="v1",
             resource="replicasets",
             verb="list",
-            namespace=target.namespace,
+            namespace=namespace,
             expected_allowed=True,
         ),
         _AccessCheck(
@@ -113,7 +118,7 @@ def _stage_one_checks(target: ScenarioTarget) -> tuple[_AccessCheck, ...]:
             version="v1",
             resource="pods",
             verb="list",
-            namespace=target.namespace,
+            namespace=namespace,
             expected_allowed=True,
         ),
         _AccessCheck(
@@ -121,7 +126,7 @@ def _stage_one_checks(target: ScenarioTarget) -> tuple[_AccessCheck, ...]:
             version="v1",
             resource="events",
             verb="list",
-            namespace=target.namespace,
+            namespace=namespace,
             expected_allowed=True,
         ),
         _AccessCheck(
@@ -136,7 +141,7 @@ def _stage_one_checks(target: ScenarioTarget) -> tuple[_AccessCheck, ...]:
             version="v1",
             resource="secrets",
             verb="get",
-            namespace=target.namespace,
+            namespace=namespace,
             expected_allowed=False,
         ),
         _AccessCheck(
@@ -145,7 +150,7 @@ def _stage_one_checks(target: ScenarioTarget) -> tuple[_AccessCheck, ...]:
             resource="pods",
             subresource="exec",
             verb="create",
-            namespace=target.namespace,
+            namespace=namespace,
             expected_allowed=False,
         ),
         *(
@@ -154,8 +159,7 @@ def _stage_one_checks(target: ScenarioTarget) -> tuple[_AccessCheck, ...]:
                 version="v1",
                 resource="deployments",
                 verb=verb,
-                namespace=target.namespace,
-                name=target.name,
+                namespace=namespace,
                 expected_allowed=False,
             )
             for verb in ("create", "update", "patch", "delete")

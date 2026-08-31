@@ -37,6 +37,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
 )
 
 from k8s_incident_agent.domain.models import JsonValue
+from k8s_incident_agent.kubernetes.access import require_stage_one_target_scope
 from k8s_incident_agent.kubernetes.client import KubernetesClients
 from k8s_incident_agent.kubernetes.contracts import (
     ConditionSummary,
@@ -305,6 +306,8 @@ class KubernetesEvidenceAdapter:
         self._core_api = cast(_CoreApi, clients.core_api)
         self._events_api = cast(_EventsApi, clients.events_api)
         self._timeout_seconds = clients.timeout_seconds
+        self._cluster_id = clients.cluster_id
+        self._diagnostic_namespace = clients.diagnostic_namespace
         self._server_timeout_seconds = max(1, math.ceil(clients.timeout_seconds))
         self._clock = clock or _utc_now
 
@@ -513,7 +516,11 @@ class KubernetesEvidenceAdapter:
         target: DeploymentTarget,
         state: _SanitizationState,
     ) -> _DeploymentContext:
-        _validate_target(target)
+        require_stage_one_target_scope(
+            target,
+            cluster_id=self._cluster_id,
+            diagnostic_namespace=self._diagnostic_namespace,
+        )
         try:
             response = await self._apps_api.read_namespaced_deployment(
                 name=target.name,
@@ -1098,11 +1105,6 @@ def _metadata(value: object) -> _MetadataView:
     if not isinstance(value, V1ObjectMeta):
         raise _contract_error()
     return cast(_MetadataView, value)
-
-
-def _validate_target(target: DeploymentTarget) -> None:
-    if target.api_version != "apps/v1" or target.kind != "Deployment":
-        raise _contract_error()
 
 
 def _validate_list_item_type_meta(

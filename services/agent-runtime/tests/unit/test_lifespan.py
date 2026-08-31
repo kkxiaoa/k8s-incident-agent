@@ -10,7 +10,10 @@ from langchain_core.language_models import BaseChatModel
 
 from k8s_incident_agent import api
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
-from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
+from k8s_incident_agent.kubernetes.credentials import (
+    DiagnosticCredential,
+    DiagnosticCredentialLease,
+)
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
@@ -78,6 +81,9 @@ def _install_runtime_fakes(
             events.append("database.close")
 
     class FakeKubernetesClients:
+        cluster_id = "k8s-incident-agent"
+        diagnostic_namespace = "k8s-incident-scenarios"
+
         async def close(self) -> None:
             events.append("kubernetes.close")
 
@@ -148,23 +154,51 @@ def _install_runtime_fakes(
             _kubeconfig={},
         )
 
-    def require_ttl(
-        _credential: DiagnosticCredential,
+    def require_window(
+        _credential: DiagnosticCredentialLease,
         required_seconds: float,
         _now: datetime,
     ) -> None:
-        events.append(f"credential.ttl:{required_seconds:g}")
+        events.append(f"credential.window:{required_seconds:g}")
         fail("ttl")
 
     async def create_kubernetes(
         _credential: DiagnosticCredential,
         _timeout: float,
+        *,
+        cluster_id: str,
+        diagnostic_namespace: str,
     ) -> FakeKubernetesClients:
+        assert cluster_id == "k8s-incident-agent"
+        assert diagnostic_namespace == "k8s-incident-scenarios"
         events.append("kubernetes.open")
         fail("kubernetes")
         return FakeKubernetesClients()
 
-    async def access(_clients: object, _target: ScenarioTarget) -> None:
+    async def create_incluster_kubernetes(
+        _timeout: float,
+        *,
+        cluster_id: str,
+        diagnostic_namespace: str,
+    ) -> FakeKubernetesClients:
+        assert cluster_id == "k8s-incident-agent"
+        assert diagnostic_namespace == "k8s-incident-scenarios"
+        events.append("kubernetes.incluster.open")
+        fail("kubernetes")
+        return FakeKubernetesClients()
+
+    def target_scope(
+        _target: ScenarioTarget,
+        *,
+        cluster_id: str,
+        diagnostic_namespace: str,
+    ) -> None:
+        assert cluster_id == "k8s-incident-agent"
+        assert diagnostic_namespace == "k8s-incident-scenarios"
+        events.append("kubernetes.target-scope")
+        fail("target-scope")
+
+    async def access(_clients: object) -> None:
         events.append("kubernetes.access")
         fail("access")
 
@@ -183,8 +217,14 @@ def _install_runtime_fakes(
     monkeypatch.setattr(api, "open_checkpoint_store", checkpoint)
     monkeypatch.setattr(api, "load_scenario_catalog", catalog)
     monkeypatch.setattr(api, "load_diagnostic_credential", credential)
-    monkeypatch.setattr(api, "require_credential_ttl", require_ttl)
+    monkeypatch.setattr(api, "require_credential_window", require_window)
     monkeypatch.setattr(api, "create_kubernetes_clients", create_kubernetes)
+    monkeypatch.setattr(
+        api,
+        "create_incluster_kubernetes_clients",
+        create_incluster_kubernetes,
+    )
+    monkeypatch.setattr(api, "require_stage_one_target_scope", target_scope)
     monkeypatch.setattr(api, "verify_stage_one_access", access)
     monkeypatch.setattr(api, "KubernetesEvidenceAdapter", create_adapter)
     monkeypatch.setattr(api.httpx, "Client", FakeSyncClient)
@@ -212,8 +252,9 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
             "checkpoint.open",
             "catalog",
             "credential",
-            "credential.ttl:240",
+            "credential.window:240",
             "kubernetes.open",
+            "kubernetes.target-scope",
             "kubernetes.access",
             "model.sync.open",
             "model.async.open",
@@ -231,6 +272,41 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
         "database.close",
     ]
     assert events[-1] == "lock.release"
+
+
+@pytest.mark.asyncio
+async def test_online_runtime_uses_incluster_source_without_loading_manual_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    _install_runtime_fakes(monkeypatch, events)
+    settings = _settings(tmp_path).model_copy(
+        update={
+            "incident_intake_mode": "online",
+            "kubernetes_credential_mode": "in_cluster",
+        }
+    )
+
+    async with api.build_runtime_container(settings):
+        assert events == [
+            "lock.acquire",
+            "discovery",
+            "database.open",
+            "database.head",
+            "checkpoint.open",
+            "kubernetes.incluster.open",
+            "kubernetes.access",
+            "model.sync.open",
+            "model.async.open",
+            "model.create",
+            "supervisor.init",
+            "supervisor.start",
+        ]
+
+    assert "catalog" not in events
+    assert "credential" not in events
+    assert not any(event.startswith("credential.window:") for event in events)
 
 
 @pytest.mark.asyncio
@@ -253,6 +329,15 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
         ),
         (
             "access",
+            [
+                "kubernetes.close",
+                "checkpoint.close",
+                "database.close",
+                "lock.release",
+            ],
+        ),
+        (
+            "target-scope",
             [
                 "kubernetes.close",
                 "checkpoint.close",

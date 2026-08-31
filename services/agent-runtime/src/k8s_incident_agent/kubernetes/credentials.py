@@ -36,6 +36,14 @@ class DiagnosticCredential:
         return copy.deepcopy(self._kubeconfig)
 
 
+@dataclass(frozen=True, slots=True)
+class InClusterCredentialLease:
+    pass
+
+
+type DiagnosticCredentialLease = DiagnosticCredential | InClusterCredentialLease
+
+
 def load_diagnostic_credential(
     paths: RuntimePaths,
     now: datetime,
@@ -99,14 +107,16 @@ def load_diagnostic_credential(
     )
 
 
-def require_credential_ttl(
-    credential: DiagnosticCredential,
+def require_credential_window(
+    credential: DiagnosticCredentialLease,
     required_seconds: float,
     now: datetime,
 ) -> None:
     if not math.isfinite(required_seconds) or required_seconds < 0:
         raise ValueError("required credential TTL must be finite and non-negative")
     normalized_now = _require_aware_utc(now)
+    if isinstance(credential, InClusterCredentialLease):
+        return
     if (credential.expires_at - normalized_now).total_seconds() < required_seconds:
         raise _authentication_failure()
 

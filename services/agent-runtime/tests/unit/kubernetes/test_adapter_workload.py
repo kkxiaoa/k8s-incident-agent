@@ -59,6 +59,8 @@ def _clients(apps_api: _AppsApi) -> KubernetesClients:
             core_api=object(),
             events_api=object(),
             timeout_seconds=10.0,
+            cluster_id=TARGET.cluster,
+            diagnostic_namespace=TARGET.namespace,
         ),
     )
 
@@ -195,6 +197,25 @@ async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> No
         "truncated": False,
         "redacted": False,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("cluster", "other-cluster"), ("namespace", "default")],
+)
+async def test_read_workload_rejects_target_outside_client_scope_before_request(
+    field: str,
+    value: str,
+) -> None:
+    adapter, apps_api = _adapter(_deployment())
+    target = TARGET.model_copy(update={field: value})
+
+    with pytest.raises(KubernetesBoundaryError) as captured:
+        await adapter.read_workload(target)
+
+    assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+    assert apps_api.calls == []
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, cast
+from urllib.parse import urlsplit
 
 import aiohttp
 from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
@@ -21,6 +22,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     VersionApi,
 )
 from kubernetes.aio.config import (  # pyright: ignore[reportMissingTypeStubs]
+    incluster_config,
     load_kube_config_from_dict,  # pyright: ignore[reportUnknownVariableType]
 )
 
@@ -37,10 +39,15 @@ _load_kube_config = cast(
     Callable[..., Awaitable[object]],
     load_kube_config_from_dict,
 )
+_load_incluster_config = cast(
+    Callable[..., object],
+    incluster_config.load_incluster_config,  # pyright: ignore[reportUnknownMemberType]
+)
 
 
 class _ConfigurationView(Protocol):
     host: str
+    api_key: dict[str, str]
     proxy: object | None
     cert_file: object | None
     key_file: object | None
@@ -48,6 +55,7 @@ class _ConfigurationView(Protocol):
     verify_ssl: bool
     debug: bool
     client_side_validation: bool
+    refresh_api_key_hook: object | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +67,8 @@ class KubernetesClients:
     version_api: VersionApi = field(repr=False)
     authorization_api: AuthorizationV1Api = field(repr=False)
     timeout_seconds: float
-    context_name: str
+    cluster_id: str
+    diagnostic_namespace: str
 
     async def close(self) -> None:
         await self.api_client.close()
@@ -68,9 +77,11 @@ class KubernetesClients:
 async def create_kubernetes_clients(
     credential: DiagnosticCredential,
     timeout_seconds: float,
+    *,
+    cluster_id: str,
+    diagnostic_namespace: str,
 ) -> KubernetesClients:
-    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
-        raise ValueError("Kubernetes timeout must be finite and positive")
+    _require_positive_timeout(timeout_seconds)
 
     configuration = Configuration()
     try:
@@ -112,15 +123,7 @@ async def create_kubernetes_clients(
         ):
             raise KubernetesBoundaryError(KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID)
 
-        configuration_view.debug = False
-        # Kubernetes 1.36 can return converted events with eventTime=null, while
-        # SDK 36.0.3 rejects that response before the adapter can normalize it.
-        configuration_view.client_side_validation = False
-        logging.getLogger(_REST_LOGGER_NAME).setLevel(logging.WARNING)
-        try:
-            api_client = ApiClient(configuration)
-        except Exception as error:
-            raise map_kubernetes_exception(error) from None
+        api_client = _create_api_client(configuration_view)
     finally:
         try:
             _remove_ca_file(ca_path)
@@ -129,7 +132,63 @@ async def create_kubernetes_clients(
                 await _close_quietly(api_client)
             raise
 
-    api_client = cast(ApiClient, api_client)
+    return await _create_scoped_clients(
+        cast(ApiClient, api_client),
+        timeout_seconds=timeout_seconds,
+        cluster_id=cluster_id,
+        diagnostic_namespace=diagnostic_namespace,
+    )
+
+
+async def create_incluster_kubernetes_clients(
+    timeout_seconds: float,
+    *,
+    cluster_id: str,
+    diagnostic_namespace: str,
+) -> KubernetesClients:
+    _require_positive_timeout(timeout_seconds)
+    configuration = Configuration()
+    try:
+        _load_incluster_config(
+            client_configuration=configuration,
+            try_refresh_token=True,
+        )
+    except Exception:
+        raise KubernetesBoundaryError(
+            KubernetesErrorCode.AUTHENTICATION_FAILED
+        ) from None
+
+    configuration_view = cast(_ConfigurationView, configuration)
+    _require_incluster_configuration(configuration_view)
+    _protect_incluster_refresh_hook(configuration_view)
+    api_client = _create_api_client(configuration_view)
+    return await _create_scoped_clients(
+        api_client,
+        timeout_seconds=timeout_seconds,
+        cluster_id=cluster_id,
+        diagnostic_namespace=diagnostic_namespace,
+    )
+
+
+def _create_api_client(configuration: _ConfigurationView) -> ApiClient:
+    configuration.debug = False
+    # Kubernetes 1.36 can return converted events with eventTime=null, while
+    # SDK 36.0.3 rejects that response before the adapter can normalize it.
+    configuration.client_side_validation = False
+    logging.getLogger(_REST_LOGGER_NAME).setLevel(logging.WARNING)
+    try:
+        return ApiClient(cast(Configuration, configuration))
+    except Exception as error:
+        raise map_kubernetes_exception(error) from None
+
+
+async def _create_scoped_clients(
+    api_client: ApiClient,
+    *,
+    timeout_seconds: float,
+    cluster_id: str,
+    diagnostic_namespace: str,
+) -> KubernetesClients:
 
     await enforce_direct_kubernetes_transport(api_client)
     try:
@@ -141,11 +200,85 @@ async def create_kubernetes_clients(
             version_api=VersionApi(api_client),
             authorization_api=AuthorizationV1Api(api_client),
             timeout_seconds=timeout_seconds,
-            context_name=credential.context_name,
+            cluster_id=cluster_id,
+            diagnostic_namespace=diagnostic_namespace,
         )
     except Exception as error:
         await _close_quietly(api_client)
         raise map_kubernetes_exception(error) from None
+
+
+def _require_positive_timeout(timeout_seconds: float) -> None:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("Kubernetes timeout must be finite and positive")
+
+
+def _require_incluster_configuration(configuration: _ConfigurationView) -> None:
+    service_host = os.environ.get(incluster_config.SERVICE_HOST_ENV_NAME)
+    service_port = os.environ.get(incluster_config.SERVICE_PORT_ENV_NAME)
+    try:
+        if service_host is None or service_port is None:
+            raise ValueError
+        if (
+            service_host != service_host.strip()
+            or service_port != service_port.strip()
+            or any(
+                ord(character) < 0x20 or ord(character) == 0x7F
+                for character in f"{service_host}{service_port}"
+            )
+        ):
+            raise ValueError
+        port = int(service_port)
+        parsed = urlsplit(configuration.host)
+        if (
+            not 1 <= port <= 65535
+            or parsed.scheme != "https"
+            or parsed.hostname is None
+            or parsed.hostname.casefold() != service_host.casefold()
+            or parsed.port != port
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError
+    except ValueError:
+        raise KubernetesBoundaryError(
+            KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+        ) from None
+
+    bearer_token = configuration.api_key.get("BearerToken")
+    if (
+        configuration.proxy is not None
+        or configuration.cert_file is not None
+        or configuration.key_file is not None
+        or configuration.ssl_ca_cert != incluster_config.SERVICE_CERT_FILENAME
+        or configuration.verify_ssl is not True
+        or not isinstance(bearer_token, str)
+        or not bearer_token
+        or not callable(configuration.refresh_api_key_hook)
+    ):
+        raise KubernetesBoundaryError(KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID)
+
+
+def _protect_incluster_refresh_hook(configuration: _ConfigurationView) -> None:
+    upstream_hook = configuration.refresh_api_key_hook
+    if not callable(upstream_hook):
+        raise KubernetesBoundaryError(KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID)
+    typed_hook = cast(Callable[[object], object], upstream_hook)
+
+    def refresh(client_configuration: object) -> object:
+        try:
+            return typed_hook(client_configuration)
+        except Exception:
+            raise KubernetesBoundaryError(
+                KubernetesErrorCode.AUTHENTICATION_FAILED
+            ) from None
+        finally:
+            configuration.refresh_api_key_hook = refresh
+
+    configuration.refresh_api_key_hook = refresh
 
 
 async def enforce_direct_kubernetes_transport(api_client: ApiClient) -> None:

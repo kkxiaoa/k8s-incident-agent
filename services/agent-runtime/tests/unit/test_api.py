@@ -7,16 +7,12 @@ from typing import cast
 import httpx
 import pytest
 from fastapi.responses import StreamingResponse
-from fastapi.routing import APIRoute
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
 from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
-from k8s_incident_agent.routes.events import router as events_router
-from k8s_incident_agent.routes.incidents import router as incidents_router
-from k8s_incident_agent.routes.scenarios import router as scenarios_router
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
 
@@ -111,18 +107,16 @@ async def test_runtime_context_failure_never_publishes_ready_container(
     assert not hasattr(app.state, "container")
 
 
-def test_route_table_contains_only_stage_one_read_and_create_endpoints() -> None:
-    app = api.create_app()
+def _route_table(app: api.FastAPI) -> set[tuple[str, str]]:
     routes: set[tuple[str, str]] = set()
-    for route in (
-        *app.routes,
-        *scenarios_router.routes,
-        *incidents_router.routes,
-        *events_router.routes,
-    ):
-        if isinstance(route, APIRoute):
-            assert route.methods is not None
-            routes.update((method, route.path) for method in route.methods)
+    paths = cast(dict[str, dict[str, object]], app.openapi()["paths"])
+    for path, operations in paths.items():
+        routes.update((method.upper(), path) for method in operations)
+    return routes
+
+
+def test_manual_route_table_contains_read_and_create_endpoints() -> None:
+    routes = _route_table(api.create_app())
 
     assert routes == {
         ("GET", "/healthz"),
@@ -133,6 +127,19 @@ def test_route_table_contains_only_stage_one_read_and_create_endpoints() -> None
         ("GET", "/api/v1/incidents/{incident_id}/events"),
     }
     assert all(method not in {"PUT", "PATCH", "DELETE"} for method, _path in routes)
+
+
+def test_online_route_table_omits_manual_entrypoints(tmp_path: Path) -> None:
+    settings = _settings(tmp_path).model_copy(update={"incident_intake_mode": "online"})
+
+    routes = _route_table(api.create_app(settings=settings))
+
+    assert routes == {
+        ("GET", "/healthz"),
+        ("GET", "/api/v1/incidents"),
+        ("GET", "/api/v1/incidents/{incident_id}"),
+        ("GET", "/api/v1/incidents/{incident_id}/events"),
+    }
 
 
 def test_runtime_entrypoint_freezes_loopback_single_worker(
@@ -149,7 +156,7 @@ def test_runtime_entrypoint_freezes_loopback_single_worker(
     api.main()
 
     assert captured == {
-        "app_target": "k8s_incident_agent.api:create_app",
+        "app_target": "k8s_incident_agent.api:create_runtime_app",
         "factory": True,
         "host": "127.0.0.1",
         "workers": 1,

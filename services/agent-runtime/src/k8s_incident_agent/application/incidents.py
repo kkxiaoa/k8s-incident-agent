@@ -29,8 +29,8 @@ from k8s_incident_agent.api_contracts import (
 )
 from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget
 from k8s_incident_agent.kubernetes.credentials import (
-    DiagnosticCredential,
-    require_credential_ttl,
+    DiagnosticCredentialLease,
+    require_credential_window,
 )
 from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.persistence.repositories import (
@@ -70,7 +70,7 @@ class IncidentApplicationService:
         catalog: tuple[PublicScenario, ...],
         repository: IncidentRepository,
         supervisor: _RunScheduler,
-        credential: DiagnosticCredential,
+        credential: DiagnosticCredentialLease,
         model: ModelSnapshot,
         budget: RunBudget,
         now: Callable[[], datetime],
@@ -99,7 +99,7 @@ class IncidentApplicationService:
         if scenario is None:
             raise ScenarioNotFoundError
         try:
-            require_credential_ttl(
+            require_credential_window(
                 self._credential,
                 self._budget.timeout_seconds + 60,
                 self._now(),

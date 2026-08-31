@@ -21,7 +21,7 @@ from k8s_incident_agent.domain.models import (
     WorkflowRunSnapshot,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
-from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
+from k8s_incident_agent.kubernetes.credentials import DiagnosticCredentialLease
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     RecoveryConsistencyError,
@@ -58,7 +58,7 @@ class RunSupervisor:
         checkpointer: AsyncSqliteSaver,
         model: BaseChatModel,
         model_snapshot: ModelSnapshot,
-        credential: DiagnosticCredential,
+        credential: DiagnosticCredentialLease,
         adapter: KubernetesEvidenceAdapter,
         now: Callable[[], datetime],
     ) -> None:

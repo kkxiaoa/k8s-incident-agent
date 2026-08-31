@@ -183,6 +183,8 @@ def _adapter(
             core_api=core_api,
             events_api=object(),
             timeout_seconds=10.0,
+            cluster_id=TARGET.cluster,
+            diagnostic_namespace=TARGET.namespace,
         ),
     )
     return KubernetesEvidenceAdapter(clients, clock=lambda: OBSERVED_AT)

@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 from k8s_incident_agent.kubernetes.credentials import (
+    InClusterCredentialLease,
     load_diagnostic_credential,
-    require_credential_ttl,
+    require_credential_window,
 )
 from k8s_incident_agent.kubernetes.errors import (
     KubernetesBoundaryError,
@@ -224,10 +225,14 @@ def test_ttl_gate_accepts_exact_budget_and_rejects_short_budget(
     _write_document(paths, _document(token=_token(NOW + timedelta(seconds=240))))
     credential = load_diagnostic_credential(paths, NOW)
 
-    require_credential_ttl(credential, 240, NOW)
+    require_credential_window(credential, 240, NOW)
 
     with pytest.raises(KubernetesBoundaryError) as captured:
-        require_credential_ttl(credential, 241, NOW)
+        require_credential_window(credential, 241, NOW)
 
     assert captured.value.code is KubernetesErrorCode.AUTHENTICATION_FAILED
     assert captured.value.retryable is False
+
+
+def test_rotating_incluster_lease_does_not_freeze_a_token_expiration() -> None:
+    require_credential_window(InClusterCredentialLease(), 24 * 60 * 60, NOW)

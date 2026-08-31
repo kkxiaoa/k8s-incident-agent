@@ -17,6 +17,10 @@ MODEL_ENVIRONMENT_VARIABLES = (
     "MODEL_TIMEOUT_SECONDS",
     "MODEL_MAX_RETRIES",
     "RUNTIME_RETENTION_DAYS",
+    "INCIDENT_INTAKE_MODE",
+    "KUBERNETES_CREDENTIAL_MODE",
+    "KUBERNETES_CLUSTER_ID",
+    "KUBERNETES_DIAGNOSTIC_NAMESPACE",
     "KUBERNETES_TIMEOUT_SECONDS",
     "AGENT_MAX_MODEL_CALLS",
     "AGENT_MAX_TOOL_CALLS",
@@ -51,6 +55,10 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     assert settings.model_timeout_seconds == 60
     assert settings.model_max_retries == 2
     assert settings.runtime_retention_days == 7
+    assert settings.incident_intake_mode == "manual"
+    assert settings.kubernetes_credential_mode == "kind_kubeconfig"
+    assert settings.kubernetes_cluster_id == "k8s-incident-agent"
+    assert settings.kubernetes_diagnostic_namespace == "k8s-incident-scenarios"
     assert settings.kubernetes_timeout_seconds == 10
     assert settings.agent_max_model_calls == 8
     assert settings.agent_max_tool_calls == 6
@@ -160,6 +168,42 @@ def test_retention_days_outside_safe_range_are_rejected(
     ],
 )
 def test_task_11_budgets_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("INCIDENT_INTAKE_MODE", "development"),
+        ("KUBERNETES_CREDENTIAL_MODE", "auto"),
+    ],
+)
+def test_runtime_modes_reject_unknown_values(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("KUBERNETES_CLUSTER_ID", " cluster"),
+        ("KUBERNETES_DIAGNOSTIC_NAMESPACE", "namespace\nvalue"),
+    ],
+)
+def test_kubernetes_scope_must_be_normalized(
     monkeypatch: pytest.MonkeyPatch,
     name: str,
     value: str,

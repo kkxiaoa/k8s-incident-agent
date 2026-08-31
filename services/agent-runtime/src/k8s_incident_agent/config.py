@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=60, gt=0)
     model_max_retries: int = Field(default=2, ge=0)
     runtime_retention_days: int = Field(default=7, ge=1, le=30)
+    incident_intake_mode: Literal["manual", "online"] = "manual"
+    kubernetes_credential_mode: Literal["kind_kubeconfig", "in_cluster"] = (
+        "kind_kubeconfig"
+    )
+    kubernetes_cluster_id: str = Field(
+        default="k8s-incident-agent",
+        min_length=1,
+    )
+    kubernetes_diagnostic_namespace: str = Field(
+        default="k8s-incident-scenarios",
+        min_length=1,
+    )
     kubernetes_timeout_seconds: float = Field(
         default=10,
         gt=0,
@@ -70,6 +82,18 @@ class Settings(BaseSettings):
         }:
             raise ValueError("SCENARIO_CATALOG_DIR must be a dedicated directory")
         return normalized
+
+    @field_validator(
+        "kubernetes_cluster_id",
+        "kubernetes_diagnostic_namespace",
+    )
+    @classmethod
+    def require_normalized_kubernetes_scope(cls, value: str) -> str:
+        if value != value.strip() or any(
+            ord(character) < 0x20 or ord(character) == 0x7F for character in value
+        ):
+            raise ValueError("Kubernetes scope must be normalized")
+        return value
 
     @field_validator("deepseek_base_url")
     @classmethod
