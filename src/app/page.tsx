@@ -83,23 +83,23 @@ export default function Home() {
     <main className="page-shell home-page">
       <section className="hero">
         <div className="hero__copy">
-          <span className="eyebrow eyebrow--hero">Stage 1 · Image Pull Diagnosis</span>
+          <span className="eyebrow eyebrow--hero">Kubernetes Incident Response</span>
           <h1>
             让每个结论，
             <span>都能回到证据。</span>
           </h1>
           <p>
-            面向本地 Kind 沙箱的 Kubernetes 运行期故障响应。确定性状态机管理 Incident，
-            诊断 Agent 只选择类型化只读工具。
+            向受支持的真实 Kubernetes 环境，构建从故障发现、证据诊断到受控修复与恢复验证的
+            Incident Agent。
           </p>
         </div>
-        <aside className="boundary-card" aria-label="当前安全边界">
+        <aside className="boundary-card" aria-label="安全边界">
           <span className="boundary-card__index">BOUNDARY / 01</span>
-          <h2>当前安全边界</h2>
+          <h2>安全边界</h2>
           <ul>
             <li>浏览器只连接 Next.js BFF</li>
             <li>集群事实必须引用持久化 Evidence</li>
-            <li>当前切片不提供集群写操作</li>
+            <li>修复执行必须通过权限、策略、审批与审计门禁</li>
           </ul>
         </aside>
       </section>
