@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - service-accounts.yaml
+  - diagnostic-rbac.yaml
+  - config-maps.yaml
+  - services.yaml
+  - deployments.yaml
+  - network-policies.yaml
+images:
+  - name: k8s-incident-agent-console
+    newName: k8s-incident-agent-console
+    digest: sha256:d17c795998baeaba9616c51bf097be196d46c1ba3350291273c32454c5ddaa2d
+  - name: k8s-incident-agent-runtime
+    newName: k8s-incident-agent-runtime
+    digest: sha256:ac579e349eea2c3804f687013b9cc7b3c6e8e1d08d4d47f4f8a06249b8fb88e8

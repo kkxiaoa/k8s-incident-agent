@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: incident-console-config
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/name: incident-console
+    app.kubernetes.io/part-of: k8s-incident-agent
+data:
+  AGENT_RUNTIME_URL: http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000
+  INCIDENT_INTAKE_MODE: manual
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-runtime-config
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/name: agent-runtime
+    app.kubernetes.io/part-of: k8s-incident-agent
+data:
+  INCIDENT_INTAKE_MODE: manual
+  KUBERNETES_CLUSTER_ID: k8s-incident-agent
+  KUBERNETES_CREDENTIAL_MODE: in_cluster
+  KUBERNETES_DIAGNOSTIC_NAMESPACE: k8s-incident-scenarios
+  RUNTIME_DATA_DIR: /var/lib/k8s-incident-agent/runtime
+  SCENARIO_CATALOG_DIR: /workspace/scenarios

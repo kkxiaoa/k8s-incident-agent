@@ -1,0 +1,28 @@
+- op: copy
+  from: /spec/template/spec/initContainers/0
+  path: /spec/template/spec/initContainers/-
+- op: replace
+  path: /spec/template/spec/initContainers/1/name
+  value: prepare-kind-volume
+- op: replace
+  path: /spec/template/spec/initContainers/1/command
+  value:
+    - /usr/bin/chown
+    - "10001:10001"
+    - /var/lib/k8s-incident-agent
+- op: remove
+  path: /spec/template/spec/initContainers/1/envFrom
+- op: replace
+  path: /spec/template/spec/initContainers/1/securityContext
+  value:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+      add: ["CHOWN"]
+    readOnlyRootFilesystem: true
+    runAsGroup: 0
+    runAsNonRoot: false
+    runAsUser: 0
+- op: move
+  from: /spec/template/spec/initContainers/1
+  path: /spec/template/spec/initContainers/0

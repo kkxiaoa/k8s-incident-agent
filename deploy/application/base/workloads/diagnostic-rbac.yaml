@@ -1,0 +1,38 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: diagnostic-agent-read
+  namespace: k8s-incident-scenarios
+  labels:
+    app.kubernetes.io/name: agent-runtime
+    app.kubernetes.io/part-of: k8s-incident-agent
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: diagnostic-agent-read
+  namespace: k8s-incident-scenarios
+  labels:
+    app.kubernetes.io/name: agent-runtime
+    app.kubernetes.io/part-of: k8s-incident-agent
+subjects:
+  - kind: ServiceAccount
+    name: agent-runtime
+    namespace: k8s-incident-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: diagnostic-agent-read

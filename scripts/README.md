@@ -1,6 +1,6 @@
 # 项目脚本
 
-本目录存放 K8s Incident Agent 的本地开发与验收脚本。它们只服务固定的本地 Kind 沙箱，不是 Runtime API，也不接受任意集群、Namespace、manifest 路径或 `kubectl` 参数。
+本目录存放 K8s Incident Agent 的本地开发、安装与验收脚本。Kind 和 Scenario 命令仍只服务固定本地沙箱；`deployment.mjs` 额外服务 Stage 1.5 固定 Kind/K3s profile，但只接受仓库内 manifest、固定 Namespace 和显式 kubeconfig context，不接受任意 manifest 路径或 `kubectl` 参数。
 
 除非特别说明，命令都应在仓库根目录执行。
 
@@ -28,6 +28,11 @@ npm run doctor
 | `npm run cluster -- status` | `kind-cluster.mjs` | 验证现有集群是否符合固定基线 | 否 |
 | `npm run cluster -- bootstrap-access` | `kind-cluster.mjs` | 安装固定诊断 RBAC 并生成受限 kubeconfig | 是 |
 | `npm run cluster -- down` | `kind-cluster.mjs` | 删除固定 Kind 集群 | 是，破坏性操作 |
+| `npm run deployment -- render <profile>` | `deployment.mjs` | 离线渲染固定安装 profile | 否 |
+| `npm run deployment -- status <profile> --context <context>` | `deployment.mjs` | 只读核对版本、组件、Secret、workload、PVC、NetworkPolicy 对象与 RBAC | 否 |
+| `npm run deployment -- install\|upgrade\|uninstall ... [--preview]` | `deployment.mjs` | 默认预览精确资源集合 | 否 |
+| `npm run deployment -- install\|upgrade\|uninstall ... --confirm` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
+| `npm run deployment -- purge ... --preview\|--confirm <identity>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
 | `npm run scenario -- list` | `scenario.mjs` | 校验并列出版本化场景的公开信息 | 否 |
 | `npm run scenario -- apply <scenario-id>` | `scenario.mjs` | 安装指定 catalog fixture | 是 |
 | `npm run scenario -- verify <scenario-id>` | `scenario.mjs` | 等待并验证场景的确定性证据条件 | 否 |
@@ -135,6 +140,40 @@ npm run openapi:check
 `generate` 或 `check`，schema input 和 TypeScript output 均固定在仓库内，不接受
 路径或 URL 参数；执行前需要先在 `services/agent-runtime` 完成 `uv sync --locked`。
 
+## `deployment.mjs`
+
+固定 profile 为：
+
+```text
+kind-evaluation
+k3s-evaluation
+k3s-online
+```
+
+`render`、`install|upgrade|uninstall` 默认只执行本地
+`kubectl kustomize`，不会读取 kubeconfig 或访问集群。所有确认写操作和
+`status` 都要求显式 `--context`，先精确核对仓库锁定的 kubectl 与目标
+Kubernetes/K3s 版本；Kind 还要求固定 context。K3s 会继续核对 CoreDNS、
+Traefik、local-path-provisioner 的固定镜像与当前可用性，以及默认 StorageClass。
+确认 install/upgrade 还要求固定单节点 Ready、两个锁定 digest 已导入，并通过
+kubectl 内部投影只返回固定模型 Secret key 是否非空，不把 Secret value 返回给
+生命周期脚本。任何检查失败都不会回退到宽权限、宿主机 Runtime 或内存数据。
+Kind 静态 hostPath 额外由同一锁定 Runtime image 的受限 init 只调整挂载根
+ownership；migration 和 Runtime 本身仍保持非 root。status 按固定 kubectl 的
+`NodeList`、`PodList`、`NetworkPolicyList` producer contract 校验，不接受测试期
+通用 `List` fallback，并忽略 RollingUpdate 已带删除时间的旧 Console Pod。
+
+普通 `uninstall` 使用独立 Kustomize 资源集合，从结构上排除 Namespace、PVC
+和 PV。`purge` 必须先确认应用 Namespace 内标准 Pod controller 与 Pod 均已卸载，
+再把当前 PVC/PV UID 组成的精确
+identity 返回给操作者；只有同一次确认仍匹配当前对象且 K3s PV 使用
+`Delete` reclaim policy 时才请求删除。Kind 静态 hostPath 无法由 Kubernetes
+对象删除证明底层数据已清理，因此该脚本拒绝 Kind purge。
+
+完整安装顺序、Secret 边界和命令见本地 Work 的
+`docs/work/stage-1-5-k3s-installable-baseline/installation.md`。真实 image import、
+apply、uninstall、purge 与 NetworkPolicy enforcement 都需要对应 live 授权。
+
 ## 测试与静态检查
 
 默认测试入口会运行本目录全部 `*.test.mjs`：
@@ -148,6 +187,7 @@ npm run lint
 
 ```bash
 node --test scripts/doctor.test.mjs
+node --test scripts/deployment.test.mjs
 node --test scripts/kind-cluster.test.mjs
 node --test scripts/openapi-types.test.mjs
 node --test scripts/scenario.test.mjs
@@ -161,6 +201,8 @@ node --test scripts/scenario.test.mjs
 - OpenAPI 生成只使用本地 FastAPI exporter、固定本地 artifact 和固定本地 TypeScript output；
 - 集群、context 和 Namespace 身份固定，脚本不会连接任意用户输入的目标；
 - 场景 ID 必须来自已经校验的 catalog，不能作为文件路径或额外命令参数；
+- deployment profile、Namespace、资源名、镜像 digest 与 manifest 路径均来自仓库固定契约；只有显式 context 由操作者选择，并在任何写操作前核对目标版本/发行版；
+- deployment preview 默认无副作用；install、upgrade、uninstall 与 purge 必须使用显式确认模式，普通 uninstall 永不包含 Namespace、PVC 或 PV；
 - `up`、`bootstrap-access`、`down`、`scenario apply` 和 `scenario cleanup` 有明确副作用，运行前应确认目标状态；
 - 脚本不会自动执行完整 live 验收序列，也不会自行决定最终保留 fixture 或 cleanup；
 - kubeconfig、token、CA data 和原始敏感响应不得写入日志、测试 fixture 或版本库。
