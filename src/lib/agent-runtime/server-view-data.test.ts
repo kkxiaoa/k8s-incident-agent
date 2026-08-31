@@ -35,9 +35,29 @@ describe("server view data", () => {
       ),
     );
 
-    const overview = await loadIncidentConsoleOverview();
+    const overview = await loadIncidentConsoleOverview("manual");
 
-    expect(overview).toEqual({ scenarios: null, incidents: null });
+    expect(overview).toEqual({
+      scenarios: null,
+      incidents: null,
+    });
+  });
+
+  it("loads only persisted incidents for the online profile", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ schemaVersion: 1, items: [], nextCursor: null }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const overview = await loadIncidentConsoleOverview("online");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url] = fetchMock.mock.calls[0] as [URL];
+    expect(url.pathname).toBe("/api/v1/incidents");
+    expect(overview).toEqual({
+      scenarios: null,
+      incidents: { items: [], hasMore: false },
+    });
   });
 
   it("maps a successful detail without diagnosis to unavailable", async () => {

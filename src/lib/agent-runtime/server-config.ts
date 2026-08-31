@@ -2,6 +2,10 @@ import "server-only";
 
 const INVALID_CONFIGURATION_MESSAGE =
   "Agent Runtime configuration is invalid.";
+const CLUSTER_RUNTIME_ORIGIN =
+  "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000";
+
+export type IncidentIntakeMode = "manual" | "online";
 
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase();
@@ -10,6 +14,22 @@ function isLoopbackHostname(hostname: string): boolean {
   }
 
   return /^127(?:\.\d{1,3}){3}$/.test(normalized);
+}
+
+function isFixedClusterRuntime(url: URL): boolean {
+  return url.origin === CLUSTER_RUNTIME_ORIGIN && url.pathname === "/";
+}
+
+export function getIncidentIntakeMode(): IncidentIntakeMode {
+  const configuredValue = process.env.INCIDENT_INTAKE_MODE;
+  if (configuredValue === undefined) {
+    return "manual";
+  }
+  if (configuredValue === "manual" || configuredValue === "online") {
+    return configuredValue;
+  }
+
+  throw new Error(INVALID_CONFIGURATION_MESSAGE);
 }
 
 export function getAgentRuntimeBaseUrl(): URL {
@@ -22,6 +42,9 @@ export function getAgentRuntimeBaseUrl(): URL {
   if (configuredValue === undefined || configuredValue.trim() === "") {
     throw new Error(INVALID_CONFIGURATION_MESSAGE);
   }
+  if (configuredValue.includes("?") || configuredValue.includes("#")) {
+    throw new Error(INVALID_CONFIGURATION_MESSAGE);
+  }
 
   let url: URL;
   try {
@@ -31,12 +54,13 @@ export function getAgentRuntimeBaseUrl(): URL {
   }
 
   if (
-    (url.protocol !== "http:" && url.protocol !== "https:") ||
-    !isLoopbackHostname(url.hostname) ||
+    !(
+      ((url.protocol === "http:" || url.protocol === "https:") &&
+        isLoopbackHostname(url.hostname)) ||
+      isFixedClusterRuntime(url)
+    ) ||
     url.username !== "" ||
-    url.password !== "" ||
-    url.search !== "" ||
-    url.hash !== ""
+    url.password !== ""
   ) {
     throw new Error(INVALID_CONFIGURATION_MESSAGE);
   }

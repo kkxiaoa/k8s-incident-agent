@@ -4,6 +4,7 @@ import { GET, POST } from "./route";
 
 beforeEach(() => {
   vi.stubEnv("AGENT_RUNTIME_URL", "http://127.0.0.1:8000");
+  vi.stubEnv("INCIDENT_INTAKE_MODE", "manual");
 });
 
 describe("/api/runtime/incidents", () => {
@@ -68,5 +69,35 @@ describe("/api/runtime/incidents", () => {
         retryable: false,
       },
     });
+  });
+
+  it("keeps incident reads available in online mode", async () => {
+    vi.stubEnv("INCIDENT_INTAKE_MODE", "online");
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ items: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET(
+      new Request("http://console.test/api/runtime/incidents?limit=10"),
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(response.status).toBe(200);
+  });
+
+  it("returns no create capability without contacting Runtime in online mode", async () => {
+    vi.stubEnv("INCIDENT_INTAKE_MODE", "online");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const request = new Request("http://console.test/api/runtime/incidents", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"scenarioId":"image-pull-backoff"}',
+    });
+
+    const response = await POST(request);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("");
   });
 });

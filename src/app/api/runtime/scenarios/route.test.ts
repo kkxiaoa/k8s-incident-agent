@@ -4,6 +4,7 @@ import { GET } from "./route";
 
 beforeEach(() => {
   vi.stubEnv("AGENT_RUNTIME_URL", "http://127.0.0.1:8000");
+  vi.stubEnv("INCIDENT_INTAKE_MODE", "manual");
 });
 
 describe("GET /api/runtime/scenarios", () => {
@@ -19,5 +20,17 @@ describe("GET /api/runtime/scenarios", () => {
     expect(url.href).toBe("http://127.0.0.1:8000/api/v1/scenarios");
     expect(new Headers(init.headers)).toEqual(new Headers());
     expect(response.status).toBe(200);
+  });
+
+  it("returns no capability without contacting Runtime in online mode", async () => {
+    vi.stubEnv("INCIDENT_INTAKE_MODE", "online");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("");
   });
 });

@@ -13,16 +13,33 @@ import {
   fetchIncidents,
   fetchScenarios,
 } from "./server-client";
+import type { IncidentIntakeMode } from "./server-config";
 
 type IncidentPageData =
   | { state: "ready"; detail: IncidentDetailView }
   | { state: "missing" }
   | { state: "unavailable" };
 
-export async function loadIncidentConsoleOverview(): Promise<{
+interface IncidentConsoleOverview {
   scenarios: ScenarioListView | null;
   incidents: IncidentListView | null;
-}> {
+}
+
+export async function loadIncidentConsoleOverview(
+  intakeMode: IncidentIntakeMode,
+): Promise<IncidentConsoleOverview> {
+  if (intakeMode === "online") {
+    const incidentResult = await fetchIncidents(
+      new URLSearchParams({ limit: "50" }),
+    );
+    return {
+      scenarios: null,
+      incidents: incidentResult.response.ok
+        ? parseIncidentListResponse(incidentResult.value)
+        : null,
+    };
+  }
+
   const [scenarioResult, incidentResult] = await Promise.all([
     fetchScenarios(),
     fetchIncidents(new URLSearchParams({ limit: "50" })),
