@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS node-base
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+FROM node-base AS dependencies
+
+WORKDIR /workspace
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM dependencies AS builder
+
+COPY next.config.ts postcss.config.mjs tsconfig.json vitest.config.mts vitest.setup.ts ./
+COPY public ./public
+COPY src ./src
+RUN npm run build
+
+FROM node-base AS runner
+
+ARG SOURCE_REVISION
+ARG SOURCE_VERSION=0.1.0
+
+RUN test -n "${SOURCE_REVISION}" \
+    && groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/app app
+
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="${SOURCE_VERSION}"
+
+ENV HOSTNAME=0.0.0.0 \
+    NODE_ENV=production \
+    PORT=3000
+
+WORKDIR /app
+
+COPY --from=builder --chown=10001:10001 /workspace/public ./public
+COPY --from=builder --chown=10001:10001 /workspace/.next/standalone ./
+COPY --from=builder --chown=10001:10001 /workspace/.next/static ./.next/static
+
+USER 10001:10001
+
+EXPOSE 3000
+STOPSIGNAL SIGTERM
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:3000/api/healthz').then((response) => process.exit(response.status === 204 ? 0 : 1)).catch(() => process.exit(1))"
+
+CMD ["node", "server.js"]
