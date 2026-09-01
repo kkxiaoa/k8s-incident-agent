@@ -17,6 +17,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from sqlalchemy import func, select, text
 from tests.factories import normalized_trigger
 
+import k8s_incident_agent.runtime.deletion as deletion_module
 import k8s_incident_agent.runtime.retention as retention_module
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import (
@@ -424,7 +425,7 @@ async def test_external_cleanup_failure_preserves_business_rows(
             assert dir_fd is not None
             raise PermissionError("artifact is locked")
 
-        monkeypatch.setattr(retention_module.shutil, "rmtree", fail_rmtree)
+        monkeypatch.setattr(deletion_module.shutil, "rmtree", fail_rmtree)
     else:
 
         class _FailingSaver:
@@ -452,6 +453,33 @@ async def test_external_cleanup_failure_preserves_business_rows(
         assert await _has_checkpoint(paths, run_id)
     else:
         assert not artifact_directory.exists()
+
+
+@pytest.mark.asyncio
+async def test_incomplete_identity_claim_blocks_prune_before_business_delete(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    command.upgrade(_alembic_config(paths), "head")
+    database = await _open_database(paths)
+    try:
+        repository = IncidentRepository(database.session_factory)
+        _, run_id = await _create_failed_run(
+            repository,
+            CUTOFF - timedelta(days=1),
+        )
+    finally:
+        await database.dispose()
+    artifact_directory = _write_artifact(paths, run_id)
+    claim_directory = paths.run_artifacts / ".runtime-delete-interrupted"
+    claim_directory.mkdir(mode=0o700)
+    artifact_directory.rename(claim_directory / "target")
+
+    with pytest.raises(RuntimeError, match="incomplete identity-bound deletion"):
+        await confirm_prune(_settings(paths), NOW)
+
+    assert (claim_directory / "target" / "trace.json").exists()
+    assert await _row_count(paths, RunRow) == 1
 
 
 @pytest.mark.asyncio
@@ -612,21 +640,32 @@ async def test_parent_swap_cannot_redirect_artifact_deletion(
     sentinel = external_directory / "sentinel.txt"
     sentinel.write_text("keep", encoding="utf-8")
     sentinel.chmod(0o600)
-    real_rmtree = retention_module.shutil.rmtree
+    real_rename = deletion_module.os.rename
 
-    def swap_parent_then_delete(path: str, *, dir_fd: int | None = None) -> None:
-        assert path == str(run_id)
-        assert dir_fd is not None
-        paths.run_artifacts.rename(original_artifact_root)
+    def swap_parent_then_delete(
+        source: str,
+        destination: str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        assert source == str(run_id)
+        assert src_dir_fd is not None
+        real_rename(paths.run_artifacts, original_artifact_root)
         paths.run_artifacts.symlink_to(
             external_artifact_root,
             target_is_directory=True,
         )
-        real_rmtree(path, dir_fd=dir_fd)
+        real_rename(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
 
     monkeypatch.setattr(
-        retention_module.shutil,
-        "rmtree",
+        deletion_module.os,
+        "rename",
         swap_parent_then_delete,
     )
 

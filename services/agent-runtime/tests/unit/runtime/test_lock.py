@@ -47,3 +47,21 @@ def test_runtime_lock_rejects_unsafe_existing_files(
 
     with pytest.raises(ValueError):
         RuntimeLock(paths.runtime_lock).acquire()
+
+
+def test_runtime_lock_rejects_a_replaced_held_lock_path(tmp_path: Path) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    lock = RuntimeLock(paths.runtime_lock)
+    lock.acquire()
+    moved_lock = paths.root / "moved.lock"
+    paths.runtime_lock.rename(moved_lock)
+    paths.runtime_lock.touch(mode=0o600)
+
+    try:
+        with pytest.raises(RuntimeError, match="identity changed"):
+            lock.require_held(paths.runtime_lock)
+    finally:
+        lock.release()
+
+    assert moved_lock.exists()
+    assert paths.runtime_lock.exists()

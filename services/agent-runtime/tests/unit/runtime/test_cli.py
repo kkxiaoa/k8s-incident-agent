@@ -6,10 +6,18 @@ from typing import cast
 from uuid import UUID
 
 import pytest
+from pydantic_settings import SettingsError
 
 import k8s_incident_agent.runtime.cli as cli_module
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.persistence.repositories import PruneTarget
+from k8s_incident_agent.runtime.reset import (
+    ResetOutcome,
+    ResetPlan,
+    ResetResult,
+    ResetState,
+    StageOneResetError,
+)
 from k8s_incident_agent.runtime.retention import PruneResult
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
@@ -70,6 +78,145 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
     }
 
 
+@pytest.mark.parametrize("mode", ["preview", "confirm"])
+def test_stage_one_reset_cli_emits_stable_safe_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+) -> None:
+    plan = ResetPlan(
+        state=ResetState.STAGE_ONE,
+        source_head="20260814_0001",
+        target_head="20260901_0002",
+        business_files=("incidents.sqlite3-wal", "incidents.sqlite3"),
+        checkpoint_files=("checkpoints.sqlite3",),
+        run_ids=(RUN_ID,),
+        artifact_run_ids=(RUN_ID,),
+        row_counts=(("incidents", 1), ("agent_runs", 1)),
+    )
+    result = ResetResult(
+        plan=plan,
+        outcome=ResetOutcome.RESET,
+        completed_at=datetime(2026, 9, 1, 8, 0, tzinfo=UTC),
+        new_head="20260901_0002",
+        deleted_business_files=plan.business_files,
+        deleted_checkpoint_files=plan.checkpoint_files,
+        deleted_artifact_run_ids=plan.artifact_run_ids,
+    )
+
+    def fake_reset_preview(_settings: Settings) -> ResetPlan:
+        return plan
+
+    def fake_reset_confirm(
+        _settings: Settings,
+    ) -> ResetResult:
+        return result
+
+    monkeypatch.setattr(
+        cli_module,
+        "Settings",
+        lambda: cast(Settings, object()),
+    )
+    monkeypatch.setattr(cli_module, "preview_stage_one_data", fake_reset_preview)
+    monkeypatch.setattr(cli_module, "confirm_stage_one_data", fake_reset_confirm)
+
+    assert cli_module.main(["reset-stage-one-data", f"--{mode}"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "mode": mode,
+        "sourceHead": "20260814_0001",
+        "state": "stage_one",
+        "targetHead": "20260901_0002",
+        "targets": {
+            "artifactRunIds": [str(RUN_ID)],
+            "businessFiles": ["incidents.sqlite3-wal", "incidents.sqlite3"],
+            "checkpointFiles": ["checkpoints.sqlite3"],
+            "rowCounts": {"agent_runs": 1, "incidents": 1},
+            "runIds": [str(RUN_ID)],
+        },
+        **(
+            {
+                "completedAt": "2026-09-01T08:00:00Z",
+                "deleted": {
+                    "artifactRunIds": [str(RUN_ID)],
+                    "businessFiles": [
+                        "incidents.sqlite3-wal",
+                        "incidents.sqlite3",
+                    ],
+                    "checkpointFiles": ["checkpoints.sqlite3"],
+                },
+                "newHead": "20260901_0002",
+                "outcome": "reset",
+            }
+            if mode == "confirm"
+            else {}
+        ),
+    }
+
+
+def test_stage_one_reset_cli_returns_a_safe_structured_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_preview(_settings: Settings) -> ResetPlan:
+        raise StageOneResetError("reset_rejected", "preflight")
+
+    monkeypatch.setattr(
+        cli_module,
+        "Settings",
+        lambda: cast(Settings, object()),
+    )
+    monkeypatch.setattr(cli_module, "preview_stage_one_data", fail_preview)
+
+    assert cli_module.main(["reset-stage-one-data", "--preview"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "error": {"code": "reset_rejected", "phase": "preflight"},
+        "mode": "preview",
+    }
+
+
+def test_stage_one_reset_cli_redacts_settings_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_settings() -> Settings:
+        raise SettingsError("secret path and value")
+
+    monkeypatch.setattr(cli_module, "Settings", fail_settings)
+
+    assert cli_module.main(["reset-stage-one-data", "--preview"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "secret path and value" not in captured.err
+    assert json.loads(captured.err) == {
+        "error": {"code": "configuration_invalid", "phase": "preflight"},
+        "mode": "preview",
+    }
+
+
+def test_stage_one_reset_cli_redacts_runtime_root_filesystem_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    unsafe_root = "/dev/null/private-runtime"
+    monkeypatch.setenv("RUNTIME_DATA_DIR", unsafe_root)
+
+    assert cli_module.main(["reset-stage-one-data", "--preview"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert unsafe_root not in captured.err
+    assert json.loads(captured.err) == {
+        "error": {"code": "configuration_invalid", "phase": "preflight"},
+        "mode": "preview",
+    }
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -81,9 +228,16 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
         ["prune", "--preview", "--sql", "DELETE FROM agent_runs"],
         ["prune", "--con"],
         ["prune", "--pre"],
+        ["reset-stage-one-data"],
+        ["reset-stage-one-data", "--preview", "--confirm"],
+        ["reset-stage-one-data", "--preview", "--run-id", str(RUN_ID)],
+        ["reset-stage-one-data", "--confirm", "--path", "/tmp/unsafe"],
+        ["reset-stage-one-data", "--preview", "--sql", "DROP TABLE incidents"],
+        ["reset-stage-one-data", "--con"],
+        ["reset-stage-one-data", "--pre"],
     ],
 )
-def test_prune_cli_rejects_missing_conflicting_or_expansive_arguments(
+def test_runtime_cli_rejects_missing_conflicting_or_expansive_arguments(
     arguments: list[str],
 ) -> None:
     with pytest.raises(SystemExit) as error:

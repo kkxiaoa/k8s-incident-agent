@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -46,6 +47,8 @@ from k8s_incident_agent.routes.incidents import (
 )
 from k8s_incident_agent.routes.incidents import router as incidents_router
 from k8s_incident_agent.routes.scenarios import router as scenarios_router
+from k8s_incident_agent.runtime.artifacts import open_private_directory
+from k8s_incident_agent.runtime.cutover import require_runtime_cutover_complete
 from k8s_incident_agent.runtime.lock import RuntimeLock
 from k8s_incident_agent.scenarios.catalog import load_scenario_catalog
 from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
@@ -130,6 +133,12 @@ async def build_runtime_container(
         runtime_lock = RuntimeLock(settings.runtime_paths.runtime_lock)
         runtime_lock.acquire()
         resources.callback(runtime_lock.release)
+
+        runtime_root_fd = open_private_directory(settings.runtime_paths.root)
+        try:
+            require_runtime_cutover_complete(runtime_root_fd)
+        finally:
+            os.close(runtime_root_fd)
 
         settings.require_deepseek_api_key()
         await discover_models(settings)

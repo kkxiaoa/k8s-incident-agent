@@ -4,7 +4,11 @@ import os
 import stat
 from pathlib import Path
 
-from k8s_incident_agent.runtime.paths import PRIVATE_FILE_MODE
+from k8s_incident_agent.runtime.paths import (
+    PRIVATE_FILE_MODE,
+    FilesystemIdentity,
+    require_filesystem_identity,
+)
 
 
 class RuntimeLockUnavailableError(RuntimeError):
@@ -71,3 +75,20 @@ class RuntimeLock:
             fcntl.flock(file_descriptor, fcntl.LOCK_UN)
         finally:
             os.close(file_descriptor)
+
+    def require_held(self, expected_path: Path | None = None) -> None:
+        if expected_path is not None and expected_path != self._path:
+            raise RuntimeError("Runtime lock does not match the fixed path")
+        file_descriptor = self._file_descriptor
+        if file_descriptor is None:
+            raise RuntimeError("Runtime lock is not held by this instance")
+        descriptor_stat = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(descriptor_stat.st_mode)
+            or stat.S_IMODE(descriptor_stat.st_mode) != PRIVATE_FILE_MODE
+        ):
+            raise RuntimeError("Runtime lock identity changed")
+        require_filesystem_identity(
+            self._path,
+            FilesystemIdentity.from_stat(descriptor_stat),
+        )

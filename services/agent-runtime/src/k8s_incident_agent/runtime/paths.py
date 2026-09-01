@@ -69,12 +69,42 @@ class RuntimePaths:
             paths.checkpoint_database,
             paths.diagnostic_kubeconfig,
             paths.runtime_lock,
-            Path(f"{paths.business_database}-wal"),
-            Path(f"{paths.business_database}-shm"),
+            *sqlite_sidecars(paths.business_database),
+            *sqlite_sidecars(paths.checkpoint_database),
         ):
             validate_existing_private_file(target)
         _validate_existing_private_directory(paths.run_artifacts)
         return paths
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemIdentity:
+    device: int
+    inode: int
+    mode: int
+
+    @classmethod
+    def from_stat(cls, value: os.stat_result) -> "FilesystemIdentity":
+        return cls(device=value.st_dev, inode=value.st_ino, mode=value.st_mode)
+
+    def matches(self, value: os.stat_result) -> bool:
+        return self == self.from_stat(value)
+
+
+def require_filesystem_identity(
+    path: Path,
+    expected: FilesystemIdentity,
+) -> None:
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        raise RuntimeError("Runtime filesystem identity changed") from None
+    if not expected.matches(current):
+        raise RuntimeError("Runtime filesystem identity changed")
+
+
+def sqlite_sidecars(database: Path) -> tuple[Path, Path]:
+    return Path(f"{database}-wal"), Path(f"{database}-shm")
 
 
 def _reject_symlink_components(path: Path) -> None:

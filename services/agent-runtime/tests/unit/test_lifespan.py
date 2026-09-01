@@ -1,5 +1,6 @@
+import sqlite3
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -8,13 +9,20 @@ from uuid import UUID
 import pytest
 from langchain_core.language_models import BaseChatModel
 
+import k8s_incident_agent.runtime.reset as reset_module
 from k8s_incident_agent import api
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
 from k8s_incident_agent.kubernetes.credentials import (
     DiagnosticCredential,
     DiagnosticCredentialLease,
 )
-from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
+from k8s_incident_agent.runtime.artifacts import ArtifactTreeEntry
+from k8s_incident_agent.runtime.paths import (
+    REPOSITORY_ROOT,
+    FilesystemIdentity,
+    RuntimePaths,
+)
+from k8s_incident_agent.runtime.reset import StageOneResetError, confirm_stage_one_data
 from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
     ScenarioTarget,
@@ -25,12 +33,15 @@ NOW = datetime(2026, 8, 26, 9, 0, tzinfo=UTC)
 
 
 def _settings(tmp_path: Path) -> Settings:
-    return Settings(
-        deepseek_api_key="test-key",
-        runtime_paths=RuntimePaths.prepare(tmp_path / "runtime"),
-        scenario_catalog_dir=REPOSITORY_ROOT / "scenarios",
-        _env_file=None,  # pyright: ignore[reportCallIssue]
+    settings = Settings.model_validate(
+        {
+            "deepseek_api_key": "test-key",
+            "RUNTIME_DATA_DIR": tmp_path / "runtime",
+            "scenario_catalog_dir": REPOSITORY_ROOT / "scenarios",
+        }
     )
+    assert settings.runtime_paths.root == tmp_path / "runtime"
+    return settings
 
 
 def _scenario() -> PublicScenario:
@@ -307,6 +318,77 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
     assert "catalog" not in events
     assert "credential" not in events
     assert not any(event.startswith("credential.window:") for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_database_published_before_reset_staging_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    real_rmtree = reset_module.rmtree_identity_bound_directory
+
+    def leave_staging_after_publication(
+        _parent_fd: int,
+        name: str,
+        _expected_identity: FilesystemIdentity,
+        _expected_tree: tuple[ArtifactTreeEntry, ...],
+    ) -> None:
+        assert name.startswith(".runtime-reset-stage-")
+        raise RuntimeError("injected staging cleanup failure")
+
+    monkeypatch.setattr(
+        reset_module,
+        "rmtree_identity_bound_directory",
+        leave_staging_after_publication,
+    )
+    with pytest.raises(StageOneResetError) as reset_error:
+        confirm_stage_one_data(settings)
+
+    assert reset_error.value.code == "migration_failed"
+    assert settings.runtime_paths.business_database.exists()
+    database_uri = (
+        f"{settings.runtime_paths.business_database.as_uri()}?mode=ro&immutable=1"
+    )
+    with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("20260901_0002",)
+    assert any(
+        entry.name.startswith(".runtime-reset-stage-")
+        for entry in settings.runtime_paths.root.iterdir()
+    )
+
+    monkeypatch.setattr(
+        reset_module,
+        "rmtree_identity_bound_directory",
+        real_rmtree,
+    )
+    events: list[str] = []
+    _install_runtime_fakes(monkeypatch, events)
+
+    with pytest.raises(RuntimeError, match="incomplete Runtime data cutover"):
+        async with api.build_runtime_container(settings):
+            pass
+
+    assert events == ["lock.acquire", "lock.release"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_incomplete_root_deletion_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path)
+    (settings.runtime_paths.root / ".runtime-delete-interrupted").mkdir(mode=0o700)
+    events: list[str] = []
+    _install_runtime_fakes(monkeypatch, events)
+
+    with pytest.raises(RuntimeError, match="incomplete Runtime data cutover"):
+        async with api.build_runtime_container(settings):
+            pass
+
+    assert events == ["lock.acquire", "lock.release"]
 
 
 @pytest.mark.asyncio

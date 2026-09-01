@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import errno
 import os
-import shutil
-import stat
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -20,16 +17,21 @@ from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     PruneTarget,
 )
+from k8s_incident_agent.runtime.artifacts import (
+    ArtifactTreeEntry,
+    open_private_directory,
+    snapshot_safe_artifact_tree,
+)
+from k8s_incident_agent.runtime.deletion import (
+    require_no_incomplete_deletion_claims,
+    rmtree_identity_bound_directory,
+)
 from k8s_incident_agent.runtime.lock import RuntimeLock
 from k8s_incident_agent.runtime.paths import (
-    PRIVATE_DIRECTORY_MODE,
-    PRIVATE_FILE_MODE,
+    FilesystemIdentity,
     RuntimePaths,
 )
 from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
-
-_ARTIFACT_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
-_RMTREE_AVOIDS_SYMLINK_ATTACKS = shutil.rmtree.avoids_symlink_attacks
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,10 +138,13 @@ def _delete_artifact_directory(
     ) as validated:
         if validated is None:
             return
-        if not _RMTREE_AVOIDS_SYMLINK_ATTACKS:
-            raise RuntimeError("Safe descriptor-relative artifact deletion is required")
-        artifact_root_fd, directory_name = validated
-        shutil.rmtree(directory_name, dir_fd=artifact_root_fd)
+        artifact_root_fd, directory_name, directory_identity, tree = validated
+        rmtree_identity_bound_directory(
+            artifact_root_fd,
+            directory_name,
+            directory_identity,
+            tree,
+        )
 
 
 def _require_safe_artifact_directories(
@@ -160,20 +165,29 @@ def _validated_artifact_parent(
     paths: RuntimePaths,
     run_id: UUID,
     artifact_directory: Path,
-) -> Generator[tuple[int, str] | None]:
+) -> Generator[
+    tuple[
+        int,
+        str,
+        FilesystemIdentity,
+        tuple[ArtifactTreeEntry, ...],
+    ]
+    | None
+]:
     expected_directory = paths.run_artifact_directory(run_id)
     if artifact_directory != expected_directory:
         raise ValueError("Prune target does not match its fixed artifact directory")
 
     try:
-        artifact_root_fd = _open_private_directory(paths.run_artifacts)
+        artifact_root_fd = open_private_directory(paths.run_artifacts)
     except FileNotFoundError:
         yield None
         return
 
     try:
+        require_no_incomplete_deletion_claims(artifact_root_fd)
         try:
-            directory_fd = _open_private_directory(
+            directory_fd = open_private_directory(
                 str(run_id),
                 dir_fd=artifact_root_fd,
             )
@@ -181,51 +195,10 @@ def _validated_artifact_parent(
             yield None
             return
         try:
-            _require_safe_artifact_tree(directory_fd)
+            directory_identity = FilesystemIdentity.from_stat(os.fstat(directory_fd))
+            tree = snapshot_safe_artifact_tree(directory_fd)
         finally:
             os.close(directory_fd)
-        yield artifact_root_fd, str(run_id)
+        yield artifact_root_fd, str(run_id), directory_identity, tree
     finally:
         os.close(artifact_root_fd)
-
-
-def _open_private_directory(path: Path | str, *, dir_fd: int | None = None) -> int:
-    try:
-        directory_fd = os.open(path, _ARTIFACT_DIRECTORY_FLAGS, dir_fd=dir_fd)
-    except OSError as error:
-        if error.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise ValueError(
-                "Run artifact directory must be private and must not be a symbolic link"
-            ) from error
-        raise
-    try:
-        _require_private_directory(os.fstat(directory_fd).st_mode)
-    except BaseException:
-        os.close(directory_fd)
-        raise
-    return directory_fd
-
-
-def _require_safe_artifact_tree(directory_fd: int) -> None:
-    with os.scandir(directory_fd) as entries:
-        for entry in entries:
-            entry_stat = entry.stat(follow_symlinks=False)
-            if stat.S_ISDIR(entry_stat.st_mode):
-                child_fd = _open_private_directory(
-                    entry.name,
-                    dir_fd=directory_fd,
-                )
-                try:
-                    _require_safe_artifact_tree(child_fd)
-                finally:
-                    os.close(child_fd)
-            elif stat.S_ISREG(entry_stat.st_mode):
-                if stat.S_IMODE(entry_stat.st_mode) != PRIVATE_FILE_MODE:
-                    raise ValueError("Run artifact file must be private")
-            else:
-                raise ValueError("Run artifacts must not contain symbolic links")
-
-
-def _require_private_directory(mode: int) -> None:
-    if not stat.S_ISDIR(mode) or stat.S_IMODE(mode) != PRIVATE_DIRECTORY_MODE:
-        raise ValueError("Run artifact directory must be private")

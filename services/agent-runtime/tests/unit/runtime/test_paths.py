@@ -59,3 +59,14 @@ def test_runtime_paths_reject_symlink_artifact_targets(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         RuntimePaths.prepare(root)
+
+
+def test_runtime_paths_reject_unsafe_checkpoint_sidecars(tmp_path: Path) -> None:
+    root = tmp_path / "runtime"
+    root.mkdir(mode=0o700)
+    external_file = tmp_path / "external-wal"
+    external_file.touch(mode=0o600)
+    (root / "checkpoints.sqlite3-wal").symlink_to(external_file)
+
+    with pytest.raises(ValueError):
+        RuntimePaths.prepare(root)

@@ -20,6 +20,7 @@ from sqlalchemy.pool import ConnectionPoolEntry
 from k8s_incident_agent.runtime.paths import (
     PRIVATE_FILE_MODE,
     RuntimePaths,
+    sqlite_sidecars,
     validate_existing_private_file,
 )
 
@@ -40,7 +41,7 @@ class BusinessDatabase:
 
 
 def prepare_business_database_file(paths: RuntimePaths) -> None:
-    for sidecar in _sqlite_sidecars(paths.business_database):
+    for sidecar in sqlite_sidecars(paths.business_database):
         validate_existing_private_file(sidecar)
 
     flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
@@ -70,7 +71,7 @@ def configure_sqlite_engine(engine: Engine, paths: RuntimePaths) -> None:
         dbapi_connection: DBAPIConnection,
         _connection_record: ConnectionPoolEntry,
     ) -> None:
-        for sidecar in _sqlite_sidecars(paths.business_database):
+        for sidecar in sqlite_sidecars(paths.business_database):
             validate_existing_private_file(sidecar)
         cursor = dbapi_connection.cursor()
         try:
@@ -83,7 +84,7 @@ def configure_sqlite_engine(engine: Engine, paths: RuntimePaths) -> None:
             cursor.close()
 
         validate_existing_private_file(paths.business_database)
-        for sidecar in _sqlite_sidecars(paths.business_database):
+        for sidecar in sqlite_sidecars(paths.business_database):
             validate_existing_private_file(sidecar)
 
     event.listen(engine, "connect", configure_connection)
@@ -129,10 +130,6 @@ async def require_alembic_head(database: BusinessDatabase) -> None:
         raise DatabaseSchemaNotCurrentError(
             "Business database schema is not at the required Alembic head"
         )
-
-
-def _sqlite_sidecars(database: Path) -> tuple[Path, Path]:
-    return Path(f"{database}-wal"), Path(f"{database}-shm")
 
 
 def _has_alembic_version_table(connection: Connection) -> bool:

@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from k8s_incident_agent.persistence.database import (
@@ -18,7 +18,7 @@ from k8s_incident_agent.runtime.lock import (
     RuntimeLock,
     RuntimeLockUnavailableError,
 )
-from k8s_incident_agent.runtime.paths import RuntimePaths
+from k8s_incident_agent.runtime.paths import FilesystemIdentity, RuntimePaths
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 
@@ -270,6 +270,71 @@ def test_migration_uses_the_shared_runtime_lock(tmp_path: Path) -> None:
             command.upgrade(_alembic_config(paths), "head")
     finally:
         lock.release()
+
+
+def test_reset_migration_uses_only_the_provided_in_memory_connection(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    root_identity = FilesystemIdentity.from_stat(paths.root.stat())
+    lock = RuntimeLock(paths.runtime_lock)
+    config = _alembic_config(paths)
+    config.attributes["caller_runtime_lock"] = lock
+    config.attributes["expected_runtime_root_identity"] = root_identity
+    engine = create_engine("sqlite://")
+
+    lock.acquire()
+    try:
+        with engine.connect() as connection:
+            config.attributes["reset_connection"] = connection
+            command.upgrade(config, "20260901_0002")
+            assert (
+                connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "20260901_0002"
+            )
+            assert all(
+                not str(row[2])
+                for row in connection.exec_driver_sql("PRAGMA database_list")
+            )
+    finally:
+        engine.dispose()
+        lock.release()
+
+    assert not paths.business_database.exists()
+    assert not Path(f"{paths.business_database}-wal").exists()
+    assert not Path(f"{paths.business_database}-shm").exists()
+
+
+def test_reset_migration_rejects_a_connection_without_the_caller_lock(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    root_identity = FilesystemIdentity.from_stat(paths.root.stat())
+    lock = RuntimeLock(paths.runtime_lock)
+    config = _alembic_config(paths)
+    config.attributes["caller_runtime_lock"] = lock
+    config.attributes["expected_runtime_root_identity"] = root_identity
+    engine = create_engine("sqlite://")
+    try:
+        with engine.connect() as connection:
+            config.attributes["reset_connection"] = connection
+            with pytest.raises(RuntimeError, match="Runtime lock is not held"):
+                command.upgrade(config, "20260901_0002")
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT COUNT(*) FROM sqlite_schema "
+                        "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                )
+                == 0
+            )
+    finally:
+        engine.dispose()
+
+    assert not paths.business_database.exists()
+    assert not Path(f"{paths.business_database}-wal").exists()
+    assert not Path(f"{paths.business_database}-shm").exists()
 
 
 @pytest.mark.asyncio
