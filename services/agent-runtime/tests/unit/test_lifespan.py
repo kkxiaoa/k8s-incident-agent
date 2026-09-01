@@ -22,7 +22,12 @@ from k8s_incident_agent.runtime.paths import (
     FilesystemIdentity,
     RuntimePaths,
 )
-from k8s_incident_agent.runtime.reset import StageOneResetError, confirm_stage_one_data
+from k8s_incident_agent.runtime.reset import (
+    StageOneResetError,
+    confirm_stage_one_data,
+    preview_stage_one_data,
+    reset_plan_digest,
+)
 from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
     ScenarioTarget,
@@ -326,6 +331,7 @@ async def test_runtime_rejects_database_published_before_reset_staging_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(tmp_path)
+    approved_digest = reset_plan_digest(preview_stage_one_data(settings))
     real_rmtree = reset_module.rmtree_identity_bound_directory
 
     def leave_staging_after_publication(
@@ -343,7 +349,7 @@ async def test_runtime_rejects_database_published_before_reset_staging_cleanup(
         leave_staging_after_publication,
     )
     with pytest.raises(StageOneResetError) as reset_error:
-        confirm_stage_one_data(settings)
+        confirm_stage_one_data(settings, approved_digest)
 
     assert reset_error.value.code == "migration_failed"
     assert settings.runtime_paths.business_database.exists()

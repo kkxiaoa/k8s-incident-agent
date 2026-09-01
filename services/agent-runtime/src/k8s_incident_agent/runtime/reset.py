@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sqlite3
 import stat
@@ -114,6 +116,24 @@ class ResetPlan:
     row_counts: tuple[tuple[str, int], ...]
 
 
+def reset_plan_digest(plan: ResetPlan) -> str:
+    canonical_payload = json.dumps(
+        {
+            "artifactRunIds": [str(run_id) for run_id in plan.artifact_run_ids],
+            "businessFiles": list(plan.business_files),
+            "checkpointFiles": list(plan.checkpoint_files),
+            "rowCounts": [list(row_count) for row_count in plan.row_counts],
+            "runIds": [str(run_id) for run_id in plan.run_ids],
+            "sourceHead": plan.source_head,
+            "state": plan.state.value,
+            "targetHead": plan.target_head,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return f"sha256:{hashlib.sha256(canonical_payload).hexdigest()}"
+
+
 @dataclass(frozen=True, slots=True)
 class ResetResult:
     plan: ResetPlan
@@ -212,10 +232,13 @@ def preview_stage_one_data(settings: Settings) -> ResetPlan:
 
 def confirm_stage_one_data(
     settings: Settings,
+    expected_plan_digest: str,
 ) -> ResetResult:
     try:
         with _locked_context(settings) as reset_context:
             preflight = _preflight(reset_context)
+            if reset_plan_digest(preflight.plan) != expected_plan_digest:
+                raise StageOneResetError("reset_plan_changed", "preflight")
             return _confirm_locked(reset_context, preflight)
     except StageOneResetError:
         raise

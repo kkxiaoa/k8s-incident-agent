@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -25,10 +26,12 @@ from k8s_incident_agent.runtime.lock import (
 from k8s_incident_agent.runtime.paths import FilesystemIdentity, RuntimePaths
 from k8s_incident_agent.runtime.reset import (
     ResetOutcome,
+    ResetPlan,
     ResetState,
     StageOneResetError,
     confirm_stage_one_data,
     preview_stage_one_data,
+    reset_plan_digest,
 )
 from k8s_incident_agent.runtime.sqlite_identity import OpenDatabaseDescriptor
 from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
@@ -37,6 +40,7 @@ SERVICE_ROOT = Path(__file__).resolve().parents[3]
 INCIDENT_ID = UUID("00000000-0000-4000-8000-000000000001")
 RUN_ID = UUID("00000000-0000-4000-8000-000000000002")
 OTHER_RUN_ID = UUID("00000000-0000-4000-8000-000000000003")
+_UNMATCHED_PLAN_DIGEST = f"sha256:{'0' * 64}"
 
 
 def _alembic_config(paths: RuntimePaths) -> Config:
@@ -49,6 +53,15 @@ def _settings(paths: RuntimePaths) -> Settings:
     settings = Settings.model_validate({"RUNTIME_DATA_DIR": paths.root})
     assert settings.runtime_paths == paths
     return settings
+
+
+def _plan_digest(paths: RuntimePaths) -> str:
+    return reset_plan_digest(preview_stage_one_data(_settings(paths)))
+
+
+def _confirm_current_plan(paths: RuntimePaths) -> reset_module.ResetResult:
+    settings = _settings(paths)
+    return confirm_stage_one_data(settings, _plan_digest(paths))
 
 
 @pytest.fixture(autouse=True)
@@ -234,6 +247,62 @@ def _head_and_counts(paths: RuntimePaths) -> tuple[str, dict[str, int]]:
     return head, counts
 
 
+def test_reset_plan_digest_covers_every_authorized_plan_field() -> None:
+    plan = ResetPlan(
+        state=ResetState.STAGE_ONE,
+        source_head="20260814_0001",
+        target_head="20260901_0002",
+        business_files=("incidents.sqlite3",),
+        checkpoint_files=("checkpoints.sqlite3",),
+        run_ids=(RUN_ID,),
+        artifact_run_ids=(RUN_ID,),
+        row_counts=(("incidents", 1),),
+    )
+    variants = (
+        replace(plan, state=ResetState.DELETION_COMPLETE),
+        replace(plan, source_head=None),
+        replace(plan, target_head="replacement-head"),
+        replace(plan, business_files=()),
+        replace(plan, checkpoint_files=()),
+        replace(plan, run_ids=(OTHER_RUN_ID,)),
+        replace(plan, artifact_run_ids=(OTHER_RUN_ID,)),
+        replace(plan, row_counts=(("incidents", 2),)),
+    )
+
+    digest = reset_plan_digest(plan)
+
+    assert digest.startswith("sha256:")
+    assert len(digest) == len("sha256:") + 64
+    assert digest == reset_plan_digest(plan)
+    assert all(reset_plan_digest(variant) != digest for variant in variants)
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_a_changed_plan_before_any_deletion(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    _seed_old_database(paths)
+    await _seed_checkpoint(paths, RUN_ID)
+    artifact = _seed_artifact(paths, RUN_ID)
+    approved_digest = _plan_digest(paths)
+    with closing(sqlite3.connect(paths.business_database)) as connection, connection:
+        connection.execute("DELETE FROM evidence")
+    preserved = {
+        path: _file_state(path)
+        for path in (paths.business_database, paths.checkpoint_database, artifact)
+    }
+
+    with pytest.raises(StageOneResetError) as error:
+        confirm_stage_one_data(_settings(paths), approved_digest)
+
+    assert error.value.code == "reset_plan_changed"
+    assert error.value.phase == "preflight"
+    assert {path: _file_state(path) for path in preserved} == preserved
+    assert _head_and_counts(paths)[1]["evidence"] == 0
+    assert _plan_digest(paths) != approved_digest
+
+
 @pytest.mark.asyncio
 async def test_preview_then_confirm_resets_only_old_stage_one_data(
     tmp_path: Path,
@@ -305,7 +374,7 @@ async def test_preview_then_confirm_resets_only_old_stage_one_data(
 
     old_database_inode = paths.business_database.stat().st_ino
     started_at = datetime.now(UTC)
-    result = confirm_stage_one_data(_settings(paths))
+    result = _confirm_current_plan(paths)
     observed_at = datetime.now(UTC)
 
     assert result.plan == preview
@@ -335,7 +404,7 @@ async def test_preview_then_confirm_resets_only_old_stage_one_data(
     assert _file_state(unknown) == preserved_before[unknown]
     assert _file_state(paths.runtime_lock) == preserved_before[paths.runtime_lock]
 
-    repeated = confirm_stage_one_data(_settings(paths))
+    repeated = _confirm_current_plan(paths)
     assert repeated.outcome is ResetOutcome.ALREADY_COMPLETE
     assert repeated.deleted_business_files == ()
     assert repeated.deleted_checkpoint_files == ()
@@ -373,7 +442,7 @@ def test_reset_rejects_incomplete_private_staging_before_deletion(
     partial.chmod(0o600)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), _UNMATCHED_PLAN_DIGEST)
 
     assert error.value.code == "reset_rejected"
     assert error.value.phase == "preflight"
@@ -389,7 +458,7 @@ def test_reset_rejects_orphan_artifact_before_any_deletion(tmp_path: Path) -> No
     database_before = _file_state(paths.business_database)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), _UNMATCHED_PLAN_DIGEST)
 
     assert error.value.code == "reset_rejected"
     assert error.value.phase == "preflight"
@@ -408,7 +477,7 @@ async def test_reset_rejects_checkpoint_for_unknown_run_before_deletion(
     checkpoint_before = _file_state(paths.checkpoint_database)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), _UNMATCHED_PLAN_DIGEST)
 
     assert error.value.code == "reset_rejected"
     assert _file_state(paths.business_database) == database_before
@@ -425,7 +494,7 @@ def test_reset_resumes_allowed_empty_cutover_states(
         paths.business_database.touch(mode=0o600)
 
     preview = preview_stage_one_data(_settings(paths))
-    result = confirm_stage_one_data(_settings(paths))
+    result = _confirm_current_plan(paths)
 
     assert preview.state is (
         ResetState.EMPTY_DATABASE
@@ -462,7 +531,7 @@ def test_new_nonempty_database_is_not_a_reset_target(tmp_path: Path) -> None:
     database_before = _file_state(paths.business_database)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), _UNMATCHED_PLAN_DIGEST)
 
     assert error.value.code == "reset_rejected"
     assert _file_state(paths.business_database) == database_before
@@ -494,7 +563,7 @@ async def test_artifact_failure_preserves_old_identity_and_can_retry(
 
     monkeypatch.setattr(deletion_module.shutil, "rmtree", fail_rmtree)
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.phase == "artifact_delete"
     assert paths.business_database.exists()
@@ -502,7 +571,7 @@ async def test_artifact_failure_preserves_old_identity_and_can_retry(
     assert artifact.exists()
 
     monkeypatch.setattr(deletion_module.shutil, "rmtree", real_rmtree)
-    assert confirm_stage_one_data(_settings(paths)).outcome is ResetOutcome.RESET
+    assert _confirm_current_plan(paths).outcome is ResetOutcome.RESET
 
 
 def test_migration_failure_leaves_deletion_complete_for_retry(
@@ -517,7 +586,7 @@ def test_migration_failure_leaves_deletion_complete_for_retry(
 
     monkeypatch.setattr(reset_module.command, "upgrade", fail_upgrade)
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.code == "migration_failed"
     assert error.value.phase == "migration"
@@ -530,7 +599,7 @@ def test_migration_failure_leaves_deletion_complete_for_retry(
     )
 
     monkeypatch.setattr(reset_module.command, "upgrade", real_upgrade)
-    assert confirm_stage_one_data(_settings(paths)).outcome is ResetOutcome.MIGRATED
+    assert _confirm_current_plan(paths).outcome is ResetOutcome.MIGRATED
 
 
 @pytest.mark.asyncio
@@ -559,14 +628,14 @@ async def test_checkpoint_delete_failure_preserves_old_database_and_can_retry(
         fail_checkpoint_main,
     )
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.phase == "checkpoint_delete"
     assert _file_identity(paths.business_database) == old_database_identity
     assert paths.checkpoint_database.exists()
 
     monkeypatch.setattr(reset_module, "unlink_identity_bound_file", real_unlink)
-    assert confirm_stage_one_data(_settings(paths)).outcome is ResetOutcome.RESET
+    assert _confirm_current_plan(paths).outcome is ResetOutcome.RESET
 
 
 def test_business_main_delete_failure_retains_identity_and_can_retry(
@@ -593,14 +662,14 @@ def test_business_main_delete_failure_retains_identity_and_can_retry(
         fail_business_main,
     )
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.phase == "business_delete"
     assert _file_identity(paths.business_database) == old_database_identity
     assert preview_stage_one_data(_settings(paths)).state is ResetState.STAGE_ONE
 
     monkeypatch.setattr(reset_module, "unlink_identity_bound_file", real_unlink)
-    assert confirm_stage_one_data(_settings(paths)).outcome is ResetOutcome.RESET
+    assert _confirm_current_plan(paths).outcome is ResetOutcome.RESET
 
 
 @pytest.mark.asyncio
@@ -630,7 +699,7 @@ async def test_external_state_reappearing_after_checkpoint_delete_preserves_old_
     )
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.phase == "business_delete"
     assert _file_identity(paths.business_database) == old_database_identity
@@ -653,7 +722,7 @@ def test_partial_private_migration_state_is_discarded_before_retry(
 
     monkeypatch.setattr(reset_module.command, "upgrade", fail_after_partial_ddl)
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.code == "migration_failed"
     assert not paths.business_database.exists()
@@ -665,7 +734,7 @@ def test_partial_private_migration_state_is_discarded_before_retry(
     )
 
     monkeypatch.setattr(reset_module.command, "upgrade", real_upgrade)
-    assert confirm_stage_one_data(_settings(paths)).outcome is ResetOutcome.MIGRATED
+    assert _confirm_current_plan(paths).outcome is ResetOutcome.MIGRATED
 
 
 @pytest.mark.asyncio
@@ -679,7 +748,7 @@ async def test_empty_new_head_with_old_checkpoint_is_rejected_without_deletion(
     checkpoint_identity = _file_identity(paths.checkpoint_database)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), _UNMATCHED_PLAN_DIGEST)
 
     assert error.value.code == "reset_rejected"
     assert _file_identity(paths.business_database) == business_identity
@@ -695,7 +764,7 @@ def test_missing_business_main_with_sidecar_is_rejected_without_deletion(
     sidecar_identity = _file_identity(sidecar)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), _UNMATCHED_PLAN_DIGEST)
 
     assert error.value.code == "reset_rejected"
     assert _file_identity(sidecar) == sidecar_identity
@@ -710,7 +779,7 @@ def test_partial_unknown_database_is_rejected_without_deletion(tmp_path: Path) -
     database_identity = _file_identity(paths.business_database)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), _UNMATCHED_PLAN_DIGEST)
 
     assert error.value.code == "reset_rejected"
     assert _file_identity(paths.business_database) == database_identity
@@ -729,7 +798,7 @@ def test_unsafe_nested_artifact_is_rejected_before_any_deletion(
     database_identity = _file_identity(paths.business_database)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), _UNMATCHED_PLAN_DIGEST)
 
     assert error.value.code == "reset_rejected"
     assert _file_identity(paths.business_database) == database_identity
@@ -746,6 +815,7 @@ def test_business_replaced_before_artifact_delete_preserves_artifact(
     _seed_old_database(paths)
     _seed_old_database(replacement_paths, OTHER_RUN_ID)
     artifact = _seed_artifact(paths, RUN_ID)
+    approved_digest = _plan_digest(paths)
     moved_database = paths.root / "expected-incidents.sqlite3"
     replacement_identity = _file_identity(replacement_paths.business_database)
     real_inspect = cast(
@@ -773,7 +843,7 @@ def test_business_replaced_before_artifact_delete_preserves_artifact(
     )
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), approved_digest)
 
     assert error.value.phase == "artifact_delete"
     assert artifact.exists()
@@ -788,6 +858,7 @@ def test_replaced_artifact_directory_is_not_deleted(
     paths = RuntimePaths.prepare(tmp_path / "runtime")
     _seed_old_database(paths)
     _seed_artifact(paths, RUN_ID)
+    approved_digest = _plan_digest(paths)
     old_database_identity = _file_identity(paths.business_database)
     moved_directory = paths.root / "moved-run-artifacts"
     real_snapshot = reset_module.snapshot_safe_artifact_tree
@@ -817,7 +888,7 @@ def test_replaced_artifact_directory_is_not_deleted(
         replace_during_resnapshot,
     )
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        confirm_stage_one_data(_settings(paths), approved_digest)
 
     assert error.value.phase == "artifact_delete"
     assert _file_identity(paths.business_database) == old_database_identity
@@ -860,7 +931,7 @@ def test_artifact_delete_failure_does_not_overwrite_a_replacement(
     monkeypatch.setattr(deletion_module.shutil, "rmtree", fail_after_replacement)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.phase == "artifact_delete"
     assert paths.run_artifact_directory(RUN_ID).read_text(encoding="utf-8") == (
@@ -914,7 +985,7 @@ def test_artifact_replaced_at_atomic_claim_is_not_deleted(
     monkeypatch.setattr(deletion_module.os, "rename", replace_at_claim)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.phase == "artifact_delete"
     assert _file_identity(paths.business_database) == old_database_identity
@@ -970,7 +1041,7 @@ async def test_checkpoint_replaced_at_atomic_claim_is_not_deleted(
     monkeypatch.setattr(deletion_module.os, "rename", replace_at_claim)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.phase == "checkpoint_delete"
     assert _file_identity(paths.business_database) == old_database_identity
@@ -1189,7 +1260,7 @@ def test_database_replaced_after_migration_is_not_reported_complete(
     monkeypatch.setattr(reset_module, "_preflight", replace_before_final_preflight)
 
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.code == "migration_failed"
     assert moved_database.exists()
@@ -1214,7 +1285,7 @@ def test_migration_keeps_the_original_lock_continuously_held(
 
     monkeypatch.setattr(reset_module.command, "upgrade", assert_lock_then_upgrade)
 
-    assert confirm_stage_one_data(_settings(paths)).outcome is ResetOutcome.MIGRATED
+    assert _confirm_current_plan(paths).outcome is ResetOutcome.MIGRATED
 
 
 def test_runtime_root_path_replacement_blocks_migration(
@@ -1235,7 +1306,7 @@ def test_runtime_root_path_replacement_blocks_migration(
 
     monkeypatch.setattr(reset_module.command, "upgrade", replace_root_then_upgrade)
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.code == "migration_failed"
     assert (paths.root / "replacement-marker").read_text(encoding="utf-8") == (
@@ -1277,7 +1348,7 @@ def test_public_database_created_during_private_migration_is_not_modified(
         create_replacement_after_private_upgrade,
     )
     with pytest.raises(StageOneResetError) as error:
-        confirm_stage_one_data(_settings(paths))
+        _confirm_current_plan(paths)
 
     assert error.value.code == "migration_failed"
     assert replacement_state is not None

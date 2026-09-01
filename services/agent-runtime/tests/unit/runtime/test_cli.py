@@ -17,6 +17,7 @@ from k8s_incident_agent.runtime.reset import (
     ResetResult,
     ResetState,
     StageOneResetError,
+    reset_plan_digest,
 )
 from k8s_incident_agent.runtime.retention import PruneResult
 
@@ -109,7 +110,9 @@ def test_stage_one_reset_cli_emits_stable_safe_json(
 
     def fake_reset_confirm(
         _settings: Settings,
+        expected_plan_digest: str,
     ) -> ResetResult:
+        assert expected_plan_digest == reset_plan_digest(plan)
         return result
 
     monkeypatch.setattr(
@@ -120,11 +123,19 @@ def test_stage_one_reset_cli_emits_stable_safe_json(
     monkeypatch.setattr(cli_module, "preview_stage_one_data", fake_reset_preview)
     monkeypatch.setattr(cli_module, "confirm_stage_one_data", fake_reset_confirm)
 
-    assert cli_module.main(["reset-stage-one-data", f"--{mode}"]) == 0
+    arguments = ["reset-stage-one-data", "--preview"]
+    if mode == "confirm":
+        arguments = [
+            "reset-stage-one-data",
+            "--confirm",
+            reset_plan_digest(plan),
+        ]
+    assert cli_module.main(arguments) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "mode": mode,
+        "planDigest": reset_plan_digest(plan),
         "sourceHead": "20260814_0001",
         "state": "stage_one",
         "targetHead": "20260901_0002",
@@ -217,6 +228,27 @@ def test_stage_one_reset_cli_redacts_runtime_root_filesystem_failures(
     }
 
 
+def test_stage_one_reset_cli_binds_real_preview_to_confirm(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("RUNTIME_DATA_DIR", str(tmp_path / "runtime"))
+
+    assert cli_module.main(["reset-stage-one-data", "--preview"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+
+    assert (
+        cli_module.main(["reset-stage-one-data", "--confirm", preview["planDigest"]])
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+
+    assert result["planDigest"] == preview["planDigest"]
+    assert result["outcome"] == "migrated"
+    assert result["newHead"] == "20260901_0002"
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -229,7 +261,11 @@ def test_stage_one_reset_cli_redacts_runtime_root_filesystem_failures(
         ["prune", "--con"],
         ["prune", "--pre"],
         ["reset-stage-one-data"],
+        ["reset-stage-one-data", "--confirm"],
         ["reset-stage-one-data", "--preview", "--confirm"],
+        ["reset-stage-one-data", "--confirm", f"sha256:{'0' * 63}"],
+        ["reset-stage-one-data", "--confirm", f"sha256:{'A' * 64}"],
+        ["reset-stage-one-data", "--confirm", f"sha512:{'0' * 64}"],
         ["reset-stage-one-data", "--preview", "--run-id", str(RUN_ID)],
         ["reset-stage-one-data", "--confirm", "--path", "/tmp/unsafe"],
         ["reset-stage-one-data", "--preview", "--sql", "DROP TABLE incidents"],
