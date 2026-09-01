@@ -866,7 +866,12 @@ function response(key, args) {
       return job;
     }
   }
-  if (key.startsWith("patch pod runtime-data-cutover-") && key.endsWith("--type=json --patch-file=- --output=json")) {
+  if (
+    key.startsWith("patch pod runtime-data-cutover-") &&
+    args.includes("--type=json") &&
+    args.includes("--patch") &&
+    args.includes("--output=json")
+  ) {
     const current = state();
     const pod = current.pods[0];
     const released = structuredClone(pod);
@@ -1230,9 +1235,10 @@ test("cutover preview creates isolation, releases only the admitted gated Pod, a
     "reset-stage-one-data",
     "--preview",
   ]);
-  const patchCall = calls.find((call) => call.args.includes("--patch-file=-"));
+  const patchCall = calls.find((call) => call.args.includes("--patch"));
   assert.ok(patchCall);
-  assert.deepEqual(JSON.parse(patchCall.input), [
+  const patchIndex = patchCall.args.indexOf("--patch");
+  assert.deepEqual(JSON.parse(patchCall.args[patchIndex + 1]), [
     { op: "test", path: "/metadata/uid", value: "pod-uid-1" },
     { op: "test", path: "/metadata/resourceVersion", value: "1" },
     {
@@ -1375,7 +1381,7 @@ test("admitted Pod drift is rejected before scheduling release and current Job i
     );
     assert.equal(result.status, 1, variable);
     assert.equal(
-      fake.calls().some((call) => call.args.includes("--patch-file=-")),
+      fake.calls().some((call) => call.args.includes("--patch")),
       false,
       variable,
     );
@@ -1412,7 +1418,7 @@ test("server-side Job admission drift is rejected before actual Job creation", (
     );
     assert.equal(createdResources(fake.calls(), "Job").length, 0, variable);
     assert.equal(
-      fake.calls().some((call) => call.args.includes("--patch-file=-")),
+      fake.calls().some((call) => call.args.includes("--patch")),
       false,
       variable,
     );

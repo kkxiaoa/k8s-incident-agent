@@ -1030,7 +1030,7 @@ async function releaseCutoverPod(
     pod.metadata?.resourceVersion,
     "cutover Pod resourceVersion",
   );
-  const patch = `${JSON.stringify([
+  const patch = JSON.stringify([
     { op: "test", path: "/metadata/uid", value: podUid },
     {
       op: "test",
@@ -1043,7 +1043,7 @@ async function releaseCutoverPod(
       value: [{ name: CUTOVER_GATE }],
     },
     { op: "remove", path: "/spec/schedulingGates/0" },
-  ])}\n`;
+  ]);
   const released = await readJsonFromKubectl(
     execute,
     request.context,
@@ -1054,11 +1054,11 @@ async function releaseCutoverPod(
       "--namespace",
       APPLICATION_NAMESPACE,
       "--type=json",
-      "--patch-file=-",
+      "--patch",
+      patch,
       "--output=json",
     ],
     "cutover Pod scheduling release",
-    patch,
   );
   if (released.metadata?.uid !== podUid) {
     throw new DeploymentContractError(
