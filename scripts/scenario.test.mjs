@@ -33,6 +33,34 @@ const NAMESPACE = "k8s-incident-scenarios";
 const NODE_IMAGE =
   "kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5";
 
+test("versioned fixture satisfies restricted Pod Security admission", () => {
+  const manifestPath = path.join(
+    REPOSITORY_ROOT,
+    "scenarios",
+    SCENARIO_ID,
+    "manifests",
+    "deployment.yaml",
+  );
+  const documents = [];
+  loadAll(readFileSync(manifestPath, "utf8"), (document) => {
+    if (document !== undefined) documents.push(document);
+  });
+
+  assert.equal(documents.length, 1);
+  const podSpec = documents[0]?.spec?.template?.spec;
+  assert.equal(podSpec?.securityContext?.runAsNonRoot, true);
+  assert.equal(podSpec?.securityContext?.seccompProfile?.type, "RuntimeDefault");
+  assert.equal(podSpec?.containers?.length, 1);
+  assert.equal(
+    podSpec?.containers?.[0]?.securityContext?.allowPrivilegeEscalation,
+    false,
+  );
+  assert.deepEqual(
+    podSpec?.containers?.[0]?.securityContext?.capabilities?.drop,
+    ["ALL"],
+  );
+});
+
 function validScenario() {
   return {
     schema_version: 1,
@@ -281,15 +309,15 @@ function k3sStatusResponse(args, options, fixtures) {
   const commandArgs = args.slice(contextIndex + 2);
   const key = commandArgs.join(" ");
   if (key === "version --output=json") {
-    return { serverVersion: { gitVersion: "v1.36.3+k3s1" } };
+    return { serverVersion: { gitVersion: "v1.36.2+k3s1" } };
   }
   const component = key.match(
     /^get deployment (coredns|traefik|local-path-provisioner) --namespace kube-system --output=json$/,
   );
   if (component !== null) {
     const versions = {
-      coredns: "1.14.6",
-      traefik: "3.7.8",
+      coredns: "1.14.4",
+      traefik: "3.7.4",
       "local-path-provisioner": "0.0.36",
     };
     return {
@@ -348,7 +376,7 @@ function k3sStatusResponse(args, options, fixtures) {
     "get pods --namespace k8s-incident-agent --selector=app.kubernetes.io/part-of=k8s-incident-agent --output=json"
   ) {
     return {
-      kind: "PodList",
+      kind: "List",
       items: ["agent-runtime", "incident-console"].map((name) => ({
         metadata: {
           name: `${name}-current`,
@@ -397,7 +425,7 @@ function k3sStatusResponse(args, options, fixtures) {
   ) {
     return {
       apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicyList",
+      kind: "List",
       items: [...fixtures.resources.values()]
         .filter((resource) => resource.kind === "NetworkPolicy")
         .map((resource) => structuredClone(resource)),

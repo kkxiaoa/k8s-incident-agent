@@ -13,7 +13,15 @@ spec:
       labels:
         app: image-pull-backoff
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: workload
           image: registry.invalid/k8s-incident-agent/missing:v1
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

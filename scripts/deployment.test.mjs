@@ -35,9 +35,9 @@ const REAL_KUBECTL =
     encoding: "utf8",
   }).trim();
 const CONSOLE_IMAGE =
-  "k8s-incident-agent-console@sha256:d17c795998baeaba9616c51bf097be196d46c1ba3350291273c32454c5ddaa2d";
+  "k8s-incident-agent-console@sha256:21738d940b41232a8ddfa78d90869c28b29a437d932bedf021a3e09fb6f8e595";
 const RUNTIME_IMAGE =
-  "k8s-incident-agent-runtime@sha256:ac579e349eea2c3804f687013b9cc7b3c6e8e1d08d4d47f4f8a06249b8fb88e8";
+  "k8s-incident-agent-runtime@sha256:91784f657a06151cb9f4d8219b1cf90581ae8b4fb95f3b4013c68d02c8eac5c9";
 
 function render(relativePath) {
   return execFileSync(
@@ -155,25 +155,69 @@ test("profile overlays change only platform storage, ingress, and intake behavio
     [evaluation, "manual"],
     [online, "online"],
   ]) {
-    assert.equal(
-      getResource(
+    for (const name of ["agent-runtime-config", "incident-console-config"]) {
+      assert.equal(
+        Object.hasOwn(
+          getResource(
+            profile,
+            "ConfigMap",
+            name,
+            "k8s-incident-agent",
+          ).data,
+          "INCIDENT_INTAKE_MODE",
+        ),
+        false,
+      );
+    }
+    for (const [deploymentName, containerName] of [
+      ["agent-runtime", "runtime"],
+      ["incident-console", "console"],
+    ]) {
+      const deployment = getResource(
         profile,
-        "ConfigMap",
-        "agent-runtime-config",
+        "Deployment",
+        deploymentName,
         "k8s-incident-agent",
-      ).data.INCIDENT_INTAKE_MODE,
-      expectedMode,
-    );
-    assert.equal(
-      getResource(
-        profile,
-        "ConfigMap",
-        "incident-console-config",
-        "k8s-incident-agent",
-      ).data.INCIDENT_INTAKE_MODE,
-      expectedMode,
-    );
+      );
+      const container = deployment.spec.template.spec.containers.find(
+        (candidate) => candidate.name === containerName,
+      );
+      assert.equal(
+        container.env.find((entry) => entry.name === "INCIDENT_INTAKE_MODE")
+          ?.value,
+        expectedMode,
+      );
+    }
   }
+
+  assert.notDeepEqual(
+    getResource(
+      evaluation,
+      "Deployment",
+      "agent-runtime",
+      "k8s-incident-agent",
+    ).spec.template,
+    getResource(
+      online,
+      "Deployment",
+      "agent-runtime",
+      "k8s-incident-agent",
+    ).spec.template,
+  );
+  assert.notDeepEqual(
+    getResource(
+      evaluation,
+      "Deployment",
+      "incident-console",
+      "k8s-incident-agent",
+    ).spec.template,
+    getResource(
+      online,
+      "Deployment",
+      "incident-console",
+      "k8s-incident-agent",
+    ).spec.template,
+  );
 });
 
 test("Runtime render preserves one-writer migration, storage, identity, and image contracts", () => {
@@ -244,6 +288,10 @@ test("Runtime render preserves one-writer migration, storage, identity, and imag
     },
   ]);
   assert.deepEqual(pod.containers[0].env, [
+    {
+      name: "INCIDENT_INTAKE_MODE",
+      value: "manual",
+    },
     {
       name: "DEEPSEEK_API_KEY",
       valueFrom: {
@@ -407,7 +455,12 @@ test("NetworkPolicy render has default deny plus only the required L3/L4 paths",
     "k8s-incident-agent",
   );
   assert.deepEqual(https.spec.egress, [
-    { ports: [{ port: 443, protocol: "TCP" }] },
+    {
+      ports: [
+        { port: 443, protocol: "TCP" },
+        { port: 6443, protocol: "TCP" },
+      ],
+    },
   ]);
 });
 
@@ -439,12 +492,12 @@ test("K3s producer contract stays exact and does not duplicate the kubectl pin",
     readFileSync(path.join(APPLICATION_ROOT, "versions.json"), "utf8"),
   );
   assert.deepEqual(contract, {
-    k3s: "v1.36.3+k3s1",
-    kubernetes: "v1.36.3",
+    k3s: "v1.36.2+k3s1",
+    kubernetes: "v1.36.2",
     components: {
-      coredns: "v1.14.6",
+      coredns: "v1.14.4",
       localPathProvisioner: "v0.0.36",
-      traefik: "v3.7.8",
+      traefik: "v3.7.4",
     },
   });
   assert.equal(Object.hasOwn(contract, "kubectl"), false);
@@ -535,6 +588,10 @@ const lockedImages = ${JSON.stringify([CONSOLE_IMAGE, RUNTIME_IMAGE])};
 function deployment(name) {
   const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
   const document = structuredClone(deploymentFixtures[profile][name]);
+  if (process.env.FAKE_DEPLOYMENT_INTAKE_MODE) {
+    const container = document.spec.template.spec.containers[0];
+    container.env.find((entry) => entry.name === "INCIDENT_INTAKE_MODE").value = process.env.FAKE_DEPLOYMENT_INTAKE_MODE;
+  }
   document.metadata.generation = 3;
   document.status = { observedGeneration: 3, replicas: 1, updatedReplicas: 1, availableReplicas: 1 };
   return document;
@@ -550,11 +607,11 @@ function response(key, args) {
     return { clientVersion: { gitVersion: process.env.FAKE_CLIENT_VERSION || "v1.36.2" } };
   }
   if (key === "version --output=json") {
-    return { serverVersion: { gitVersion: process.env.FAKE_SERVER_VERSION || "v1.36.3+k3s1" } };
+    return { serverVersion: { gitVersion: process.env.FAKE_SERVER_VERSION || "v1.36.2+k3s1" } };
   }
   const component = key.match(/^get deployment (coredns|traefik|local-path-provisioner) --namespace kube-system --output=json$/);
   if (component) {
-    const versions = { coredns: "1.14.6", traefik: "3.7.8", "local-path-provisioner": "0.0.36" };
+    const versions = { coredns: "1.14.4", traefik: "3.7.4", "local-path-provisioner": "0.0.36" };
     return {
       metadata: { generation: 2 },
       spec: { replicas: 1, template: { spec: { containers: [{ image: "registry.example/" + component[1] + ":" + versions[component[1]] }] } } },
@@ -579,13 +636,16 @@ function response(key, args) {
     const availableImages = process.env.FAKE_IMAGE_MISSING === "1"
       ? lockedImages.slice(0, 1)
       : lockedImages;
+    const imageRepository = process.env.FAKE_IMAGE_REPOSITORY_MISMATCH === "1"
+      ? "registry.example/"
+      : "docker.io/library/";
     return {
-      kind: "NodeList",
+      kind: "List",
       items: [{
         metadata: { name: "single-node" },
         status: {
           conditions: [{ type: "Ready", status: "True" }],
-          images: availableImages.map((name) => ({ names: ["docker.io/library/" + name] })),
+          images: availableImages.map((name) => ({ names: [imageRepository + name] })),
         },
       }],
     };
@@ -623,7 +683,7 @@ function response(key, args) {
         status: { phase: "Running", containerStatuses: [{ ready: false }] },
       });
     }
-    return { kind: "PodList", items: pods };
+    return { kind: "List", items: pods };
   }
   const service = key.match(/^get service (agent-runtime|incident-console) --namespace k8s-incident-agent --output=json$/);
   if (service) {
@@ -656,7 +716,6 @@ function response(key, args) {
       },
       data: runtime
         ? {
-          INCIDENT_INTAKE_MODE: process.env.FAKE_INTAKE_MODE || "online",
           KUBERNETES_CLUSTER_ID: "k8s-incident-agent",
           KUBERNETES_CREDENTIAL_MODE: "in_cluster",
           KUBERNETES_DIAGNOSTIC_NAMESPACE: "k8s-incident-scenarios",
@@ -665,7 +724,6 @@ function response(key, args) {
         }
         : {
           AGENT_RUNTIME_URL: "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000",
-          INCIDENT_INTAKE_MODE: process.env.FAKE_INTAKE_MODE || "online",
         },
     };
   }
@@ -677,7 +735,7 @@ function response(key, args) {
     }
     return {
       apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicyList",
+      kind: "List",
       items,
     };
   }
@@ -843,7 +901,6 @@ test("confirmed online install preflights, applies, waits, and reports the real 
 
 test("Kind status accepts the fixed ownership init and exact producer lists", (t) => {
   const fake = createFakeKubectl(t, {
-    FAKE_INTAKE_MODE: "manual",
     FAKE_PROFILE: "kind-evaluation",
     FAKE_SERVER_VERSION: "v1.36.1",
   });
@@ -906,6 +963,18 @@ test("status ignores an old terminating Console Pod after rollout", (t) => {
   assert.equal(JSON.parse(result.stdout).pods, 2);
 });
 
+test("status rejects a deployed intake mode that differs from the profile", (t) => {
+  const fake = createFakeKubectl(t, {
+    FAKE_DEPLOYMENT_INTAKE_MODE: "manual",
+  });
+  const result = runDeployment(
+    ["status", "k3s-online", "--context", "demo-k3s"],
+    fake.environment,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL installation_not_ready /);
+});
+
 test("confirmed install rejects an unavailable fixed K3s component before apply", (t) => {
   const fake = createFakeKubectl(t, { FAKE_COMPONENT_UNAVAILABLE: "traefik" });
   const result = runDeployment(
@@ -952,6 +1021,22 @@ test("confirmed install rejects a missing locked node image before apply", (t) =
     fake
       .calls()
       .some((call) => call.args.includes("apply")),
+    false,
+  );
+});
+
+test("confirmed install rejects the right digest under an unusable repository name", (t) => {
+  const fake = createFakeKubectl(t, {
+    FAKE_IMAGE_REPOSITORY_MISMATCH: "1",
+  });
+  const result = runDeployment(
+    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    fake.environment,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL image_unavailable /);
+  assert.equal(
+    fake.calls().some((call) => call.args.includes("apply")),
     false,
   );
 });

@@ -590,8 +590,8 @@ async function readInstallationStatus(
   requireClusterIpService(runtimeService, "agent-runtime", 8000);
   requireClusterIpService(consoleService, "incident-console", 80);
   const volumeName = requireBoundPvc(pvc, request.profile);
-  requireRuntimeConfig(runtimeConfig, request.profile.intakeMode);
-  requireConsoleConfig(consoleConfig, request.profile.intakeMode);
+  requireRuntimeConfig(runtimeConfig);
+  requireConsoleConfig(consoleConfig);
   requireNetworkPolicies(networkPolicies, desiredManifest);
   if (request.profile.platform === "k3s") {
     const ingress = await readJsonResource(execute, request.context, [
@@ -786,7 +786,7 @@ async function requireSingleNodeImages(contract, context, execute) {
     "--output=json",
   ], "Kubernetes Nodes");
   if (
-    nodes.kind !== "NodeList" ||
+    nodes.kind !== "List" ||
     !Array.isArray(nodes.items) ||
     nodes.items.length !== 1
   ) {
@@ -806,14 +806,10 @@ async function requireSingleNodeImages(contract, context, execute) {
       "the fixed Kubernetes node is not ready",
     );
   }
-  const expectedDigests = Object.values(contract.images).map(
-    (image) => image.slice(image.indexOf("@") + 1),
+  const expectedImageNames = Object.values(contract.images).map(
+    (image) => `docker.io/library/${image}`,
   );
-  if (
-    expectedDigests.some(
-      (digest) => !imageNames.some((name) => name.endsWith(`@${digest}`)),
-    )
-  ) {
+  if (expectedImageNames.some((expected) => !imageNames.includes(expected))) {
     throw new DeploymentContractError(
       "image_unavailable",
       "the fixed deployment images are not available on the Kubernetes node",
@@ -1109,6 +1105,11 @@ function requireReadyDeployment(document, name, images, profile) {
   ) {
     throw stateError(`${name} Deployment does not use the locked image`);
   }
+  requireContainerIntakeMode(
+    containers[0],
+    profile.intakeMode,
+    `${name} Deployment`,
+  );
   if (isRuntime) {
     const migration = initContainers.find(
       (container) => container?.name === "migrate",
@@ -1172,8 +1173,21 @@ function requireReadyDeployment(document, name, images, profile) {
   }
 }
 
+function requireContainerIntakeMode(container, intakeMode, label) {
+  const entries = Array.isArray(container?.env)
+    ? container.env.filter((entry) => entry?.name === "INCIDENT_INTAKE_MODE")
+    : [];
+  if (
+    entries.length !== 1 ||
+    entries[0]?.value !== intakeMode ||
+    Object.hasOwn(entries[0], "valueFrom")
+  ) {
+    throw stateError(`${label} does not use the selected intake mode`);
+  }
+}
+
 function requireReadyPods(document) {
-  if (document.kind !== "PodList" || !Array.isArray(document.items)) {
+  if (document.kind !== "List" || !Array.isArray(document.items)) {
     throw stateError("application Pods are unavailable");
   }
   const activePods = document.items.filter(
@@ -1248,9 +1262,8 @@ function requireBoundPvc(document, profile) {
   return volumeName;
 }
 
-function requireRuntimeConfig(document, intakeMode) {
+function requireRuntimeConfig(document) {
   const expected = {
-    INCIDENT_INTAKE_MODE: intakeMode,
     KUBERNETES_CLUSTER_ID: "k8s-incident-agent",
     KUBERNETES_CREDENTIAL_MODE: "in_cluster",
     KUBERNETES_DIAGNOSTIC_NAMESPACE: DIAGNOSTIC_NAMESPACE,
@@ -1261,18 +1274,19 @@ function requireRuntimeConfig(document, intakeMode) {
     document.kind !== "ConfigMap" ||
     document.metadata?.name !== "agent-runtime-config" ||
     document.metadata?.namespace !== APPLICATION_NAMESPACE ||
+    Object.hasOwn(document.data ?? {}, "INCIDENT_INTAKE_MODE") ||
     Object.entries(expected).some(([key, value]) => document.data?.[key] !== value)
   ) {
     throw stateError("Runtime ConfigMap does not match the selected profile");
   }
 }
 
-function requireConsoleConfig(document, intakeMode) {
+function requireConsoleConfig(document) {
   if (
     document.kind !== "ConfigMap" ||
     document.metadata?.name !== "incident-console-config" ||
     document.metadata?.namespace !== APPLICATION_NAMESPACE ||
-    document.data?.INCIDENT_INTAKE_MODE !== intakeMode ||
+    Object.hasOwn(document.data ?? {}, "INCIDENT_INTAKE_MODE") ||
     document.data?.AGENT_RUNTIME_URL !==
       "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000"
   ) {
@@ -1304,7 +1318,7 @@ function requireReadyIngress(document) {
 
 function requireNetworkPolicies(document, desiredManifest) {
   if (
-    document.kind !== "NetworkPolicyList" ||
+    document.kind !== "List" ||
     !Array.isArray(document.items)
   ) {
     throw stateError("application NetworkPolicies are unavailable");

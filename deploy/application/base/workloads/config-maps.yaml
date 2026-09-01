@@ -8,7 +8,6 @@ metadata:
     app.kubernetes.io/part-of: k8s-incident-agent
 data:
   AGENT_RUNTIME_URL: http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000
-  INCIDENT_INTAKE_MODE: manual
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -19,7 +18,6 @@ metadata:
     app.kubernetes.io/name: agent-runtime
     app.kubernetes.io/part-of: k8s-incident-agent
 data:
-  INCIDENT_INTAKE_MODE: manual
   KUBERNETES_CLUSTER_ID: k8s-incident-agent
   KUBERNETES_CREDENTIAL_MODE: in_cluster
   KUBERNETES_DIAGNOSTIC_NAMESPACE: k8s-incident-scenarios

@@ -166,13 +166,22 @@ k3s-online
 `status` 都要求显式 `--context`，先精确核对仓库锁定的 kubectl 与目标
 Kubernetes/K3s 版本；Kind 还要求固定 context。K3s 会继续核对 CoreDNS、
 Traefik、local-path-provisioner 的固定镜像与当前可用性，以及默认 StorageClass。
-确认 install/upgrade 还要求固定单节点 Ready、两个锁定 digest 已导入，并通过
-kubectl 内部投影只返回固定模型 Secret key 是否非空，不把 Secret value 返回给
-生命周期脚本。任何检查失败都不会回退到宽权限、宿主机 Runtime 或内存数据。
+确认 install/upgrade 还要求固定单节点 Ready、两个 manifest 可解析的
+`docker.io/library/<repository>@<locked-digest>` identity 已导入，并通过 kubectl
+内部投影只返回固定模型 Secret key 是否非空，不把 Secret value 返回给生命周期
+脚本。任何检查失败都不会回退到宽权限、宿主机 Runtime 或内存数据。
+当前lock是每个逻辑镜像一个只含`linux/arm64`与`linux/amd64`的OCI index。containerd
+导入archive后默认只为顶层index保留tag；即使使用`ctr images import --digests`，也
+不会自动生成manifest所引用的应用repository@index。因此operator必须在导入同一
+archive后，使用`ctr images tag <repository>:<build-tag> <repository>@<locked-index-digest>`
+为同一index增加精确reference。预检继续要求完整repository@index，不降级为可变tag。
 Kind 静态 hostPath 额外由同一锁定 Runtime image 的受限 init 只调整挂载根
-ownership；migration 和 Runtime 本身仍保持非 root。status 按固定 kubectl 的
-`NodeList`、`PodList`、`NetworkPolicyList` producer contract 校验，不接受测试期
-通用 `List` fallback，并忽略 RollingUpdate 已带删除时间的旧 Console Pod。
+ownership；migration 和 Runtime 本身仍保持非 root。status 按固定 kubectl 的资源
+列表命令 `apiVersion: v1, kind: List` producer contract 校验，并忽略 RollingUpdate
+已带删除时间的旧 Console Pod。`INCIDENT_INTAKE_MODE` 直接位于
+Console 与 Runtime 的 Deployment Pod template；base 为 `manual`，`k3s-online`
+overlay 改为 `online` 并触发 rollout。ConfigMap 不重复保存该值，status 会
+核对实际容器 env 与 rollout generation，防止 profile 已升级但进程仍使用旧 mode。
 
 普通 `uninstall` 使用独立 Kustomize 资源集合，从结构上排除 Namespace、PVC
 和 PV。`purge` 必须先确认应用 Namespace 内标准 Pod controller 与 Pod 均已卸载，

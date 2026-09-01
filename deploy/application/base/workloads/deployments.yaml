@@ -30,6 +30,9 @@ spec:
         - name: console
           image: k8s-incident-agent-console
           imagePullPolicy: IfNotPresent
+          env:
+            - name: INCIDENT_INTAKE_MODE
+              value: manual
           envFrom:
             - configMapRef:
                 name: incident-console-config
@@ -115,6 +118,8 @@ spec:
             - configMapRef:
                 name: agent-runtime-config
           env:
+            - name: INCIDENT_INTAKE_MODE
+              value: manual
             - name: DEEPSEEK_API_KEY
               valueFrom:
                 secretKeyRef:

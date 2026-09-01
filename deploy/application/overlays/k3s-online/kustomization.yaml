@@ -5,13 +5,15 @@ resources:
 patches:
   - path: console-online.yaml
     target:
+      group: apps
       version: v1
-      kind: ConfigMap
-      name: incident-console-config
+      kind: Deployment
+      name: incident-console
       namespace: k8s-incident-agent
   - path: runtime-online.yaml
     target:
+      group: apps
       version: v1
-      kind: ConfigMap
-      name: agent-runtime-config
+      kind: Deployment
+      name: agent-runtime
       namespace: k8s-incident-agent
