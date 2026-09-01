@@ -33,6 +33,7 @@ npm run doctor
 | `npm run deployment -- install\|upgrade\|uninstall ... [--preview]` | `deployment.mjs` | 默认预览精确资源集合 | 否 |
 | `npm run deployment -- install\|upgrade\|uninstall ... --confirm` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
 | `npm run deployment -- purge ... --preview\|--confirm <identity>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
+| `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation>` | `deployment.mjs` | 用固定一次性 Job 预览或确认保留 PVC 的 Stage 1 数据 cutover | 是；`--confirm` 额外删除旧业务数据 |
 | `npm run scenario -- list` | `scenario.mjs` | 校验并列出版本化场景的公开信息 | 否 |
 | `npm run scenario -- apply <scenario-id>` | `scenario.mjs` | 安装指定 catalog fixture | 是 |
 | `npm run scenario -- verify <scenario-id>` | `scenario.mjs` | 等待并验证场景的确定性证据条件 | 否 |
@@ -190,6 +191,26 @@ identity 返回给操作者；只有同一次确认仍匹配当前对象且 K3s 
 `Delete` reclaim policy 时才请求删除。Kind 静态 hostPath 无法由 Kubernetes
 对象删除证明底层数据已清理，因此该脚本拒绝 Kind purge。
 
+Stage 1.6 数据 cutover 只接受 `kind-evaluation` 与 `k3s-evaluation`：
+
+```bash
+npm run deployment -- cutover k3s-evaluation --context <context> --preview
+npm run deployment -- cutover k3s-evaluation --context <context> --confirm <cutover-confirmation>
+```
+
+cutover 要求应用 workload 已停止，并重新核对固定集群版本、单 Ready node、
+锁定 Runtime image、Namespace/PVC/PV identity、唯一 `default-deny` 和三类 API
+mutator 空集合。preview 也会以锁定 Runtime image 创建一次无 token、无 Secret、
+无网络 allow、单 Pod、零重试的固定 Job，因此不是离线只读操作；真实 admitted Pod
+必须保持 `SchedulingGated`，通过固定安全投影后才用 UID/resourceVersion 前置条件
+移除 gate。每个 Job 无论结果如何都按创建时的 UID 清理，普通 install/upgrade
+发现 Job 或 owner Pod 残留时会在 apply 前拒绝。
+
+preview 只输出有界 reset 摘要和绑定当前集群/PVC/image/Runtime plan 的版本化
+confirmation。confirm 会先运行一个全新 preview Job，再重读全部外部 identity；只有
+用户 confirmation 仍匹配时，才把该次 Runtime `planDigest` 传给新的 confirm Job。
+不接受 image、PVC、Namespace、manifest、路径、SQL、Run ID、环境变量或任意命令参数。
+
 完整安装顺序、Secret 边界和命令见本地 Work 的
 `docs/work/stage-1-5-k3s-installable-baseline/installation.md`。真实 image import、
 apply、uninstall、purge 与 NetworkPolicy enforcement 都需要对应 live 授权。
@@ -222,7 +243,7 @@ node --test scripts/scenario.test.mjs
 - 集群、context 和 Namespace 身份固定，脚本不会连接任意用户输入的目标；
 - 场景 ID 必须来自已经校验的 catalog，不能作为文件路径或额外命令参数；
 - deployment profile、Namespace、资源名、镜像 digest 与 manifest 路径均来自仓库固定契约；只有显式 context 由操作者选择，并在任何写操作前核对目标版本/发行版；
-- deployment preview 默认无副作用；install、upgrade、uninstall 与 purge 必须使用显式确认模式，普通 uninstall 永不包含 Namespace、PVC 或 PV；
+- deployment lifecycle preview 默认无副作用；cutover preview 会创建并清理固定 Job，必要时创建并保留 `default-deny`；install、upgrade、uninstall、purge 与 cutover 的破坏性路径都必须使用各自的显式确认模式，普通 uninstall 永不包含 Namespace、PVC 或 PV；
 - `up`、`bootstrap-access`、`down`、`scenario apply` 和 `scenario cleanup` 有明确副作用，运行前应确认目标状态；
 - 脚本不会自动执行完整 live 验收序列，也不会自行决定最终保留 fixture 或 cleanup；
 - kubeconfig、token、CA data 和原始敏感响应不得写入日志、测试 fixture 或版本库。

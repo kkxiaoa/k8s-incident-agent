@@ -514,6 +514,12 @@ function runDeployment(args, environment = {}) {
 function createFakeKubectl(t, overrides = {}) {
   const directory = mkdtempSync(path.join(os.tmpdir(), "deployment-kubectl-"));
   const logPath = path.join(directory, "calls.jsonl");
+  const statePath = path.join(directory, "state.json");
+  writeFileSync(logPath, "");
+  writeFileSync(
+    statePath,
+    JSON.stringify({ job: null, pods: [], policyPresent: false, sequence: 0 }),
+  );
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const executable = path.join(directory, "kubectl");
   const rendered = {
@@ -561,7 +567,7 @@ function createFakeKubectl(t, overrides = {}) {
   writeFileSync(
     executable,
     `#!/usr/bin/env node
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
 let input = "";
@@ -585,6 +591,14 @@ const deploymentFixtures = ${JSON.stringify(deploymentFixtures)};
 const networkPolicyFixtures = ${JSON.stringify(networkPolicyFixtures)};
 const lockedImages = ${JSON.stringify([CONSOLE_IMAGE, RUNTIME_IMAGE])};
 
+function state() {
+  return JSON.parse(readFileSync(process.env.FAKE_KUBECTL_STATE, "utf8"));
+}
+
+function saveState(value) {
+  writeFileSync(process.env.FAKE_KUBECTL_STATE, JSON.stringify(value));
+}
+
 function deployment(name) {
   const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
   const document = structuredClone(deploymentFixtures[profile][name]);
@@ -595,6 +609,107 @@ function deployment(name) {
   document.metadata.generation = 3;
   document.status = { observedGeneration: 3, replicas: 1, updatedReplicas: 1, availableReplicas: 1 };
   return document;
+}
+
+function admittedCutoverJob(document, uid) {
+  const job = structuredClone(document);
+  job.metadata.uid = uid;
+  job.metadata.resourceVersion = "1";
+  job.status = {};
+  return job;
+}
+
+function gatedCutoverPod(job, name, uid) {
+  const pod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name,
+      namespace: "k8s-incident-agent",
+      uid,
+      resourceVersion: "1",
+      labels: {
+        ...job.spec.template.metadata.labels,
+        "batch.kubernetes.io/job-name": "runtime-data-cutover",
+      },
+      ownerReferences: [{
+        apiVersion: "batch/v1",
+        kind: "Job",
+        name: "runtime-data-cutover",
+        uid: job.metadata.uid,
+        controller: true,
+        blockOwnerDeletion: true,
+      }],
+    },
+    spec: structuredClone(job.spec.template.spec),
+    status: {
+      phase: "Pending",
+      conditions: [{
+        type: "PodScheduled",
+        status: "False",
+        reason: "SchedulingGated",
+      }],
+    },
+  };
+  pod.spec.serviceAccountName = "default";
+  pod.spec.tolerations = [
+    {
+      key: "node.kubernetes.io/not-ready",
+      operator: "Exists",
+      effect: "NoExecute",
+      tolerationSeconds: 300,
+    },
+    {
+      key: "node.kubernetes.io/unreachable",
+      operator: "Exists",
+      effect: "NoExecute",
+      tolerationSeconds: 300,
+    },
+  ];
+  if (process.env.FAKE_CUTOVER_GATE_MISSING === "1") {
+    delete pod.spec.schedulingGates;
+  }
+  if (process.env.FAKE_CUTOVER_EXTRA_CONTAINER === "1") {
+    pod.spec.containers.push({ name: "injected", image: "busybox:latest" });
+  }
+  return pod;
+}
+
+function runtimeOutput(command) {
+  const mode = command[2] === "--preview" ? "preview" : "confirm";
+  if (process.env.FAKE_CUTOVER_OUTPUT_MALFORMED === "1") return "not-json";
+  if (process.env.FAKE_CUTOVER_JOB_FAILED === "1") {
+    return {
+      mode,
+      error: { code: "reset_rejected", phase: "preflight" },
+    };
+  }
+  const planDigest = mode === "preview"
+    ? "sha256:" + "1".repeat(64)
+    : command[3];
+  return {
+    mode,
+    planDigest,
+    sourceHead: "20260814_0001",
+    state: "stage_one",
+    targetHead: "20260901_0002",
+    targets: {
+      artifactRunIds: ["artifact-run-id"],
+      businessFiles: ["incidents.sqlite3"],
+      checkpointFiles: ["checkpoints.sqlite3"],
+      rowCounts: { incidents: 1, agent_runs: 1 },
+      runIds: ["run-id"],
+    },
+    ...(mode === "confirm" ? {
+      deleted: {
+        artifactRunIds: ["artifact-run-id"],
+        businessFiles: ["incidents.sqlite3"],
+        checkpointFiles: ["checkpoints.sqlite3"],
+      },
+      newHead: "20260901_0002",
+      outcome: "reset",
+    } : {}),
+  };
 }
 
 function response(key, args) {
@@ -635,7 +750,9 @@ function response(key, args) {
   if (key === "get nodes --output=json") {
     const availableImages = process.env.FAKE_IMAGE_MISSING === "1"
       ? lockedImages.slice(0, 1)
-      : lockedImages;
+      : process.env.FAKE_CONSOLE_IMAGE_MISSING === "1"
+        ? lockedImages.slice(1)
+        : lockedImages;
     const imageRepository = process.env.FAKE_IMAGE_REPOSITORY_MISMATCH === "1"
       ? "registry.example/"
       : "docker.io/library/";
@@ -649,6 +766,165 @@ function response(key, args) {
         },
       }],
     };
+  }
+  if (key === "get namespace k8s-incident-agent --output=json") {
+    return {
+      apiVersion: "v1",
+      kind: "Namespace",
+      metadata: {
+        name: "k8s-incident-agent",
+        uid: process.env.FAKE_NAMESPACE_UID || "namespace-uid",
+        labels: { "app.kubernetes.io/part-of": "k8s-incident-agent" },
+      },
+    };
+  }
+  if (key === "get job runtime-data-cutover --namespace k8s-incident-agent --ignore-not-found=true --output=json") {
+    const current = state();
+    if (current.job !== null) return current.job;
+    if (process.env.FAKE_CUTOVER_RESIDUE === "1") {
+      return { apiVersion: "batch/v1", kind: "Job", metadata: { name: "runtime-data-cutover" } };
+    }
+    return "";
+  }
+  if (key === "get pods --namespace k8s-incident-agent --output=json") {
+    const items = structuredClone(state().pods);
+    if (process.env.FAKE_CUTOVER_OWNER_POD_ONLY === "1") {
+      items.push({
+        apiVersion: "v1",
+        kind: "Pod",
+        metadata: {
+          name: "owner-only-residue",
+          namespace: "k8s-incident-agent",
+          ownerReferences: [{
+            apiVersion: "batch/v1",
+            kind: "Job",
+            name: "runtime-data-cutover",
+            uid: "deleted-job-uid",
+            controller: true,
+          }],
+        },
+      });
+    }
+    return { apiVersion: "v1", kind: "List", items };
+  }
+  if (
+    key === "get mutatingwebhookconfigurations.admissionregistration.k8s.io --output=json" ||
+    key === "get mutatingadmissionpolicies.admissionregistration.k8s.io --output=json" ||
+    key === "get mutatingadmissionpolicybindings.admissionregistration.k8s.io --output=json"
+  ) {
+    return {
+      apiVersion: "v1",
+      kind: "List",
+      items: process.env.FAKE_CUTOVER_MUTATOR === "1" ? [{ metadata: { name: "unexpected-mutator" } }] : [],
+    };
+  }
+  if (
+    key === "create --dry-run=server --output=json --filename=-" ||
+    key === "create --output=json --filename=-"
+  ) {
+    const document = JSON.parse(input);
+    const dryRun = key.includes("--dry-run=server");
+    if (document.kind === "NetworkPolicy") {
+      if (!dryRun) {
+        const current = state();
+        current.policyPresent = true;
+        saveState(current);
+      }
+      return document;
+    }
+    if (document.kind === "Job") {
+      if (dryRun) {
+        const admitted = admittedCutoverJob(document, "dry-run-job-uid");
+        if (process.env.FAKE_CUTOVER_JOB_ADMISSION_DRIFT === "1") {
+          admitted.spec.template.spec.containers.push({
+            name: "injected",
+            image: "busybox:latest",
+          });
+        }
+        if (process.env.FAKE_CUTOVER_JOB_NODENAME_DRIFT === "1") {
+          admitted.spec.template.spec.nodeName = "single-node";
+        }
+        return admitted;
+      }
+      const current = state();
+      current.sequence += 1;
+      const job = admittedCutoverJob(document, "job-uid-" + current.sequence);
+      const pod = gatedCutoverPod(
+        job,
+        "runtime-data-cutover-" + current.sequence,
+        "pod-uid-" + current.sequence,
+      );
+      current.job = job;
+      current.pods = [pod];
+      if (process.env.FAKE_CUTOVER_MULTIPLE_PODS === "1") {
+        const duplicate = structuredClone(pod);
+        duplicate.metadata.name += "-duplicate";
+        duplicate.metadata.uid += "-duplicate";
+        current.pods.push(duplicate);
+      }
+      saveState(current);
+      return job;
+    }
+  }
+  if (key.startsWith("patch pod runtime-data-cutover-") && key.endsWith("--type=json --patch-file=- --output=json")) {
+    const current = state();
+    const pod = current.pods[0];
+    const released = structuredClone(pod);
+    released.metadata.resourceVersion = "2";
+    released.spec.schedulingGates = [];
+    const terminal = structuredClone(released);
+    terminal.metadata.resourceVersion = "3";
+    terminal.spec.nodeName = "single-node";
+    const failed = process.env.FAKE_CUTOVER_JOB_FAILED === "1";
+    terminal.status = {
+      phase: failed ? "Failed" : "Succeeded",
+      conditions: [{ type: "PodScheduled", status: "True" }],
+      containerStatuses: [{
+        name: "runtime-reset",
+        ready: false,
+        restartCount: 0,
+        state: { terminated: { exitCode: failed ? 1 : 0 } },
+      }],
+    };
+    if (process.env.FAKE_CUTOVER_POD_UID_REPLACED === "1") {
+      terminal.metadata.uid = "replacement-pod-uid";
+    }
+    current.pods = [terminal];
+    current.job.status = {
+      conditions: [{
+        type: failed ? "Failed" : "Complete",
+        status: "True",
+      }],
+    };
+    saveState(current);
+    return released;
+  }
+  if (key.startsWith("logs pod/runtime-data-cutover-") && key.endsWith("--namespace k8s-incident-agent --container runtime-reset")) {
+    const current = state();
+    const output = runtimeOutput(current.job.spec.template.spec.containers[0].command);
+    if (process.env.FAKE_CUTOVER_POD_UID_REPLACED_AFTER_LOG === "1") {
+      current.pods[0].metadata.uid = "replacement-pod-uid-after-log";
+      saveState(current);
+    }
+    return output;
+  }
+  if (key === "delete --raw /apis/batch/v1/namespaces/k8s-incident-agent/jobs/runtime-data-cutover --filename=-") {
+    if (process.env.FAKE_CUTOVER_CLEANUP_FAILED === "1") {
+      process.exitCode = 1;
+      return "cleanup failed";
+    }
+    const current = state();
+    current.job = null;
+    current.pods = [];
+    saveState(current);
+    return {};
+  }
+  if (
+    key === "wait --for=delete job/runtime-data-cutover --namespace k8s-incident-agent --timeout=300s" ||
+    (key.startsWith("wait --for=delete pod/runtime-data-cutover-") &&
+      key.endsWith("--namespace k8s-incident-agent --timeout=300s"))
+  ) {
+    return "ok\\n";
   }
   if (key === "get deployment agent-runtime --namespace k8s-incident-agent --output=json") {
     return deployment("agent-runtime");
@@ -704,7 +980,20 @@ function response(key, args) {
   }
   if (key === "get persistentvolumeclaim runtime-data --namespace k8s-incident-agent --output=json" || key === "get persistentvolumeclaim runtime-data --namespace k8s-incident-agent --ignore-not-found=true --output=json") {
     const kind = process.env.FAKE_PROFILE === "kind-evaluation";
-    return { kind: "PersistentVolumeClaim", metadata: { name: "runtime-data", namespace: "k8s-incident-agent", uid: "pvc-uid" }, spec: { storageClassName: kind ? "k8s-incident-agent-kind" : "local-path", volumeName: kind ? "k8s-incident-agent-runtime-data" : "pvc-volume" }, status: { phase: "Bound" } };
+    return {
+      apiVersion: "v1",
+      kind: "PersistentVolumeClaim",
+      metadata: { name: "runtime-data", namespace: "k8s-incident-agent", uid: "pvc-uid" },
+      spec: {
+        accessModes: ["ReadWriteOnce"],
+        storageClassName: process.env.FAKE_CUTOVER_STORAGE_DRIFT === "1"
+          ? "unexpected"
+          : kind ? "k8s-incident-agent-kind" : "local-path",
+        volumeMode: "Filesystem",
+        volumeName: kind ? "k8s-incident-agent-runtime-data" : "pvc-volume",
+      },
+      status: { phase: "Bound" },
+    };
   }
   if (key === "get configmap agent-runtime-config --namespace k8s-incident-agent --output=json" || key === "get configmap incident-console-config --namespace k8s-incident-agent --output=json") {
     const runtime = key.includes("agent-runtime-config");
@@ -729,9 +1018,16 @@ function response(key, args) {
   }
   if (key === "get networkpolicies --namespace k8s-incident-agent --output=json") {
     const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
-    const items = structuredClone(networkPolicyFixtures[profile]);
+    const current = state();
+    const items = process.env.FAKE_CUTOVER === "1"
+      ? current.policyPresent
+        ? [structuredClone(networkPolicyFixtures[profile].find((item) => item.metadata.name === "default-deny"))]
+        : []
+      : structuredClone(networkPolicyFixtures[profile]);
     if (process.env.FAKE_NETWORK_POLICY_DRIFT === "1") {
-      items.find((item) => item.metadata.name === "default-deny").spec.ingress = [{}];
+      const defaultDeny = items.find((item) => item.metadata.name === "default-deny");
+      if (defaultDeny) defaultDeny.spec.ingress = [{}];
+      else items.push({ kind: "NetworkPolicy", metadata: { name: "unexpected" }, spec: {} });
     }
     return {
       apiVersion: "networking.k8s.io/v1",
@@ -767,7 +1063,33 @@ function response(key, args) {
     return process.env.FAKE_ACTIVE_WORKLOAD === "1" ? "pod/agent-runtime-active\\n" : "";
   }
   if (key === "get persistentvolume pvc-volume --output=json") {
-    return { kind: "PersistentVolume", metadata: { name: "pvc-volume", uid: "pv-uid" }, spec: { claimRef: { uid: "pvc-uid", name: "runtime-data", namespace: "k8s-incident-agent" }, persistentVolumeReclaimPolicy: "Delete" } };
+    return {
+      apiVersion: "v1",
+      kind: "PersistentVolume",
+      metadata: { name: "pvc-volume", uid: "pv-uid" },
+      spec: {
+        accessModes: ["ReadWriteOnce"],
+        claimRef: { uid: "pvc-uid", name: "runtime-data", namespace: "k8s-incident-agent" },
+        persistentVolumeReclaimPolicy: "Delete",
+        storageClassName: "local-path",
+        volumeMode: "Filesystem",
+      },
+    };
+  }
+  if (key === "get persistentvolume k8s-incident-agent-runtime-data --output=json") {
+    return {
+      apiVersion: "v1",
+      kind: "PersistentVolume",
+      metadata: { name: "k8s-incident-agent-runtime-data", uid: "kind-pv-uid" },
+      spec: {
+        accessModes: ["ReadWriteOnce"],
+        claimRef: { uid: "pvc-uid", name: "runtime-data", namespace: "k8s-incident-agent" },
+        hostPath: { path: "/var/local/k8s-incident-agent", type: "DirectoryOrCreate" },
+        persistentVolumeReclaimPolicy: "Retain",
+        storageClassName: "k8s-incident-agent-kind",
+        volumeMode: "Filesystem",
+      },
+    };
   }
   if (key === "delete --raw /api/v1/namespaces/k8s-incident-agent/persistentvolumeclaims/runtime-data --filename=-") return "{}";
   return undefined;
@@ -779,6 +1101,7 @@ function response(key, args) {
   return {
     environment: {
       FAKE_KUBECTL_LOG: logPath,
+      FAKE_KUBECTL_STATE: statePath,
       PATH: `${directory}${path.delimiter}${process.env.PATH}`,
       REAL_KUBECTL,
       ...overrides,
@@ -791,6 +1114,454 @@ function response(key, args) {
     },
   };
 }
+
+function createdResources(calls, kind) {
+  return calls
+    .filter(
+      (call) =>
+        call.args.includes("create") &&
+        !call.args.includes("--dry-run=server") &&
+        call.input !== "",
+    )
+    .map((call) => JSON.parse(call.input))
+    .filter((document) => document.kind === kind);
+}
+
+test("cutover manifest is a fixed tokenless single-Pod reset Job", () => {
+  const [job] = documents(
+    readFileSync(path.join(APPLICATION_ROOT, "cutover", "job.yaml"), "utf8"),
+  );
+  assert.equal(job.kind, "Job");
+  assert.equal(job.metadata.name, "runtime-data-cutover");
+  assert.equal(job.metadata.namespace, "k8s-incident-agent");
+  assert.deepEqual(
+    {
+      parallelism: job.spec.parallelism,
+      completions: job.spec.completions,
+      backoffLimit: job.spec.backoffLimit,
+      activeDeadlineSeconds: job.spec.activeDeadlineSeconds,
+    },
+    {
+      parallelism: 1,
+      completions: 1,
+      backoffLimit: 0,
+      activeDeadlineSeconds: 300,
+    },
+  );
+  const pod = job.spec.template.spec;
+  assert.equal(pod.automountServiceAccountToken, false);
+  assert.equal(pod.restartPolicy, "Never");
+  assert.deepEqual(pod.schedulingGates, [
+    { name: "k8s-incident-agent.io/runtime-data-cutover" },
+  ]);
+  assert.equal(pod.containers.length, 1);
+  assert.deepEqual(pod.containers[0].command, [
+    "runtime",
+    "reset-stage-one-data",
+    "--preview",
+  ]);
+  assert.deepEqual(pod.volumes, [
+    {
+      name: "runtime-data",
+      persistentVolumeClaim: { claimName: "runtime-data" },
+    },
+  ]);
+  const serialized = JSON.stringify(job);
+  for (const forbidden of [
+    "serviceAccountName",
+    "secretKeyRef",
+    "configMapRef",
+    "hostPath",
+    "/bin/sh",
+    "agent-runtime-model",
+  ]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+});
+
+test("cutover rejects every open or malformed CLI shape before kubectl", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_CUTOVER: "1" });
+  const cases = [
+    ["cutover", "k3s-online", "--context", "demo-k3s", "--preview"],
+    ["cutover", "k3s-evaluation", "--preview"],
+    ["cutover", "k3s-evaluation", "--context", "--kubeconfig=x", "--preview"],
+    ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview", "extra"],
+    ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--confirm", "bad"],
+    ["cutover", "kind-evaluation", "--context", "other-kind", "--preview"],
+  ];
+  for (const args of cases) {
+    const result = runDeployment(args, fake.environment);
+    assert.equal(result.status, 1, `${args.join(" ")}\n${result.stderr}`);
+  }
+  assert.deepEqual(fake.calls(), []);
+});
+
+test("cutover preview creates isolation, releases only the admitted gated Pod, and cleans by UID", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_CUTOVER: "1" });
+  const result = runDeployment(
+    ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
+    fake.environment,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.mode, "preview");
+  assert.equal(output.profile, "k3s-evaluation");
+  assert.match(output.confirmation, /^cutover:v1:sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(output.reset, {
+    sourceHead: "20260814_0001",
+    targetHead: "20260901_0002",
+    state: "stage_one",
+    rowCounts: { incidents: 1, agent_runs: 1 },
+    businessFileCount: 1,
+    checkpointFileCount: 1,
+    runCount: 1,
+    artifactRunCount: 1,
+    planDigest: `sha256:${"1".repeat(64)}`,
+  });
+  assert.equal(result.stdout.includes("run-id"), false);
+  assert.equal(result.stdout.includes("incidents.sqlite3"), false);
+
+  const calls = fake.calls();
+  assert.equal(createdResources(calls, "NetworkPolicy").length, 1);
+  const jobs = createdResources(calls, "Job");
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(jobs[0].spec.template.spec.containers[0].command, [
+    "runtime",
+    "reset-stage-one-data",
+    "--preview",
+  ]);
+  const patchCall = calls.find((call) => call.args.includes("--patch-file=-"));
+  assert.ok(patchCall);
+  assert.deepEqual(JSON.parse(patchCall.input), [
+    { op: "test", path: "/metadata/uid", value: "pod-uid-1" },
+    { op: "test", path: "/metadata/resourceVersion", value: "1" },
+    {
+      op: "test",
+      path: "/spec/schedulingGates",
+      value: [{ name: "k8s-incident-agent.io/runtime-data-cutover" }],
+    },
+    { op: "remove", path: "/spec/schedulingGates/0" },
+  ]);
+  const cleanup = calls.find((call) =>
+    call.args.includes(
+      "/apis/batch/v1/namespaces/k8s-incident-agent/jobs/runtime-data-cutover",
+    ),
+  );
+  assert.ok(cleanup);
+  assert.deepEqual(JSON.parse(cleanup.input), {
+    apiVersion: "v1",
+    kind: "DeleteOptions",
+    preconditions: { uid: "job-uid-1" },
+    propagationPolicy: "Foreground",
+  });
+});
+
+test("Kind cutover uses the fixed context, hostPath PV identity, and only the Runtime image", (t) => {
+  const fake = createFakeKubectl(t, {
+    FAKE_CONSOLE_IMAGE_MISSING: "1",
+    FAKE_CUTOVER: "1",
+    FAKE_PROFILE: "kind-evaluation",
+    FAKE_SERVER_VERSION: "v1.36.1",
+  });
+  const result = runDeployment(
+    [
+      "cutover",
+      "kind-evaluation",
+      "--context",
+      "kind-k8s-incident-agent",
+      "--preview",
+    ],
+    fake.environment,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.cluster.serverVersion, "v1.36.1");
+  assert.equal(output.storage.volumeName, "k8s-incident-agent-runtime-data");
+  assert.equal(output.storage.pvUid, "kind-pv-uid");
+  assert.equal(output.runtimeImage, RUNTIME_IMAGE);
+});
+
+test("cutover confirm runs a fresh preview and passes only its plan digest to the destructive Job", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_CUTOVER: "1" });
+  const args = ["cutover", "k3s-evaluation", "--context", "demo-k3s"];
+  const preview = runDeployment([...args, "--preview"], fake.environment);
+  assert.equal(preview.status, 0, preview.stderr);
+  const confirmation = JSON.parse(preview.stdout).confirmation;
+
+  const confirmed = runDeployment(
+    [...args, "--confirm", confirmation],
+    fake.environment,
+  );
+  assert.equal(confirmed.status, 0, confirmed.stderr);
+  const output = JSON.parse(confirmed.stdout);
+  assert.equal(output.mode, "confirmed");
+  assert.equal(output.reset.outcome, "reset");
+  assert.equal(output.reset.newHead, "20260901_0002");
+  assert.deepEqual(output.reset.deleted, {
+    businessFileCount: 1,
+    checkpointFileCount: 1,
+    artifactRunCount: 1,
+  });
+
+  const commands = createdResources(fake.calls(), "Job").map(
+    (job) => job.spec.template.spec.containers[0].command,
+  );
+  assert.deepEqual(commands.slice(-2), [
+    ["runtime", "reset-stage-one-data", "--preview"],
+    [
+      "runtime",
+      "reset-stage-one-data",
+      "--confirm",
+      `sha256:${"1".repeat(64)}`,
+    ],
+  ]);
+  assert.equal(createdResources(fake.calls(), "NetworkPolicy").length, 1);
+});
+
+test("stale external target confirmation never creates a destructive Job", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_CUTOVER: "1" });
+  const args = ["cutover", "k3s-evaluation", "--context", "demo-k3s"];
+  const preview = runDeployment([...args, "--preview"], fake.environment);
+  assert.equal(preview.status, 0, preview.stderr);
+  const confirmation = JSON.parse(preview.stdout).confirmation;
+  const result = runDeployment(
+    [...args, "--confirm", confirmation],
+    { ...fake.environment, FAKE_NAMESPACE_UID: "replacement-namespace-uid" },
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL cutover_confirmation_mismatch /);
+  const commands = createdResources(fake.calls(), "Job").map(
+    (job) => job.spec.template.spec.containers[0].command,
+  );
+  assert.equal(commands.some((command) => command[2] === "--confirm"), false);
+});
+
+test("cutover preflight gates fail before Runtime Job creation", (t) => {
+  const cases = [
+    ["FAKE_ACTIVE_WORKLOAD", "cutover_workload_active"],
+    ["FAKE_CUTOVER_MUTATOR", "cutover_mutator_present"],
+    ["FAKE_CUTOVER_STORAGE_DRIFT", "cutover_storage_invalid"],
+    ["FAKE_IMAGE_MISSING", "image_unavailable"],
+    ["FAKE_NETWORK_POLICY_DRIFT", "cutover_network_policy_invalid"],
+  ];
+  for (const [variable, code] of cases) {
+    const fake = createFakeKubectl(t, {
+      FAKE_CUTOVER: "1",
+      [variable]: "1",
+    });
+    const result = runDeployment(
+      ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, variable);
+    assert.match(result.stderr, new RegExp(`^FAIL ${code} `), variable);
+    assert.equal(createdResources(fake.calls(), "Job").length, 0, variable);
+  }
+});
+
+test("admitted Pod drift is rejected before scheduling release and current Job is cleaned", (t) => {
+  for (const variable of [
+    "FAKE_CUTOVER_GATE_MISSING",
+    "FAKE_CUTOVER_EXTRA_CONTAINER",
+    "FAKE_CUTOVER_MULTIPLE_PODS",
+  ]) {
+    const fake = createFakeKubectl(t, {
+      FAKE_CUTOVER: "1",
+      [variable]: "1",
+    });
+    const result = runDeployment(
+      ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, variable);
+    assert.equal(
+      fake.calls().some((call) => call.args.includes("--patch-file=-")),
+      false,
+      variable,
+    );
+    assert.equal(
+      fake.calls().some((call) =>
+        call.args.includes(
+          "/apis/batch/v1/namespaces/k8s-incident-agent/jobs/runtime-data-cutover",
+        ),
+      ),
+      true,
+      variable,
+    );
+  }
+});
+
+test("server-side Job admission drift is rejected before actual Job creation", (t) => {
+  for (const variable of [
+    "FAKE_CUTOVER_JOB_ADMISSION_DRIFT",
+    "FAKE_CUTOVER_JOB_NODENAME_DRIFT",
+  ]) {
+    const fake = createFakeKubectl(t, {
+      FAKE_CUTOVER: "1",
+      [variable]: "1",
+    });
+    const result = runDeployment(
+      ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, variable);
+    assert.match(
+      result.stderr,
+      /^FAIL cutover_job_contract_invalid /,
+      variable,
+    );
+    assert.equal(createdResources(fake.calls(), "Job").length, 0, variable);
+    assert.equal(
+      fake.calls().some((call) => call.args.includes("--patch-file=-")),
+      false,
+      variable,
+    );
+  }
+});
+
+test("released Pod identity replacement is rejected before and after log capture", (t) => {
+  for (const [variable, expectedLogRead] of [
+    ["FAKE_CUTOVER_POD_UID_REPLACED", false],
+    ["FAKE_CUTOVER_POD_UID_REPLACED_AFTER_LOG", true],
+  ]) {
+    const fake = createFakeKubectl(t, {
+      FAKE_CUTOVER: "1",
+      [variable]: "1",
+    });
+    const result = runDeployment(
+      ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, variable);
+    assert.match(
+      result.stderr,
+      /^FAIL cutover_pod_identity_changed /,
+      variable,
+    );
+    assert.equal(
+      fake.calls().some((call) => call.args.includes("logs")),
+      expectedLogRead,
+      variable,
+    );
+    assert.equal(
+      fake.calls().some((call) =>
+        call.args.includes(
+          "/apis/batch/v1/namespaces/k8s-incident-agent/jobs/runtime-data-cutover",
+        ),
+      ),
+      true,
+      variable,
+    );
+  }
+});
+
+test("Runtime failure, malformed output, and cleanup failure cannot report cutover success", (t) => {
+  const cases = [
+    ["FAKE_CUTOVER_JOB_FAILED", "cutover_runtime_failed"],
+    ["FAKE_CUTOVER_OUTPUT_MALFORMED", "cutover_runtime_output_invalid"],
+    ["FAKE_CUTOVER_CLEANUP_FAILED", "cutover_cleanup_failed"],
+  ];
+  for (const [variable, code] of cases) {
+    const fake = createFakeKubectl(t, {
+      FAKE_CUTOVER: "1",
+      [variable]: "1",
+    });
+    const result = runDeployment(
+      ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, variable);
+    assert.match(result.stderr, new RegExp(`^FAIL ${code} `), variable);
+    assert.equal(result.stdout, "", variable);
+  }
+});
+
+test("the next cutover preview recovers only an exact terminal Job residue", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_CUTOVER: "1" });
+  const args = [
+    "cutover",
+    "k3s-evaluation",
+    "--context",
+    "demo-k3s",
+    "--preview",
+  ];
+  const interrupted = runDeployment(args, {
+    ...fake.environment,
+    FAKE_CUTOVER_CLEANUP_FAILED: "1",
+  });
+  assert.equal(interrupted.status, 1);
+  assert.match(interrupted.stderr, /^FAIL cutover_cleanup_failed /);
+  const recovered = runDeployment(args, fake.environment);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  const deletes = fake.calls().filter((call) =>
+    call.args.includes(
+      "/apis/batch/v1/namespaces/k8s-incident-agent/jobs/runtime-data-cutover",
+    ),
+  );
+  assert.equal(deletes.length >= 3, true);
+  assert.equal(JSON.parse(deletes.at(-1).input).preconditions.uid, "job-uid-2");
+});
+
+test("active cutover residue requires review and is never auto-deleted", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_CUTOVER: "1" });
+  const args = [
+    "cutover",
+    "k3s-evaluation",
+    "--context",
+    "demo-k3s",
+    "--preview",
+  ];
+  const interrupted = runDeployment(args, {
+    ...fake.environment,
+    FAKE_CUTOVER_CLEANUP_FAILED: "1",
+    FAKE_CUTOVER_GATE_MISSING: "1",
+  });
+  assert.equal(interrupted.status, 1);
+  const deletesBefore = fake.calls().filter((call) =>
+    call.args.includes(
+      "/apis/batch/v1/namespaces/k8s-incident-agent/jobs/runtime-data-cutover",
+    ),
+  ).length;
+  const result = runDeployment(args, fake.environment);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL cutover_residue_active /);
+  const deletesAfter = fake.calls().filter((call) =>
+    call.args.includes(
+      "/apis/batch/v1/namespaces/k8s-incident-agent/jobs/runtime-data-cutover",
+    ),
+  ).length;
+  assert.equal(deletesAfter, deletesBefore);
+});
+
+test("install and upgrade reject cutover residue before apply", (t) => {
+  for (const action of ["install", "upgrade"]) {
+    const fake = createFakeKubectl(t, { FAKE_CUTOVER_RESIDUE: "1" });
+    const result = runDeployment(
+      [action, "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, action);
+    assert.match(result.stderr, /^FAIL cutover_residue_present /);
+    assert.equal(
+      fake.calls().some((call) => call.args.includes("apply")),
+      false,
+      action,
+    );
+  }
+  const ownerOnly = createFakeKubectl(t, {
+    FAKE_CUTOVER_OWNER_POD_ONLY: "1",
+  });
+  const result = runDeployment(
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
+    ownerOnly.environment,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL cutover_residue_present /);
+  assert.equal(
+    ownerOnly.calls().some((call) => call.args.includes("apply")),
+    false,
+  );
+});
 
 test("lifecycle preview is offline and uninstall inventory excludes retained data", () => {
   const install = runDeployment([

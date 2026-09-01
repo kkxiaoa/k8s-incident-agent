@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,9 +20,31 @@ const RUNTIME_SERVICE_ACCOUNT = "agent-runtime";
 const RUNTIME_SECRET = "agent-runtime-model";
 const RUNTIME_SECRET_KEY = "api-key";
 const RUNTIME_PVC = "runtime-data";
+const CUTOVER_JOB = "runtime-data-cutover";
+const CUTOVER_CONTAINER = "runtime-reset";
+const CUTOVER_GATE = "k8s-incident-agent.io/runtime-data-cutover";
+const DEFAULT_DENY_POLICY = "default-deny";
+const CUTOVER_CONFIRMATION_PATTERN = /^cutover:v1:sha256:[a-f0-9]{64}$/;
+const PLAN_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const CUTOVER_DEFAULT_TOLERATIONS = Object.freeze([
+  Object.freeze({
+    key: "node.kubernetes.io/not-ready",
+    operator: "Exists",
+    effect: "NoExecute",
+    tolerationSeconds: 300,
+  }),
+  Object.freeze({
+    key: "node.kubernetes.io/unreachable",
+    operator: "Exists",
+    effect: "NoExecute",
+    tolerationSeconds: 300,
+  }),
+]);
 const COMMAND_OUTPUT_LIMIT_BYTES = 2 * 1024 * 1024;
 const READ_TIMEOUT_MILLISECONDS = 30_000;
 const WRITE_TIMEOUT_MILLISECONDS = 10 * 60_000;
+const CUTOVER_DEADLINE_MILLISECONDS = 5 * 60_000;
+const CUTOVER_POLL_INTERVAL_MILLISECONDS = 250;
 const WAIT_TIMEOUT = "300s";
 
 const PROFILE_DEFINITIONS = Object.freeze({
@@ -44,6 +67,7 @@ const PROFILE_DEFINITIONS = Object.freeze({
     uninstall: "uninstall/k3s",
   }),
 });
+const CUTOVER_PROFILES = new Set(["kind-evaluation", "k3s-evaluation"]);
 
 export class DeploymentContractError extends Error {
   constructor(code, message) {
@@ -98,6 +122,17 @@ async function main() {
         contract,
         execute,
       }),
+    );
+    return;
+  }
+
+  if (request.action === "cutover") {
+    printJson(
+      await runCutover(
+        await loadCutoverContract(contract),
+        request,
+        execute,
+      ),
     );
     return;
   }
@@ -179,6 +214,27 @@ function parseArguments(argv) {
     };
   }
 
+  if (action === "cutover") {
+    if (!CUTOVER_PROFILES.has(profile.name)) throw usageError();
+    const options = parseOptions(rest, {
+      context: "required",
+      cutoverMode: true,
+    });
+    if (profile.platform === "kind" && options.context !== KIND_CONTEXT) {
+      throw new DeploymentContractError(
+        "cluster_identity_mismatch",
+        "Kind cutover requires the fixed project context",
+      );
+    }
+    return {
+      action,
+      profile,
+      context: options.context,
+      mode: options.mode,
+      confirmation: options.confirmation,
+    };
+  }
+
   throw usageError();
 }
 
@@ -193,7 +249,7 @@ function parseOptions(values, shape) {
     }
     if (
       value === "--preview" &&
-      (shape.lifecycleMode || shape.purgeMode) &&
+      (shape.lifecycleMode || shape.purgeMode || shape.cutoverMode) &&
       options.mode === undefined
     ) {
       options.mode = "preview";
@@ -201,7 +257,7 @@ function parseOptions(values, shape) {
     }
     if (
       value === "--confirm" &&
-      (shape.lifecycleMode || shape.purgeMode) &&
+      (shape.lifecycleMode || shape.purgeMode || shape.cutoverMode) &&
       options.mode === undefined
     ) {
       options.mode = "confirm";
@@ -210,6 +266,9 @@ function parseOptions(values, shape) {
           values[index + 1],
           "purge confirmation",
         );
+        index += 1;
+      } else if (shape.cutoverMode) {
+        options.confirmation = requireCutoverConfirmation(values[index + 1]);
         index += 1;
       }
       continue;
@@ -220,7 +279,7 @@ function parseOptions(values, shape) {
   if (shape.context === "required" && options.context === undefined) {
     throw usageError();
   }
-  if (shape.purgeMode && options.mode === undefined) {
+  if ((shape.purgeMode || shape.cutoverMode) && options.mode === undefined) {
     throw usageError();
   }
   return options;
@@ -255,6 +314,20 @@ function requireContextValue(value) {
   return context;
 }
 
+function requireCutoverConfirmation(value) {
+  const confirmation = requireNormalizedValue(value, "cutover confirmation");
+  if (
+    confirmation.startsWith("-") ||
+    !CUTOVER_CONFIRMATION_PATTERN.test(confirmation)
+  ) {
+    throw new DeploymentContractError(
+      "invalid_argument",
+      "cutover confirmation must use the fixed versioned SHA-256 format",
+    );
+  }
+  return confirmation;
+}
+
 function requireProfile(name) {
   const definition = PROFILE_DEFINITIONS[name];
   if (definition === undefined) throw usageError();
@@ -264,7 +337,7 @@ function requireProfile(name) {
 function usageError() {
   return new DeploymentContractError(
     "usage_invalid",
-    "expected render, status, install, upgrade, uninstall, or purge with a fixed deployment profile",
+    "expected render, status, install, upgrade, uninstall, purge, or cutover with a fixed deployment profile",
   );
 }
 
@@ -326,6 +399,29 @@ async function loadDeploymentContract(repositoryRoot) {
   };
 }
 
+async function loadCutoverContract(contract) {
+  const [rawJob, rawNetworkPolicies] = await Promise.all([
+    readFile(path.join(contract.applicationRoot, "cutover", "job.yaml"), "utf8"),
+    readFile(
+      path.join(
+        contract.applicationRoot,
+        "base",
+        "workloads",
+        "network-policies.yaml",
+      ),
+      "utf8",
+    ),
+  ]);
+  return {
+    ...contract,
+    cutover: normalizeCutoverContract(
+      rawJob,
+      rawNetworkPolicies,
+      contract.images["k8s-incident-agent-runtime"],
+    ),
+  };
+}
+
 function normalizeImageLock(rawImages) {
   if (!Array.isArray(rawImages) || rawImages.length !== 2) {
     throw new DeploymentContractError(
@@ -362,6 +458,74 @@ function normalizeImageLock(rawImages) {
   return images;
 }
 
+function normalizeCutoverContract(
+  rawJob,
+  rawNetworkPolicies,
+  runtimeImage,
+) {
+  let job;
+  const defaultDenyCandidates = [];
+  try {
+    job = load(rawJob);
+    loadAll(rawNetworkPolicies, (document) => {
+      if (
+        document?.kind === "NetworkPolicy" &&
+        document.metadata?.name === DEFAULT_DENY_POLICY
+      ) {
+        defaultDenyCandidates.push(document);
+      }
+    });
+  } catch {
+    throw new DeploymentContractError(
+      "cutover_manifest_invalid",
+      "cutover resources are not valid YAML",
+    );
+  }
+  if (
+    job === null ||
+    typeof job !== "object" ||
+    Array.isArray(job) ||
+    defaultDenyCandidates.length !== 1
+  ) {
+    throw new DeploymentContractError(
+      "cutover_manifest_invalid",
+      "cutover resources are incomplete",
+    );
+  }
+  const container = job.spec?.template?.spec?.containers?.[0];
+  if (container?.image !== "k8s-incident-agent-runtime") {
+    throw new DeploymentContractError(
+      "cutover_manifest_invalid",
+      "cutover Job does not use the locked Runtime image placeholder",
+    );
+  }
+  container.image = runtimeImage;
+  requireCutoverJobContract(job, runtimeImage, [
+    "runtime",
+    "reset-stage-one-data",
+    "--preview",
+  ]);
+  requireDefaultDenyContract(defaultDenyCandidates[0]);
+  return {
+    defaultDeny: defaultDenyCandidates[0],
+    job,
+  };
+}
+
+function buildCutoverJob(contract, mode, planDigest) {
+  const job = structuredClone(contract.cutover.job);
+  job.spec.template.spec.containers[0].command =
+    mode === "preview"
+      ? ["runtime", "reset-stage-one-data", "--preview"]
+      : ["runtime", "reset-stage-one-data", "--confirm", planDigest];
+  requireCutoverJobContract(
+    job,
+    contract.images["k8s-incident-agent-runtime"],
+    job.spec.template.spec.containers[0].command,
+  );
+  return job;
+}
+
 async function renderProfile(contract, profile, execute) {
   return executeCommand(
     execute,
@@ -370,6 +534,1262 @@ async function renderProfile(contract, profile, execute) {
     READ_TIMEOUT_MILLISECONDS,
     "Kustomize render",
   );
+}
+
+async function runCutover(contract, request, execute) {
+  const target = await prepareCutoverTarget(contract, request, execute);
+  const previewReset = await executeCutoverJob(
+    contract,
+    request,
+    execute,
+    "preview",
+  );
+  const confirmation = cutoverConfirmation(target, previewReset.planDigest);
+  if (request.mode === "preview") {
+    return {
+      action: "cutover",
+      mode: "preview",
+      profile: request.profile.name,
+      context: request.context,
+      ...cutoverTargetProjection(target),
+      reset: previewReset,
+      confirmation,
+    };
+  }
+  if (request.confirmation !== confirmation) {
+    throw new DeploymentContractError(
+      "cutover_confirmation_mismatch",
+      "cutover confirmation does not match the fresh target",
+    );
+  }
+
+  const reboundTarget = await prepareCutoverTarget(contract, request, execute);
+  if (!isDeepStrictEqual(reboundTarget, target)) {
+    throw new DeploymentContractError(
+      "cutover_target_changed",
+      "cutover target changed before destructive Job creation",
+    );
+  }
+  const confirmedReset = await executeCutoverJob(
+    contract,
+    request,
+    execute,
+    "confirm",
+    previewReset.planDigest,
+  );
+  return {
+    action: "cutover",
+    mode: "confirmed",
+    profile: request.profile.name,
+    context: request.context,
+    ...cutoverTargetProjection(reboundTarget),
+    reset: confirmedReset,
+  };
+}
+
+async function prepareCutoverTarget(contract, request, execute) {
+  await requireClusterPrerequisites(contract, request, execute, {
+    components: false,
+    images: [contract.images["k8s-incident-agent-runtime"]],
+    secret: false,
+  });
+  await recoverTerminalCutoverJob(contract, request, execute);
+  const first = await readCutoverSnapshot(contract, request, execute);
+  if (!first.defaultDenyPresent) {
+    await createDefaultDeny(contract, request, execute);
+  }
+  const second = await readCutoverSnapshot(contract, request, execute);
+  if (
+    !second.defaultDenyPresent ||
+    !isDeepStrictEqual(first.target, second.target)
+  ) {
+    throw new DeploymentContractError(
+      "cutover_target_changed",
+      "cutover target changed while establishing isolation",
+    );
+  }
+  return second.target;
+}
+
+async function readCutoverSnapshot(contract, request, execute) {
+  const runtimeImage = contract.images["k8s-incident-agent-runtime"];
+  const cluster = await requireClusterPrerequisites(
+    contract,
+    request,
+    execute,
+    {
+      components: false,
+      images: [runtimeImage],
+      secret: false,
+    },
+  );
+  const [namespaceUid, storage, defaultDenyPresent] = await Promise.all([
+    readCutoverNamespace(request, execute),
+    readCutoverStorage(request, execute),
+    readCutoverNetworkPolicyState(request, execute),
+    requireCutoverMutatorsAbsent(request, execute),
+    requireWorkloadsAbsent(request, execute, {
+      code: "cutover_workload_active",
+      message: "application workloads must be absent before cutover",
+    }),
+  ]);
+  return {
+    defaultDenyPresent,
+    target: {
+      context: request.context,
+      namespaceUid,
+      profile: request.profile.name,
+      pvUid: storage.pvUid,
+      pvcName: RUNTIME_PVC,
+      pvcUid: storage.pvcUid,
+      runtimeImage,
+      serverVersion: cluster.serverVersion,
+      volumeName: storage.volumeName,
+    },
+  };
+}
+
+async function readCutoverNamespace(request, execute) {
+  const namespace = await readJsonResource(execute, request.context, [
+    "get",
+    "namespace",
+    APPLICATION_NAMESPACE,
+    "--output=json",
+  ], "application Namespace");
+  if (
+    namespace.kind !== "Namespace" ||
+    namespace.metadata?.name !== APPLICATION_NAMESPACE ||
+    namespace.metadata?.labels?.["app.kubernetes.io/part-of"] !==
+      "k8s-incident-agent"
+  ) {
+    throw new DeploymentContractError(
+      "cutover_namespace_invalid",
+      "application Namespace does not match the fixed cutover target",
+    );
+  }
+  return requireString(namespace.metadata?.uid, "application Namespace UID");
+}
+
+async function readCutoverStorage(request, execute) {
+  const pvc = await readJsonResource(execute, request.context, [
+    "get",
+    "persistentvolumeclaim",
+    RUNTIME_PVC,
+    "--namespace",
+    APPLICATION_NAMESPACE,
+    "--output=json",
+  ], "Runtime PVC");
+  const expectedStorageClass =
+    request.profile.platform === "kind"
+      ? "k8s-incident-agent-kind"
+      : "local-path";
+  if (
+    pvc.kind !== "PersistentVolumeClaim" ||
+    pvc.metadata?.name !== RUNTIME_PVC ||
+    pvc.metadata?.namespace !== APPLICATION_NAMESPACE ||
+    pvc.spec?.storageClassName !== expectedStorageClass ||
+    pvc.spec?.volumeMode !== "Filesystem" ||
+    !isDeepStrictEqual(pvc.spec?.accessModes, ["ReadWriteOnce"]) ||
+    pvc.status?.phase !== "Bound"
+  ) {
+    throw new DeploymentContractError(
+      "cutover_storage_invalid",
+      "Runtime PVC does not match the fixed cutover storage contract",
+    );
+  }
+  const pvcUid = requireString(pvc.metadata?.uid, "Runtime PVC UID");
+  const volumeName = requireString(pvc.spec?.volumeName, "Runtime PV name");
+  const pv = await readJsonResource(execute, request.context, [
+    "get",
+    "persistentvolume",
+    volumeName,
+    "--output=json",
+  ], "Runtime PV");
+  const baseContractMatched =
+    pv.kind === "PersistentVolume" &&
+    pv.metadata?.name === volumeName &&
+    pv.spec?.claimRef?.uid === pvcUid &&
+    pv.spec?.claimRef?.name === RUNTIME_PVC &&
+    pv.spec?.claimRef?.namespace === APPLICATION_NAMESPACE &&
+    pv.spec?.storageClassName === expectedStorageClass &&
+    pv.spec?.volumeMode === "Filesystem" &&
+    isDeepStrictEqual(pv.spec?.accessModes, ["ReadWriteOnce"]);
+  const platformContractMatched =
+    request.profile.platform === "kind"
+      ? volumeName === "k8s-incident-agent-runtime-data" &&
+        pv.spec?.persistentVolumeReclaimPolicy === "Retain" &&
+        isDeepStrictEqual(pv.spec?.hostPath, {
+          path: "/var/local/k8s-incident-agent",
+          type: "DirectoryOrCreate",
+        })
+      : pv.spec?.persistentVolumeReclaimPolicy === "Delete";
+  if (!baseContractMatched || !platformContractMatched) {
+    throw new DeploymentContractError(
+      "cutover_storage_invalid",
+      "Runtime PV does not match the bound cutover target",
+    );
+  }
+  return {
+    pvcUid,
+    volumeName,
+    pvUid: requireString(pv.metadata?.uid, "Runtime PV UID"),
+  };
+}
+
+async function readCutoverNetworkPolicyState(request, execute) {
+  const policies = await readJsonResource(execute, request.context, [
+    "get",
+    "networkpolicies",
+    "--namespace",
+    APPLICATION_NAMESPACE,
+    "--output=json",
+  ], "cutover NetworkPolicies");
+  if (policies.kind !== "List" || !Array.isArray(policies.items)) {
+    throw new DeploymentContractError(
+      "cutover_network_policy_invalid",
+      "cutover NetworkPolicy collection is unavailable",
+    );
+  }
+  if (policies.items.length === 0) return false;
+  if (policies.items.length !== 1) {
+    throw new DeploymentContractError(
+      "cutover_network_policy_invalid",
+      "cutover permits only the fixed default-deny NetworkPolicy",
+    );
+  }
+  requireDefaultDenyContract(policies.items[0]);
+  return true;
+}
+
+async function createDefaultDeny(contract, request, execute) {
+  const input = serializeKubernetesResource(contract.cutover.defaultDeny);
+  const dryRun = await readJsonFromKubectl(
+    execute,
+    request.context,
+    [
+      "create",
+      "--dry-run=server",
+      "--output=json",
+      "--filename=-",
+    ],
+    "default-deny admission preview",
+    input,
+  );
+  requireDefaultDenyContract(dryRun, contract.cutover.defaultDeny);
+  const created = await readJsonFromKubectl(
+    execute,
+    request.context,
+    ["create", "--output=json", "--filename=-"],
+    "default-deny creation",
+    input,
+  );
+  requireDefaultDenyContract(created, contract.cutover.defaultDeny);
+}
+
+async function requireCutoverMutatorsAbsent(request, execute) {
+  const resources = [
+    "mutatingwebhookconfigurations.admissionregistration.k8s.io",
+    "mutatingadmissionpolicies.admissionregistration.k8s.io",
+    "mutatingadmissionpolicybindings.admissionregistration.k8s.io",
+  ];
+  const collections = await Promise.all(
+    resources.map((resource) =>
+      readJsonResource(execute, request.context, [
+        "get",
+        resource,
+        "--output=json",
+      ], resource),
+    ),
+  );
+  if (
+    collections.some(
+      (collection) =>
+        collection.kind !== "List" ||
+        !Array.isArray(collection.items) ||
+        collection.items.length !== 0,
+    )
+  ) {
+    throw new DeploymentContractError(
+      "cutover_mutator_present",
+      "cutover requires all supported API mutator collections to be empty",
+    );
+  }
+}
+
+function cutoverConfirmation(target, planDigest) {
+  const payload = JSON.stringify({
+    context: target.context,
+    namespaceUid: target.namespaceUid,
+    planDigest,
+    profile: target.profile,
+    pvUid: target.pvUid,
+    pvcName: target.pvcName,
+    pvcUid: target.pvcUid,
+    runtimeImage: target.runtimeImage,
+    serverVersion: target.serverVersion,
+    volumeName: target.volumeName,
+  });
+  const digest = createHash("sha256").update(payload).digest("hex");
+  return `cutover:v1:sha256:${digest}`;
+}
+
+function cutoverTargetProjection(target) {
+  return {
+    cluster: { serverVersion: target.serverVersion },
+    namespaceUid: target.namespaceUid,
+    storage: {
+      pvcName: target.pvcName,
+      pvcUid: target.pvcUid,
+      volumeName: target.volumeName,
+      pvUid: target.pvUid,
+    },
+    runtimeImage: target.runtimeImage,
+  };
+}
+
+async function executeCutoverJob(
+  contract,
+  request,
+  execute,
+  mode,
+  planDigest,
+) {
+  const runtimeImage = contract.images["k8s-incident-agent-runtime"];
+  const desiredJob = buildCutoverJob(contract, mode, planDigest);
+  const input = serializeKubernetesResource(desiredJob);
+  const admitted = await readJsonFromKubectl(
+    execute,
+    request.context,
+    ["create", "--dry-run=server", "--output=json", "--filename=-"],
+    "cutover Job admission preview",
+    input,
+  );
+  requireCutoverJobContract(
+    admitted,
+    runtimeImage,
+    desiredJob.spec.template.spec.containers[0].command,
+  );
+
+  let jobUid;
+  let knownPodNames = [];
+  let result;
+  let operationError;
+  try {
+    const created = await readJsonFromKubectl(
+      execute,
+      request.context,
+      ["create", "--output=json", "--filename=-"],
+      "cutover Job creation",
+      input,
+    );
+    jobUid = requireString(created.metadata?.uid, "cutover Job UID");
+    requireCutoverJobContract(
+      created,
+      runtimeImage,
+      desiredJob.spec.template.spec.containers[0].command,
+    );
+
+    const gatedPod = await waitForGatedCutoverPod(
+      request,
+      execute,
+      jobUid,
+      runtimeImage,
+      desiredJob.spec.template.spec.containers[0].command,
+    );
+    knownPodNames = [gatedPod.metadata.name];
+    const releasedPod = await releaseCutoverPod(
+      request,
+      execute,
+      gatedPod,
+      jobUid,
+      runtimeImage,
+      desiredJob.spec.template.spec.containers[0].command,
+    );
+    const terminal = await waitForCutoverTerminal(
+      request,
+      execute,
+      jobUid,
+      runtimeImage,
+      desiredJob.spec.template.spec.containers[0].command,
+      releasedPod.metadata.name,
+      releasedPod.metadata.uid,
+    );
+    knownPodNames = terminal.pods.map((pod) => pod.metadata.name);
+    const terminalPod = terminal.pods[0];
+    const log = await runKubectl(
+      execute,
+      request.context,
+      [
+        "logs",
+        `pod/${terminalPod.metadata.name}`,
+        "--namespace",
+        APPLICATION_NAMESPACE,
+        "--container",
+        CUTOVER_CONTAINER,
+      ],
+      READ_TIMEOUT_MILLISECONDS,
+      "cutover Runtime output",
+    );
+    const postLogPod = requireStableCutoverPod(
+      await readCutoverPods(request, execute),
+      terminalPod.metadata.name,
+      releasedPod.metadata.uid,
+    );
+    requireCutoverPodContract(
+      postLogPod,
+      jobUid,
+      runtimeImage,
+      desiredJob.spec.template.spec.containers[0].command,
+      "terminal",
+    );
+    if (terminal.phase === "failed") {
+      const failure = normalizeCutoverRuntimeFailure(log, mode);
+      throw new DeploymentContractError(
+        "cutover_runtime_failed",
+        `Runtime reset failed safely (${failure.code}/${failure.phase})`,
+      );
+    }
+    result = normalizeCutoverRuntimeSuccess(log, mode, planDigest);
+  } catch (error) {
+    operationError = error;
+  }
+
+  if (jobUid !== undefined) {
+    try {
+      await cleanupCutoverJob(request, execute, jobUid, knownPodNames);
+    } catch {
+      throw new DeploymentContractError(
+        "cutover_cleanup_failed",
+        "cutover Job result could not be converged to an absent state",
+      );
+    }
+  }
+  if (operationError !== undefined) throw operationError;
+  return result;
+}
+
+async function waitForGatedCutoverPod(
+  request,
+  execute,
+  jobUid,
+  runtimeImage,
+  command,
+) {
+  const deadline = Date.now() + CUTOVER_DEADLINE_MILLISECONDS;
+  while (Date.now() <= deadline) {
+    const job = await readOptionalCutoverJob(request, execute);
+    if (job === null || job.metadata?.uid !== jobUid) {
+      throw new DeploymentContractError(
+        "cutover_job_identity_changed",
+        "cutover Job identity changed before Pod release",
+      );
+    }
+    requireCutoverJobContract(job, runtimeImage, command);
+    if (cutoverJobPhase(job) !== "active") {
+      throw new DeploymentContractError(
+        "cutover_job_terminal_early",
+        "cutover Job became terminal before its Pod was released",
+      );
+    }
+    const pods = await readCutoverPods(request, execute);
+    if (pods.length > 1) {
+      throw new DeploymentContractError(
+        "cutover_pod_count_invalid",
+        "cutover Job produced more than one Pod",
+      );
+    }
+    if (pods.length === 1) {
+      requireCutoverPodContract(
+        pods[0],
+        jobUid,
+        runtimeImage,
+        command,
+        "gated",
+      );
+      return pods[0];
+    }
+    await delay(CUTOVER_POLL_INTERVAL_MILLISECONDS);
+  }
+  throw new DeploymentContractError(
+    "cutover_timeout",
+    "cutover Job did not produce a gated Pod before the deadline",
+  );
+}
+
+async function releaseCutoverPod(
+  request,
+  execute,
+  pod,
+  jobUid,
+  runtimeImage,
+  command,
+) {
+  const podName = requireString(pod.metadata?.name, "cutover Pod name");
+  const podUid = requireString(pod.metadata?.uid, "cutover Pod UID");
+  const resourceVersion = requireString(
+    pod.metadata?.resourceVersion,
+    "cutover Pod resourceVersion",
+  );
+  const patch = `${JSON.stringify([
+    { op: "test", path: "/metadata/uid", value: podUid },
+    {
+      op: "test",
+      path: "/metadata/resourceVersion",
+      value: resourceVersion,
+    },
+    {
+      op: "test",
+      path: "/spec/schedulingGates",
+      value: [{ name: CUTOVER_GATE }],
+    },
+    { op: "remove", path: "/spec/schedulingGates/0" },
+  ])}\n`;
+  const released = await readJsonFromKubectl(
+    execute,
+    request.context,
+    [
+      "patch",
+      "pod",
+      podName,
+      "--namespace",
+      APPLICATION_NAMESPACE,
+      "--type=json",
+      "--patch-file=-",
+      "--output=json",
+    ],
+    "cutover Pod scheduling release",
+    patch,
+  );
+  if (released.metadata?.uid !== podUid) {
+    throw new DeploymentContractError(
+      "cutover_pod_identity_changed",
+      "cutover Pod identity changed during scheduling release",
+    );
+  }
+  requireCutoverPodContract(
+    released,
+    jobUid,
+    runtimeImage,
+    command,
+    "released",
+  );
+  return released;
+}
+
+async function waitForCutoverTerminal(
+  request,
+  execute,
+  jobUid,
+  runtimeImage,
+  command,
+  podName,
+  podUid,
+) {
+  const deadline = Date.now() + CUTOVER_DEADLINE_MILLISECONDS;
+  while (Date.now() <= deadline) {
+    const job = await readOptionalCutoverJob(request, execute);
+    if (job === null || job.metadata?.uid !== jobUid) {
+      throw new DeploymentContractError(
+        "cutover_job_identity_changed",
+        "cutover Job identity changed before completion",
+      );
+    }
+    requireCutoverJobContract(job, runtimeImage, command);
+    const pods = await readCutoverPods(request, execute);
+    const pod = requireStableCutoverPod(pods, podName, podUid);
+    requireCutoverPodContract(
+      pod,
+      jobUid,
+      runtimeImage,
+      command,
+      "terminal",
+    );
+    const phase = cutoverJobPhase(job);
+    const podPhase = pod.status?.phase;
+    if (
+      (phase === "complete" && podPhase === "Succeeded") ||
+      (phase === "failed" && podPhase === "Failed")
+    ) {
+      return { phase, pods };
+    }
+    if (phase !== "active") {
+      throw new DeploymentContractError(
+        "cutover_terminal_invalid",
+        "cutover Job and Pod terminal states disagree",
+      );
+    }
+    await delay(CUTOVER_POLL_INTERVAL_MILLISECONDS);
+  }
+  throw new DeploymentContractError(
+    "cutover_timeout",
+    "cutover Job did not finish before the deadline",
+  );
+}
+
+function requireStableCutoverPod(pods, podName, podUid) {
+  if (pods.length !== 1) {
+    throw new DeploymentContractError(
+      "cutover_pod_count_invalid",
+      "cutover Job does not have exactly one stable owner Pod",
+    );
+  }
+  const [pod] = pods;
+  if (pod.metadata?.name !== podName || pod.metadata?.uid !== podUid) {
+    throw new DeploymentContractError(
+      "cutover_pod_identity_changed",
+      "cutover Pod identity changed after scheduling release",
+    );
+  }
+  return pod;
+}
+
+async function recoverTerminalCutoverJob(contract, request, execute) {
+  const job = await readOptionalCutoverJob(request, execute);
+  const pods = await readCutoverPods(request, execute);
+  if (job === null && pods.length === 0) return;
+  if (job === null) {
+    throw new DeploymentContractError(
+      "cutover_residue_invalid",
+      "cutover owner Pods exist without the fixed Job",
+    );
+  }
+  const runtimeImage = contract.images["k8s-incident-agent-runtime"];
+  requireCutoverJobContract(job, runtimeImage);
+  const jobUid = requireString(job.metadata?.uid, "cutover Job UID");
+  const phase = cutoverJobPhase(job);
+  if (phase === "active") {
+    throw new DeploymentContractError(
+      "cutover_residue_active",
+      "an active cutover Job requires operator review",
+    );
+  }
+  if (
+    pods.length > 1 ||
+    (pods.length === 0 && job.metadata?.deletionTimestamp == null)
+  ) {
+    throw new DeploymentContractError(
+      "cutover_residue_invalid",
+      "terminal cutover residue does not have exactly one owner Pod",
+    );
+  }
+  if (pods.length === 1) {
+    const hasGate = isDeepStrictEqual(pods[0].spec?.schedulingGates, [
+      { name: CUTOVER_GATE },
+    ]);
+    if (phase === "complete" && hasGate) {
+      throw new DeploymentContractError(
+        "cutover_residue_invalid",
+        "completed cutover residue still has its scheduling gate",
+      );
+    }
+    requireCutoverPodContract(
+      pods[0],
+      jobUid,
+      runtimeImage,
+      job.spec.template.spec.containers[0].command,
+      hasGate ? "terminal-gated" : "terminal",
+    );
+    const podPhase = pods[0].status?.phase;
+    if (
+      (phase === "complete" && podPhase !== "Succeeded") ||
+      (phase === "failed" && podPhase !== "Failed")
+    ) {
+      throw new DeploymentContractError(
+        "cutover_residue_invalid",
+        "terminal cutover Job and Pod states disagree",
+      );
+    }
+  }
+  const podNames = pods.map(
+    (pod) => requireString(pod.metadata?.name, "cutover Pod name"),
+  );
+  if (job.metadata?.deletionTimestamp != null) {
+    await waitForCutoverDeletion(request, execute, podNames);
+  } else {
+    await cleanupCutoverJob(request, execute, jobUid, podNames);
+  }
+}
+
+async function cleanupCutoverJob(request, execute, jobUid, podNames) {
+  const deleteOptions = `${JSON.stringify({
+    apiVersion: "v1",
+    kind: "DeleteOptions",
+    preconditions: { uid: jobUid },
+    propagationPolicy: "Foreground",
+  })}\n`;
+  await runKubectl(
+    execute,
+    request.context,
+    [
+      "delete",
+      "--raw",
+      `/apis/batch/v1/namespaces/${APPLICATION_NAMESPACE}/jobs/${CUTOVER_JOB}`,
+      "--filename=-",
+    ],
+    WRITE_TIMEOUT_MILLISECONDS,
+    "cutover Job cleanup",
+    deleteOptions,
+  );
+  await waitForCutoverDeletion(request, execute, podNames);
+}
+
+async function waitForCutoverDeletion(request, execute, podNames) {
+  await runKubectl(
+    execute,
+    request.context,
+    [
+      "wait",
+      "--for=delete",
+      `job/${CUTOVER_JOB}`,
+      "--namespace",
+      APPLICATION_NAMESPACE,
+      `--timeout=${WAIT_TIMEOUT}`,
+    ],
+    WRITE_TIMEOUT_MILLISECONDS,
+    "cutover Job deletion",
+  );
+  for (const podName of new Set(podNames)) {
+    await runKubectl(
+      execute,
+      request.context,
+      [
+        "wait",
+        "--for=delete",
+        `pod/${podName}`,
+        "--namespace",
+        APPLICATION_NAMESPACE,
+        `--timeout=${WAIT_TIMEOUT}`,
+      ],
+      WRITE_TIMEOUT_MILLISECONDS,
+      "cutover Pod deletion",
+    );
+  }
+  if ((await readCutoverPods(request, execute)).length !== 0) {
+    throw new DeploymentContractError(
+      "cutover_cleanup_failed",
+      "cutover owner Pods remain after Job cleanup",
+    );
+  }
+}
+
+async function requireCutoverObjectsAbsent(request, execute) {
+  const [job, pods] = await Promise.all([
+    readOptionalCutoverJob(request, execute),
+    readCutoverPods(request, execute),
+  ]);
+  if (job !== null || pods.length !== 0) {
+    throw new DeploymentContractError(
+      "cutover_residue_present",
+      "run cutover preview recovery before install or upgrade",
+    );
+  }
+}
+
+async function readOptionalCutoverJob(request, execute) {
+  const output = await runKubectl(
+    execute,
+    request.context,
+    [
+      "get",
+      "job",
+      CUTOVER_JOB,
+      "--namespace",
+      APPLICATION_NAMESPACE,
+      "--ignore-not-found=true",
+      "--output=json",
+    ],
+    READ_TIMEOUT_MILLISECONDS,
+    "cutover Job",
+  );
+  if (output.trim() === "") return null;
+  return parseJsonObject(output, "cutover Job");
+}
+
+async function readCutoverPods(request, execute) {
+  const pods = await readJsonResource(execute, request.context, [
+    "get",
+    "pods",
+    "--namespace",
+    APPLICATION_NAMESPACE,
+    "--output=json",
+  ], "cutover Pods");
+  if (pods.kind !== "List" || !Array.isArray(pods.items)) {
+    throw new DeploymentContractError(
+      "cutover_pod_collection_invalid",
+      "cutover Pod collection is unavailable",
+    );
+  }
+  return pods.items.filter(
+    (pod) =>
+      pod?.metadata?.labels?.["batch.kubernetes.io/job-name"] === CUTOVER_JOB ||
+      pod?.metadata?.ownerReferences?.some(
+        (owner) => owner?.kind === "Job" && owner?.name === CUTOVER_JOB,
+      ),
+  );
+}
+
+function requireCutoverJobContract(document, runtimeImage, expectedCommand) {
+  const spec = document?.spec;
+  const pod = spec?.template?.spec;
+  const containers = pod?.containers;
+  const command = containers?.[0]?.command;
+  requireCutoverCommand(command, expectedCommand);
+  const labels = document?.metadata?.labels ?? {};
+  const templateLabels = spec?.template?.metadata?.labels ?? {};
+  if (
+    document?.apiVersion !== "batch/v1" ||
+    document?.kind !== "Job" ||
+    document?.metadata?.name !== CUTOVER_JOB ||
+    document?.metadata?.namespace !== APPLICATION_NAMESPACE ||
+    labels["app.kubernetes.io/component"] !== CUTOVER_JOB ||
+    labels["app.kubernetes.io/part-of"] !== "k8s-incident-agent" ||
+    labels["app.kubernetes.io/name"] === "agent-runtime" ||
+    spec?.parallelism !== 1 ||
+    spec?.completions !== 1 ||
+    spec?.backoffLimit !== 0 ||
+    spec?.activeDeadlineSeconds !== 300 ||
+    spec?.ttlSecondsAfterFinished !== undefined ||
+    spec?.suspend === true ||
+    spec?.manualSelector === true ||
+    spec?.completionMode === "Indexed" ||
+    templateLabels["app.kubernetes.io/component"] !== CUTOVER_JOB ||
+    templateLabels["app.kubernetes.io/part-of"] !== "k8s-incident-agent" ||
+    templateLabels["app.kubernetes.io/name"] === "agent-runtime" ||
+    pod?.nodeName !== undefined ||
+    !cutoverPodSpecMatches(pod, runtimeImage, command, true, false)
+  ) {
+    throw new DeploymentContractError(
+      "cutover_job_contract_invalid",
+      "cutover Job does not match the fixed safety contract",
+    );
+  }
+}
+
+function requireCutoverCommand(command, expectedCommand) {
+  const isPreview = isDeepStrictEqual(command, [
+    "runtime",
+    "reset-stage-one-data",
+    "--preview",
+  ]);
+  const isConfirm =
+    Array.isArray(command) &&
+    command.length === 4 &&
+    isDeepStrictEqual(command.slice(0, 3), [
+      "runtime",
+      "reset-stage-one-data",
+      "--confirm",
+    ]) &&
+    PLAN_DIGEST_PATTERN.test(command[3]);
+  if (
+    (!isPreview && !isConfirm) ||
+    (expectedCommand !== undefined &&
+      !isDeepStrictEqual(command, expectedCommand))
+  ) {
+    throw new DeploymentContractError(
+      "cutover_job_contract_invalid",
+      "cutover Job command is not one of the fixed reset forms",
+    );
+  }
+}
+
+function cutoverPodSpecMatches(
+  pod,
+  runtimeImage,
+  command,
+  requireGate,
+  allowDefaultTolerations,
+) {
+  const containers = pod?.containers;
+  const container = containers?.[0];
+  const volumes = pod?.volumes;
+  const securityContext = pod?.securityContext;
+  const tolerations = pod?.tolerations ?? [];
+  const tolerationsMatched =
+    tolerations.length === 0 ||
+    (allowDefaultTolerations &&
+      isDeepStrictEqual(
+        [...tolerations].sort((left, right) => left.key.localeCompare(right.key)),
+        [...CUTOVER_DEFAULT_TOLERATIONS].sort((left, right) =>
+          left.key.localeCompare(right.key)
+        ),
+      ));
+  const gatesMatched = requireGate
+    ? isDeepStrictEqual(pod?.schedulingGates, [{ name: CUTOVER_GATE }])
+    : pod?.schedulingGates === undefined || pod.schedulingGates.length === 0;
+  return (
+    pod?.automountServiceAccountToken === false &&
+    (pod?.serviceAccountName === undefined ||
+      pod.serviceAccountName === "default") &&
+    (pod?.serviceAccount === undefined || pod.serviceAccount === "default") &&
+    pod?.restartPolicy === "Never" &&
+    gatesMatched &&
+    (pod?.hostNetwork === undefined || pod.hostNetwork === false) &&
+    (pod?.hostPID === undefined || pod.hostPID === false) &&
+    (pod?.hostIPC === undefined || pod.hostIPC === false) &&
+    (pod?.shareProcessNamespace === undefined ||
+      pod.shareProcessNamespace === false) &&
+    pod?.nodeSelector === undefined &&
+    pod?.affinity === undefined &&
+    tolerationsMatched &&
+    pod?.hostAliases === undefined &&
+    pod?.runtimeClassName === undefined &&
+    (pod?.imagePullSecrets === undefined || pod.imagePullSecrets.length === 0) &&
+    (pod?.initContainers === undefined || pod.initContainers.length === 0) &&
+    (pod?.ephemeralContainers === undefined ||
+      pod.ephemeralContainers.length === 0) &&
+    isDeepStrictEqual(securityContext, {
+      runAsNonRoot: true,
+      runAsUser: 10001,
+      runAsGroup: 10001,
+      fsGroup: 10001,
+      seccompProfile: { type: "RuntimeDefault" },
+    }) &&
+    Array.isArray(containers) &&
+    containers.length === 1 &&
+    container?.name === CUTOVER_CONTAINER &&
+    container?.image === runtimeImage &&
+    container?.imagePullPolicy === "IfNotPresent" &&
+    isDeepStrictEqual(container?.command, command) &&
+    (container?.args === undefined || container.args.length === 0) &&
+    isDeepStrictEqual(container?.env, [
+      {
+        name: "RUNTIME_DATA_DIR",
+        value: "/var/lib/k8s-incident-agent/runtime",
+      },
+    ]) &&
+    container?.envFrom === undefined &&
+    container?.lifecycle === undefined &&
+    container?.livenessProbe === undefined &&
+    container?.readinessProbe === undefined &&
+    container?.startupProbe === undefined &&
+    (container?.ports === undefined || container.ports.length === 0) &&
+    isDeepStrictEqual(container?.securityContext, {
+      allowPrivilegeEscalation: false,
+      capabilities: { drop: ["ALL"] },
+    }) &&
+    isDeepStrictEqual(container?.volumeMounts, [
+      {
+        name: "runtime-data",
+        mountPath: "/var/lib/k8s-incident-agent",
+      },
+    ]) &&
+    Array.isArray(volumes) &&
+    volumes.length === 1 &&
+    isDeepStrictEqual(volumes[0], {
+      name: "runtime-data",
+      persistentVolumeClaim: { claimName: RUNTIME_PVC },
+    })
+  );
+}
+
+function requireCutoverPodContract(
+  document,
+  jobUid,
+  runtimeImage,
+  command,
+  state,
+) {
+  const ownerReferences = document?.metadata?.ownerReferences;
+  const owner = ownerReferences?.[0];
+  const gated = state === "gated";
+  const requireGate = gated || state === "terminal-gated";
+  const podScheduled = document?.status?.conditions?.find(
+    (condition) => condition?.type === "PodScheduled",
+  );
+  const statuses = [
+    ...(document?.status?.initContainerStatuses ?? []),
+    ...(document?.status?.containerStatuses ?? []),
+    ...(document?.status?.ephemeralContainerStatuses ?? []),
+  ];
+  const startedBeforeRelease = statuses.some(
+    (status) =>
+      status?.started === true ||
+      status?.state?.running !== undefined ||
+      status?.state?.terminated !== undefined,
+  );
+  if (
+    document?.apiVersion !== "v1" ||
+    document?.kind !== "Pod" ||
+    document?.metadata?.namespace !== APPLICATION_NAMESPACE ||
+    typeof document?.metadata?.name !== "string" ||
+    typeof document?.metadata?.uid !== "string" ||
+    typeof document?.metadata?.resourceVersion !== "string" ||
+    !Array.isArray(ownerReferences) ||
+    ownerReferences.length !== 1 ||
+    owner?.apiVersion !== "batch/v1" ||
+    owner?.kind !== "Job" ||
+    owner?.name !== CUTOVER_JOB ||
+    owner?.uid !== jobUid ||
+    owner?.controller !== true ||
+    document?.metadata?.labels?.["app.kubernetes.io/component"] !==
+      CUTOVER_JOB ||
+    document?.metadata?.labels?.["app.kubernetes.io/part-of"] !==
+      "k8s-incident-agent" ||
+    document?.metadata?.labels?.["app.kubernetes.io/name"] ===
+      "agent-runtime" ||
+    !cutoverPodSpecMatches(
+      document?.spec,
+      runtimeImage,
+      command,
+      requireGate,
+      true,
+    ) ||
+    ((requireGate || state === "released") &&
+      document?.spec?.nodeName !== undefined) ||
+    (gated &&
+      (document?.status?.phase !== "Pending" ||
+        podScheduled?.status !== "False" ||
+        podScheduled?.reason !== "SchedulingGated" ||
+        startedBeforeRelease)) ||
+    (state === "terminal-gated" && startedBeforeRelease)
+  ) {
+    throw new DeploymentContractError(
+      "cutover_pod_contract_invalid",
+      "admitted cutover Pod does not match the fixed safety projection",
+    );
+  }
+}
+
+function cutoverJobPhase(job) {
+  const conditions = job?.status?.conditions ?? [];
+  if (!Array.isArray(conditions)) {
+    throw new DeploymentContractError(
+      "cutover_job_status_invalid",
+      "cutover Job status conditions are invalid",
+    );
+  }
+  const complete = conditions.some(
+    (condition) => condition?.type === "Complete" && condition?.status === "True",
+  );
+  const failed = conditions.some(
+    (condition) => condition?.type === "Failed" && condition?.status === "True",
+  );
+  if (complete && failed) {
+    throw new DeploymentContractError(
+      "cutover_job_status_invalid",
+      "cutover Job reports conflicting terminal conditions",
+    );
+  }
+  return complete ? "complete" : failed ? "failed" : "active";
+}
+
+function requireDefaultDenyContract(document) {
+  if (
+    document?.apiVersion !== "networking.k8s.io/v1" ||
+    document?.kind !== "NetworkPolicy" ||
+    document?.metadata?.name !== DEFAULT_DENY_POLICY ||
+    document?.metadata?.namespace !== APPLICATION_NAMESPACE ||
+    document?.metadata?.labels?.["app.kubernetes.io/part-of"] !==
+      "k8s-incident-agent" ||
+    !isDeepStrictEqual(document?.spec, {
+      podSelector: {},
+      policyTypes: ["Ingress", "Egress"],
+    })
+  ) {
+    throw new DeploymentContractError(
+      "cutover_network_policy_invalid",
+      "default-deny does not match the shared fixed contract",
+    );
+  }
+}
+
+function normalizeCutoverRuntimeSuccess(rawLog, mode, expectedPlanDigest) {
+  const payload = parseCutoverRuntimeObject(rawLog, "Runtime reset output");
+  const plan = normalizeCutoverRuntimePlan(payload, mode);
+  if (mode === "preview") return plan;
+  if (
+    payload.planDigest !== expectedPlanDigest ||
+    !["reset", "migrated", "already_complete"].includes(payload.outcome) ||
+    payload.newHead !== "20260901_0002"
+  ) {
+    throw new DeploymentContractError(
+      "cutover_runtime_output_invalid",
+      "Runtime confirm output does not match the requested reset",
+    );
+  }
+  const deleted = requireCutoverRuntimeObject(
+    payload.deleted,
+    "Runtime deleted targets",
+  );
+  const businessFiles = requireStringArray(
+    deleted.businessFiles,
+    "Runtime deleted business files",
+  );
+  const checkpointFiles = requireStringArray(
+    deleted.checkpointFiles,
+    "Runtime deleted checkpoint files",
+  );
+  const artifactRunIds = requireStringArray(
+    deleted.artifactRunIds,
+    "Runtime deleted artifact runs",
+  );
+  return {
+    ...plan,
+    outcome: payload.outcome,
+    newHead: payload.newHead,
+    deleted: {
+      businessFileCount: businessFiles.length,
+      checkpointFileCount: checkpointFiles.length,
+      artifactRunCount: artifactRunIds.length,
+    },
+  };
+}
+
+function normalizeCutoverRuntimePlan(payload, mode) {
+  if (
+    payload.mode !== mode ||
+    payload.targetHead !== "20260901_0002" ||
+    !["stage_one", "deletion_complete", "empty_database", "already_complete"]
+      .includes(payload.state) ||
+    !(payload.sourceHead === null ||
+      (typeof payload.sourceHead === "string" && payload.sourceHead !== "")) ||
+    typeof payload.planDigest !== "string" ||
+    !PLAN_DIGEST_PATTERN.test(payload.planDigest)
+  ) {
+    throw new DeploymentContractError(
+      "cutover_runtime_output_invalid",
+      "Runtime reset output does not match the fixed contract",
+    );
+  }
+  const targets = requireCutoverRuntimeObject(
+    payload.targets,
+    "Runtime reset targets",
+  );
+  const rowCounts = requireCutoverRuntimeObject(
+    targets.rowCounts,
+    "Runtime row counts",
+  );
+  if (
+    Object.keys(rowCounts).length > 5 ||
+    Object.entries(rowCounts).some(
+      ([name, count]) =>
+        name === "" ||
+        name.length > 64 ||
+        !Number.isSafeInteger(count) ||
+        count < 0,
+    )
+  ) {
+    throw new DeploymentContractError(
+      "cutover_runtime_output_invalid",
+      "Runtime row counts are invalid",
+    );
+  }
+  const businessFiles = requireStringArray(
+    targets.businessFiles,
+    "Runtime business files",
+  );
+  const checkpointFiles = requireStringArray(
+    targets.checkpointFiles,
+    "Runtime checkpoint files",
+  );
+  const runIds = requireStringArray(targets.runIds, "Runtime run identities");
+  const artifactRunIds = requireStringArray(
+    targets.artifactRunIds,
+    "Runtime artifact run identities",
+  );
+  return {
+    sourceHead: payload.sourceHead,
+    targetHead: payload.targetHead,
+    state: payload.state,
+    rowCounts,
+    businessFileCount: businessFiles.length,
+    checkpointFileCount: checkpointFiles.length,
+    runCount: runIds.length,
+    artifactRunCount: artifactRunIds.length,
+    planDigest: payload.planDigest,
+  };
+}
+
+function normalizeCutoverRuntimeFailure(rawLog, mode) {
+  const payload = parseCutoverRuntimeObject(rawLog, "Runtime reset failure");
+  const error = requireCutoverRuntimeObject(
+    payload.error,
+    "Runtime reset failure",
+  );
+  if (
+    payload.mode !== mode ||
+    typeof error.code !== "string" ||
+    !/^[a-z][a-z0-9_]{0,63}$/.test(error.code) ||
+    ![
+      "preflight",
+      "artifact_delete",
+      "checkpoint_delete",
+      "business_delete",
+      "migration",
+    ].includes(error.phase)
+  ) {
+    throw new DeploymentContractError(
+      "cutover_runtime_output_invalid",
+      "Runtime failure output does not match the fixed contract",
+    );
+  }
+  return { code: error.code, phase: error.phase };
+}
+
+function requireStringArray(value, label) {
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== "string" || entry === "")
+  ) {
+    throw new DeploymentContractError(
+      "cutover_runtime_output_invalid",
+      `${label} are invalid`,
+    );
+  }
+  return value;
+}
+
+function parseCutoverRuntimeObject(rawValue, label) {
+  try {
+    return requireCutoverRuntimeObject(JSON.parse(rawValue.trim()), label);
+  } catch (error) {
+    if (
+      error instanceof DeploymentContractError &&
+      error.code === "cutover_runtime_output_invalid"
+    ) {
+      throw error;
+    }
+    throw new DeploymentContractError(
+      "cutover_runtime_output_invalid",
+      `${label} is not one JSON object`,
+    );
+  }
+}
+
+function requireCutoverRuntimeObject(value, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new DeploymentContractError(
+      "cutover_runtime_output_invalid",
+      `${label} is invalid`,
+    );
+  }
+  return value;
+}
+
+function serializeKubernetesResource(document) {
+  return `${JSON.stringify(document)}\n`;
+}
+
+async function readJsonFromKubectl(
+  execute,
+  context,
+  args,
+  label,
+  input,
+) {
+  const output = await runKubectl(
+    execute,
+    context,
+    args,
+    WRITE_TIMEOUT_MILLISECONDS,
+    label,
+    input,
+  );
+  return parseJsonObject(output, label);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function previewLifecycleAction(
@@ -401,6 +1821,7 @@ async function confirmApply(contract, request, execute) {
     images: true,
     secret: true,
   });
+  await requireCutoverObjectsAbsent(request, execute);
   const overlayPath = profilePath(contract, request.profile.overlay);
   await runKubectl(
     execute,
@@ -687,8 +2108,15 @@ async function requireClusterPrerequisites(
     await requireRuntimeSecret(request.context, execute);
   }
   if (requirements.images) {
-    await requireSingleNodeImages(contract, request.context, execute);
+    await requireSingleNodeImages(
+      request.context,
+      execute,
+      Array.isArray(requirements.images)
+        ? requirements.images
+        : Object.values(contract.images),
+    );
   }
+  return { serverVersion: actualServerVersion };
 }
 
 async function requireK3sComponents(contract, context, execute) {
@@ -779,7 +2207,11 @@ async function requireRuntimeSecret(context, execute) {
   }
 }
 
-async function requireSingleNodeImages(contract, context, execute) {
+async function requireSingleNodeImages(
+  context,
+  execute,
+  expectedImages,
+) {
   const nodes = await readJsonResource(execute, context, [
     "get",
     "nodes",
@@ -806,7 +2238,7 @@ async function requireSingleNodeImages(contract, context, execute) {
       "the fixed Kubernetes node is not ready",
     );
   }
-  const expectedImageNames = Object.values(contract.images).map(
+  const expectedImageNames = expectedImages.map(
     (image) => `docker.io/library/${image}`,
   );
   if (expectedImageNames.some((expected) => !imageNames.includes(expected))) {
@@ -953,7 +2385,7 @@ async function runPurge(contract, request, execute) {
   };
 }
 
-async function requireWorkloadsAbsent(request, execute) {
+async function requireWorkloadsAbsent(request, execute, options = {}) {
   const output = (
     await runKubectl(
       execute,
@@ -972,8 +2404,8 @@ async function requireWorkloadsAbsent(request, execute) {
   ).trim();
   if (output !== "") {
     throw new DeploymentContractError(
-      "purge_workload_active",
-      "uninstall workloads before purging Runtime data",
+      options.code ?? "purge_workload_active",
+      options.message ?? "uninstall workloads before purging Runtime data",
     );
   }
 }

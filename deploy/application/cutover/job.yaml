@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: runtime-data-cutover
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/component: runtime-data-cutover
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: runtime-data-cutover
+        app.kubernetes.io/part-of: k8s-incident-agent
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      schedulingGates:
+        - name: k8s-incident-agent.io/runtime-data-cutover
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runtime-reset
+          image: k8s-incident-agent-runtime
+          imagePullPolicy: IfNotPresent
+          command: ["runtime", "reset-stage-one-data", "--preview"]
+          env:
+            - name: RUNTIME_DATA_DIR
+              value: /var/lib/k8s-incident-agent/runtime
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: runtime-data
+              mountPath: /var/lib/k8s-incident-agent
+      volumes:
+        - name: runtime-data
+          persistentVolumeClaim:
+            claimName: runtime-data
