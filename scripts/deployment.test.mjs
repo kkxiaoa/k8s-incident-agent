@@ -35,9 +35,9 @@ const REAL_KUBECTL =
     encoding: "utf8",
   }).trim();
 const CONSOLE_IMAGE =
-  "k8s-incident-agent-console@sha256:21738d940b41232a8ddfa78d90869c28b29a437d932bedf021a3e09fb6f8e595";
+  "k8s-incident-agent-console@sha256:62310090946e27a4274680ab09084046e6708994a499761d0e2fed3a69b64fa1";
 const RUNTIME_IMAGE =
-  "k8s-incident-agent-runtime@sha256:91784f657a06151cb9f4d8219b1cf90581ae8b4fb95f3b4013c68d02c8eac5c9";
+  "k8s-incident-agent-runtime@sha256:395f13fd3f5c01e28ff9c5656e28563b714b6018e9aa79e81b84cace9d66663d";
 
 function render(relativePath) {
   return execFileSync(
