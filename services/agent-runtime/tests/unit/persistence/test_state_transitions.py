@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
+from tests.factories import normalized_trigger
 
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
@@ -24,11 +25,6 @@ from k8s_incident_agent.persistence.repositories import (
     RecoveryConsistencyError,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -54,21 +50,8 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
         await database.dispose()
 
 
-def _scenario() -> PublicScenario:
-    return PublicScenario(
-        scenario_id="image-pull-backoff",
-        scenario_version=1,
-        display_name="Image pull failure",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(type="manual", summary="Deployment unavailable"),
-        target=ScenarioTarget(
-            cluster="k8s-incident-agent",
-            namespace="k8s-incident-scenarios",
-            api_version="apps/v1",
-            kind="Deployment",
-            name="image-pull-backoff",
-        ),
-    )
+def _scenario():
+    return normalized_trigger()
 
 
 def _failure_terminal(run_id: UUID) -> TerminalRecord:

@@ -10,6 +10,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     VersionInfo,
 )
 
+from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.kubernetes.client import KubernetesClients
 from k8s_incident_agent.kubernetes.errors import (
     KubernetesBoundaryError,
@@ -17,7 +18,6 @@ from k8s_incident_agent.kubernetes.errors import (
     map_kubernetes_exception,
 )
 from k8s_incident_agent.scenarios.contracts import (
-    ScenarioTarget,
     validate_stage_one_target,
 )
 
@@ -82,17 +82,20 @@ async def verify_stage_one_access(
 
 
 def require_stage_one_target_scope(
-    target: ScenarioTarget,
+    target: KubernetesTarget,
     *,
     cluster_id: str,
     diagnostic_namespace: str,
-) -> None:
+) -> str:
     try:
         validate_stage_one_target(target)
     except ValueError:
         raise _contract_invalid() from None
     if target.cluster != cluster_id or target.namespace != diagnostic_namespace:
         raise _contract_invalid()
+    if target.namespace is None:
+        raise _contract_invalid()
+    return target.namespace
 
 
 def _stage_one_checks(namespace: str) -> tuple[_AccessCheck, ...]:

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import event, func, select
 from sqlalchemy.exc import OperationalError
+from tests.factories import normalized_trigger
 
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
@@ -32,16 +34,12 @@ from k8s_incident_agent.persistence.models import (
     RunRow,
 )
 from k8s_incident_agent.persistence.repositories import (
+    ActiveRunExistsError,
     IncidentRepository,
     PersistenceOperationError,
     RecoveryConsistencyError,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -64,24 +62,8 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
         await database.dispose()
 
 
-def _scenario() -> PublicScenario:
-    return PublicScenario(
-        scenario_id="image-pull-backoff",
-        scenario_version=1,
-        display_name="Image pull failure",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(
-            type="manual",
-            summary="The target Deployment is unavailable.",
-        ),
-        target=ScenarioTarget(
-            cluster="k8s-incident-agent",
-            namespace="k8s-incident-scenarios",
-            api_version="apps/v1",
-            kind="Deployment",
-            name="image-pull-backoff",
-        ),
-    )
+def _scenario():
+    return normalized_trigger()
 
 
 def _model() -> ModelSnapshot:
@@ -104,6 +86,30 @@ async def _row_count(database: BusinessDatabase, row_type: type[object]) -> int:
     return count
 
 
+async def _fail_run(
+    repository: IncidentRepository,
+    run_id: UUID,
+) -> None:
+    await repository.start_run(run_id, NOW)
+    await repository.persist_terminal(
+        TerminalRecord(
+            run_id=run_id,
+            completed_at=NOW.replace(minute=1),
+            outcome=None,
+            summary=None,
+            root_causes=(),
+            missing_information=(),
+            redacted=False,
+            error_code="request_timeout",
+            error_retryable=True,
+            model_calls=1,
+            tool_calls=1,
+            input_tokens=None,
+            output_tokens=None,
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_incident_run_and_event_are_one_transaction(
     tmp_path: Path,
@@ -120,13 +126,13 @@ async def test_create_incident_run_and_event_are_one_transaction(
         assert created.event.event_key == "incident.created"
         assert created.event.event_type == "incident.created"
         assert created.event.payload == {
+            "attempt": 1,
             "incidentId": str(created.incident_id),
             "incidentStatus": "RECEIVED",
             "occurredAt": created.event.occurred_at.isoformat().replace("+00:00", "Z"),
             "runId": str(created.run_id),
             "runStatus": "QUEUED",
-            "scenarioId": "image-pull-backoff",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
         }
         assert await _row_count(database, IncidentRow) == 1
         assert await _row_count(database, RunRow) == 1
@@ -171,6 +177,82 @@ async def test_create_rolls_back_all_rows_when_event_insert_fails(
         assert await _row_count(database, RunRow) == 0
         assert await _row_count(database, RunEventRow) == 0
         assert notifications == []
+
+
+@pytest.mark.asyncio
+async def test_rerun_requires_terminal_predecessor_and_keeps_attempts_isolated(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        first = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+
+        with pytest.raises(ActiveRunExistsError):
+            await repository.create_run(first.incident_id, _model(), _budget())
+
+        await _fail_run(repository, first.run_id)
+        second = await repository.create_run(first.incident_id, _model(), _budget())
+        assert second is not None
+
+        latest = await repository.get_incident_detail(
+            first.incident_id,
+            run_id=None,
+            event_limit=100,
+        )
+        historical = await repository.get_incident_detail(
+            first.incident_id,
+            run_id=first.run_id,
+            event_limit=100,
+        )
+        assert latest is not None
+        assert historical is not None
+        assert latest.run.id == second.run_id
+        assert latest.run.attempt == 2
+        assert latest.run.status is RunStatus.QUEUED
+        assert [event.event_type for event in latest.events] == ["run.queued"]
+        assert historical.run.id == first.run_id
+        assert historical.run.attempt == 1
+        assert historical.run.status is RunStatus.FAILED
+        assert historical.run.error_code == "request_timeout"
+        assert all(event.run_id == first.run_id for event in historical.events)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rerun_creates_exactly_one_active_attempt(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        first = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        await _fail_run(repository, first.run_id)
+
+        results = await asyncio.gather(
+            repository.create_run(first.incident_id, _model(), _budget()),
+            repository.create_run(first.incident_id, _model(), _budget()),
+            return_exceptions=True,
+        )
+
+        created = [
+            result for result in results if not isinstance(result, BaseException)
+        ]
+        rejected = [result for result in results if isinstance(result, BaseException)]
+        assert len(created) == 1
+        assert len(rejected) == 1
+        assert isinstance(rejected[0], ActiveRunExistsError)
+        page = await repository.list_run_records(
+            first.incident_id,
+            limit=50,
+            before_attempt=None,
+        )
+        assert page is not None
+        assert [(run.attempt, run.status) for run in page.items] == [
+            (2, RunStatus.QUEUED),
+            (1, RunStatus.FAILED),
+        ]
 
 
 @pytest.mark.asyncio
@@ -395,7 +477,7 @@ async def test_workflow_snapshot_and_recoverable_scan_use_persisted_run_state(
 
         assert queued_snapshot.run_status is RunStatus.QUEUED
         assert queued_snapshot.started_at is None
-        assert queued_snapshot.trigger_summary == _scenario().trigger.summary
+        assert queued_snapshot.trigger_summary == _scenario().trigger_summary
         assert queued_snapshot.target == _scenario().target
         assert queued_snapshot.model == _model()
         assert queued_snapshot.budget == _budget()
@@ -410,7 +492,7 @@ async def test_workflow_snapshot_and_recoverable_scan_use_persisted_run_state(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutation",
-    ["missing", "tampered", "run_updated_at", "incident_updated_at"],
+    ["missing", "tampered", "run_updated_at"],
 )
 async def test_workflow_snapshot_requires_matching_run_started_event(
     tmp_path: Path,
@@ -440,12 +522,7 @@ async def test_workflow_snapshot_requires_matching_run_started_event(
                 assert run is not None
                 run.updated_at = NOW.replace(second=1)
             else:
-                incident = await session.get(
-                    IncidentRow,
-                    str(created.incident_id),
-                )
-                assert incident is not None
-                incident.updated_at = NOW.replace(second=1)
+                raise AssertionError("Unknown mutation")
 
         with pytest.raises(RecoveryConsistencyError):
             await repository.get_workflow_run_snapshot(created.run_id)

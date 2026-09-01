@@ -35,4 +35,25 @@ describe("GET /api/runtime/incidents/[incidentId]", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(response.status).toBe(422);
   });
+
+  it("forwards the single selected runId and rejects duplicates", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const runId = "223e4567-e89b-42d3-a456-426614174000";
+
+    await GET(new Request(`http://console.test/detail?runId=${runId}`), {
+      params: Promise.resolve({ incidentId: INCIDENT_ID }),
+    });
+    expect((fetchMock.mock.calls[0] as [URL])[0].searchParams.get("runId")).toBe(
+      runId,
+    );
+
+    fetchMock.mockClear();
+    const response = await GET(
+      new Request(`http://console.test/detail?runId=${runId}&runId=${runId}`),
+      { params: Promise.resolve({ incidentId: INCIDENT_ID }) },
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(422);
+  });
 });

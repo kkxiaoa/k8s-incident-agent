@@ -56,6 +56,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/incidents/{incident_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Runs */
+        get: operations["list_runs_api_v1_incidents__incident_id__runs_get"];
+        put?: never;
+        /** Create Run */
+        post: operations["create_run_api_v1_incidents__incident_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{incident_id}/runs/{run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Run Events */
+        get: operations["list_run_events_api_v1_incidents__incident_id__runs__run_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/scenarios": {
         parameters: {
             query?: never;
@@ -106,19 +141,26 @@ export interface components {
              * Format: uuid
              */
             incidentId: string;
-            incidentStatus: components["schemas"]["IncidentStatus"];
+            /**
+             * Schemaversion
+             * @default 2
+             * @constant
+             */
+            schemaVersion: 2;
+        };
+        /** CreateRunResponse */
+        CreateRunResponse: {
             /**
              * Runid
              * Format: uuid
              */
             runId: string;
-            runStatus: components["schemas"]["RunStatus"];
             /**
              * Schemaversion
-             * @default 1
+             * @default 2
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** DiagnosisCompletedEventPayload */
         DiagnosisCompletedEventPayload: {
@@ -161,7 +203,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** DiagnosisCompletedStreamEvent */
         DiagnosisCompletedStreamEvent: {
@@ -215,7 +257,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** DiagnosisInsufficientStreamEvent */
         DiagnosisInsufficientStreamEvent: {
@@ -268,6 +310,13 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
         };
+        /** EventPageResponse */
+        EventPageResponse: {
+            /** Items */
+            items: components["schemas"]["RunEventStreamItem"][];
+            /** Nextcursor */
+            nextCursor: string | null;
+        };
         /** EvidenceRecordedEventPayload */
         EvidenceRecordedEventPayload: {
             /**
@@ -303,7 +352,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -364,6 +413,8 @@ export interface components {
         };
         /** IncidentCreatedEventPayload */
         IncidentCreatedEventPayload: {
+            /** Attempt */
+            attempt: number;
             /**
              * Incidentid
              * Format: uuid
@@ -389,13 +440,11 @@ export interface components {
              * @constant
              */
             runStatus: "QUEUED";
-            /** Scenarioid */
-            scenarioId: string;
             /**
              * Schemaversion
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** IncidentCreatedStreamEvent */
         IncidentCreatedStreamEvent: {
@@ -411,24 +460,22 @@ export interface components {
         /** IncidentDetailResponse */
         IncidentDetailResponse: {
             diagnosis: components["schemas"]["DiagnosisResponse"] | null;
+            /** Eventcursor */
+            eventCursor: string;
+            eventPage: components["schemas"]["EventPageResponse"];
             /** Evidence */
             evidence: components["schemas"]["EvidenceResponse"][];
             incident: components["schemas"]["IncidentResponse"];
-            run: components["schemas"]["RunResponse"];
             /**
              * Schemaversion
-             * @default 1
+             * @default 2
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
+            selectedRun: components["schemas"]["SelectedRunResponse"];
         };
         /** IncidentListItem */
         IncidentListItem: {
-            /**
-             * Createdat
-             * Format: date-time
-             */
-            createdAt: string;
             /** Displayname */
             displayName: string;
             /**
@@ -436,12 +483,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
-            /** Scenarioid */
-            scenarioId: string;
-            /** Scenarioversion */
-            scenarioVersion: number;
             status: components["schemas"]["IncidentStatus"];
-            target: components["schemas"]["ScenarioTargetResponse"];
+            target: components["schemas"]["IncidentTargetResponse"];
             /**
              * Updatedat
              * Format: date-time
@@ -456,10 +499,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 1
+             * @default 2
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** IncidentResponse */
         IncidentResponse: {
@@ -475,25 +518,42 @@ export interface components {
              * Format: uuid
              */
             id: string;
-            /** Scenarioid */
-            scenarioId: string;
-            /** Scenarioversion */
-            scenarioVersion: number;
+            source: components["schemas"]["IncidentSourceResponse"];
             status: components["schemas"]["IncidentStatus"];
-            target: components["schemas"]["ScenarioTargetResponse"];
+            target: components["schemas"]["IncidentTargetResponse"];
             /** Triggersummary */
             triggerSummary: string;
+        };
+        /** IncidentSourceResponse */
+        IncidentSourceResponse: {
+            /** Ref */
+            ref: string | null;
+            /** Revision */
+            revision: string | null;
             /**
-             * Updatedat
-             * Format: date-time
+             * Type
+             * @constant
              */
-            updatedAt: string;
+            type: "scenario";
         };
         /**
          * IncidentStatus
          * @enum {string}
          */
         IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "INSUFFICIENT_EVIDENCE" | "FAILED";
+        /** IncidentTargetResponse */
+        IncidentTargetResponse: {
+            /** Apiversion */
+            apiVersion: string;
+            /** Cluster */
+            cluster: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Namespace */
+            namespace: string | null;
+        };
         /** RootCauseResponse */
         RootCauseResponse: {
             /** Code */
@@ -508,15 +568,6 @@ export interface components {
             /** Statement */
             statement: string;
         };
-        /** RunBudgetResponse */
-        RunBudgetResponse: {
-            /** Maxmodelcalls */
-            maxModelCalls: number;
-            /** Maxtoolcalls */
-            maxToolCalls: number;
-            /** Timeoutseconds */
-            timeoutSeconds: number;
-        };
         /** RunErrorResponse */
         RunErrorResponse: {
             /** Code */
@@ -524,8 +575,21 @@ export interface components {
             /** Retryable */
             retryable: boolean;
         };
+        /** RunEventHistoryResponse */
+        RunEventHistoryResponse: {
+            /** Items */
+            items: components["schemas"]["RunEventStreamItem"][];
+            /** Nextcursor */
+            nextCursor: string | null;
+            /**
+             * Schemaversion
+             * @default 2
+             * @constant
+             */
+            schemaVersion: 2;
+        };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */
@@ -561,7 +625,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** RunFailedStreamEvent */
         RunFailedStreamEvent: {
@@ -574,37 +638,64 @@ export interface components {
             /** Id */
             id: string;
         };
-        /** RunResponse */
-        RunResponse: {
-            budget: components["schemas"]["RunBudgetResponse"];
-            /** Completedat */
-            completedAt: string | null;
+        /** RunHistoryResponse */
+        RunHistoryResponse: {
+            /** Items */
+            items: components["schemas"]["RunSummaryResponse"][];
+            /** Nextcursor */
+            nextCursor: string | null;
             /**
-             * Createdat
-             * Format: date-time
+             * Schemaversion
+             * @default 2
+             * @constant
              */
-            createdAt: string;
-            error: components["schemas"]["RunErrorResponse"] | null;
+            schemaVersion: 2;
+        };
+        /** RunQueuedEventPayload */
+        RunQueuedEventPayload: {
+            /** Attempt */
+            attempt: number;
             /**
-             * Id
+             * Incidentid
              * Format: uuid
              */
+            incidentId: string;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            /**
+             * Runstatus
+             * @constant
+             */
+            runStatus: "QUEUED";
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 2;
+        };
+        /** RunQueuedStreamEvent */
+        RunQueuedStreamEvent: {
+            data: components["schemas"]["RunQueuedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "run.queued";
+            /** Id */
             id: string;
-            /** Modelid */
-            modelId: string;
-            /** Modelprovider */
-            modelProvider: string;
-            /** Promptversion */
-            promptVersion: string;
-            /** Startedat */
-            startedAt: string | null;
-            status: components["schemas"]["RunStatus"];
-            /** Thinkingmode */
-            thinkingMode: boolean;
-            usage: components["schemas"]["RunUsageResponse"];
         };
         /** RunStartedEventPayload */
         RunStartedEventPayload: {
+            /** Attempt */
+            attempt: number;
             /**
              * Incidentid
              * Format: uuid
@@ -634,7 +725,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** RunStartedStreamEvent */
         RunStartedStreamEvent: {
@@ -652,16 +743,25 @@ export interface components {
          * @enum {string}
          */
         RunStatus: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
-        /** RunUsageResponse */
-        RunUsageResponse: {
-            /** Inputtokens */
-            inputTokens: number | null;
-            /** Modelcalls */
-            modelCalls: number | null;
-            /** Outputtokens */
-            outputTokens: number | null;
-            /** Toolcalls */
-            toolCalls: number | null;
+        /** RunSummaryResponse */
+        RunSummaryResponse: {
+            /** Attempt */
+            attempt: number;
+            /** Completedat */
+            completedAt: string | null;
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Startedat */
+            startedAt: string | null;
+            status: components["schemas"]["RunStatus"];
         };
         /** ScenarioListResponse */
         ScenarioListResponse: {
@@ -710,6 +810,27 @@ export interface components {
              */
             type: "manual";
         };
+        /** SelectedRunResponse */
+        SelectedRunResponse: {
+            /** Attempt */
+            attempt: number;
+            /** Completedat */
+            completedAt: string | null;
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            error: components["schemas"]["RunErrorResponse"] | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Startedat */
+            startedAt: string | null;
+            status: components["schemas"]["RunStatus"];
+        };
         /** ToolFailedEventPayload */
         ToolFailedEventPayload: {
             /** Errorcode */
@@ -735,7 +856,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -773,7 +894,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -920,7 +1041,9 @@ export interface operations {
     };
     get_incident_api_v1_incidents__incident_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                runId?: string | null;
+            };
             header?: never;
             path: {
                 incident_id: string;
@@ -996,6 +1119,214 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["RunEventStreamItem"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_runs_api_v1_incidents__incident_id__runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunHistoryResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_run_api_v1_incidents__incident_id__runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateRunResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_run_events_api_v1_incidents__incident_id__runs__run_id__events_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                incident_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunEventHistoryResponse"];
                 };
             };
             /** @description Bad Request */

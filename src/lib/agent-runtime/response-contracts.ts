@@ -1,22 +1,25 @@
 import type { components } from "./generated";
+import {
+  isValidEventId,
+  parseRunEventItem,
+  type RunEventStreamItem,
+} from "./event-contracts";
 
 type ApiDiagnosis = components["schemas"]["DiagnosisResponse"];
 type ApiEvidence = components["schemas"]["EvidenceResponse"];
-type ApiIncident = components["schemas"]["IncidentResponse"];
-type ApiIncidentListItem = components["schemas"]["IncidentListItem"];
 type ApiRootCause = components["schemas"]["RootCauseResponse"];
 type ApiRunError = components["schemas"]["RunErrorResponse"];
 type ApiScenario = components["schemas"]["ScenarioResponse"];
-type ApiTarget = components["schemas"]["ScenarioTargetResponse"];
+
+export interface TargetView {
+  kind: string;
+  namespace: string | null;
+  name: string;
+}
 
 export type ScenarioView = Pick<
   ApiScenario,
   "scenarioId" | "displayName" | "description"
-> & { target: TargetView };
-
-export type IncidentListItemView = Pick<
-  ApiIncidentListItem,
-  "id" | "displayName" | "status" | "updatedAt"
 > & { target: TargetView };
 
 export interface ScenarioListView {
@@ -27,27 +30,63 @@ export interface CreateIncidentView {
   incidentId: string;
 }
 
-export interface IncidentListView {
-  items: IncidentListItemView[];
-  hasMore: boolean;
+export interface CreateRunView {
+  runId: string;
 }
 
-type TargetView = Pick<ApiTarget, "kind" | "namespace" | "name">;
-type IncidentView = Pick<
-  ApiIncident,
-  | "id"
-  | "scenarioId"
-  | "scenarioVersion"
-  | "displayName"
-  | "triggerSummary"
-  | "status"
-  | "createdAt"
-> & { target: TargetView };
+export interface IncidentListItemView {
+  id: string;
+  displayName: string;
+  status: components["schemas"]["IncidentStatus"];
+  target: TargetView;
+  updatedAt: string;
+}
+
+export interface IncidentListView {
+  items: IncidentListItemView[];
+  nextCursor: string | null;
+}
+
+export interface IncidentSourceView {
+  type: "scenario";
+  ref: string | null;
+  revision: string | null;
+}
+
+export interface IncidentView {
+  id: string;
+  displayName: string;
+  triggerSummary: string;
+  status: components["schemas"]["IncidentStatus"];
+  source: IncidentSourceView;
+  target: TargetView;
+  createdAt: string;
+}
+
 export type RunErrorView = Pick<ApiRunError, "code" | "retryable">;
-type RunView = {
+
+export interface SelectedRunView {
+  id: string;
+  attempt: number;
   status: components["schemas"]["RunStatus"];
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
   error: RunErrorView | null;
-};
+}
+
+export type RunSummaryView = Omit<SelectedRunView, "error">;
+
+export interface RunHistoryView {
+  items: RunSummaryView[];
+  nextCursor: string | null;
+}
+
+export interface EventPageView {
+  items: RunEventStreamItem[];
+  nextCursor: string | null;
+}
+
 export type EvidenceView = Pick<
   ApiEvidence,
   | "id"
@@ -59,10 +98,12 @@ export type EvidenceView = Pick<
   | "targetRef"
   | "truncated"
 >;
+
 type RootCauseView = Pick<
   ApiRootCause,
   "code" | "statement" | "confidence" | "evidenceIds"
 >;
+
 export type DiagnosisView = Pick<
   ApiDiagnosis,
   "outcome" | "summary" | "missingInformation" | "redacted"
@@ -70,7 +111,9 @@ export type DiagnosisView = Pick<
 
 export interface IncidentDetailView {
   incident: IncidentView;
-  run: RunView;
+  selectedRun: SelectedRunView;
+  eventPage: EventPageView;
+  eventCursor: string;
   evidence: EvidenceView[];
   diagnosis: DiagnosisView | null;
 }
@@ -82,12 +125,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value);
-}
-
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
 function isIncidentStatus(
@@ -113,12 +160,13 @@ function isRunStatus(
   );
 }
 
-function parseTarget(value: unknown): TargetView | null {
+function parseTarget(value: unknown, namespaceRequired = false): TargetView | null {
   if (
     !isObject(value) ||
     typeof value.kind !== "string" ||
-    typeof value.namespace !== "string" ||
-    typeof value.name !== "string"
+    typeof value.name !== "string" ||
+    (value.namespace !== null && typeof value.namespace !== "string") ||
+    (namespaceRequired && typeof value.namespace !== "string")
   ) {
     return null;
   }
@@ -146,7 +194,7 @@ function parseScenario(value: unknown): ScenarioView | null {
     return null;
   }
 
-  const target = parseTarget(value.target);
+  const target = parseTarget(value.target, true);
   return target === null
     ? null
     : {
@@ -163,7 +211,7 @@ function parseIncidentListItem(value: unknown): IncidentListItemView | null {
     !isUuid(value.id) ||
     typeof value.displayName !== "string" ||
     !isIncidentStatus(value.status) ||
-    typeof value.updatedAt !== "string"
+    !isTimestamp(value.updatedAt)
   ) {
     return null;
   }
@@ -180,30 +228,41 @@ function parseIncidentListItem(value: unknown): IncidentListItemView | null {
       };
 }
 
-function parseIncident(value: unknown): IncidentView | null {
+function parseIncidentSource(value: unknown): IncidentSourceView | null {
   if (
     !isObject(value) ||
-    !isUuid(value.id) ||
-    typeof value.scenarioId !== "string" ||
-    !isInteger(value.scenarioVersion) ||
-    typeof value.displayName !== "string" ||
-    typeof value.triggerSummary !== "string" ||
-    !isIncidentStatus(value.status) ||
-    typeof value.createdAt !== "string"
+    value.type !== "scenario" ||
+    (value.ref !== null && typeof value.ref !== "string") ||
+    (value.revision !== null && typeof value.revision !== "string")
   ) {
     return null;
   }
 
+  return { type: value.type, ref: value.ref, revision: value.revision };
+}
+
+function parseIncident(value: unknown): IncidentView | null {
+  if (
+    !isObject(value) ||
+    !isUuid(value.id) ||
+    typeof value.displayName !== "string" ||
+    typeof value.triggerSummary !== "string" ||
+    !isIncidentStatus(value.status) ||
+    !isTimestamp(value.createdAt)
+  ) {
+    return null;
+  }
+
+  const source = parseIncidentSource(value.source);
   const target = parseTarget(value.target);
-  return target === null
+  return source === null || target === null
     ? null
     : {
         id: value.id,
-        scenarioId: value.scenarioId,
-        scenarioVersion: value.scenarioVersion,
         displayName: value.displayName,
         triggerSummary: value.triggerSummary,
         status: value.status,
+        source,
         target,
         createdAt: value.createdAt,
       };
@@ -217,15 +276,57 @@ function parseRunError(value: unknown): RunErrorView | null {
     : null;
 }
 
-function parseRun(value: unknown): RunView | null {
-  if (!isObject(value) || !isRunStatus(value.status)) {
+function parseRunBase(value: unknown): RunSummaryView | null {
+  if (
+    !isObject(value) ||
+    !isUuid(value.id) ||
+    !isPositiveInteger(value.attempt) ||
+    !isRunStatus(value.status) ||
+    !isTimestamp(value.createdAt) ||
+    (value.startedAt !== null && !isTimestamp(value.startedAt)) ||
+    (value.completedAt !== null && !isTimestamp(value.completedAt))
+  ) {
+    return null;
+  }
+
+  return {
+    id: value.id,
+    attempt: value.attempt,
+    status: value.status,
+    createdAt: value.createdAt,
+    startedAt: value.startedAt,
+    completedAt: value.completedAt,
+  };
+}
+
+function parseSelectedRun(value: unknown): SelectedRunView | null {
+  const run = parseRunBase(value);
+  if (run === null || !isObject(value)) {
     return null;
   }
 
   const error = value.error === null ? null : parseRunError(value.error);
-  return value.error !== null && error === null
-    ? null
-    : { status: value.status, error };
+  return value.error !== null && error === null ? null : { ...run, error };
+}
+
+function parseEventPage(value: unknown): EventPageView | null {
+  if (
+    !isObject(value) ||
+    !Array.isArray(value.items) ||
+    (value.nextCursor !== null &&
+      (typeof value.nextCursor !== "string" || value.nextCursor.length === 0))
+  ) {
+    return null;
+  }
+
+  try {
+    return {
+      items: value.items.map(parseRunEventItem),
+      nextCursor: value.nextCursor,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function parseEvidence(value: unknown): EvidenceView | null {
@@ -234,7 +335,7 @@ function parseEvidence(value: unknown): EvidenceView | null {
     !isUuid(value.id) ||
     typeof value.toolName !== "string" ||
     typeof value.evidenceKind !== "string" ||
-    typeof value.observedAt !== "string" ||
+    !isTimestamp(value.observedAt) ||
     !isObject(value.targetRef) ||
     !isObject(value.payload) ||
     typeof value.truncated !== "boolean" ||
@@ -311,15 +412,15 @@ function parseDiagnosis(value: unknown): DiagnosisView | null {
 export function parseCreateIncidentResponse(
   value: unknown,
 ): CreateIncidentView | null {
-  if (
-    !isObject(value) ||
-    value.schemaVersion !== 1 ||
-    !isUuid(value.incidentId)
-  ) {
-    return null;
-  }
+  return isObject(value) && value.schemaVersion === 2 && isUuid(value.incidentId)
+    ? { incidentId: value.incidentId }
+    : null;
+}
 
-  return { incidentId: value.incidentId };
+export function parseCreateRunResponse(value: unknown): CreateRunView | null {
+  return isObject(value) && value.schemaVersion === 2 && isUuid(value.runId)
+    ? { runId: value.runId }
+    : null;
 }
 
 export function parseScenarioListResponse(
@@ -340,7 +441,7 @@ export function parseIncidentListResponse(
 ): IncidentListView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -350,10 +451,42 @@ export function parseIncidentListResponse(
   const items = value.items.map(parseIncidentListItem);
   return items.some((item) => item === null)
     ? null
-    : {
-        items: items as IncidentListItemView[],
-        hasMore: value.nextCursor !== null,
-      };
+    : { items: items as IncidentListItemView[], nextCursor: value.nextCursor };
+}
+
+export function parseRunHistoryResponse(value: unknown): RunHistoryView | null {
+  if (
+    !isObject(value) ||
+    value.schemaVersion !== 2 ||
+    !Array.isArray(value.items) ||
+    (value.nextCursor !== null && typeof value.nextCursor !== "string")
+  ) {
+    return null;
+  }
+
+  const items = value.items.map(parseRunBase);
+  return items.some((item) => item === null)
+    ? null
+    : { items: items as RunSummaryView[], nextCursor: value.nextCursor };
+}
+
+export function parseRunEventHistoryResponse(
+  value: unknown,
+  expectedIncidentId: string,
+  expectedRunId: string,
+): EventPageView | null {
+  if (!isObject(value) || value.schemaVersion !== 2) {
+    return null;
+  }
+  const page = parseEventPage(value);
+  return page === null ||
+    page.items.some(
+      (event) =>
+        event.data.incidentId !== expectedIncidentId ||
+        event.data.runId !== expectedRunId,
+    )
+    ? null
+    : page;
 }
 
 export function parseIncidentDetailResponse(
@@ -361,20 +494,28 @@ export function parseIncidentDetailResponse(
 ): IncidentDetailView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
+    !isValidEventId(value.eventCursor) ||
     !Array.isArray(value.evidence)
   ) {
     return null;
   }
 
   const incident = parseIncident(value.incident);
-  const run = parseRun(value.run);
+  const selectedRun = parseSelectedRun(value.selectedRun);
+  const eventPage = parseEventPage(value.eventPage);
   const evidence = value.evidence.map(parseEvidence);
   const diagnosis =
     value.diagnosis === null ? null : parseDiagnosis(value.diagnosis);
   if (
     incident === null ||
-    run === null ||
+    selectedRun === null ||
+    eventPage === null ||
+    eventPage.items.some(
+      (event) =>
+        event.data.incidentId !== incident.id ||
+        event.data.runId !== selectedRun.id,
+    ) ||
     evidence.some((item) => item === null) ||
     (value.diagnosis !== null && diagnosis === null)
   ) {
@@ -383,7 +524,9 @@ export function parseIncidentDetailResponse(
 
   return {
     incident,
-    run,
+    selectedRun,
+    eventPage,
+    eventCursor: value.eventCursor,
     evidence: evidence as EvidenceView[],
     diagnosis,
   };

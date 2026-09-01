@@ -5,9 +5,10 @@ interface IncidentRouteContext {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: IncidentRouteContext,
 ): Promise<Response> {
   const { incidentId } = await context.params;
-  return (await fetchIncident(incidentId)).response;
+  const runIds = new URL(request.url).searchParams.getAll("runId");
+  return (await fetchIncident(incidentId, runIds.length === 1 ? runIds[0] : runIds.length === 0 ? undefined : "invalid")).response;
 }

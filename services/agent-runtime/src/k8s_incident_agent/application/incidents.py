@@ -11,32 +11,47 @@ from uuid import UUID
 from k8s_incident_agent.api_contracts import (
     CreateIncidentRequest,
     CreateIncidentResponse,
+    CreateRunResponse,
     DiagnosisResponse,
+    EventPageResponse,
     EvidenceResponse,
     IncidentDetailResponse,
     IncidentListItem,
     IncidentListResponse,
     IncidentResponse,
+    IncidentSourceResponse,
+    IncidentTargetResponse,
     RootCauseResponse,
-    RunBudgetResponse,
     RunErrorResponse,
-    RunResponse,
-    RunUsageResponse,
+    RunEventHistoryResponse,
+    RunEventStreamItem,
+    RunHistoryResponse,
+    RunSummaryResponse,
     ScenarioListResponse,
     ScenarioResponse,
     ScenarioTargetResponse,
     ScenarioTriggerResponse,
+    SelectedRunResponse,
 )
-from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget
+from k8s_incident_agent.application.event_projection import validated_stream_item
+from k8s_incident_agent.domain.contracts import (
+    IncidentSource,
+    KubernetesTarget,
+    NormalizedIncidentTrigger,
+)
+from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget, RunEvent
 from k8s_incident_agent.kubernetes.credentials import (
     DiagnosticCredentialLease,
     require_credential_window,
 )
 from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.persistence.repositories import (
+    ActiveRunExistsError,
     IncidentDetailRecord,
     IncidentListRecord,
     IncidentRepository,
+    IncidentRunDetail,
+    RunNotFoundRepositoryError,
 )
 from k8s_incident_agent.scenarios.contracts import PublicScenario, ScenarioTarget
 
@@ -48,6 +63,14 @@ class ScenarioNotFoundError(RuntimeError):
 
 
 class IncidentNotFoundError(RuntimeError):
+    pass
+
+
+class RunNotFoundError(RuntimeError):
+    pass
+
+
+class ActiveRunConflictError(RuntimeError):
     pass
 
 
@@ -98,6 +121,139 @@ class IncidentApplicationService:
         scenario = self._scenarios.get(request.scenario_id)
         if scenario is None:
             raise ScenarioNotFoundError
+        self._require_runtime_ready()
+        created = await self._repository.create_incident_and_run(
+            _normalized_scenario_trigger(scenario),
+            self._model,
+            self._budget,
+        )
+        await self._schedule_committed_run(created.run_id)
+        return CreateIncidentResponse(incident_id=created.incident_id)
+
+    async def create_run(self, incident_id: UUID) -> CreateRunResponse:
+        self._require_runtime_ready()
+        try:
+            created = await self._repository.create_run(
+                incident_id,
+                self._model,
+                self._budget,
+            )
+        except ActiveRunExistsError:
+            raise ActiveRunConflictError from None
+        if created is None:
+            raise IncidentNotFoundError
+        await self._schedule_committed_run(created.run_id)
+        return CreateRunResponse(run_id=created.run_id)
+
+    async def list_incidents(
+        self,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> IncidentListResponse:
+        decoded_cursor = _decode_incident_cursor(cursor) if cursor is not None else None
+        page = await self._repository.list_incident_records(
+            limit=limit,
+            cursor=decoded_cursor,
+        )
+        next_cursor = None
+        if page.has_more and page.items:
+            last = page.items[-1]
+            next_cursor = _encode_cursor(
+                {"createdAt": _rfc3339(last.created_at), "id": str(last.id)}
+            )
+        return IncidentListResponse(
+            items=tuple(_incident_list_item(item) for item in page.items),
+            next_cursor=next_cursor,
+        )
+
+    async def get_incident(
+        self,
+        incident_id: UUID,
+        *,
+        run_id: UUID | None,
+    ) -> IncidentDetailResponse:
+        try:
+            detail = await self._repository.get_incident_detail(
+                incident_id,
+                run_id=run_id,
+                event_limit=100,
+            )
+        except RunNotFoundRepositoryError:
+            raise RunNotFoundError from None
+        if detail is None:
+            raise IncidentNotFoundError
+        return _incident_detail_response(detail)
+
+    async def list_runs(
+        self,
+        incident_id: UUID,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> RunHistoryResponse:
+        before_attempt = (
+            _decode_run_cursor(cursor, incident_id) if cursor is not None else None
+        )
+        page = await self._repository.list_run_records(
+            incident_id,
+            limit=limit,
+            before_attempt=before_attempt,
+        )
+        if page is None:
+            raise IncidentNotFoundError
+        next_cursor = None
+        if page.has_more and page.items:
+            next_cursor = _encode_cursor(
+                {
+                    "incidentId": str(incident_id),
+                    "attempt": page.items[-1].attempt,
+                }
+            )
+        return RunHistoryResponse(
+            items=tuple(_run_summary(item) for item in page.items),
+            next_cursor=next_cursor,
+        )
+
+    async def list_run_events(
+        self,
+        incident_id: UUID,
+        run_id: UUID,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> RunEventHistoryResponse:
+        before_event_id = (
+            _decode_event_cursor(cursor, incident_id, run_id)
+            if cursor is not None
+            else None
+        )
+        if not await self._repository.incident_exists(incident_id):
+            raise IncidentNotFoundError
+        try:
+            page = await self._repository.list_run_events(
+                incident_id,
+                run_id,
+                limit=limit,
+                before_event_id=before_event_id,
+            )
+        except RunNotFoundRepositoryError:
+            raise RunNotFoundError from None
+        next_cursor = None
+        if page.has_more and page.items:
+            next_cursor = _encode_cursor(
+                {
+                    "incidentId": str(incident_id),
+                    "runId": str(run_id),
+                    "eventId": page.items[-1].id,
+                }
+            )
+        return RunEventHistoryResponse(
+            items=tuple(_stream_item(event) for event in page.items),
+            next_cursor=next_cursor,
+        )
+
+    def _require_runtime_ready(self) -> None:
         try:
             require_credential_window(
                 self._credential,
@@ -106,46 +262,24 @@ class IncidentApplicationService:
             )
         except KubernetesBoundaryError:
             raise RuntimeNotReadyError from None
-        created = await self._repository.create_incident_and_run(
-            scenario,
-            self._model,
-            self._budget,
-        )
-        # The committed QUEUED run is deliberately left for startup reconciliation.
+
+    async def _schedule_committed_run(self, run_id: UUID) -> None:
+        # Startup reconciliation remains the recovery path when scheduling fails.
         with suppress(Exception):
-            await self._supervisor.schedule(created.run_id)
-        return CreateIncidentResponse(
-            incident_id=created.incident_id,
-            run_id=created.run_id,
-            incident_status=created.incident_status,
-            run_status=created.run_status,
-        )
+            await self._supervisor.schedule(run_id)
 
-    async def list_incidents(
-        self,
-        *,
-        limit: int,
-        cursor: str | None,
-    ) -> IncidentListResponse:
-        decoded_cursor = _decode_cursor(cursor) if cursor is not None else None
-        page = await self._repository.list_incident_records(
-            limit=limit,
-            cursor=decoded_cursor,
-        )
-        next_cursor = None
-        if page.has_more and page.items:
-            last = page.items[-1]
-            next_cursor = _encode_cursor(last.created_at, last.id)
-        return IncidentListResponse(
-            items=tuple(_incident_list_item(item) for item in page.items),
-            next_cursor=next_cursor,
-        )
 
-    async def get_incident(self, incident_id: UUID) -> IncidentDetailResponse:
-        detail = await self._repository.get_incident_detail(incident_id)
-        if detail is None:
-            raise IncidentNotFoundError
-        return _incident_detail_response(detail)
+def _normalized_scenario_trigger(scenario: PublicScenario) -> NormalizedIncidentTrigger:
+    return NormalizedIncidentTrigger(
+        source=IncidentSource(
+            type="scenario",
+            ref=scenario.scenario_id,
+            revision=str(scenario.scenario_version),
+        ),
+        display_name=scenario.display_name,
+        trigger_summary=scenario.trigger.summary,
+        target=KubernetesTarget.model_validate(scenario.target.model_dump()),
+    )
 
 
 def _scenario_response(scenario: PublicScenario) -> ScenarioResponse:
@@ -158,11 +292,13 @@ def _scenario_response(scenario: PublicScenario) -> ScenarioResponse:
             type=scenario.trigger.type,
             summary=scenario.trigger.summary,
         ),
-        target=_target_response(scenario.target),
+        target=_scenario_target_response(scenario.target),
     )
 
 
-def _target_response(target: ScenarioTarget) -> ScenarioTargetResponse:
+def _scenario_target_response(target: ScenarioTarget) -> ScenarioTargetResponse:
+    if target.namespace is None:
+        raise ValueError("Scenario target must be namespaced")
     return ScenarioTargetResponse(
         cluster=target.cluster,
         namespace=target.namespace,
@@ -172,28 +308,60 @@ def _target_response(target: ScenarioTarget) -> ScenarioTargetResponse:
     )
 
 
+def _target_response(target: KubernetesTarget) -> IncidentTargetResponse:
+    return IncidentTargetResponse(
+        cluster=target.cluster,
+        namespace=target.namespace,
+        api_version=target.api_version,
+        kind=target.kind,
+        name=target.name,
+    )
+
+
+def _source_response(source: IncidentSource) -> IncidentSourceResponse:
+    return IncidentSourceResponse(
+        type=source.type,
+        ref=source.ref,
+        revision=source.revision,
+    )
+
+
 def _incident_list_item(item: IncidentListRecord) -> IncidentListItem:
     return IncidentListItem(
         id=item.id,
-        scenario_id=item.scenario_id,
-        scenario_version=item.scenario_version,
         display_name=item.display_name,
         target=_target_response(item.target),
         status=item.status,
-        created_at=item.created_at,
         updated_at=item.updated_at,
     )
 
 
-def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailResponse:
-    incident = detail.incident
-    run = detail.run
+def _run_summary(run: IncidentRunDetail) -> RunSummaryResponse:
+    return RunSummaryResponse(
+        id=run.id,
+        attempt=run.attempt,
+        status=run.status,
+        created_at=run.created_at,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+    )
+
+
+def _selected_run(run: IncidentRunDetail) -> SelectedRunResponse:
     run_error = None
     if run.error_code is not None and run.error_retryable is not None:
         run_error = RunErrorResponse(
             code=run.error_code,
             retryable=run.error_retryable,
         )
+    return SelectedRunResponse(
+        **_run_summary(run).model_dump(),
+        error=run_error,
+    )
+
+
+def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailResponse:
+    incident = detail.incident
     diagnosis = None
     if detail.diagnosis is not None:
         diagnosis = DiagnosisResponse(
@@ -213,40 +381,29 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             redacted=detail.diagnosis.redacted,
             created_at=detail.diagnosis.created_at,
         )
+    next_cursor = None
+    if detail.has_older_events and detail.events:
+        next_cursor = _encode_cursor(
+            {
+                "incidentId": str(incident.id),
+                "runId": str(detail.run.id),
+                "eventId": detail.events[-1].id,
+            }
+        )
     return IncidentDetailResponse(
         incident=IncidentResponse(
             id=incident.id,
-            scenario_id=incident.scenario_id,
-            scenario_version=incident.scenario_version,
+            source=_source_response(incident.source),
             display_name=incident.display_name,
             trigger_summary=detail.trigger_summary,
             target=_target_response(incident.target),
             status=incident.status,
             created_at=incident.created_at,
-            updated_at=incident.updated_at,
         ),
-        run=RunResponse(
-            id=run.id,
-            status=run.status,
-            model_provider=run.model.provider,
-            model_id=run.model.model_id,
-            thinking_mode=run.model.thinking_mode,
-            prompt_version=run.model.prompt_version,
-            budget=RunBudgetResponse(
-                max_model_calls=run.budget.max_model_calls,
-                max_tool_calls=run.budget.max_tool_calls,
-                timeout_seconds=run.budget.timeout_seconds,
-            ),
-            usage=RunUsageResponse(
-                model_calls=run.model_calls,
-                tool_calls=run.tool_calls,
-                input_tokens=run.input_tokens,
-                output_tokens=run.output_tokens,
-            ),
-            error=run_error,
-            created_at=run.created_at,
-            started_at=run.started_at,
-            completed_at=run.completed_at,
+        selected_run=_selected_run(detail.run),
+        event_page=EventPageResponse(
+            items=tuple(_stream_item(event) for event in detail.events),
+            next_cursor=next_cursor,
         ),
         evidence=tuple(
             EvidenceResponse(
@@ -263,20 +420,25 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             for evidence in detail.evidence
         ),
         diagnosis=diagnosis,
+        event_cursor=str(detail.event_cursor),
     )
 
 
-def _encode_cursor(created_at: datetime, incident_id: UUID) -> str:
-    document = json.dumps(
-        {"createdAt": _rfc3339(created_at), "id": str(incident_id)},
+def _stream_item(event: RunEvent) -> RunEventStreamItem:
+    return validated_stream_item(event)
+
+
+def _encode_cursor(document: dict[str, str | int]) -> str:
+    encoded = json.dumps(
+        document,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
-    return base64.urlsafe_b64encode(document).rstrip(b"=").decode()
+    return base64.urlsafe_b64encode(encoded).rstrip(b"=").decode()
 
 
-def _decode_cursor(cursor: str) -> tuple[datetime, UUID]:
+def _decode_cursor_document(cursor: str) -> dict[object, object]:
     try:
         if not cursor or not _BASE64URL.fullmatch(cursor):
             raise ValueError
@@ -289,24 +451,49 @@ def _decode_cursor(cursor: str) -> tuple[datetime, UUID]:
         value = cast(object, json.loads(document))
         if not isinstance(value, dict):
             raise ValueError
-        untyped = cast(dict[object, object], value)
-        created_at_raw = untyped.get("createdAt")
-        incident_id_raw = untyped.get("id")
+        return cast(dict[object, object], value)
+    except (binascii.Error, UnicodeError, json.JSONDecodeError, ValueError):
+        raise InvalidCursorError from None
+
+
+def _decode_incident_cursor(cursor: str) -> tuple[datetime, UUID]:
+    value = _decode_cursor_document(cursor)
+    created_at_raw = value.get("createdAt")
+    incident_id_raw = value.get("id")
+    try:
         if not isinstance(created_at_raw, str) or not isinstance(incident_id_raw, str):
             raise ValueError
         created_at = datetime.fromisoformat(created_at_raw)
         utc_offset = created_at.utcoffset()
         if utc_offset is None or utc_offset.total_seconds() != 0:
             raise ValueError
-        incident_id = UUID(incident_id_raw)
-        return created_at.astimezone(UTC), incident_id
-    except (
-        binascii.Error,
-        UnicodeError,
-        json.JSONDecodeError,
-        ValueError,
-    ):
+        return created_at.astimezone(UTC), UUID(incident_id_raw)
+    except ValueError:
         raise InvalidCursorError from None
+
+
+def _decode_run_cursor(cursor: str, incident_id: UUID) -> int:
+    value = _decode_cursor_document(cursor)
+    owner = value.get("incidentId")
+    attempt = value.get("attempt")
+    if owner != str(incident_id) or type(attempt) is not int or attempt < 1:
+        raise InvalidCursorError
+    return attempt
+
+
+def _decode_event_cursor(cursor: str, incident_id: UUID, run_id: UUID) -> int:
+    value = _decode_cursor_document(cursor)
+    owner = value.get("incidentId")
+    run_owner = value.get("runId")
+    event_id = value.get("eventId")
+    if (
+        owner != str(incident_id)
+        or run_owner != str(run_id)
+        or type(event_id) is not int
+        or event_id <= 0
+    ):
+        raise InvalidCursorError
+    return event_id
 
 
 def _rfc3339(value: datetime) -> str:

@@ -10,11 +10,14 @@ export const DIAGNOSIS_ID = "44444444-4444-4444-8444-444444444444";
 
 export function makeIncidentDetail(): IncidentDetailResponse {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     incident: {
       id: INCIDENT_ID,
-      scenarioId: "image-pull-backoff",
-      scenarioVersion: 1,
+      source: {
+        type: "scenario",
+        ref: "image-pull-backoff",
+        revision: "1",
+      },
       displayName: "Image pull failure",
       triggerSummary: "Pod cannot pull its container image.",
       status: "RECEIVED",
@@ -26,31 +29,18 @@ export function makeIncidentDetail(): IncidentDetailResponse {
         cluster: "kind-k8s-incident-agent",
       },
       createdAt: "2026-08-29T01:00:00Z",
-      updatedAt: "2026-08-29T01:00:00Z",
     },
-    run: {
+    selectedRun: {
       id: RUN_ID,
+      attempt: 1,
       status: "QUEUED",
       createdAt: "2026-08-29T01:00:00Z",
       startedAt: null,
       completedAt: null,
-      modelProvider: "deepseek",
-      modelId: "deepseek-chat",
-      promptVersion: "stage1-v1",
-      thinkingMode: false,
-      budget: {
-        maxToolCalls: 8,
-        maxModelCalls: 3,
-        timeoutSeconds: 120,
-      },
-      usage: {
-        toolCalls: null,
-        modelCalls: null,
-        inputTokens: null,
-        outputTokens: null,
-      },
       error: null,
     },
+    eventPage: { items: [], nextCursor: null },
+    eventCursor: "1",
     evidence: [],
     diagnosis: null,
   };

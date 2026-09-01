@@ -23,14 +23,20 @@ def _parse_args(argv: Sequence[str] | None) -> _PruneMode:
     return "preview" if arguments.preview else "confirm"
 
 
-def _target_payload(target: PruneTarget) -> dict[str, str | int]:
+def _target_payload(
+    target: PruneTarget,
+) -> dict[str, str | int | list[str]]:
     return {
-        "artifactDirectory": str(target.artifact_directory),
+        "artifactDirectories": [
+            str(directory) for directory in target.artifact_directories
+        ],
         "diagnosisRows": target.diagnosis_rows,
         "eventRows": target.event_rows,
         "evidenceRows": target.evidence_rows,
         "incidentId": str(target.incident_id),
-        "runId": str(target.run_id),
+        "runIds": [str(run_id) for run_id in target.run_ids],
+        "runRows": target.run_rows,
+        "updatedAt": target.updated_at.isoformat(),
     }
 
 

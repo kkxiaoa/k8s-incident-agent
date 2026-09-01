@@ -21,7 +21,11 @@ import { RunTimeline } from "./run-timeline";
 import { ScenarioLauncher } from "./scenario-launcher";
 import IncidentError from "@/app/incidents/[incidentId]/error";
 
-const navigation = vi.hoisted(() => ({ push: vi.fn() }));
+const navigation = vi.hoisted(() => ({
+  push: vi.fn(),
+  replace: vi.fn(),
+  refresh: vi.fn(),
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => navigation,
@@ -97,8 +101,33 @@ function detailResponse(detail = makeIncidentDetail()): Response {
   });
 }
 
+function renderIncidentStream(detail = makeIncidentDetail()) {
+  return render(
+    <IncidentStream
+      initialDetail={detail}
+      initialRuns={{
+        items: [
+          {
+            id: detail.selectedRun.id,
+            attempt: detail.selectedRun.attempt,
+            status: detail.selectedRun.status,
+            createdAt: detail.selectedRun.createdAt,
+            startedAt: detail.selectedRun.startedAt,
+            completedAt: detail.selectedRun.completedAt,
+          },
+        ],
+        nextCursor: null,
+      }}
+      latestMode
+      manualActions
+    />,
+  );
+}
+
 afterEach(() => {
   navigation.push.mockReset();
+  navigation.replace.mockReset();
+  navigation.refresh.mockReset();
   FakeEventSource.current = null;
 });
 
@@ -134,11 +163,8 @@ describe("ScenarioLauncher", () => {
     resolveRequest?.(
       new Response(
         JSON.stringify({
-          schemaVersion: 1,
+          schemaVersion: 2,
           incidentId: INCIDENT_ID,
-          runId: RUN_ID,
-          incidentStatus: "RECEIVED",
-          runStatus: "QUEUED",
         }),
         { status: 202, headers: { "content-type": "application/json" } },
       ),
@@ -153,11 +179,8 @@ describe("ScenarioLauncher", () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          schemaVersion: 1,
+          schemaVersion: 2,
           incidentId: INCIDENT_ID,
-          runId: RUN_ID,
-          incidentStatus: "RECEIVED",
-          runStatus: "QUEUED",
         }),
         { status: 202, headers: { "content-type": "application/json" } },
       ),
@@ -220,6 +243,138 @@ describe("ScenarioLauncher", () => {
 });
 
 describe("read-only incident presentation", () => {
+  it("renders bounded initial events, subscribes from the snapshot cursor, and keeps terminal streams open", async () => {
+    const detail = makeIncidentDetail();
+    detail.eventPage.items = [
+      parseRunEvent(
+        "incident.created",
+        "1",
+        JSON.stringify({
+          schemaVersion: 2,
+          incidentId: INCIDENT_ID,
+          runId: RUN_ID,
+          attempt: 1,
+          incidentStatus: "RECEIVED",
+          runStatus: "QUEUED",
+          occurredAt: "2026-08-29T01:00:00Z",
+        }),
+        INCIDENT_ID,
+      ),
+    ];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(detailResponse(detail)));
+    vi.stubGlobal("EventSource", FakeEventSource);
+
+    renderIncidentStream(detail);
+    const source = FakeEventSource.current;
+    expect(source?.url).toBe(
+      `/api/runtime/incidents/${INCIDENT_ID}/events?cursor=1`,
+    );
+    expect(screen.getByText("Incident 已创建")).toBeVisible();
+
+    act(() => {
+      source?.emit("diagnosis.completed", "2", {
+        schemaVersion: 2,
+        incidentId: INCIDENT_ID,
+        runId: RUN_ID,
+        diagnosisId: DIAGNOSIS_ID,
+        incidentStatus: "DIAGNOSED",
+        outcome: "diagnosed",
+        runStatus: "COMPLETED",
+        occurredAt: "2026-08-29T01:00:04Z",
+      });
+    });
+
+    expect(await screen.findByText("诊断已完成")).toBeVisible();
+    expect(source?.close).not.toHaveBeenCalled();
+  });
+
+  it("stops a live stream when an event belongs to another Incident", async () => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+
+    renderIncidentStream();
+    const source = FakeEventSource.current;
+    act(() => {
+      source?.emit("run.started", "2", {
+        schemaVersion: 2,
+        incidentId: "66666666-6666-4666-8666-666666666666",
+        runId: RUN_ID,
+        attempt: 1,
+        incidentStatus: "TRIAGING",
+        runStatus: "RUNNING",
+        occurredAt: "2026-08-29T01:00:02Z",
+      });
+    });
+
+    expect(
+      await screen.findByText("收到无法验证的运行事件，实时更新已停止。"),
+    ).toBeVisible();
+    expect(source?.close).toHaveBeenCalledOnce();
+  });
+
+  it("creates a later Run only through the manual latest-mode action", async () => {
+    const detail = makeIncidentDetail();
+    detail.selectedRun.status = "COMPLETED";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            schemaVersion: 2,
+            runId: "55555555-5555-4555-8555-555555555555",
+          }),
+          { status: 202, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const user = userEvent.setup();
+
+    renderIncidentStream(detail);
+    await user.click(screen.getByRole("button", { name: "重新诊断" }));
+
+    expect(fetch).toHaveBeenCalledWith(
+      `/api/runtime/incidents/${INCIDENT_ID}/runs`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(navigation.replace).toHaveBeenCalledWith(
+      `/incidents/${INCIDENT_ID}?runId=55555555-5555-4555-8555-555555555555`,
+    );
+    expect(navigation.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("does not render a rerun action for the online profile", () => {
+    const detail = makeIncidentDetail();
+    detail.selectedRun.status = "COMPLETED";
+    vi.stubGlobal("EventSource", FakeEventSource);
+
+    render(
+      <IncidentStream
+        initialDetail={detail}
+        initialRuns={{ items: [], nextCursor: null }}
+        latestMode
+        manualActions={false}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "重新诊断" })).toBeNull();
+  });
+
+  it("renders a historical failed Run after the Incident has recovered", () => {
+    const detail = makeIncidentDetail();
+    detail.incident.status = "DIAGNOSED";
+    detail.selectedRun.status = "FAILED";
+    detail.selectedRun.error = {
+      code: "workflow_failed",
+      retryable: false,
+    };
+    vi.stubGlobal("EventSource", FakeEventSource);
+
+    renderIncidentStream(detail);
+
+    expect(screen.getByText("诊断运行失败")).toBeVisible();
+    expect(screen.getByText("workflow_failed")).toBeVisible();
+  });
+
   it("coalesces persisted detail refreshes during replay", async () => {
     let resolveFirstRequest: (response: Response) => void = () => {
       throw new Error("First detail request was not started");
@@ -234,30 +389,31 @@ describe("read-only incident presentation", () => {
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("EventSource", FakeEventSource);
 
-    render(<IncidentStream initialDetail={makeIncidentDetail()} />);
+    renderIncidentStream();
     const source = FakeEventSource.current;
     expect(source).not.toBeNull();
 
     act(() => {
       source?.emit("incident.created", "1", {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
-        scenarioId: SCENARIO.scenarioId,
+        attempt: 1,
         incidentStatus: "RECEIVED",
         runStatus: "QUEUED",
         occurredAt: "2026-08-29T01:00:00Z",
       });
       source?.emit("run.started", "2", {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
+        attempt: 1,
         incidentStatus: "TRIAGING",
         runStatus: "RUNNING",
         occurredAt: "2026-08-29T01:00:01Z",
       });
       source?.emit("tool.started", "3", {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -270,10 +426,10 @@ describe("read-only incident presentation", () => {
     act(() => {
       for (const id of ["4", "5", "6"]) {
         source?.emit("evidence.recorded", id, {
-          schemaVersion: 1,
+          schemaVersion: 2,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
-          evidenceId: `evidence-${id}`,
+          evidenceId: EVIDENCE_ID,
           evidenceKind: "kubernetes.pod",
           observedAt: "2026-08-29T01:00:03Z",
           redacted: false,
@@ -303,12 +459,12 @@ describe("read-only incident presentation", () => {
     const initialDetail = makeIncidentDetail();
     initialDetail.evidence = [];
 
-    render(<IncidentStream initialDetail={initialDetail} />);
+    renderIncidentStream(initialDetail);
     const source = FakeEventSource.current;
 
     act(() => {
       source?.emit("evidence.recorded", "4", {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         evidenceId: EVIDENCE_ID,
@@ -321,7 +477,7 @@ describe("read-only incident presentation", () => {
         occurredAt: "2026-08-29T01:00:03Z",
       });
       source?.emit("tool.started", "5", {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-2",
@@ -392,8 +548,11 @@ describe("read-only incident presentation", () => {
       <IncidentList
         incidents={[
           {
-            ...detail.incident,
+            id: detail.incident.id,
+            displayName: detail.incident.displayName,
+            target: detail.incident.target,
             status: "TRIAGING",
+            updatedAt: detail.incident.createdAt,
           },
         ]}
       />,
@@ -406,7 +565,7 @@ describe("read-only incident presentation", () => {
     expect(screen.getByText("诊断中")).toBeVisible();
     expect(document.querySelector("time")).toHaveAttribute(
       "datetime",
-      detail.incident.updatedAt,
+      detail.incident.createdAt,
     );
     expect(screen.queryByText(/ UTC$/)).toBeNull();
   });
@@ -470,19 +629,20 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "1",
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
         toolName: "get_pods",
         occurredAt: "2026-08-29T01:00:01Z",
       }),
+      INCIDENT_ID,
     );
     const firstEvidence = parseRunEvent(
       "evidence.recorded",
       "2",
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         evidenceId: EVIDENCE_ID,
@@ -494,18 +654,20 @@ describe("read-only incident presentation", () => {
         truncated: false,
         occurredAt: "2026-08-29T01:00:02Z",
       }),
+      INCIDENT_ID,
     );
     const secondStarted = parseRunEvent(
       "tool.started",
       "3",
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-2",
         toolName: "get_events",
         occurredAt: "2026-08-29T01:00:03Z",
       }),
+      INCIDENT_ID,
     );
 
     const { rerender } = render(
@@ -525,7 +687,7 @@ describe("read-only incident presentation", () => {
     rerender(
       <RunTimeline
         events={[firstStarted, firstEvidence, secondStarted]}
-        connection="closed"
+        connection="invalid"
       />,
     );
     expect(screen.getByText("get_events 开始").closest("li")).not.toHaveClass(
@@ -540,8 +702,8 @@ describe("read-only incident presentation", () => {
       "timeline-waiting__text",
     );
 
-    rerender(<RunTimeline events={[]} connection="closed" />);
-    expect(screen.getByText("事件流已结束，未记录运行事件。")).not.toHaveClass(
+    rerender(<RunTimeline events={[]} connection="invalid" />);
+    expect(screen.getByText("事件流已停止，未收到有效运行事件。")).not.toHaveClass(
       "timeline-waiting__text",
     );
   });
@@ -569,7 +731,7 @@ describe("read-only incident presentation", () => {
     render(
       <DiagnosisPanel
         diagnosis={detail.diagnosis}
-        incidentStatus={detail.incident.status}
+        runStatus="COMPLETED"
         runError={null}
       />,
     );
@@ -589,19 +751,20 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "7",
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
         toolName: "get_events",
         occurredAt: "2026-08-29T01:00:02Z",
       }),
+      INCIDENT_ID,
     );
     const toolFailure = parseRunEvent(
       "tool.failed",
       "8",
       JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -610,14 +773,15 @@ describe("read-only incident presentation", () => {
         retryable: false,
         occurredAt: "2026-08-29T01:00:03Z",
       }),
+      INCIDENT_ID,
     );
 
     render(
       <>
-        <RunTimeline events={[toolStarted, toolFailure]} connection="closed" />
+        <RunTimeline events={[toolStarted, toolFailure]} connection="invalid" />
         <DiagnosisPanel
           diagnosis={null}
-          incidentStatus="FAILED"
+          runStatus="FAILED"
           runError={{ code: "workflow_failed", retryable: false }}
         />
       </>,

@@ -125,6 +125,9 @@ def test_manual_route_table_contains_read_and_create_endpoints() -> None:
         ("GET", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents/{incident_id}"),
         ("GET", "/api/v1/incidents/{incident_id}/events"),
+        ("GET", "/api/v1/incidents/{incident_id}/runs"),
+        ("POST", "/api/v1/incidents/{incident_id}/runs"),
+        ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
     }
     assert all(method not in {"PUT", "PATCH", "DELETE"} for method, _path in routes)
 
@@ -139,6 +142,8 @@ def test_online_route_table_omits_manual_entrypoints(tmp_path: Path) -> None:
         ("GET", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents/{incident_id}"),
         ("GET", "/api/v1/incidents/{incident_id}/events"),
+        ("GET", "/api/v1/incidents/{incident_id}/runs"),
+        ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
     }
 
 

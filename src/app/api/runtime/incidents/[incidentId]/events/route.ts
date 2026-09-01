@@ -9,9 +9,11 @@ export async function GET(
   context: IncidentEventRouteContext,
 ): Promise<Response> {
   const { incidentId } = await context.params;
+  const headerCursor = request.headers.get("last-event-id");
+  const queryCursors = new URL(request.url).searchParams.getAll("cursor");
   return streamIncidentEvents(
     incidentId,
-    request.headers.get("last-event-id"),
+    headerCursor ?? (queryCursors.length === 1 ? queryCursors[0] : queryCursors.length === 0 ? null : "invalid"),
     request.signal,
   );
 }

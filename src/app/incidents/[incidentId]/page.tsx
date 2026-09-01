@@ -2,19 +2,28 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { IncidentStream } from "@/components/incidents/incident-stream";
+import { getIncidentIntakeMode } from "@/lib/agent-runtime/server-config";
 import { loadIncidentPage } from "@/lib/agent-runtime/server-view-data";
 
 interface IncidentPageProps {
   params: Promise<{ incidentId: string }>;
+  searchParams: Promise<{ runId?: string | string[] }>;
 }
 
 export const metadata: Metadata = {
   title: "Incident Console",
 };
 
-export default async function IncidentPage({ params }: IncidentPageProps) {
+export default async function IncidentPage({ params, searchParams }: IncidentPageProps) {
   const { incidentId } = await params;
-  const pageData = await loadIncidentPage(incidentId);
+  const requestedRunId = (await searchParams).runId;
+  const runId =
+    typeof requestedRunId === "string"
+      ? requestedRunId
+      : requestedRunId === undefined
+        ? undefined
+        : "invalid";
+  const pageData = await loadIncidentPage(incidentId, runId);
   const missing = pageData.state === "missing";
 
   return (
@@ -38,7 +47,13 @@ export default async function IncidentPage({ params }: IncidentPageProps) {
           </Link>
         </section>
       ) : (
-        <IncidentStream initialDetail={pageData.detail} />
+        <IncidentStream
+          key={`${pageData.detail.selectedRun.id}:${runId === undefined ? "latest" : "history"}`}
+          initialDetail={pageData.detail}
+          initialRuns={pageData.runs}
+          latestMode={runId === undefined}
+          manualActions={getIncidentIntakeMode() === "manual"}
+        />
       )}
     </main>
   );

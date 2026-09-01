@@ -41,4 +41,38 @@ describe("GET /api/runtime/incidents/[incidentId]/events", () => {
     ]);
     expect(response.headers.get("content-type")).toBe("text/event-stream");
   });
+
+  it("uses the initial query cursor unless a reconnect header is present", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(new ReadableStream(), {
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await GET(new Request("http://console.test/events?cursor=17"), {
+      params: Promise.resolve({ incidentId: INCIDENT_ID }),
+    });
+    expect(
+      new Headers((fetchMock.mock.calls[0] as [URL, RequestInit])[1].headers).get(
+        "last-event-id",
+      ),
+    ).toBe("17");
+
+    fetchMock.mockClear();
+    await GET(
+      new Request("http://console.test/events?cursor=17", {
+        headers: { "last-event-id": "23" },
+      }),
+      { params: Promise.resolve({ incidentId: INCIDENT_ID }) },
+    );
+    expect(
+      new Headers((fetchMock.mock.calls[0] as [URL, RequestInit])[1].headers).get(
+        "last-event-id",
+      ),
+    ).toBe("23");
+  });
 });

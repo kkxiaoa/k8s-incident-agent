@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.persistence.database import (
@@ -48,7 +49,7 @@ async def preview_prune(
                 paths.run_artifacts,
             )
             for target in targets:
-                _require_safe_artifact_directory(paths, target)
+                _require_safe_artifact_directories(paths, target)
             return targets
 
 
@@ -66,8 +67,19 @@ async def confirm_prune(settings: Settings, now: datetime) -> PruneResult:
             deleted_targets: list[PruneTarget] = []
             async with open_checkpoint_store(paths.checkpoint_database) as saver:
                 for target in targets:
-                    _delete_artifact_directory(paths, target)
-                    await saver.adelete_thread(str(target.run_id))
+                    _require_safe_artifact_directories(paths, target)
+                    for run_id, artifact_directory in zip(
+                        target.run_ids,
+                        target.artifact_directories,
+                        strict=True,
+                    ):
+                        _delete_artifact_directory(
+                            paths,
+                            run_id,
+                            artifact_directory,
+                        )
+                    for run_id in target.run_ids:
+                        await saver.adelete_thread(str(run_id))
                     deleted = await repository.delete_prune_target(
                         target,
                         cutoff,
@@ -112,8 +124,16 @@ async def _repository(paths: RuntimePaths) -> AsyncGenerator[IncidentRepository]
         await database.dispose()
 
 
-def _delete_artifact_directory(paths: RuntimePaths, target: PruneTarget) -> None:
-    with _validated_artifact_parent(paths, target) as validated:
+def _delete_artifact_directory(
+    paths: RuntimePaths,
+    run_id: UUID,
+    artifact_directory: Path,
+) -> None:
+    with _validated_artifact_parent(
+        paths,
+        run_id,
+        artifact_directory,
+    ) as validated:
         if validated is None:
             return
         if not _RMTREE_AVOIDS_SYMLINK_ATTACKS:
@@ -122,21 +142,27 @@ def _delete_artifact_directory(paths: RuntimePaths, target: PruneTarget) -> None
         shutil.rmtree(directory_name, dir_fd=artifact_root_fd)
 
 
-def _require_safe_artifact_directory(
+def _require_safe_artifact_directories(
     paths: RuntimePaths,
     target: PruneTarget,
 ) -> None:
-    with _validated_artifact_parent(paths, target):
-        pass
+    for run_id, artifact_directory in zip(
+        target.run_ids,
+        target.artifact_directories,
+        strict=True,
+    ):
+        with _validated_artifact_parent(paths, run_id, artifact_directory):
+            pass
 
 
 @contextmanager
 def _validated_artifact_parent(
     paths: RuntimePaths,
-    target: PruneTarget,
+    run_id: UUID,
+    artifact_directory: Path,
 ) -> Generator[tuple[int, str] | None]:
-    expected_directory = paths.run_artifact_directory(target.run_id)
-    if target.artifact_directory != expected_directory:
+    expected_directory = paths.run_artifact_directory(run_id)
+    if artifact_directory != expected_directory:
         raise ValueError("Prune target does not match its fixed artifact directory")
 
     try:
@@ -148,7 +174,7 @@ def _validated_artifact_parent(
     try:
         try:
             directory_fd = _open_private_directory(
-                str(target.run_id),
+                str(run_id),
                 dir_fd=artifact_root_fd,
             )
         except FileNotFoundError:
@@ -158,7 +184,7 @@ def _validated_artifact_parent(
             _require_safe_artifact_tree(directory_fd)
         finally:
             os.close(directory_fd)
-        yield artifact_root_fd, str(target.run_id)
+        yield artifact_root_fd, str(run_id)
     finally:
         os.close(artifact_root_fd)
 

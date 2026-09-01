@@ -15,6 +15,9 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/v1/incidents"),
     ("GET", "/api/v1/incidents/{incident_id}"),
     ("GET", "/api/v1/incidents/{incident_id}/events"),
+    ("GET", "/api/v1/incidents/{incident_id}/runs"),
+    ("POST", "/api/v1/incidents/{incident_id}/runs"),
+    ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
 }
 
 HTTP_METHODS = frozenset(
@@ -34,6 +37,27 @@ EXPECTED_ERROR_STATUSES = {
         "500",
         "503",
     },
+    ("GET", "/api/v1/incidents/{incident_id}/runs"): {
+        "400",
+        "404",
+        "422",
+        "500",
+        "503",
+    },
+    ("POST", "/api/v1/incidents/{incident_id}/runs"): {
+        "404",
+        "409",
+        "422",
+        "500",
+        "503",
+    },
+    ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"): {
+        "400",
+        "404",
+        "422",
+        "500",
+        "503",
+    },
 }
 
 EXPECTED_EVENT_COMPONENTS = {
@@ -41,6 +65,7 @@ EXPECTED_EVENT_COMPONENTS = {
         "IncidentCreatedStreamEvent",
         "IncidentCreatedEventPayload",
     ),
+    "run.queued": ("RunQueuedStreamEvent", "RunQueuedEventPayload"),
     "run.started": ("RunStartedStreamEvent", "RunStartedEventPayload"),
     "tool.started": ("ToolStartedStreamEvent", "ToolStartedEventPayload"),
     "evidence.recorded": (
@@ -170,6 +195,21 @@ def test_operations_reference_their_success_and_error_models(
             "/api/v1/incidents/{incident_id}",
             "200",
         ): "IncidentDetailResponse",
+        (
+            "GET",
+            "/api/v1/incidents/{incident_id}/runs",
+            "200",
+        ): "RunHistoryResponse",
+        (
+            "POST",
+            "/api/v1/incidents/{incident_id}/runs",
+            "202",
+        ): "CreateRunResponse",
+        (
+            "GET",
+            "/api/v1/incidents/{incident_id}/runs/{run_id}/events",
+            "200",
+        ): "RunEventHistoryResponse",
     }
     for (method, path, status), model in success_models.items():
         response = schema["paths"][path][method.lower()]["responses"][status]

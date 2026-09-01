@@ -15,6 +15,7 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import CheckpointMetadata, empty_checkpoint
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from sqlalchemy import func, select, text
+from tests.factories import normalized_trigger
 
 import k8s_incident_agent.runtime.retention as retention_module
 from k8s_incident_agent.config import Settings
@@ -48,11 +49,6 @@ from k8s_incident_agent.runtime.lock import (
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
 from k8s_incident_agent.runtime.retention import confirm_prune, preview_prune
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
 from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
@@ -75,24 +71,8 @@ def _settings(paths: RuntimePaths) -> Settings:
     )
 
 
-def _scenario() -> PublicScenario:
-    return PublicScenario(
-        scenario_id="image-pull-backoff",
-        scenario_version=1,
-        display_name="Image pull failure",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(
-            type="manual",
-            summary="The target Deployment is unavailable.",
-        ),
-        target=ScenarioTarget(
-            cluster="k8s-incident-agent",
-            namespace="k8s-incident-scenarios",
-            api_version="apps/v1",
-            kind="Deployment",
-            name="image-pull-backoff",
-        ),
-    )
+def _scenario():
+    return normalized_trigger()
 
 
 def _model() -> ModelSnapshot:
@@ -225,7 +205,7 @@ async def _has_checkpoint(paths: RuntimePaths, run_id: UUID) -> bool:
 
 
 def _write_artifact(paths: RuntimePaths, run_id: UUID) -> Path:
-    paths.run_artifacts.mkdir(mode=0o700)
+    paths.run_artifacts.mkdir(mode=0o700, exist_ok=True)
     directory = paths.run_artifacts / str(run_id)
     directory.mkdir(mode=0o700)
     artifact = directory / "trace.json"
@@ -235,7 +215,7 @@ def _write_artifact(paths: RuntimePaths, run_id: UUID) -> Path:
 
 
 @pytest.mark.asyncio
-async def test_preview_selects_only_consistent_terminal_runs_before_cutoff(
+async def test_preview_selects_only_terminal_incidents_before_cutoff(
     tmp_path: Path,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
@@ -248,33 +228,51 @@ async def test_preview_selects_only_consistent_terminal_runs_before_cutoff(
             CUTOFF - timedelta(microseconds=1),
         )
         await _create_failed_run(repository, CUTOFF)
-        _, missing_completed_at = await _create_failed_run(
-            repository,
-            CUTOFF - timedelta(days=1),
-        )
         queued = await repository.create_incident_and_run(
             _scenario(), _model(), _budget()
         )
         async with database.session_factory() as session, session.begin():
-            missing_completed_row = await session.get(RunRow, str(missing_completed_at))
             queued_row = await session.get(RunRow, str(queued.run_id))
-            assert missing_completed_row is not None
             assert queued_row is not None
-            missing_completed_row.completed_at = None
             queued_row.completed_at = CUTOFF - timedelta(days=1)
     finally:
         await database.dispose()
 
     targets = await preview_prune(_settings(paths), NOW)
 
-    assert [target.run_id for target in targets] == [eligible_run_id]
+    assert [target.run_ids for target in targets] == [(eligible_run_id,)]
     assert targets[0].event_rows == 2
     assert targets[0].evidence_rows == 0
     assert targets[0].diagnosis_rows == 0
-    assert targets[0].artifact_directory == paths.run_artifact_directory(
-        eligible_run_id
+    assert targets[0].artifact_directories == (
+        paths.run_artifact_directory(eligible_run_id),
     )
-    assert await _row_count(paths, RunRow) == 4
+    assert targets[0].run_rows == 1
+    assert await _row_count(paths, RunRow) == 3
+
+
+@pytest.mark.asyncio
+async def test_preview_fails_closed_on_inconsistent_terminal_run(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    command.upgrade(_alembic_config(paths), "head")
+    database = await _open_database(paths)
+    try:
+        repository = IncidentRepository(database.session_factory)
+        _, run_id = await _create_failed_run(
+            repository,
+            CUTOFF - timedelta(days=1),
+        )
+        async with database.session_factory() as session, session.begin():
+            run = await session.get(RunRow, str(run_id))
+            assert run is not None
+            run.completed_at = None
+    finally:
+        await database.dispose()
+
+    with pytest.raises(RecoveryConsistencyError):
+        await preview_prune(_settings(paths), NOW)
 
 
 @pytest.mark.asyncio
@@ -331,7 +329,7 @@ async def test_confirm_deletes_artifact_checkpoint_and_business_rows_idempotentl
     first = await confirm_prune(_settings(paths), NOW)
     second = await confirm_prune(_settings(paths), NOW)
 
-    assert [target.run_id for target in first.deleted_targets] == [run_id]
+    assert [target.run_ids for target in first.deleted_targets] == [(run_id,)]
     assert second.deleted_targets == ()
     assert not artifact_directory.exists()
     assert not await _has_checkpoint(paths, run_id)
@@ -340,6 +338,63 @@ async def test_confirm_deletes_artifact_checkpoint_and_business_rows_idempotentl
     assert await _row_count(paths, RunEventRow) == 0
     assert await _row_count(paths, EvidenceRow) == 0
     assert await _row_count(paths, DiagnosisRow) == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_prunes_all_runs_only_as_one_incident_aggregate(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    command.upgrade(_alembic_config(paths), "head")
+    database = await _open_database(paths)
+    try:
+        repository = IncidentRepository(database.session_factory)
+        incident_id, first_run_id = await _create_diagnosed_run(
+            repository,
+            CUTOFF - timedelta(days=2),
+        )
+        second = await repository.create_run(incident_id, _model(), _budget())
+        assert second is not None
+        await repository.persist_terminal(
+            TerminalRecord(
+                run_id=second.run_id,
+                completed_at=CUTOFF - timedelta(days=1),
+                outcome=None,
+                summary=None,
+                root_causes=(),
+                missing_information=(),
+                redacted=False,
+                error_code="model_upstream_failed",
+                error_retryable=True,
+                model_calls=None,
+                tool_calls=None,
+                input_tokens=None,
+                output_tokens=None,
+            )
+        )
+    finally:
+        await database.dispose()
+
+    run_ids = (first_run_id, second.run_id)
+    artifacts = tuple(_write_artifact(paths, run_id) for run_id in run_ids)
+    for run_id in run_ids:
+        await _seed_checkpoint(paths, run_id)
+
+    preview = await preview_prune(_settings(paths), NOW)
+    assert len(preview) == 1
+    assert preview[0].incident_id == incident_id
+    assert preview[0].run_ids == run_ids
+    assert preview[0].run_rows == 2
+    assert preview[0].event_rows == 7
+
+    result = await confirm_prune(_settings(paths), NOW)
+
+    assert result.deleted_targets == preview
+    assert all(not artifact.exists() for artifact in artifacts)
+    for run_id in run_ids:
+        assert not await _has_checkpoint(paths, run_id)
+    assert await _row_count(paths, IncidentRow) == 0
+    assert await _row_count(paths, RunRow) == 0
 
 
 @pytest.mark.asyncio
@@ -444,7 +499,7 @@ async def test_count_change_before_business_transaction_fails_closed(
     database = await _open_database(paths)
     try:
         repository = IncidentRepository(database.session_factory)
-        incident_id, run_id = await _create_failed_run(
+        _, run_id = await _create_failed_run(
             repository,
             CUTOFF - timedelta(days=1),
         )
@@ -468,11 +523,10 @@ async def test_count_change_before_business_transaction_fails_closed(
                 ):
                     session.add(
                         RunEventRow(
-                            incident_id=str(incident_id),
                             run_id=str(run_id),
                             event_key="concurrent-change",
                             event_type="test.concurrent-change",
-                            schema_version=1,
+                            schema_version=2,
                             occurred_at=NOW,
                             payload_json="{}",
                         )
@@ -578,7 +632,7 @@ async def test_parent_swap_cannot_redirect_artifact_deletion(
 
     result = await confirm_prune(_settings(paths), NOW)
 
-    assert [target.run_id for target in result.deleted_targets] == [run_id]
+    assert [target.run_ids for target in result.deleted_targets] == [(run_id,)]
     assert not (original_artifact_root / artifact_directory.name).exists()
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert await _row_count(paths, RunRow) == 0
@@ -606,7 +660,7 @@ async def test_forged_artifact_root_and_target_path_are_rejected(
         targets = await repository.list_prune_targets(CUTOFF, paths.run_artifacts)
         mismatched = replace(
             targets[0],
-            artifact_directory=outside / str(run_id),
+            artifact_directories=(outside / str(run_id),),
         )
         with pytest.raises(RecoveryConsistencyError):
             await repository.delete_prune_target(

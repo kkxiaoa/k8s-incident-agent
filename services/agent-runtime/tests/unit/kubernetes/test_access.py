@@ -224,7 +224,7 @@ async def _clients(
     authorization_api: _ScriptedAuthorizationApi,
     *,
     cluster_id: str = TARGET.cluster,
-    diagnostic_namespace: str = TARGET.namespace,
+    diagnostic_namespace: str = cast(str, TARGET.namespace),
 ) -> AsyncGenerator[KubernetesClients]:
     api_client = ApiClient(Configuration())
     clients = KubernetesClients(
@@ -369,7 +369,7 @@ def test_target_scope_rejects_catalog_target_outside_configured_scope(
         require_stage_one_target_scope(
             target,
             cluster_id=TARGET.cluster,
-            diagnostic_namespace=TARGET.namespace,
+            diagnostic_namespace=cast(str, TARGET.namespace),
         )
 
     assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID

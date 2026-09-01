@@ -1,7 +1,7 @@
 import type {
   DiagnosisResponse,
-  IncidentStatus,
   RunErrorResponse,
+  RunStatus,
 } from "@/lib/agent-runtime/view-models";
 
 const CONFIDENCE_LABELS = {
@@ -12,15 +12,15 @@ const CONFIDENCE_LABELS = {
 
 export function DiagnosisPanel({
   diagnosis,
-  incidentStatus,
+  runStatus,
   runError,
 }: {
   diagnosis: DiagnosisResponse | null;
-  incidentStatus: IncidentStatus;
+  runStatus: RunStatus;
   runError: RunErrorResponse | null;
 }) {
   if (diagnosis === null) {
-    if (incidentStatus === "FAILED") {
+    if (runStatus === "FAILED") {
       return (
         <section className="console-section diagnosis-panel" aria-labelledby="diagnosis-heading">
           <span className="eyebrow eyebrow--danger">Terminal</span>

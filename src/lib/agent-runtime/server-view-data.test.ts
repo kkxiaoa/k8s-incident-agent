@@ -27,7 +27,7 @@ describe("server view data", () => {
           url.pathname.endsWith("/scenarios")
             ? jsonResponse({ schemaVersion: 1, items: [null] })
             : jsonResponse({
-                schemaVersion: 1,
+                schemaVersion: 2,
                 items: [null],
                 nextCursor: null,
               }),
@@ -45,7 +45,7 @@ describe("server view data", () => {
 
   it("loads only persisted incidents for the online profile", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ schemaVersion: 1, items: [], nextCursor: null }),
+      jsonResponse({ schemaVersion: 2, items: [], nextCursor: null }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -56,7 +56,7 @@ describe("server view data", () => {
     expect(url.pathname).toBe("/api/v1/incidents");
     expect(overview).toEqual({
       scenarios: null,
-      incidents: { items: [], hasMore: false },
+      incidents: { items: [], nextCursor: null },
     });
   });
 
@@ -73,14 +73,38 @@ describe("server view data", () => {
   it("projects a valid detail to the fields consumed by the console", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(jsonResponse(makeIncidentDetail())),
+      vi.fn((url: URL) =>
+        Promise.resolve(
+          url.pathname.endsWith("/runs")
+            ? jsonResponse({
+                schemaVersion: 2,
+                items: [
+                  {
+                    id: makeIncidentDetail().selectedRun.id,
+                    attempt: 1,
+                    status: "QUEUED",
+                    createdAt: "2026-08-29T01:00:00Z",
+                    startedAt: null,
+                    completedAt: null,
+                  },
+                ],
+                nextCursor: null,
+              })
+            : jsonResponse(makeIncidentDetail()),
+        ),
+      ),
     );
 
     const pageData = await loadIncidentPage(INCIDENT_ID);
 
     expect(pageData.state).toBe("ready");
     if (pageData.state === "ready") {
-      expect(pageData.detail.run).toEqual({ status: "QUEUED", error: null });
+      expect(pageData.detail.selectedRun).toMatchObject({
+        attempt: 1,
+        status: "QUEUED",
+        error: null,
+      });
+      expect(pageData.runs.items).toHaveLength(1);
       expect(pageData.detail.incident).not.toHaveProperty("updatedAt");
     }
   });

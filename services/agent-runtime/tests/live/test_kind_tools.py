@@ -10,6 +10,7 @@ from alembic import command
 from alembic.config import Config
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
+from tests.factories import agent_run_snapshot, normalized_trigger
 
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
@@ -24,11 +25,7 @@ from k8s_incident_agent.kubernetes.tools import build_diagnostic_tools
 from k8s_incident_agent.persistence.database import create_business_database
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
+from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 pytestmark = pytest.mark.live_kind
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
@@ -104,17 +101,7 @@ async def test_fixed_kind_tools_persist_three_fresh_observations(
             target = _target()
             repository = IncidentRepository(database.session_factory)
             created = await repository.create_incident_and_run(
-                PublicScenario(
-                    scenario_id="image-pull-backoff",
-                    scenario_version=1,
-                    display_name="Image pull failure",
-                    description="A Deployment cannot pull its configured image.",
-                    trigger=ScenarioTrigger(
-                        type="manual",
-                        summary="The target Deployment is unavailable.",
-                    ),
-                    target=target,
-                ),
+                normalized_trigger(),
                 ModelSnapshot(
                     provider="deepseek",
                     model_id="deepseek-v4-flash",
@@ -125,7 +112,7 @@ async def test_fixed_kind_tools_persist_three_fresh_observations(
             )
             await repository.start_run(created.run_id, started_at)
             context = DiagnosticToolContext(
-                run=await repository.get_agent_run_snapshot(created.run_id),
+                run=await agent_run_snapshot(repository, created.run_id),
                 target=target,
                 credential=credential,
                 adapter=KubernetesEvidenceAdapter(clients),

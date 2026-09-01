@@ -8,7 +8,6 @@ const CONNECTION_LABELS: Record<IncidentStreamConnection, string> = {
   connecting: "正在连接事件流",
   live: "实时追踪中",
   reconnecting: "连接中断，正在恢复",
-  closed: "事件流已结束",
   invalid: "事件流数据无效",
 };
 
@@ -21,7 +20,13 @@ function eventCopy(event: RunEventStreamItem): {
     case "incident.created":
       return {
         title: "Incident 已创建",
-        detail: event.data.scenarioId,
+        detail: `第 ${event.data.attempt} 次诊断已排队`,
+        tone: "neutral",
+      };
+    case "run.queued":
+      return {
+        title: "诊断运行已排队",
+        detail: `第 ${event.data.attempt} 次诊断`,
         tone: "neutral",
       };
     case "run.started":
@@ -118,9 +123,7 @@ export function RunTimeline({
               streamCanBeRunning ? "timeline-waiting__text" : undefined
             }
           >
-            {connection === "closed"
-              ? "事件流已结束，未记录运行事件。"
-              : connection === "invalid"
+            {connection === "invalid"
                 ? "事件流已停止，未收到有效运行事件。"
                 : "正在等待持久化运行事件"}
           </span>
@@ -133,7 +136,8 @@ export function RunTimeline({
               streamCanBeRunning &&
               ((event.event === "tool.started" &&
                 running.has(event.data.toolCallId)) ||
-                (event.event === "run.started" && event.id === latestEventId));
+                ((event.event === "run.started" || event.event === "run.queued") &&
+                  event.id === latestEventId));
             return (
               <li
                 key={event.id}

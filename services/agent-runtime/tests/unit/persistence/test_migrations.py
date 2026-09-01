@@ -25,8 +25,9 @@ SERVICE_ROOT = Path(__file__).resolve().parents[3]
 EXPECTED_COLUMNS = {
     "incidents": (
         "id",
-        "scenario_id",
-        "scenario_version",
+        "trigger_source",
+        "trigger_ref",
+        "trigger_revision",
         "display_name",
         "trigger_summary",
         "cluster",
@@ -41,6 +42,7 @@ EXPECTED_COLUMNS = {
     "agent_runs": (
         "id",
         "incident_id",
+        "attempt",
         "status",
         "model_provider",
         "model_id",
@@ -62,7 +64,6 @@ EXPECTED_COLUMNS = {
     ),
     "run_events": (
         "id",
-        "incident_id",
         "run_id",
         "event_key",
         "event_type",
@@ -97,17 +98,14 @@ EXPECTED_COLUMNS = {
 EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
     "incidents": set(),
     "agent_runs": {("incident_id", "incidents", "id")},
-    "run_events": {
-        ("incident_id", "incidents", "id"),
-        ("run_id", "agent_runs", "id"),
-    },
+    "run_events": {("run_id", "agent_runs", "id")},
     "evidence": {("run_id", "agent_runs", "id")},
     "diagnoses": {("run_id", "agent_runs", "id")},
 }
 
 EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
     "incidents": set(),
-    "agent_runs": {("incident_id",)},
+    "agent_runs": {("incident_id",), ("incident_id", "attempt")},
     "run_events": {("run_id", "event_key")},
     "evidence": {("run_id", "tool_call_id")},
     "diagnoses": {("run_id",)},
@@ -116,7 +114,7 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
 EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
     "incidents": {("created_at", "id")},
     "agent_runs": {("status",)},
-    "run_events": {("incident_id", "id")},
+    "run_events": {("run_id", "id")},
     "evidence": set(),
     "diagnoses": set(),
 }
@@ -161,7 +159,9 @@ def _schema_snapshot(database: Path) -> dict[str, Any]:
             query_indexes[table] = set()
             for index in connection.execute(f'PRAGMA index_list("{table}")'):
                 index_columns = _index_columns(connection, str(index[1]))
-                if str(index[3]) == "u":
+                if str(index[3]) == "u" or str(index[1]) == (
+                    "uq_agent_runs_active_incident_id"
+                ):
                     unique_keys[table].add(index_columns)
                 elif str(index[3]) == "c":
                     query_indexes[table].add(index_columns)
@@ -174,7 +174,7 @@ def _schema_snapshot(database: Path) -> dict[str, Any]:
         }
 
 
-def test_migration_round_trip_produces_the_exact_stage_one_schema(
+def test_migration_round_trip_produces_the_exact_stage_one_six_schema(
     tmp_path: Path,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
@@ -199,6 +199,66 @@ def test_migration_round_trip_produces_the_exact_stage_one_schema(
 
     command.upgrade(config, "head")
     assert _schema_snapshot(paths.business_database) == first_schema
+
+
+def test_stage_one_six_upgrade_rejects_nonempty_stage_one_before_ddl(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    config = _alembic_config(paths)
+    command.upgrade(config, "20260814_0001")
+    with sqlite3.connect(paths.business_database) as connection:
+        connection.execute(
+            "INSERT INTO incidents "
+            "(id, scenario_id, scenario_version, display_name, trigger_summary, "
+            "cluster, namespace, api_version, kind, resource_name, status, "
+            "created_at, updated_at) VALUES "
+            "('incident-id', 'scenario', 1, 'display', 'trigger', 'cluster', "
+            "'namespace', 'apps/v1', 'Deployment', 'name', 'RECEIVED', "
+            "'2026-08-15T00:00:00Z', '2026-08-15T00:00:00Z')"
+        )
+
+    with pytest.raises(RuntimeError, match="requires an empty business database"):
+        command.upgrade(config, "head")
+
+    assert (
+        "scenario_id"
+        in _schema_snapshot(paths.business_database)["columns"]["incidents"]
+    )
+    with sqlite3.connect(paths.business_database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("20260814_0001",)
+
+
+def test_stage_one_six_downgrade_rejects_nonempty_head_before_ddl(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    config = _alembic_config(paths)
+    command.upgrade(config, "head")
+    with sqlite3.connect(paths.business_database) as connection:
+        connection.execute(
+            "INSERT INTO incidents "
+            "(id, trigger_source, trigger_ref, trigger_revision, display_name, "
+            "trigger_summary, cluster, namespace, api_version, kind, resource_name, "
+            "status, created_at, updated_at) VALUES "
+            "('incident-id', 'scenario', 'scenario', '1', 'display', 'trigger', "
+            "'cluster', NULL, 'apps/v1', 'Deployment', 'name', 'RECEIVED', "
+            "'2026-08-15T00:00:00Z', '2026-08-15T00:00:00Z')"
+        )
+
+    with pytest.raises(RuntimeError, match="requires an empty business database"):
+        command.downgrade(config, "20260814_0001")
+
+    assert (
+        "trigger_source"
+        in _schema_snapshot(paths.business_database)["columns"]["incidents"]
+    )
+    with sqlite3.connect(paths.business_database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("20260901_0002",)
 
 
 def test_migration_uses_the_shared_runtime_lock(tmp_path: Path) -> None:
@@ -241,10 +301,11 @@ async def test_business_database_enables_sqlite_safety_and_accepts_head(
             await connection.execute(
                 text(
                     "INSERT INTO incidents "
-                    "(id, scenario_id, scenario_version, display_name, "
+                    "(id, trigger_source, trigger_ref, trigger_revision, display_name, "
                     "trigger_summary, cluster, namespace, api_version, kind, "
                     "resource_name, status, created_at, updated_at) VALUES "
-                    "('incident-id', 'image-pull-backoff', 1, 'Image pull failure', "
+                    "('incident-id', 'scenario', 'image-pull-backoff', '1', "
+                    "'Image pull failure', "
                     "'Deployment unavailable', 'k8s-incident-agent', "
                     "'k8s-incident-scenarios', 'apps/v1', 'Deployment', "
                     "'image-pull-backoff', 'RECEIVED', "
@@ -299,40 +360,40 @@ def test_migration_rejects_values_outside_domain_statuses(tmp_path: Path) -> Non
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 "INSERT INTO incidents "
-                "(id, scenario_id, scenario_version, display_name, "
+                "(id, trigger_source, trigger_ref, trigger_revision, display_name, "
                 "trigger_summary, cluster, namespace, api_version, kind, "
                 "resource_name, status, created_at, updated_at) VALUES "
-                "('invalid', 'scenario', 1, 'display', 'trigger', 'cluster', "
+                "('invalid', 'scenario', 'scenario', '1', 'display', 'trigger', 'cluster', "
                 "'namespace', 'apps/v1', 'Deployment', 'name', 'UNKNOWN', "
                 "'2026-08-15T00:00:00Z', '2026-08-15T00:00:00Z')"
             )
 
         connection.execute(
             "INSERT INTO incidents "
-            "(id, scenario_id, scenario_version, display_name, trigger_summary, "
+            "(id, trigger_source, trigger_ref, trigger_revision, display_name, trigger_summary, "
             "cluster, namespace, api_version, kind, resource_name, status, "
             "created_at, updated_at) VALUES "
-            "('incident-id', 'scenario', 1, 'display', 'trigger', 'cluster', "
+            "('incident-id', 'scenario', 'scenario', '1', 'display', 'trigger', 'cluster', "
             "'namespace', 'apps/v1', 'Deployment', 'name', 'RECEIVED', "
             "'2026-08-15T00:00:00Z', '2026-08-15T00:00:00Z')"
         )
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
                 "INSERT INTO agent_runs "
-                "(id, incident_id, status, model_provider, model_id, "
+                "(id, incident_id, attempt, status, model_provider, model_id, "
                 "thinking_mode, prompt_version, max_model_calls, max_tool_calls, "
                 "timeout_seconds, created_at, updated_at) VALUES "
-                "('invalid-run', 'incident-id', 'UNKNOWN', 'deepseek', "
+                "('invalid-run', 'incident-id', 1, 'UNKNOWN', 'deepseek', "
                 "'deepseek-v4-flash', 0, 'stage1-v1', 8, 6, 180, "
                 "'2026-08-15T00:00:00Z', '2026-08-15T00:00:00Z')"
             )
 
         connection.execute(
             "INSERT INTO agent_runs "
-            "(id, incident_id, status, model_provider, model_id, thinking_mode, "
+            "(id, incident_id, attempt, status, model_provider, model_id, thinking_mode, "
             "prompt_version, max_model_calls, max_tool_calls, timeout_seconds, "
             "created_at, updated_at) VALUES "
-            "('run-id', 'incident-id', 'QUEUED', 'deepseek', "
+            "('run-id', 'incident-id', 1, 'QUEUED', 'deepseek', "
             "'deepseek-v4-flash', 0, 'stage1-v1', 8, 6, 180, "
             "'2026-08-15T00:00:00Z', '2026-08-15T00:00:00Z')"
         )

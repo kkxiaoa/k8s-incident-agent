@@ -30,7 +30,7 @@ NOW = datetime(2026, 8, 26, 9, 0, tzinfo=UTC)
 
 def _base_payload() -> dict[str, JsonValue]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "incidentId": str(INCIDENT_ID),
         "runId": str(RUN_ID),
         "occurredAt": "2026-08-26T09:00:00Z",
@@ -62,25 +62,35 @@ EVENT_CASES = (
         "incident.created",
         "incident.created",
         {
-            "scenarioId": "image-pull-backoff",
+            "attempt": 1,
             "incidentStatus": "RECEIVED",
             "runStatus": "QUEUED",
         },
     ),
     _event(
         2,
-        "run.started",
-        "run.started",
-        {"incidentStatus": "TRIAGING", "runStatus": "RUNNING"},
+        "run.queued",
+        "run.queued",
+        {"attempt": 2, "runStatus": "QUEUED"},
     ),
     _event(
         3,
+        "run.started",
+        "run.started",
+        {
+            "attempt": 1,
+            "incidentStatus": "TRIAGING",
+            "runStatus": "RUNNING",
+        },
+    ),
+    _event(
+        4,
         "tool.started",
         "tool:call-1:started",
         {"toolCallId": "call-1", "toolName": "get_workload"},
     ),
     _event(
-        4,
+        5,
         "evidence.recorded",
         "tool:call-1:evidence",
         {
@@ -94,7 +104,7 @@ EVENT_CASES = (
         },
     ),
     _event(
-        5,
+        6,
         "tool.failed",
         "tool:call-2:failed",
         {
@@ -105,7 +115,7 @@ EVENT_CASES = (
         },
     ),
     _event(
-        6,
+        7,
         "diagnosis.completed",
         "run:terminal",
         {
@@ -116,7 +126,7 @@ EVENT_CASES = (
         },
     ),
     _event(
-        7,
+        8,
         "diagnosis.insufficient",
         "run:terminal",
         {
@@ -127,7 +137,7 @@ EVENT_CASES = (
         },
     ),
     _event(
-        8,
+        9,
         "run.failed",
         "run:terminal",
         {
@@ -159,6 +169,10 @@ class _Repository:
     async def incident_exists(self, incident_id: UUID) -> bool:
         assert incident_id == INCIDENT_ID
         return self.exists
+
+    async def latest_incident_event_id(self, incident_id: UUID) -> int:
+        assert incident_id == INCIDENT_ID
+        return max((event.id for event in self.events), default=0)
 
     async def get_incident_event(
         self,
@@ -238,6 +252,19 @@ async def test_zero_cursor_starts_at_first_event_without_ownership_lookup() -> N
 
 
 @pytest.mark.asyncio
+async def test_missing_cursor_tails_after_current_latest_event() -> None:
+    repository = _Repository(EVENT_CASES)
+    notifier = _ImmediateTimeoutNotifier()
+    stream = await IncidentEventService(
+        _dependencies(repository, notifier=notifier)
+    ).open_stream(INCIDENT_ID, None)
+
+    assert await anext(stream) == b": heartbeat\n\n"
+    assert repository.list_calls == [(INCIDENT_ID, EVENT_CASES[-1].id, 100)]
+    await cast(AsyncGenerator[bytes], stream).aclose()
+
+
+@pytest.mark.asyncio
 async def test_serializer_rejects_unpersisted_payload_fields() -> None:
     event = EVENT_CASES[0]
     corrupted_payload = dict(event.payload)
@@ -266,7 +293,7 @@ async def test_serializer_rejects_unpersisted_payload_fields() -> None:
     ("event", "updates"),
     [
         (
-            EVENT_CASES[4],
+            EVENT_CASES[5],
             {"errorCode": "permission_denied", "retryable": True},
         ),
         (
@@ -306,7 +333,7 @@ async def test_serializer_rejects_invalid_failure_contracts(
     ("event", "field"),
     [
         (EVENT_CASES[0], "occurredAt"),
-        (EVENT_CASES[3], "observedAt"),
+        (EVENT_CASES[4], "observedAt"),
     ],
 )
 async def test_serializer_rejects_non_utc_event_timestamps(
@@ -387,33 +414,37 @@ async def test_replay_uses_batches_of_100_and_allows_global_id_gaps() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconnect_starts_after_cursor_without_duplicate_and_terminal_closes() -> (
+async def test_reconnect_starts_after_cursor_without_duplicate_and_keeps_stream_open() -> (
     None
 ):
-    created, started, *_rest, terminal = EVENT_CASES
+    created, queued, started, *_rest, terminal = EVENT_CASES
     repository = _Repository((created, started, terminal))
-    stream = await IncidentEventService(_dependencies(repository)).open_stream(
-        INCIDENT_ID,
-        str(created.id),
-    )
+    notifier = _ImmediateTimeoutNotifier()
+    stream = await IncidentEventService(
+        _dependencies(repository, notifier=notifier)
+    ).open_stream(INCIDENT_ID, str(created.id))
 
     replayed = [await anext(stream), await anext(stream)]
 
     assert f"id: {created.id}\n".encode() not in b"".join(replayed)
     assert replayed[0].startswith(f"id: {started.id}\n".encode())
     assert replayed[1].startswith(f"id: {terminal.id}\n".encode())
-    with pytest.raises(StopAsyncIteration):
-        await anext(stream)
+    assert await anext(stream) == b": heartbeat\n\n"
+    assert queued.id not in {created.id, started.id, terminal.id}
+    await cast(AsyncGenerator[bytes], stream).aclose()
 
 
 @pytest.mark.asyncio
-async def test_reconnect_after_already_received_terminal_closes_immediately() -> None:
+async def test_reconnect_after_already_received_terminal_keeps_stream_open() -> None:
     terminal = EVENT_CASES[-1]
-    service = IncidentEventService(_dependencies(_Repository((terminal,))))
+    notifier = _ImmediateTimeoutNotifier()
+    service = IncidentEventService(
+        _dependencies(_Repository((terminal,)), notifier=notifier)
+    )
     stream = await service.open_stream(INCIDENT_ID, str(terminal.id))
 
-    with pytest.raises(StopAsyncIteration):
-        await anext(stream)
+    assert await anext(stream) == b": heartbeat\n\n"
+    await cast(AsyncGenerator[bytes], stream).aclose()
 
 
 class _RecoveredRepository(_Repository):
@@ -431,7 +462,7 @@ class _RecoveredRepository(_Repository):
     ) -> tuple[RunEvent, ...]:
         self._reads += 1
         self.list_calls.append((incident_id, after_id, limit))
-        if self._reads == 1:
+        if self._reads == 1 or after_id >= self._recovered.id:
             return ()
         return (self._recovered,)
 
@@ -467,8 +498,8 @@ async def test_lost_notification_recovers_from_database_after_heartbeat() -> Non
             f"data: {canonical_json(terminal.payload)}\n\n"
         ).encode()
     )
-    with pytest.raises(StopAsyncIteration):
-        await anext(stream)
+    assert await anext(stream) == b": heartbeat\n\n"
+    await cast(AsyncGenerator[bytes], stream).aclose()
 
 
 @pytest.mark.asyncio

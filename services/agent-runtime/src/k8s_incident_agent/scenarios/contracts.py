@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from k8s_incident_agent.domain.contracts import KubernetesTarget
+
 
 class _ImmutableContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -17,17 +19,7 @@ class ScenarioTrigger(_ImmutableContract):
         return _normalized_string(value)
 
 
-class ScenarioTarget(_ImmutableContract):
-    cluster: str = Field(min_length=1)
-    namespace: str = Field(min_length=1)
-    api_version: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-
-    @field_validator("cluster", "namespace", "api_version", "kind", "name")
-    @classmethod
-    def require_normalized_target_value(cls, value: str) -> str:
-        return _normalized_string(value)
+ScenarioTarget = KubernetesTarget
 
 
 class PublicScenario(_ImmutableContract):
@@ -44,7 +36,7 @@ class PublicScenario(_ImmutableContract):
         return _normalized_string(value)
 
 
-def validate_stage_one_target(target: ScenarioTarget) -> None:
+def validate_stage_one_target(target: KubernetesTarget) -> None:
     if (
         target.cluster != "k8s-incident-agent"
         or target.namespace != "k8s-incident-scenarios"

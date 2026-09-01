@@ -73,7 +73,7 @@ test("create reaches terminal diagnosis, reconnects natively, and refreshes from
     page.getByText("Pod 引用的镜像 manifest 不存在，导致 ImagePullBackOff。"),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "kubernetes.pod" })).toBeVisible();
-  await expect(page.getByText("事件流已结束")).toBeVisible();
+  await expect(page.getByText("实时追踪中")).toBeVisible();
   await expect(page.locator(".timeline__item")).toHaveCount(5);
   await expect(page.locator(".timeline__item--success .timeline__dot").first()).toHaveCSS(
     "box-shadow",
@@ -110,7 +110,7 @@ test("create reaches terminal diagnosis, reconnects natively, and refreshes from
     eventConnections: Record<string, Array<string | null>>;
   };
   const firstConnections = Object.values(observations.eventConnections)[0];
-  expect(firstConnections?.slice(0, 2)).toEqual([null, "3"]);
+  expect(firstConnections?.slice(0, 2)).toEqual(["1", "4"]);
 
   await page.reload();
   await expect(page.getByText("已诊断").first()).toBeVisible();

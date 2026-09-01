@@ -13,6 +13,7 @@ from langgraph.types import StateSnapshot
 from pydantic import ValidationError
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
+from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     ModelSnapshot,
@@ -26,7 +27,6 @@ from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     RecoveryConsistencyError,
 )
-from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 from k8s_incident_agent.workflow.graph import (
     GraphDependencies,
@@ -394,7 +394,7 @@ def _require_checkpoint_identity(
     run: WorkflowRunSnapshot,
 ) -> None:
     try:
-        target = ScenarioTarget.model_validate(values.get("target"))
+        target = KubernetesTarget.model_validate(values.get("target"))
     except ValidationError:
         raise RuntimeError("Running run checkpoint identity does not match") from None
     if (

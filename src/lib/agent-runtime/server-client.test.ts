@@ -2,13 +2,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createIncident,
+  createRun,
   fetchIncident,
   fetchIncidents,
+  fetchRunEvents,
+  fetchRuns,
   fetchScenarios,
   streamIncidentEvents,
 } from "./server-client";
 
 const INCIDENT_ID = "123e4567-e89b-12d3-a456-426614174000";
+const RUN_ID = "223e4567-e89b-42d3-a456-426614174000";
 const RUNTIME_URL = "http://127.0.0.1:8000/runtime";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -105,6 +109,46 @@ describe("fixed REST helpers", () => {
     const { response } = await fetchIncident(INCIDENT_ID);
 
     expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual(envelope);
+  });
+
+  it("maps run detail, history, events, and create to fixed owner-bound paths", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchIncident(INCIDENT_ID, RUN_ID);
+    await fetchRuns(INCIDENT_ID, new URLSearchParams({ limit: "20" }));
+    await fetchRunEvents(
+      INCIDENT_ID,
+      RUN_ID,
+      new URLSearchParams({ cursor: "opaque" }),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 202));
+    await createRun(INCIDENT_ID);
+
+    expect(
+      fetchMock.mock.calls.map(([url]) => (url as URL).href),
+    ).toEqual([
+      `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}?runId=${RUN_ID}`,
+      `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/runs?limit=20`,
+      `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/runs/${RUN_ID}/events?cursor=opaque`,
+      `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/runs`,
+    ]);
+  });
+
+  it("preserves the retryable active-run conflict contract", async () => {
+    const envelope = {
+      error: {
+        code: "active_run_exists",
+        message: "An active run already exists.",
+        retryable: true,
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(envelope, 409)));
+
+    const response = await createRun(INCIDENT_ID);
+
+    expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual(envelope);
   });
 

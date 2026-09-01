@@ -16,6 +16,10 @@ const INCIDENTS_PATH = "/api/v1/incidents" satisfies RuntimePath;
 const INCIDENT_PATH = "/api/v1/incidents/{incident_id}" satisfies RuntimePath;
 const INCIDENT_EVENTS_PATH =
   "/api/v1/incidents/{incident_id}/events" satisfies RuntimePath;
+const INCIDENT_RUNS_PATH =
+  "/api/v1/incidents/{incident_id}/runs" satisfies RuntimePath;
+const RUN_EVENTS_PATH =
+  "/api/v1/incidents/{incident_id}/runs/{run_id}/events" satisfies RuntimePath;
 
 const REST_TIMEOUT_MILLISECONDS = 15_000;
 const SSE_CONNECT_TIMEOUT_MILLISECONDS = 10_000;
@@ -37,6 +41,16 @@ const RUNTIME_ERROR_CONTRACTS = {
     status: 404,
     message: "Incident was not found.",
     retryable: false,
+  },
+  run_not_found: {
+    status: 404,
+    message: "Run was not found.",
+    retryable: false,
+  },
+  active_run_exists: {
+    status: 409,
+    message: "An active run already exists.",
+    retryable: true,
   },
   invalid_cursor: {
     status: 400,
@@ -80,6 +94,29 @@ const INCIDENT_CREATE_ERROR_CODES = [
 ] as const satisfies readonly RuntimeErrorCode[];
 const INCIDENT_DETAIL_ERROR_CODES = [
   "incident_not_found",
+  "run_not_found",
+  "invalid_request",
+  "runtime_not_ready",
+  "internal_error",
+] as const satisfies readonly RuntimeErrorCode[];
+const RUN_HISTORY_ERROR_CODES = [
+  "invalid_cursor",
+  "incident_not_found",
+  "invalid_request",
+  "runtime_not_ready",
+  "internal_error",
+] as const satisfies readonly RuntimeErrorCode[];
+const RUN_CREATE_ERROR_CODES = [
+  "incident_not_found",
+  "active_run_exists",
+  "invalid_request",
+  "runtime_not_ready",
+  "internal_error",
+] as const satisfies readonly RuntimeErrorCode[];
+const RUN_EVENT_HISTORY_ERROR_CODES = [
+  "invalid_cursor",
+  "incident_not_found",
+  "run_not_found",
   "invalid_request",
   "runtime_not_ready",
   "internal_error",
@@ -148,6 +185,30 @@ function incidentPath(template: string, incidentId: string): string | null {
   }
 
   return template.replace("{incident_id}", encodeURIComponent(incidentId));
+}
+
+function runPath(
+  template: string,
+  incidentId: string,
+  runId: string,
+): string | null {
+  const path = incidentPath(template, incidentId);
+  return path !== null && UUID_PATTERN.test(runId)
+    ? path.replace("{run_id}", encodeURIComponent(runId))
+    : null;
+}
+
+function forwardQuery(
+  searchParams: URLSearchParams,
+  allowedNames: readonly string[],
+): URLSearchParams {
+  const forwarded = new URLSearchParams();
+  for (const [name, value] of searchParams) {
+    if (allowedNames.includes(name)) {
+      forwarded.append(name, value);
+    }
+  }
+  return forwarded;
 }
 
 function isJsonContentType(contentType: string | null): contentType is string {
@@ -326,19 +387,12 @@ export function fetchScenarios(): Promise<RuntimeJsonResult> {
 export function fetchIncidents(
   searchParams: URLSearchParams,
 ): Promise<RuntimeJsonResult> {
-  const forwarded = new URLSearchParams();
-  for (const [name, value] of searchParams) {
-    if (name === "limit" || name === "cursor") {
-      forwarded.append(name, value);
-    }
-  }
-
   return requestRest(
     INCIDENTS_PATH,
     200,
     INCIDENT_LIST_ERROR_CODES,
     { method: "GET" },
-    forwarded,
+    forwardQuery(searchParams, ["limit", "cursor"]),
   );
 }
 
@@ -362,8 +416,36 @@ export async function createIncident(request: Request): Promise<Response> {
   return result.response;
 }
 
-export function fetchIncident(incidentId: string): Promise<RuntimeJsonResult> {
+export function fetchIncident(
+  incidentId: string,
+  runId?: string,
+): Promise<RuntimeJsonResult> {
   const path = incidentPath(INCIDENT_PATH, incidentId);
+  if (path === null || (runId !== undefined && !UUID_PATTERN.test(runId))) {
+    return Promise.resolve({
+      response: errorResponse(422, INVALID_REQUEST),
+      value: null,
+    });
+  }
+
+  const searchParams = new URLSearchParams();
+  if (runId !== undefined) {
+    searchParams.set("runId", runId);
+  }
+  return requestRest(
+    path,
+    200,
+    INCIDENT_DETAIL_ERROR_CODES,
+    { method: "GET" },
+    searchParams,
+  );
+}
+
+export function fetchRuns(
+  incidentId: string,
+  searchParams: URLSearchParams,
+): Promise<RuntimeJsonResult> {
+  const path = incidentPath(INCIDENT_RUNS_PATH, incidentId);
   if (path === null) {
     return Promise.resolve({
       response: errorResponse(422, INVALID_REQUEST),
@@ -371,9 +453,46 @@ export function fetchIncident(incidentId: string): Promise<RuntimeJsonResult> {
     });
   }
 
-  return requestRest(path, 200, INCIDENT_DETAIL_ERROR_CODES, {
-    method: "GET",
-  });
+  return requestRest(
+    path,
+    200,
+    RUN_HISTORY_ERROR_CODES,
+    { method: "GET" },
+    forwardQuery(searchParams, ["limit", "cursor"]),
+  );
+}
+
+export async function createRun(incidentId: string): Promise<Response> {
+  const path = incidentPath(INCIDENT_RUNS_PATH, incidentId);
+  if (path === null) {
+    return errorResponse(422, INVALID_REQUEST);
+  }
+
+  return (
+    await requestRest(path, 202, RUN_CREATE_ERROR_CODES, { method: "POST" })
+  ).response;
+}
+
+export function fetchRunEvents(
+  incidentId: string,
+  runId: string,
+  searchParams: URLSearchParams,
+): Promise<RuntimeJsonResult> {
+  const path = runPath(RUN_EVENTS_PATH, incidentId, runId);
+  if (path === null) {
+    return Promise.resolve({
+      response: errorResponse(422, INVALID_REQUEST),
+      value: null,
+    });
+  }
+
+  return requestRest(
+    path,
+    200,
+    RUN_EVENT_HISTORY_ERROR_CODES,
+    { method: "GET" },
+    forwardQuery(searchParams, ["limit", "cursor"]),
+  );
 }
 
 export async function streamIncidentEvents(

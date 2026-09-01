@@ -40,8 +40,10 @@ export function runStatusLabel(status: RunStatus): string {
 
 export function targetLabel(target: {
   kind: string;
-  namespace: string;
+  namespace: string | null;
   name: string;
 }): string {
-  return `${target.kind} · ${target.namespace}/${target.name}`;
+  return target.namespace === null
+    ? `${target.kind} · ${target.name}`
+    : `${target.kind} · ${target.namespace}/${target.name}`;
 }

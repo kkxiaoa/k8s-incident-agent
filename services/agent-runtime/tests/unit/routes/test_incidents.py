@@ -13,14 +13,18 @@ from k8s_incident_agent.api import RuntimeContainer
 from k8s_incident_agent.api_contracts import (
     CreateIncidentRequest,
     CreateIncidentResponse,
+    CreateRunResponse,
+    EventPageResponse,
     IncidentDetailResponse,
     IncidentListItem,
     IncidentListResponse,
     IncidentResponse,
-    RunBudgetResponse,
-    RunResponse,
-    RunUsageResponse,
-    ScenarioTargetResponse,
+    IncidentSourceResponse,
+    IncidentTargetResponse,
+    RunEventHistoryResponse,
+    RunHistoryResponse,
+    RunSummaryResponse,
+    SelectedRunResponse,
 )
 from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
@@ -31,7 +35,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 INCIDENT_ID = UUID("00000000-0000-0000-0000-000000000001")
 RUN_ID = UUID("00000000-0000-0000-0000-000000000002")
 NOW = datetime(2026, 8, 26, 9, 0, tzinfo=UTC)
-TARGET = ScenarioTargetResponse(
+TARGET = IncidentTargetResponse(
     cluster="k8s-incident-agent",
     namespace="k8s-incident-scenarios",
     api_version="apps/v1",
@@ -49,12 +53,11 @@ class _IncidentService:
         request: CreateIncidentRequest,
     ) -> CreateIncidentResponse:
         assert request.scenario_id == "image-pull-backoff"
-        return CreateIncidentResponse(
-            incident_id=INCIDENT_ID,
-            run_id=RUN_ID,
-            incident_status=IncidentStatus.RECEIVED,
-            run_status=RunStatus.QUEUED,
-        )
+        return CreateIncidentResponse(incident_id=INCIDENT_ID)
+
+    async def create_run(self, incident_id: UUID) -> CreateRunResponse:
+        assert incident_id == INCIDENT_ID
+        return CreateRunResponse(run_id=RUN_ID)
 
     async def list_incidents(
         self,
@@ -67,58 +70,90 @@ class _IncidentService:
             items=(
                 IncidentListItem(
                     id=INCIDENT_ID,
-                    scenario_id="image-pull-backoff",
-                    scenario_version=1,
                     display_name="Image pull failure",
                     target=TARGET,
                     status=IncidentStatus.RECEIVED,
-                    created_at=NOW,
                     updated_at=NOW,
                 ),
             ),
             next_cursor=None,
         )
 
-    async def get_incident(self, incident_id: UUID) -> IncidentDetailResponse:
+    async def get_incident(
+        self,
+        incident_id: UUID,
+        *,
+        run_id: UUID | None,
+    ) -> IncidentDetailResponse:
         assert incident_id == INCIDENT_ID
+        assert run_id in (None, RUN_ID)
         return IncidentDetailResponse(
             incident=IncidentResponse(
                 id=INCIDENT_ID,
-                scenario_id="image-pull-backoff",
-                scenario_version=1,
+                source=IncidentSourceResponse(
+                    type="scenario",
+                    ref="image-pull-backoff",
+                    revision="1",
+                ),
                 display_name="Image pull failure",
                 trigger_summary="The target Deployment is unavailable.",
                 target=TARGET,
                 status=IncidentStatus.RECEIVED,
                 created_at=NOW,
-                updated_at=NOW,
             ),
-            run=RunResponse(
+            selected_run=SelectedRunResponse(
                 id=RUN_ID,
+                attempt=1,
                 status=RunStatus.QUEUED,
-                model_provider="deepseek",
-                model_id="deepseek-v4-flash",
-                thinking_mode=False,
-                prompt_version="stage1-v1",
-                budget=RunBudgetResponse(
-                    max_model_calls=8,
-                    max_tool_calls=6,
-                    timeout_seconds=180,
-                ),
-                usage=RunUsageResponse(
-                    model_calls=None,
-                    tool_calls=None,
-                    input_tokens=None,
-                    output_tokens=None,
-                ),
                 error=None,
                 created_at=NOW,
                 started_at=None,
                 completed_at=None,
             ),
+            event_page=EventPageResponse(items=(), next_cursor=None),
             evidence=(),
             diagnosis=None,
+            event_cursor="1",
         )
+
+    async def list_runs(
+        self,
+        incident_id: UUID,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> RunHistoryResponse:
+        assert incident_id == INCIDENT_ID
+        assert (limit, cursor) == (20, None)
+        return RunHistoryResponse(
+            items=(
+                RunSummaryResponse(
+                    id=RUN_ID,
+                    attempt=1,
+                    status=RunStatus.QUEUED,
+                    created_at=NOW,
+                    started_at=None,
+                    completed_at=None,
+                ),
+            ),
+            next_cursor=None,
+        )
+
+    async def list_run_events(
+        self,
+        incident_id: UUID,
+        run_id: UUID,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> RunEventHistoryResponse:
+        assert (incident_id, run_id, limit, cursor) == (
+            INCIDENT_ID,
+            RUN_ID,
+            100,
+            None,
+        )
+        return RunEventHistoryResponse(items=(), next_cursor=None)
 
 
 @asynccontextmanager
@@ -165,11 +200,8 @@ async def test_create_returns_202_and_exact_versioned_projection(
 
     assert response.status_code == 202
     assert response.json() == {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "incidentId": str(INCIDENT_ID),
-        "runId": str(RUN_ID),
-        "incidentStatus": "RECEIVED",
-        "runStatus": "QUEUED",
     }
 
 
@@ -183,7 +215,7 @@ async def test_list_uses_default_limit_and_serializes_utc_timestamp(
 
     assert response.status_code == 200
     assert service.list_arguments == (20, None)
-    assert response.json()["items"][0]["createdAt"] == "2026-08-26T09:00:00Z"
+    assert response.json()["items"][0]["updatedAt"] == "2026-08-26T09:00:00Z"
     assert response.json()["nextCursor"] is None
 
 
@@ -197,16 +229,12 @@ async def test_detail_preserves_nullable_run_and_diagnosis_fields(
 
     assert response.status_code == 200
     document = response.json()
-    assert document["schemaVersion"] == 1
-    assert document["run"]["usage"] == {
-        "modelCalls": None,
-        "toolCalls": None,
-        "inputTokens": None,
-        "outputTokens": None,
-    }
-    assert document["run"]["startedAt"] is None
-    assert document["run"]["completedAt"] is None
-    assert document["run"]["error"] is None
+    assert document["schemaVersion"] == 2
+    assert document["selectedRun"]["startedAt"] is None
+    assert document["selectedRun"]["completedAt"] is None
+    assert document["selectedRun"]["error"] is None
+    assert document["eventCursor"] == "1"
+    assert document["eventPage"] == {"items": [], "nextCursor": None}
     assert document["diagnosis"] is None
     assert document["evidence"] == []
 
@@ -224,3 +252,21 @@ async def test_list_query_bounds_use_validation_envelope(
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_request"
     assert service.list_arguments is None
+
+
+@pytest.mark.asyncio
+async def test_run_routes_use_v2_minimal_contracts(tmp_path: Path) -> None:
+    service = _IncidentService()
+    async with _client(tmp_path, service) as client:
+        created = await client.post(f"/api/v1/incidents/{INCIDENT_ID}/runs")
+        history = await client.get(f"/api/v1/incidents/{INCIDENT_ID}/runs")
+        events = await client.get(
+            f"/api/v1/incidents/{INCIDENT_ID}/runs/{RUN_ID}/events"
+        )
+
+    assert created.status_code == 202
+    assert created.json() == {"schemaVersion": 2, "runId": str(RUN_ID)}
+    assert history.status_code == 200
+    assert history.json()["items"][0]["attempt"] == 1
+    assert events.status_code == 200
+    assert events.json() == {"schemaVersion": 2, "items": [], "nextCursor": None}

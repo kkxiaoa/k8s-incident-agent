@@ -12,6 +12,7 @@ from alembic.config import Config
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
 from sqlalchemy import select
+from tests.factories import agent_run_snapshot, normalized_trigger
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.domain.models import EvidenceRecord, ModelSnapshot, RunBudget
@@ -38,11 +39,7 @@ from k8s_incident_agent.persistence.database import (
 from k8s_incident_agent.persistence.models import RunEventRow, RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
+from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 21, 11, 0, tzinfo=UTC)
@@ -157,15 +154,8 @@ def _observation_document(
     return common
 
 
-def _scenario() -> PublicScenario:
-    return PublicScenario(
-        scenario_id="image-pull-backoff",
-        scenario_version=1,
-        display_name="Image pull failure",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(type="manual", summary="Deployment unavailable"),
-        target=TARGET,
-    )
+def _scenario():
+    return normalized_trigger()
 
 
 async def _context(
@@ -186,7 +176,7 @@ async def _context(
     )
     await repository.start_run(created.run_id, NOW)
     return DiagnosticToolContext(
-        run=await repository.get_agent_run_snapshot(created.run_id),
+        run=await agent_run_snapshot(repository, created.run_id),
         target=TARGET,
         credential=DiagnosticCredential(
             kubeconfig_path=Path("/ignored/diagnostic.kubeconfig"),
@@ -424,15 +414,14 @@ async def test_success_and_failure_outcome_conflict_fails_closed(
             failure_time = NOW + timedelta(seconds=40)
             session.add(
                 RunEventRow(
-                    incident_id=run.incident_id,
                     run_id=str(context.run.id),
                     event_key="tool:call-1:failed",
                     event_type="tool.failed",
-                    schema_version=1,
+                    schema_version=2,
                     occurred_at=failure_time,
                     payload_json=canonical_json(
                         {
-                            "schemaVersion": 1,
+                            "schemaVersion": 2,
                             "incidentId": run.incident_id,
                             "runId": str(context.run.id),
                             "occurredAt": "2026-08-21T11:00:40Z",

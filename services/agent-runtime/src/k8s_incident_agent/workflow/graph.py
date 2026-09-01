@@ -42,6 +42,7 @@ from k8s_incident_agent.diagnosis.validation import (
     UnresolvedToolFailuresError,
     validate_diagnosis,
 )
+from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
     JsonValue,
@@ -66,10 +67,7 @@ from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     RecoveryConsistencyError,
 )
-from k8s_incident_agent.scenarios.contracts import (
-    ScenarioTarget,
-    validate_stage_one_target,
-)
+from k8s_incident_agent.scenarios.contracts import validate_stage_one_target
 from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 from k8s_incident_agent.workflow.state import IncidentGraphInput, IncidentGraphState
 
@@ -228,7 +226,7 @@ def _triage_target_node(
             ):
                 raise RecoveryConsistencyError
             incident_id = UUID(raw_incident_id)
-            target = ScenarioTarget.model_validate(raw_target)
+            target = KubernetesTarget.model_validate(raw_target)
             if (
                 str(incident_id) != raw_incident_id
                 or incident_id != scheduled.incident_id

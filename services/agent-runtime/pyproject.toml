@@ -49,6 +49,7 @@ addopts = ["-m", "not live_model and not live_kind"]
 asyncio_mode = "auto"
 strict_config = true
 strict_markers = true
+pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
     "live_kind: tests that explicitly call the fixed local Kind cluster",

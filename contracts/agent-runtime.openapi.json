@@ -24,31 +24,38 @@
             "title": "Incidentid",
             "type": "string"
           },
-          "incidentStatus": {
-            "$ref": "#/components/schemas/IncidentStatus"
-          },
-          "runId": {
-            "format": "uuid",
-            "title": "Runid",
-            "type": "string"
-          },
-          "runStatus": {
-            "$ref": "#/components/schemas/RunStatus"
-          },
           "schemaVersion": {
-            "const": 1,
-            "default": 1,
+            "const": 2,
+            "default": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
         },
         "required": [
-          "incidentId",
-          "runId",
-          "incidentStatus",
-          "runStatus"
+          "incidentId"
         ],
         "title": "CreateIncidentResponse",
+        "type": "object"
+      },
+      "CreateRunResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 2,
+            "default": 2,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "title": "CreateRunResponse",
         "type": "object"
       },
       "DiagnosisCompletedEventPayload": {
@@ -90,7 +97,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 1,
+            "const": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -171,7 +178,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 1,
+            "const": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -309,6 +316,35 @@
         "title": "ErrorResponse",
         "type": "object"
       },
+      "EventPageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunEventStreamItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nextcursor"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "title": "EventPageResponse",
+        "type": "object"
+      },
       "EvidenceRecordedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -346,7 +382,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 1,
+            "const": 2,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -477,6 +513,11 @@
       "IncidentCreatedEventPayload": {
         "additionalProperties": false,
         "properties": {
+          "attempt": {
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
           "incidentId": {
             "format": "uuid",
             "title": "Incidentid",
@@ -502,12 +543,8 @@
             "title": "Runstatus",
             "type": "string"
           },
-          "scenarioId": {
-            "title": "Scenarioid",
-            "type": "string"
-          },
           "schemaVersion": {
-            "const": 1,
+            "const": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -517,7 +554,7 @@
           "incidentId",
           "runId",
           "occurredAt",
-          "scenarioId",
+          "attempt",
           "incidentStatus",
           "runStatus"
         ],
@@ -561,6 +598,14 @@
               }
             ]
           },
+          "eventCursor": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Eventcursor",
+            "type": "string"
+          },
+          "eventPage": {
+            "$ref": "#/components/schemas/EventPageResponse"
+          },
           "evidence": {
             "items": {
               "$ref": "#/components/schemas/EvidenceResponse"
@@ -571,21 +616,23 @@
           "incident": {
             "$ref": "#/components/schemas/IncidentResponse"
           },
-          "run": {
-            "$ref": "#/components/schemas/RunResponse"
-          },
           "schemaVersion": {
-            "const": 1,
-            "default": 1,
+            "const": 2,
+            "default": 2,
             "title": "Schemaversion",
             "type": "integer"
+          },
+          "selectedRun": {
+            "$ref": "#/components/schemas/SelectedRunResponse"
           }
         },
         "required": [
           "incident",
-          "run",
+          "selectedRun",
+          "eventPage",
           "evidence",
-          "diagnosis"
+          "diagnosis",
+          "eventCursor"
         ],
         "title": "IncidentDetailResponse",
         "type": "object"
@@ -593,11 +640,6 @@
       "IncidentListItem": {
         "additionalProperties": false,
         "properties": {
-          "createdAt": {
-            "format": "date-time",
-            "title": "Createdat",
-            "type": "string"
-          },
           "displayName": {
             "title": "Displayname",
             "type": "string"
@@ -607,19 +649,11 @@
             "title": "Id",
             "type": "string"
           },
-          "scenarioId": {
-            "title": "Scenarioid",
-            "type": "string"
-          },
-          "scenarioVersion": {
-            "title": "Scenarioversion",
-            "type": "integer"
-          },
           "status": {
             "$ref": "#/components/schemas/IncidentStatus"
           },
           "target": {
-            "$ref": "#/components/schemas/ScenarioTargetResponse"
+            "$ref": "#/components/schemas/IncidentTargetResponse"
           },
           "updatedAt": {
             "format": "date-time",
@@ -629,12 +663,9 @@
         },
         "required": [
           "id",
-          "scenarioId",
-          "scenarioVersion",
           "displayName",
           "target",
           "status",
-          "createdAt",
           "updatedAt"
         ],
         "title": "IncidentListItem",
@@ -662,8 +693,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 1,
-            "default": 1,
+            "const": 2,
+            "default": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -692,42 +723,69 @@
             "title": "Id",
             "type": "string"
           },
-          "scenarioId": {
-            "title": "Scenarioid",
-            "type": "string"
-          },
-          "scenarioVersion": {
-            "title": "Scenarioversion",
-            "type": "integer"
+          "source": {
+            "$ref": "#/components/schemas/IncidentSourceResponse"
           },
           "status": {
             "$ref": "#/components/schemas/IncidentStatus"
           },
           "target": {
-            "$ref": "#/components/schemas/ScenarioTargetResponse"
+            "$ref": "#/components/schemas/IncidentTargetResponse"
           },
           "triggerSummary": {
             "title": "Triggersummary",
-            "type": "string"
-          },
-          "updatedAt": {
-            "format": "date-time",
-            "title": "Updatedat",
             "type": "string"
           }
         },
         "required": [
           "id",
-          "scenarioId",
-          "scenarioVersion",
+          "source",
           "displayName",
           "triggerSummary",
           "target",
           "status",
-          "createdAt",
-          "updatedAt"
+          "createdAt"
         ],
         "title": "IncidentResponse",
+        "type": "object"
+      },
+      "IncidentSourceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "type": {
+            "const": "scenario",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "ref",
+          "revision"
+        ],
+        "title": "IncidentSourceResponse",
         "type": "object"
       },
       "IncidentStatus": {
@@ -740,6 +798,47 @@
         ],
         "title": "IncidentStatus",
         "type": "string"
+      },
+      "IncidentTargetResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "apiVersion": {
+            "title": "Apiversion",
+            "type": "string"
+          },
+          "cluster": {
+            "title": "Cluster",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Namespace"
+          }
+        },
+        "required": [
+          "cluster",
+          "namespace",
+          "apiVersion",
+          "kind",
+          "name"
+        ],
+        "title": "IncidentTargetResponse",
+        "type": "object"
       },
       "RootCauseResponse": {
         "additionalProperties": false,
@@ -779,30 +878,6 @@
         "title": "RootCauseResponse",
         "type": "object"
       },
-      "RunBudgetResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "maxModelCalls": {
-            "title": "Maxmodelcalls",
-            "type": "integer"
-          },
-          "maxToolCalls": {
-            "title": "Maxtoolcalls",
-            "type": "integer"
-          },
-          "timeoutSeconds": {
-            "title": "Timeoutseconds",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "maxModelCalls",
-          "maxToolCalls",
-          "timeoutSeconds"
-        ],
-        "title": "RunBudgetResponse",
-        "type": "object"
-      },
       "RunErrorResponse": {
         "additionalProperties": false,
         "properties": {
@@ -822,6 +897,41 @@
         "title": "RunErrorResponse",
         "type": "object"
       },
+      "RunEventHistoryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunEventStreamItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nextcursor"
+          },
+          "schemaVersion": {
+            "const": 2,
+            "default": 2,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "title": "RunEventHistoryResponse",
+        "type": "object"
+      },
       "RunEventStreamItem": {
         "discriminator": {
           "mapping": {
@@ -830,6 +940,7 @@
             "evidence.recorded": "#/components/schemas/EvidenceRecordedStreamEvent",
             "incident.created": "#/components/schemas/IncidentCreatedStreamEvent",
             "run.failed": "#/components/schemas/RunFailedStreamEvent",
+            "run.queued": "#/components/schemas/RunQueuedStreamEvent",
             "run.started": "#/components/schemas/RunStartedStreamEvent",
             "tool.failed": "#/components/schemas/ToolFailedStreamEvent",
             "tool.started": "#/components/schemas/ToolStartedStreamEvent"
@@ -839,6 +950,9 @@
         "oneOf": [
           {
             "$ref": "#/components/schemas/IncidentCreatedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/RunQueuedStreamEvent"
           },
           {
             "$ref": "#/components/schemas/RunStartedStreamEvent"
@@ -901,7 +1015,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 1,
+            "const": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -943,99 +1057,118 @@
         "title": "RunFailedStreamEvent",
         "type": "object"
       },
-      "RunResponse": {
+      "RunHistoryResponse": {
         "additionalProperties": false,
         "properties": {
-          "budget": {
-            "$ref": "#/components/schemas/RunBudgetResponse"
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummaryResponse"
+            },
+            "title": "Items",
+            "type": "array"
           },
-          "completedAt": {
+          "nextCursor": {
             "anyOf": [
               {
-                "format": "date-time",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Completedat"
+            "title": "Nextcursor"
           },
-          "createdAt": {
-            "format": "date-time",
-            "title": "Createdat",
+          "schemaVersion": {
+            "const": 2,
+            "default": 2,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "title": "RunHistoryResponse",
+        "type": "object"
+      },
+      "RunQueuedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "minimum": 2.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
             "type": "string"
           },
-          "error": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RunErrorResponse"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "runStatus": {
+            "const": "QUEUED",
+            "title": "Runstatus",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 2,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "attempt",
+          "runStatus"
+        ],
+        "title": "RunQueuedEventPayload",
+        "type": "object"
+      },
+      "RunQueuedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RunQueuedEventPayload"
+          },
+          "event": {
+            "const": "run.queued",
+            "title": "Event",
+            "type": "string"
           },
           "id": {
-            "format": "uuid",
             "title": "Id",
             "type": "string"
-          },
-          "modelId": {
-            "title": "Modelid",
-            "type": "string"
-          },
-          "modelProvider": {
-            "title": "Modelprovider",
-            "type": "string"
-          },
-          "promptVersion": {
-            "title": "Promptversion",
-            "type": "string"
-          },
-          "startedAt": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Startedat"
-          },
-          "status": {
-            "$ref": "#/components/schemas/RunStatus"
-          },
-          "thinkingMode": {
-            "title": "Thinkingmode",
-            "type": "boolean"
-          },
-          "usage": {
-            "$ref": "#/components/schemas/RunUsageResponse"
           }
         },
         "required": [
           "id",
-          "status",
-          "modelProvider",
-          "modelId",
-          "thinkingMode",
-          "promptVersion",
-          "budget",
-          "usage",
-          "error",
-          "createdAt",
-          "startedAt",
-          "completedAt"
+          "event",
+          "data"
         ],
-        "title": "RunResponse",
+        "title": "RunQueuedStreamEvent",
         "type": "object"
       },
       "RunStartedEventPayload": {
         "additionalProperties": false,
         "properties": {
+          "attempt": {
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
           "incidentId": {
             "format": "uuid",
             "title": "Incidentid",
@@ -1062,7 +1195,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 1,
+            "const": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1072,6 +1205,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "attempt",
           "incidentStatus",
           "runStatus"
         ],
@@ -1112,61 +1246,61 @@
         "title": "RunStatus",
         "type": "string"
       },
-      "RunUsageResponse": {
+      "RunSummaryResponse": {
         "additionalProperties": false,
         "properties": {
-          "inputTokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Inputtokens"
+          "attempt": {
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
           },
-          "modelCalls": {
+          "completedAt": {
             "anyOf": [
               {
-                "type": "integer"
+                "format": "date-time",
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Modelcalls"
+            "title": "Completedat"
           },
-          "outputTokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Outputtokens"
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
           },
-          "toolCalls": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "startedAt": {
             "anyOf": [
               {
-                "type": "integer"
+                "format": "date-time",
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Toolcalls"
+            "title": "Startedat"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
           }
         },
         "required": [
-          "modelCalls",
-          "toolCalls",
-          "inputTokens",
-          "outputTokens"
+          "id",
+          "attempt",
+          "status",
+          "createdAt",
+          "startedAt",
+          "completedAt"
         ],
-        "title": "RunUsageResponse",
+        "title": "RunSummaryResponse",
         "type": "object"
       },
       "ScenarioListResponse": {
@@ -1283,6 +1417,74 @@
         "title": "ScenarioTriggerResponse",
         "type": "object"
       },
+      "SelectedRunResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "completedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completedat"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunErrorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "startedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Startedat"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        },
+        "required": [
+          "id",
+          "attempt",
+          "status",
+          "createdAt",
+          "startedAt",
+          "completedAt",
+          "error"
+        ],
+        "title": "SelectedRunResponse",
+        "type": "object"
+      },
       "ToolFailedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1310,7 +1512,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 1,
+            "const": 2,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -1379,7 +1581,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 1,
+            "const": 2,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -1602,6 +1804,23 @@
               "title": "Incident Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "runId",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runid"
+            }
           }
         ],
         "responses": {
@@ -1753,6 +1972,310 @@
           }
         },
         "summary": "Get Incident Events"
+      }
+    },
+    "/api/v1/incidents/{incident_id}/runs": {
+      "get": {
+        "operationId": "list_runs_api_v1_incidents__incident_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "List Runs"
+      },
+      "post": {
+        "operationId": "create_run_api_v1_incidents__incident_id__runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Create Run"
+      }
+    },
+    "/api/v1/incidents/{incident_id}/runs/{run_id}/events": {
+      "get": {
+        "operationId": "list_run_events_api_v1_incidents__incident_id__runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunEventHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "List Run Events"
       }
     },
     "/api/v1/scenarios": {

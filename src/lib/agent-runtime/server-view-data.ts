@@ -3,20 +3,23 @@ import "server-only";
 import {
   parseIncidentDetailResponse,
   parseIncidentListResponse,
+  parseRunHistoryResponse,
   parseScenarioListResponse,
   type IncidentDetailView,
   type IncidentListView,
+  type RunHistoryView,
   type ScenarioListView,
 } from "./response-contracts";
 import {
   fetchIncident,
   fetchIncidents,
+  fetchRuns,
   fetchScenarios,
 } from "./server-client";
 import type { IncidentIntakeMode } from "./server-config";
 
 type IncidentPageData =
-  | { state: "ready"; detail: IncidentDetailView }
+  | { state: "ready"; detail: IncidentDetailView; runs: RunHistoryView }
   | { state: "missing" }
   | { state: "unavailable" };
 
@@ -57,16 +60,26 @@ export async function loadIncidentConsoleOverview(
 
 export async function loadIncidentPage(
   incidentId: string,
+  runId?: string,
 ): Promise<IncidentPageData> {
-  const result = await fetchIncident(incidentId);
-  if (result.response.status === 404 || result.response.status === 422) {
+  const [detailResult, runsResult] = await Promise.all([
+    fetchIncident(incidentId, runId),
+    fetchRuns(incidentId, new URLSearchParams({ limit: "20" })),
+  ]);
+  if (
+    detailResult.response.status === 404 ||
+    detailResult.response.status === 422
+  ) {
     return { state: "missing" };
   }
 
-  const detail = result.response.ok
-    ? parseIncidentDetailResponse(result.value)
+  const detail = detailResult.response.ok
+    ? parseIncidentDetailResponse(detailResult.value)
     : null;
-  return detail === null
+  const runs = runsResult.response.ok
+    ? parseRunHistoryResponse(runsResult.value)
+    : null;
+  return detail === null || runs === null
     ? { state: "unavailable" }
-    : { state: "ready", detail };
+    : { state: "ready", detail, runs };
 }

@@ -6,20 +6,25 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Literal, cast
 from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.dml import Delete
 
 from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
+from k8s_incident_agent.domain.contracts import (
+    IncidentSource,
+    KubernetesTarget,
+    NormalizedIncidentTrigger,
+)
 from k8s_incident_agent.domain.models import (
-    AgentRunSnapshot,
     CreatedIncident,
+    CreatedRun,
     DiagnosisOutcome,
     DiagnosisValidationSnapshot,
     EvidenceRecord,
@@ -45,29 +50,29 @@ from k8s_incident_agent.persistence.models import (
     RunEventRow,
     RunRow,
 )
-from k8s_incident_agent.scenarios.contracts import PublicScenario, ScenarioTarget
 
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
-_SCHEMA_VERSION: Final = 1
+_SCHEMA_VERSION: Final = 2
 
 
 @dataclass(frozen=True, slots=True)
 class PruneTarget:
     incident_id: UUID
-    run_id: UUID
-    artifact_directory: Path
+    updated_at: datetime
+    run_ids: tuple[UUID, ...]
+    artifact_directories: tuple[Path, ...]
     event_rows: int
     evidence_rows: int
     diagnosis_rows: int
+    run_rows: int
 
 
 @dataclass(frozen=True, slots=True)
 class IncidentListRecord:
     id: UUID
-    scenario_id: str
-    scenario_version: int
+    source: IncidentSource
     display_name: str
-    target: ScenarioTarget
+    target: KubernetesTarget
     status: IncidentStatus
     created_at: datetime
     updated_at: datetime
@@ -82,13 +87,8 @@ class IncidentListPage:
 @dataclass(frozen=True, slots=True)
 class IncidentRunDetail:
     id: UUID
+    attempt: int
     status: RunStatus
-    model: ModelSnapshot
-    budget: RunBudget
-    model_calls: int | None
-    tool_calls: int | None
-    input_tokens: int | None
-    output_tokens: int | None
     error_code: str | None
     error_retryable: bool | None
     created_at: datetime
@@ -127,6 +127,21 @@ class IncidentDetailRecord:
     run: IncidentRunDetail
     evidence: tuple[IncidentEvidenceDetail, ...]
     diagnosis: IncidentDiagnosisDetail | None
+    events: tuple[RunEvent, ...]
+    has_older_events: bool
+    event_cursor: int
+
+
+@dataclass(frozen=True, slots=True)
+class RunListPage:
+    items: tuple[IncidentRunDetail, ...]
+    has_more: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RunEventPage:
+    items: tuple[RunEvent, ...]
+    has_more: bool
 
 
 class RepositoryError(RuntimeError):
@@ -145,6 +160,20 @@ class PersistenceOperationError(RepositoryError):
 
     def __init__(self) -> None:
         super().__init__("Persistence operation failed")
+
+
+class ActiveRunExistsError(RepositoryError):
+    code = "active_run_exists"
+
+    def __init__(self) -> None:
+        super().__init__("Incident already has an active Run")
+
+
+class RunNotFoundRepositoryError(RepositoryError):
+    code = "run_not_found"
+
+    def __init__(self) -> None:
+        super().__init__("Run does not belong to the Incident")
 
 
 async def _execute_with_replay[T](
@@ -208,13 +237,21 @@ class IncidentRepository:
             raise ValueError("Event ID must be positive")
         try:
             async with self._session_factory() as session:
-                row = await session.scalar(
-                    select(RunEventRow).where(
-                        RunEventRow.id == event_id,
-                        RunEventRow.incident_id == str(incident_id),
+                row = (
+                    await session.execute(
+                        select(RunEventRow, RunRow.incident_id)
+                        .join(RunRow, RunRow.id == RunEventRow.run_id)
+                        .where(
+                            RunEventRow.id == event_id,
+                            RunRow.incident_id == str(incident_id),
+                        )
                     )
+                ).one_or_none()
+                return (
+                    None
+                    if row is None
+                    else _event_from_row(row[0], expected_incident_id=incident_id)
                 )
-                return None if row is None else _event_from_row(row)
         except RepositoryError:
             raise
         except SQLAlchemyError:
@@ -233,16 +270,40 @@ class IncidentRepository:
             raise ValueError("Event replay limit must be between 1 and 100")
         try:
             async with self._session_factory() as session:
-                rows = await session.scalars(
-                    select(RunEventRow)
-                    .where(
-                        RunEventRow.incident_id == str(incident_id),
-                        RunEventRow.id > after_id,
+                rows = (
+                    await session.execute(
+                        select(RunEventRow)
+                        .join(RunRow, RunRow.id == RunEventRow.run_id)
+                        .where(
+                            RunRow.incident_id == str(incident_id),
+                            RunEventRow.id > after_id,
+                        )
+                        .order_by(RunEventRow.id)
+                        .limit(limit)
                     )
-                    .order_by(RunEventRow.id)
-                    .limit(limit)
+                ).scalars()
+                return tuple(
+                    _event_from_row(row, expected_incident_id=incident_id)
+                    for row in rows
                 )
-                return tuple(_event_from_row(row) for row in rows)
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def latest_incident_event_id(self, incident_id: UUID) -> int:
+        try:
+            async with self._session_factory() as session:
+                latest = await session.scalar(
+                    select(func.max(RunEventRow.id))
+                    .join(RunRow, RunRow.id == RunEventRow.run_id)
+                    .where(RunRow.incident_id == str(incident_id))
+                )
+                if latest is None:
+                    return 0
+                if latest <= 0:
+                    raise RecoveryConsistencyError
+                return latest
         except RepositoryError:
             raise
         except SQLAlchemyError:
@@ -291,44 +352,46 @@ class IncidentRepository:
     async def get_incident_detail(
         self,
         incident_id: UUID,
+        *,
+        run_id: UUID | None,
+        event_limit: int,
     ) -> IncidentDetailRecord | None:
+        if event_limit < 1 or event_limit > 100:
+            raise ValueError("Event page limit must be between 1 and 100")
         try:
             async with self._session_factory() as session:
-                start_event_row = aliased(RunEventRow)
-                terminal_event_row = aliased(RunEventRow)
-                row = (
-                    await session.execute(
-                        select(
-                            IncidentRow,
-                            RunRow,
-                            DiagnosisRow,
-                            start_event_row,
-                            terminal_event_row,
-                        )
-                        .outerjoin(RunRow, RunRow.incident_id == IncidentRow.id)
-                        .outerjoin(DiagnosisRow, DiagnosisRow.run_id == RunRow.id)
-                        .outerjoin(
-                            start_event_row,
-                            and_(
-                                start_event_row.run_id == RunRow.id,
-                                start_event_row.event_key == "run.started",
-                            ),
-                        )
-                        .outerjoin(
-                            terminal_event_row,
-                            and_(
-                                terminal_event_row.run_id == RunRow.id,
-                                terminal_event_row.event_key == "run:terminal",
-                            ),
-                        )
-                        .where(IncidentRow.id == str(incident_id))
-                    )
-                ).one_or_none()
-                if row is None:
+                incident = await session.get(IncidentRow, str(incident_id))
+                if incident is None:
                     return None
-                incident, run, diagnosis, start_event, terminal_event = row
+
+                if run_id is None:
+                    run = await session.scalar(
+                        select(RunRow)
+                        .where(RunRow.incident_id == incident.id)
+                        .order_by(RunRow.attempt.desc())
+                        .limit(1)
+                    )
+                else:
+                    run = await session.get(RunRow, str(run_id))
+                    if run is None or run.incident_id != incident.id:
+                        raise RunNotFoundRepositoryError
                 if run is None:
                     raise RecoveryConsistencyError
+                diagnosis = await session.scalar(
+                    select(DiagnosisRow).where(DiagnosisRow.run_id == run.id)
+                )
+                start_event = await session.scalar(
+                    select(RunEventRow).where(
+                        RunEventRow.run_id == run.id,
+                        RunEventRow.event_key == "run.started",
+                    )
+                )
+                terminal_event = await session.scalar(
+                    select(RunEventRow).where(
+                        RunEventRow.run_id == run.id,
+                        RunEventRow.event_key == "run:terminal",
+                    )
+                )
                 workflow, terminal = _workflow_run_projection(
                     run,
                     incident,
@@ -343,6 +406,21 @@ class IncidentRepository:
                         .order_by(EvidenceRow.observed_at, EvidenceRow.id)
                     )
                 )
+                event_rows = list(
+                    await session.scalars(
+                        select(RunEventRow)
+                        .where(RunEventRow.run_id == run.id)
+                        .order_by(RunEventRow.id.desc())
+                        .limit(event_limit + 1)
+                    )
+                )
+                event_cursor = await session.scalar(
+                    select(func.max(RunEventRow.id))
+                    .join(RunRow, RunRow.id == RunEventRow.run_id)
+                    .where(RunRow.incident_id == incident.id)
+                )
+                if not isinstance(event_cursor, int) or event_cursor <= 0:
+                    raise RecoveryConsistencyError
                 return _incident_detail_record(
                     incident,
                     run,
@@ -350,6 +428,83 @@ class IncidentRepository:
                     evidence_rows,
                     workflow,
                     terminal,
+                    event_rows[:event_limit],
+                    len(event_rows) > event_limit,
+                    event_cursor,
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def list_run_records(
+        self,
+        incident_id: UUID,
+        *,
+        limit: int,
+        before_attempt: int | None,
+    ) -> RunListPage | None:
+        if limit < 1 or limit > 50:
+            raise ValueError("Run list limit must be between 1 and 50")
+        if before_attempt is not None and before_attempt < 1:
+            raise ValueError("Run cursor attempt must be positive")
+        try:
+            async with self._session_factory() as session:
+                incident = await session.get(IncidentRow, str(incident_id))
+                if incident is None:
+                    return None
+                statement = select(RunRow).where(RunRow.incident_id == incident.id)
+                if before_attempt is not None:
+                    statement = statement.where(RunRow.attempt < before_attempt)
+                runs = list(
+                    await session.scalars(
+                        statement.order_by(RunRow.attempt.desc()).limit(limit + 1)
+                    )
+                )
+                details = [
+                    await _run_detail_from_row(session, incident, run)
+                    for run in runs[:limit]
+                ]
+                return RunListPage(
+                    items=tuple(details),
+                    has_more=len(runs) > limit,
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def list_run_events(
+        self,
+        incident_id: UUID,
+        run_id: UUID,
+        *,
+        limit: int,
+        before_event_id: int | None,
+    ) -> RunEventPage:
+        if limit < 1 or limit > 100:
+            raise ValueError("Event history limit must be between 1 and 100")
+        if before_event_id is not None and before_event_id <= 0:
+            raise ValueError("Event history cursor must be positive")
+        try:
+            async with self._session_factory() as session:
+                run = await session.get(RunRow, str(run_id))
+                if run is None or run.incident_id != str(incident_id):
+                    raise RunNotFoundRepositoryError
+                statement = select(RunEventRow).where(RunEventRow.run_id == run.id)
+                if before_event_id is not None:
+                    statement = statement.where(RunEventRow.id < before_event_id)
+                rows = list(
+                    await session.scalars(
+                        statement.order_by(RunEventRow.id.desc()).limit(limit + 1)
+                    )
+                )
+                return RunEventPage(
+                    items=tuple(
+                        _event_from_row(row, expected_incident_id=incident_id)
+                        for row in rows[:limit]
+                    ),
+                    has_more=len(rows) > limit,
                 )
         except RepositoryError:
             raise
@@ -435,27 +590,28 @@ class IncidentRepository:
         cutoff = _require_aware_datetime(cutoff)
         try:
             async with self._session_factory() as session:
-                rows = (
-                    await session.execute(
-                        select(RunRow, IncidentRow)
-                        .join(IncidentRow, IncidentRow.id == RunRow.incident_id)
+                active_run = exists().where(
+                    RunRow.incident_id == IncidentRow.id,
+                    RunRow.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+                )
+                incidents = list(
+                    await session.scalars(
+                        select(IncidentRow)
                         .where(
-                            RunRow.status.in_((RunStatus.COMPLETED, RunStatus.FAILED)),
-                            RunRow.completed_at.is_not(None),
-                            RunRow.completed_at < cutoff,
+                            IncidentRow.updated_at < cutoff,
+                            ~active_run,
                         )
-                        .order_by(RunRow.completed_at, RunRow.id)
+                        .order_by(IncidentRow.updated_at, IncidentRow.id)
                     )
-                ).all()
+                )
                 return tuple(
                     [
-                        await _prune_target_from_rows(
+                        await _prune_target_from_incident(
                             session,
-                            run,
                             incident,
                             artifact_root,
                         )
-                        for run, incident in rows
+                        for incident in incidents
                     ]
                 )
         except RepositoryError:
@@ -472,47 +628,40 @@ class IncidentRepository:
         cutoff = _require_aware_datetime(cutoff)
         try:
             async with self._session_factory() as session, session.begin():
-                run = await session.get(RunRow, str(target.run_id))
-                if run is None:
+                incident = await session.get(IncidentRow, str(target.incident_id))
+                if incident is None:
                     return False
-                incident = await session.get(IncidentRow, run.incident_id)
-                if (
-                    incident is None
-                    or run.completed_at is None
-                    or run.status not in (RunStatus.COMPLETED, RunStatus.FAILED)
-                    or _database_datetime(run.completed_at) >= cutoff
-                ):
+                if _database_datetime(incident.updated_at) >= cutoff:
                     raise RecoveryConsistencyError
-                current = await _prune_target_from_rows(
+                current = await _prune_target_from_incident(
                     session,
-                    run,
                     incident,
                     artifact_root,
                 )
                 if current != target:
                     raise RecoveryConsistencyError
 
+                run_ids = tuple(str(run_id) for run_id in target.run_ids)
+
                 await _delete_exact_rows(
                     session,
-                    delete(RunEventRow).where(RunEventRow.run_id == str(target.run_id)),
+                    delete(RunEventRow).where(RunEventRow.run_id.in_(run_ids)),
                     target.event_rows,
                 )
                 await _delete_exact_rows(
                     session,
-                    delete(EvidenceRow).where(EvidenceRow.run_id == str(target.run_id)),
+                    delete(EvidenceRow).where(EvidenceRow.run_id.in_(run_ids)),
                     target.evidence_rows,
                 )
                 await _delete_exact_rows(
                     session,
-                    delete(DiagnosisRow).where(
-                        DiagnosisRow.run_id == str(target.run_id)
-                    ),
+                    delete(DiagnosisRow).where(DiagnosisRow.run_id.in_(run_ids)),
                     target.diagnosis_rows,
                 )
                 await _delete_exact_rows(
                     session,
-                    delete(RunRow).where(RunRow.id == str(target.run_id)),
-                    1,
+                    delete(RunRow).where(RunRow.id.in_(run_ids)),
+                    target.run_rows,
                 )
                 await _delete_exact_rows(
                     session,
@@ -522,23 +671,6 @@ class IncidentRepository:
                     1,
                 )
                 return True
-        except RepositoryError:
-            raise
-        except SQLAlchemyError:
-            raise PersistenceOperationError from None
-
-    async def get_agent_run_snapshot(self, run_id: UUID) -> AgentRunSnapshot:
-        try:
-            async with self._session_factory() as session:
-                run, incident = await _load_run_context(session, run_id)
-                _require_active_run(run, incident)
-                if run.started_at is None or run.timeout_seconds <= 0:
-                    raise RecoveryConsistencyError
-                return AgentRunSnapshot(
-                    id=run_id,
-                    started_at=_database_datetime(run.started_at),
-                    timeout_seconds=run.timeout_seconds,
-                )
         except RepositoryError:
             raise
         except SQLAlchemyError:
@@ -627,7 +759,7 @@ class IncidentRepository:
 
     async def create_incident_and_run(
         self,
-        scenario: PublicScenario,
+        trigger: NormalizedIncidentTrigger,
         model: ModelSnapshot,
         budget: RunBudget,
     ) -> CreatedIncident:
@@ -637,7 +769,7 @@ class IncidentRepository:
         payload = _base_payload(incident_id, run_id, occurred_at)
         payload.update(
             {
-                "scenarioId": scenario.scenario_id,
+                "attempt": 1,
                 "incidentStatus": IncidentStatus.RECEIVED.value,
                 "runStatus": RunStatus.QUEUED.value,
             }
@@ -647,15 +779,16 @@ class IncidentRepository:
             async with self._session_factory() as session, session.begin():
                 incident_row = IncidentRow(
                     id=str(incident_id),
-                    scenario_id=scenario.scenario_id,
-                    scenario_version=scenario.scenario_version,
-                    display_name=scenario.display_name,
-                    trigger_summary=scenario.trigger.summary,
-                    cluster=scenario.target.cluster,
-                    namespace=scenario.target.namespace,
-                    api_version=scenario.target.api_version,
-                    kind=scenario.target.kind,
-                    resource_name=scenario.target.name,
+                    trigger_source=trigger.source.type,
+                    trigger_ref=trigger.source.ref,
+                    trigger_revision=trigger.source.revision,
+                    display_name=trigger.display_name,
+                    trigger_summary=trigger.trigger_summary,
+                    cluster=trigger.target.cluster,
+                    namespace=trigger.target.namespace,
+                    api_version=trigger.target.api_version,
+                    kind=trigger.target.kind,
+                    resource_name=trigger.target.name,
                     status=IncidentStatus.RECEIVED,
                     created_at=occurred_at,
                     updated_at=occurred_at,
@@ -663,33 +796,18 @@ class IncidentRepository:
                 session.add(incident_row)
                 await session.flush()
 
-                run_row = RunRow(
-                    id=str(run_id),
-                    incident_id=str(incident_id),
-                    status=RunStatus.QUEUED,
-                    model_provider=model.provider,
-                    model_id=model.model_id,
-                    thinking_mode=model.thinking_mode,
-                    prompt_version=model.prompt_version,
-                    max_model_calls=budget.max_model_calls,
-                    max_tool_calls=budget.max_tool_calls,
-                    timeout_seconds=budget.timeout_seconds,
-                    model_calls=None,
-                    tool_calls=None,
-                    input_tokens=None,
-                    output_tokens=None,
-                    error_code=None,
-                    error_retryable=None,
-                    created_at=occurred_at,
-                    started_at=None,
-                    completed_at=None,
-                    updated_at=occurred_at,
+                run_row = _new_run_row(
+                    run_id=run_id,
+                    incident_id=incident_id,
+                    attempt=1,
+                    model=model,
+                    budget=budget,
+                    occurred_at=occurred_at,
                 )
                 session.add(run_row)
                 await session.flush()
 
                 event_row = _new_event_row(
-                    incident_id=incident_id,
                     run_id=run_id,
                     event_key="incident.created",
                     event_type="incident.created",
@@ -698,7 +816,10 @@ class IncidentRepository:
                 )
                 session.add(event_row)
                 await session.flush()
-                run_event = _event_from_row(event_row)
+                run_event = _event_from_row(
+                    event_row,
+                    expected_incident_id=incident_id,
+                )
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
@@ -710,6 +831,97 @@ class IncidentRepository:
             event=run_event,
         )
         await self._notify_committed_event(created.event)
+        return created
+
+    async def create_run(
+        self,
+        incident_id: UUID,
+        model: ModelSnapshot,
+        budget: RunBudget,
+    ) -> CreatedRun | None:
+        run_id = uuid4()
+        occurred_at = datetime.now(UTC)
+        try:
+            async with self._session_factory() as session, session.begin():
+                incident = await session.get(IncidentRow, str(incident_id))
+                if incident is None:
+                    return None
+                active = await session.scalar(
+                    select(
+                        exists().where(
+                            RunRow.incident_id == incident.id,
+                            RunRow.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+                        )
+                    )
+                )
+                if active is not False:
+                    raise ActiveRunExistsError
+                max_attempt = await session.scalar(
+                    select(func.max(RunRow.attempt)).where(
+                        RunRow.incident_id == incident.id
+                    )
+                )
+                if not isinstance(max_attempt, int) or max_attempt < 1:
+                    raise RecoveryConsistencyError
+                attempt = max_attempt + 1
+                run_row = _new_run_row(
+                    run_id=run_id,
+                    incident_id=incident_id,
+                    attempt=attempt,
+                    model=model,
+                    budget=budget,
+                    occurred_at=occurred_at,
+                )
+                session.add(run_row)
+                await session.flush()
+                payload = _base_payload(incident_id, run_id, occurred_at)
+                payload.update(
+                    {
+                        "attempt": attempt,
+                        "runStatus": RunStatus.QUEUED.value,
+                    }
+                )
+                event_row = _new_event_row(
+                    run_id=run_id,
+                    event_key="run.queued",
+                    event_type="run.queued",
+                    occurred_at=occurred_at,
+                    payload=payload,
+                )
+                session.add(event_row)
+                incident.updated_at = occurred_at
+                await session.flush()
+                event = _event_from_row(
+                    event_row,
+                    expected_incident_id=incident_id,
+                )
+        except ActiveRunExistsError:
+            raise
+        except IntegrityError:
+            try:
+                async with self._session_factory() as session:
+                    active = await session.scalar(
+                        select(
+                            exists().where(
+                                RunRow.incident_id == str(incident_id),
+                                RunRow.status.in_(
+                                    (RunStatus.QUEUED, RunStatus.RUNNING)
+                                ),
+                            )
+                        )
+                    )
+            except SQLAlchemyError:
+                raise PersistenceOperationError from None
+            if active is True:
+                raise ActiveRunExistsError from None
+            raise PersistenceOperationError from None
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+        created = CreatedRun(run_id=run_id)
+        await self._notify_committed_event(event)
         return created
 
     async def start_run(self, run_id: UUID, started_at: datetime) -> RunRecord:
@@ -737,12 +949,16 @@ class IncidentRepository:
             run.started_at = started_at
             run.updated_at = started_at
             event_row = _new_event_row(
-                incident_id=incident_id,
                 run_id=run_id,
                 event_key="run.started",
                 event_type="run.started",
                 occurred_at=started_at,
-                payload=_run_started_event_payload(incident_id, run_id, started_at),
+                payload=_run_started_event_payload(
+                    incident_id,
+                    run_id,
+                    run.attempt,
+                    started_at,
+                ),
             )
             session.add(event_row)
             await session.flush()
@@ -788,11 +1004,13 @@ class IncidentRepository:
                     tool_call_id,
                     tool_name,
                 )
-                return _event_from_row(existing)
+                return _event_from_row(
+                    existing,
+                    expected_incident_id=incident_id,
+                )
             _require_active_run(run, incident)
             occurred_at = datetime.now(UTC)
             event_row = _new_event_row(
-                incident_id=incident_id,
                 run_id=run_id,
                 event_key=event_key,
                 event_type="tool.started",
@@ -807,7 +1025,10 @@ class IncidentRepository:
             )
             session.add(event_row)
             await session.flush()
-            return _event_from_row(event_row)
+            return _event_from_row(
+                event_row,
+                expected_incident_id=incident_id,
+            )
 
     async def _replay_tool_started(
         self,
@@ -829,7 +1050,10 @@ class IncidentRepository:
                 tool_call_id,
                 tool_name,
             )
-            return _event_from_row(event_row)
+            return _event_from_row(
+                event_row,
+                expected_incident_id=UUID(incident.id),
+            )
 
     async def record_evidence(self, evidence: EvidenceRecord) -> PersistedEvidence:
         normalized = replace(
@@ -882,7 +1106,6 @@ class IncidentRepository:
             )
             occurred_at = datetime.now(UTC)
             event_row = _new_event_row(
-                incident_id=incident_id,
                 run_id=evidence.run_id,
                 event_key=f"tool:{evidence.tool_call_id}:evidence",
                 event_type="evidence.recorded",
@@ -896,7 +1119,7 @@ class IncidentRepository:
             )
             session.add_all((evidence_row, event_row))
             await session.flush()
-            return _persisted_evidence(evidence_row, event_row)
+            return _persisted_evidence(evidence_row, event_row, incident_id)
 
     async def _replay_evidence(self, evidence: EvidenceRecord) -> PersistedEvidence:
         async with self._session_factory() as session:
@@ -947,7 +1170,6 @@ class IncidentRepository:
                 )
             _require_active_run(run, incident)
             event_row = _new_event_row(
-                incident_id=incident_id,
                 run_id=failure.run_id,
                 event_key=event_key,
                 event_type="tool.failed",
@@ -956,7 +1178,10 @@ class IncidentRepository:
             )
             session.add(event_row)
             await session.flush()
-            return _event_from_row(event_row)
+            return _event_from_row(
+                event_row,
+                expected_incident_id=incident_id,
+            )
 
     async def _replay_tool_failure(self, failure: ToolFailureRecord) -> RunEvent:
         async with self._session_factory() as session:
@@ -1047,7 +1272,6 @@ class IncidentRepository:
                 persisted_diagnosis_id,
             )
             event_row = _new_event_row(
-                incident_id=incident_id,
                 run_id=terminal.run_id,
                 event_key="run:terminal",
                 event_type=_terminal_event_type(terminal),
@@ -1061,7 +1285,10 @@ class IncidentRepository:
                 incident_status=incident_target,
                 run_status=run_target,
                 diagnosis_id=persisted_diagnosis_id,
-                event=_event_from_row(event_row),
+                event=_event_from_row(
+                    event_row,
+                    expected_incident_id=incident_id,
+                ),
             )
 
     async def _replay_terminal(self, terminal: TerminalRecord) -> PersistedTerminal:
@@ -1094,43 +1321,64 @@ async def _load_run_context(
     return run, incident
 
 
-async def _prune_target_from_rows(
+async def _prune_target_from_incident(
     session: AsyncSession,
-    run: RunRow,
     incident: IncidentRow,
     artifact_root: Path,
 ) -> PruneTarget:
     try:
-        run_id = UUID(run.id)
+        incident_id = UUID(incident.id)
+        updated_at = _database_datetime(incident.updated_at)
     except (TypeError, ValueError):
         raise RecoveryConsistencyError from None
-    diagnosis = await _diagnosis_by_run(session, run_id)
-    start_event = await _event_by_key(session, run_id, "run.started")
-    terminal_event = await _event_by_key(session, run_id, "run:terminal")
-    snapshot = _workflow_run_snapshot(
-        run,
-        incident,
-        diagnosis,
-        start_event,
-        terminal_event,
+    runs = list(
+        await session.scalars(
+            select(RunRow)
+            .where(RunRow.incident_id == incident.id)
+            .order_by(RunRow.attempt)
+        )
     )
-    if snapshot.run_status not in (RunStatus.COMPLETED, RunStatus.FAILED):
+    if not runs or [run.attempt for run in runs] != list(range(1, len(runs) + 1)):
         raise RecoveryConsistencyError
+    run_ids: list[UUID] = []
+    for run in runs:
+        try:
+            run_id = UUID(run.id)
+        except (TypeError, ValueError):
+            raise RecoveryConsistencyError from None
+        diagnosis = await _diagnosis_by_run(session, run_id)
+        start_event = await _event_by_key(session, run_id, "run.started")
+        terminal_event = await _event_by_key(session, run_id, "run:terminal")
+        snapshot = _workflow_run_snapshot(
+            run,
+            incident,
+            diagnosis,
+            start_event,
+            terminal_event,
+        )
+        if snapshot.incident_id != incident_id or snapshot.run_status not in (
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+        ):
+            raise RecoveryConsistencyError
+        run_ids.append(run_id)
+
+    persisted_run_ids = tuple(str(run_id) for run_id in run_ids)
 
     event_rows = await session.scalar(
         select(func.count())
         .select_from(RunEventRow)
-        .where(RunEventRow.run_id == run.id)
+        .where(RunEventRow.run_id.in_(persisted_run_ids))
     )
     evidence_rows = await session.scalar(
         select(func.count())
         .select_from(EvidenceRow)
-        .where(EvidenceRow.run_id == run.id)
+        .where(EvidenceRow.run_id.in_(persisted_run_ids))
     )
     diagnosis_rows = await session.scalar(
         select(func.count())
         .select_from(DiagnosisRow)
-        .where(DiagnosisRow.run_id == run.id)
+        .where(DiagnosisRow.run_id.in_(persisted_run_ids))
     )
     if (
         not isinstance(event_rows, int)
@@ -1142,12 +1390,14 @@ async def _prune_target_from_rows(
     ):
         raise RecoveryConsistencyError
     return PruneTarget(
-        incident_id=snapshot.incident_id,
-        run_id=snapshot.id,
-        artifact_directory=artifact_root / str(snapshot.id),
+        incident_id=incident_id,
+        updated_at=updated_at,
+        run_ids=tuple(run_ids),
+        artifact_directories=tuple(artifact_root / str(run_id) for run_id in run_ids),
         event_rows=event_rows,
         evidence_rows=evidence_rows,
         diagnosis_rows=diagnosis_rows,
+        run_rows=len(runs),
     )
 
 
@@ -1163,18 +1413,17 @@ async def _delete_exact_rows(
 
 def _incident_list_record(row: IncidentRow) -> IncidentListRecord:
     try:
-        if (
-            not _is_non_empty_string(row.scenario_id)
-            or not _is_positive_integer(row.scenario_version)
-            or not _is_non_empty_string(row.display_name)
-        ):
+        if not _is_non_empty_string(row.display_name):
             raise ValueError
         return IncidentListRecord(
             id=UUID(row.id),
-            scenario_id=row.scenario_id,
-            scenario_version=row.scenario_version,
+            source=IncidentSource(
+                type=cast(Literal["scenario"], row.trigger_source),
+                ref=row.trigger_ref,
+                revision=row.trigger_revision,
+            ),
             display_name=row.display_name,
-            target=ScenarioTarget(
+            target=KubernetesTarget(
                 cluster=row.cluster,
                 namespace=row.namespace,
                 api_version=row.api_version,
@@ -1196,6 +1445,9 @@ def _incident_detail_record(
     evidence_rows: list[EvidenceRow],
     workflow: WorkflowRunSnapshot,
     terminal: TerminalRecord | None,
+    event_rows: list[RunEventRow],
+    has_older_events: bool,
+    event_cursor: int,
 ) -> IncidentDetailRecord:
     incident_record = _incident_list_record(incident)
     try:
@@ -1207,14 +1459,7 @@ def _incident_detail_record(
             or not _is_non_empty_string(incident.trigger_summary)
         ):
             raise ValueError
-        usage: tuple[object, ...] = (
-            run.model_calls,
-            run.tool_calls,
-            run.input_tokens,
-            run.output_tokens,
-        )
-        if any(not _is_optional_non_negative_integer(value) for value in usage):
-            raise ValueError
+        run_detail = _incident_run_detail(run, workflow)
         completed_at = (
             _database_datetime(run.completed_at)
             if run.completed_at is not None
@@ -1248,28 +1493,85 @@ def _incident_detail_record(
         return IncidentDetailRecord(
             incident=incident_record,
             trigger_summary=incident.trigger_summary,
-            run=IncidentRunDetail(
-                id=run_id,
-                status=run.status,
-                model=workflow.model,
-                budget=workflow.budget,
-                model_calls=run.model_calls,
-                tool_calls=run.tool_calls,
-                input_tokens=run.input_tokens,
-                output_tokens=run.output_tokens,
-                error_code=run.error_code,
-                error_retryable=run.error_retryable,
-                created_at=_database_datetime(run.created_at),
-                started_at=workflow.started_at,
-                completed_at=completed_at,
-            ),
+            run=run_detail,
             evidence=tuple(
                 _incident_evidence_detail(row, run_id) for row in evidence_rows
             ),
             diagnosis=diagnosis_detail,
+            events=tuple(
+                _event_from_row(
+                    row,
+                    expected_incident_id=incident_record.id,
+                )
+                for row in event_rows
+            ),
+            has_older_events=has_older_events,
+            event_cursor=event_cursor,
         )
     except (AttributeError, TypeError, ValueError):
         raise RecoveryConsistencyError from None
+
+
+async def _run_detail_from_row(
+    session: AsyncSession,
+    incident: IncidentRow,
+    run: RunRow,
+) -> IncidentRunDetail:
+    diagnosis = await session.scalar(
+        select(DiagnosisRow).where(DiagnosisRow.run_id == run.id)
+    )
+    start_event = await session.scalar(
+        select(RunEventRow).where(
+            RunEventRow.run_id == run.id,
+            RunEventRow.event_key == "run.started",
+        )
+    )
+    terminal_event = await session.scalar(
+        select(RunEventRow).where(
+            RunEventRow.run_id == run.id,
+            RunEventRow.event_key == "run:terminal",
+        )
+    )
+    workflow, _ = _workflow_run_projection(
+        run,
+        incident,
+        diagnosis,
+        start_event,
+        terminal_event,
+    )
+    return _incident_run_detail(run, workflow)
+
+
+def _incident_run_detail(
+    run: RunRow,
+    workflow: WorkflowRunSnapshot,
+) -> IncidentRunDetail:
+    usage: tuple[object, ...] = (
+        run.model_calls,
+        run.tool_calls,
+        run.input_tokens,
+        run.output_tokens,
+    )
+    if (
+        not _is_positive_integer(run.attempt)
+        or any(not _is_optional_non_negative_integer(value) for value in usage)
+        or (run.error_code is None) is not (run.error_retryable is None)
+    ):
+        raise RecoveryConsistencyError
+    return IncidentRunDetail(
+        id=workflow.id,
+        attempt=run.attempt,
+        status=run.status,
+        error_code=run.error_code,
+        error_retryable=run.error_retryable,
+        created_at=_database_datetime(run.created_at),
+        started_at=workflow.started_at,
+        completed_at=(
+            _database_datetime(run.completed_at)
+            if run.completed_at is not None
+            else None
+        ),
+    )
 
 
 def _incident_evidence_detail(
@@ -1328,17 +1630,21 @@ def _workflow_run_projection(
     try:
         run_id = UUID(run.id)
         incident_id = UUID(incident.id)
-        target = ScenarioTarget(
+        target = KubernetesTarget(
             cluster=incident.cluster,
             namespace=incident.namespace,
             api_version=incident.api_version,
             kind=incident.kind,
             name=incident.resource_name,
         )
+        if target.namespace is None:
+            raise ValueError
     except (AttributeError, TypeError, ValueError):
         raise RecoveryConsistencyError from None
-    if run.incident_id != incident.id or not _valid_workflow_snapshot_values(
-        run, incident
+    if (
+        run.incident_id != incident.id
+        or not _is_positive_integer(run.attempt)
+        or not _valid_workflow_snapshot_values(run, incident)
     ):
         raise RecoveryConsistencyError
 
@@ -1367,8 +1673,7 @@ def _workflow_run_projection(
     terminal: TerminalRecord | None = None
     if run.status is RunStatus.QUEUED:
         if (
-            incident.status is not IncidentStatus.RECEIVED
-            or started_at is not None
+            started_at is not None
             or completed_at is not None
             or not _has_empty_terminal_fields(run, diagnosis, terminal_event)
         ):
@@ -1434,7 +1739,12 @@ def _require_start_event_consistency(
         event_key="run.started",
         event_type="run.started",
         occurred_at=started_at,
-        payload=_run_started_event_payload(incident_id, run_id, started_at),
+        payload=_run_started_event_payload(
+            incident_id,
+            run_id,
+            run.attempt,
+            started_at,
+        ),
     ):
         raise RecoveryConsistencyError
 
@@ -1449,7 +1759,6 @@ def _require_active_start_consistency(
         run.started_at is None
         or _database_datetime(run.started_at) != expected_started_at
         or _database_datetime(run.updated_at) != expected_started_at
-        or _database_datetime(incident.updated_at) != expected_started_at
     ):
         raise RecoveryConsistencyError
     _require_start_event_consistency(
@@ -1624,9 +1933,42 @@ async def _diagnosis_by_run(session: AsyncSession, run_id: UUID) -> DiagnosisRow
     )
 
 
+def _new_run_row(
+    *,
+    run_id: UUID,
+    incident_id: UUID,
+    attempt: int,
+    model: ModelSnapshot,
+    budget: RunBudget,
+    occurred_at: datetime,
+) -> RunRow:
+    return RunRow(
+        id=str(run_id),
+        incident_id=str(incident_id),
+        attempt=attempt,
+        status=RunStatus.QUEUED,
+        model_provider=model.provider,
+        model_id=model.model_id,
+        thinking_mode=model.thinking_mode,
+        prompt_version=model.prompt_version,
+        max_model_calls=budget.max_model_calls,
+        max_tool_calls=budget.max_tool_calls,
+        timeout_seconds=budget.timeout_seconds,
+        model_calls=None,
+        tool_calls=None,
+        input_tokens=None,
+        output_tokens=None,
+        error_code=None,
+        error_retryable=None,
+        created_at=occurred_at,
+        started_at=None,
+        completed_at=None,
+        updated_at=occurred_at,
+    )
+
+
 def _new_event_row(
     *,
-    incident_id: UUID,
     run_id: UUID,
     event_key: str,
     event_type: str,
@@ -1634,7 +1976,6 @@ def _new_event_row(
     payload: dict[str, JsonValue],
 ) -> RunEventRow:
     return RunEventRow(
-        incident_id=str(incident_id),
         run_id=str(run_id),
         event_key=event_key,
         event_type=event_type,
@@ -1644,18 +1985,31 @@ def _new_event_row(
     )
 
 
-def _event_from_row(row: RunEventRow) -> RunEvent:
+def _event_from_row(
+    row: RunEventRow,
+    *,
+    expected_incident_id: UUID,
+) -> RunEvent:
     try:
         if row.schema_version != _SCHEMA_VERSION:
             raise RecoveryConsistencyError
+        payload = _event_payload(row)
+        incident_id = UUID(cast(str, payload.get("incidentId")))
+        run_id = UUID(row.run_id)
+        if (
+            incident_id != expected_incident_id
+            or payload.get("runId") != str(run_id)
+            or payload.get("schemaVersion") != _SCHEMA_VERSION
+        ):
+            raise RecoveryConsistencyError
         return RunEvent(
             id=row.id,
-            incident_id=UUID(row.incident_id),
-            run_id=UUID(row.run_id),
+            incident_id=incident_id,
+            run_id=run_id,
             event_key=row.event_key,
             event_type=row.event_type,
             occurred_at=_database_datetime(row.occurred_at),
-            payload=_event_payload(row),
+            payload=payload,
         )
     except (TypeError, ValueError):
         raise RecoveryConsistencyError from None
@@ -1694,11 +2048,13 @@ def _tool_started_event_payload(
 def _run_started_event_payload(
     incident_id: UUID,
     run_id: UUID,
+    attempt: int,
     started_at: datetime,
 ) -> dict[str, JsonValue]:
     payload = _base_payload(incident_id, run_id, started_at)
     payload.update(
         {
+            "attempt": attempt,
             "incidentStatus": IncidentStatus.TRIAGING.value,
             "runStatus": RunStatus.RUNNING.value,
         }
@@ -1717,8 +2073,7 @@ def _event_matches(
     payload: dict[str, JsonValue],
 ) -> bool:
     return (
-        row.incident_id == str(incident_id)
-        and row.run_id == str(run_id)
+        row.run_id == str(run_id)
         and row.event_key == event_key
         and row.event_type == event_type
         and row.schema_version == _SCHEMA_VERSION
@@ -1736,9 +2091,12 @@ def _started_run(
         id=UUID(run.id),
         incident_id=UUID(incident.id),
         status=run.status,
-        incident_status=incident.status,
+        incident_status=IncidentStatus.TRIAGING,
         started_at=_database_datetime(run.started_at),
-        event=_event_from_row(event_row),
+        event=_event_from_row(
+            event_row,
+            expected_incident_id=UUID(incident.id),
+        ),
     )
 
 
@@ -1748,10 +2106,7 @@ def _replayed_start(
     event_row: RunEventRow,
     started_at: datetime,
 ) -> RunRecord:
-    if (
-        run.status is not RunStatus.RUNNING
-        or incident.status is not IncidentStatus.TRIAGING
-    ):
+    if run.status is not RunStatus.RUNNING:
         raise RecoveryConsistencyError
     _require_active_start_consistency(
         run,
@@ -1838,7 +2193,7 @@ async def _resolve_evidence_replay(
         payload=expected_payload,
     ):
         raise RecoveryConsistencyError
-    return _persisted_evidence(persisted, event_row)
+    return _persisted_evidence(persisted, event_row, incident_id)
 
 
 def _evidence_matches(row: EvidenceRow, evidence: EvidenceRecord) -> bool:
@@ -1878,7 +2233,9 @@ def _evidence_event_payload(
 
 
 def _persisted_evidence(
-    evidence_row: EvidenceRow, event_row: RunEventRow
+    evidence_row: EvidenceRow,
+    event_row: RunEventRow,
+    incident_id: UUID,
 ) -> PersistedEvidence:
     try:
         return PersistedEvidence(
@@ -1892,7 +2249,10 @@ def _persisted_evidence(
             payload=parse_json_object(evidence_row.payload_json),
             truncated=evidence_row.truncated,
             redacted=evidence_row.redacted,
-            event=_event_from_row(event_row),
+            event=_event_from_row(
+                event_row,
+                expected_incident_id=incident_id,
+            ),
         )
     except (TypeError, ValueError):
         raise RecoveryConsistencyError from None
@@ -1947,7 +2307,7 @@ def _existing_evidence_outcome_from_event(
         )
     ):
         raise RecoveryConsistencyError
-    return _persisted_evidence(evidence_row, event_row)
+    return _persisted_evidence(evidence_row, event_row, incident_id)
 
 
 def _existing_failure_outcome(
@@ -2172,7 +2532,7 @@ def _resolve_failure_replay(
         payload=_tool_failure_event_payload(failure, incident_id),
     ):
         raise RecoveryConsistencyError
-    return _event_from_row(existing)
+    return _event_from_row(existing, expected_incident_id=incident_id)
 
 
 def _require_active_run(run: RunRow, incident: IncidentRow) -> None:
@@ -2281,12 +2641,10 @@ def _resolve_terminal_replay(
         expected_diagnosis_id,
     )
     if (
-        incident.status is not incident_target
-        or run.status is not run_target
+        run.status is not run_target
         or run.completed_at is None
         or _database_datetime(run.completed_at) != terminal.completed_at
         or _database_datetime(run.updated_at) != terminal.completed_at
-        or _database_datetime(incident.updated_at) != terminal.completed_at
         or run.model_calls != terminal.model_calls
         or run.tool_calls != terminal.tool_calls
         or run.input_tokens != terminal.input_tokens
@@ -2309,7 +2667,10 @@ def _resolve_terminal_replay(
         incident_status=incident_target,
         run_status=run_target,
         diagnosis_id=expected_diagnosis_id,
-        event=_event_from_row(terminal_event),
+        event=_event_from_row(
+            terminal_event,
+            expected_incident_id=incident_id,
+        ),
     )
 
 

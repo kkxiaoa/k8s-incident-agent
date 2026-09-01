@@ -914,6 +914,87 @@ select {
   font-size: 0.7rem !important;
 }
 
+.run-controls {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 22px;
+  align-items: center;
+  margin-top: 22px;
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-large);
+  background: rgb(255 255 255 / 94%);
+}
+
+.run-controls h2 {
+  margin: 5px 0 0;
+  color: var(--navy-deep);
+  font-size: 1.2rem;
+}
+
+.run-selector {
+  display: flex;
+  min-width: 0;
+  gap: 7px;
+  padding: 4px;
+  overflow-x: auto;
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.run-selector__item {
+  flex: 0 0 auto;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 720;
+  text-decoration: none;
+}
+
+.run-selector__item:hover,
+.run-selector__item.is-selected {
+  border-color: #b8d9d4;
+  color: #086f68;
+  background: white;
+}
+
+.run-selector__item.is-selected {
+  box-shadow: 0 5px 14px rgb(17 53 75 / 8%);
+}
+
+.run-controls__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.run-controls__actions .primary-button,
+.run-controls__actions .secondary-button {
+  width: auto;
+  min-height: 40px;
+  padding-inline: 14px;
+  white-space: nowrap;
+}
+
+.timeline-history-button {
+  margin: 0 0 8px 18px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: white;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.timeline-history-button:disabled,
+.run-controls button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .console-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
@@ -1534,6 +1615,14 @@ select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .run-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .run-controls__actions {
+    justify-content: flex-start;
+  }
+
   .evidence-grid {
     grid-template-columns: 1fr;
   }
@@ -1561,7 +1650,8 @@ select {
 
   .home-panel,
   .console-section,
-  .incident-overview {
+  .incident-overview,
+  .run-controls {
     padding: 23px;
     border-radius: 17px;
   }

@@ -12,7 +12,7 @@ from k8s_incident_agent.persistence.models import (
 )
 
 
-def test_domain_statuses_define_only_the_stage_one_transitions() -> None:
+def test_domain_statuses_define_only_the_multi_run_transitions() -> None:
     incident_transitions = {
         (current, target)
         for current in IncidentStatus
@@ -32,6 +32,12 @@ def test_domain_statuses_define_only_the_stage_one_transitions() -> None:
         (IncidentStatus.TRIAGING, IncidentStatus.DIAGNOSED),
         (IncidentStatus.TRIAGING, IncidentStatus.INSUFFICIENT_EVIDENCE),
         (IncidentStatus.TRIAGING, IncidentStatus.FAILED),
+        (IncidentStatus.DIAGNOSED, IncidentStatus.TRIAGING),
+        (IncidentStatus.DIAGNOSED, IncidentStatus.FAILED),
+        (IncidentStatus.INSUFFICIENT_EVIDENCE, IncidentStatus.TRIAGING),
+        (IncidentStatus.INSUFFICIENT_EVIDENCE, IncidentStatus.FAILED),
+        (IncidentStatus.FAILED, IncidentStatus.TRIAGING),
+        (IncidentStatus.FAILED, IncidentStatus.FAILED),
     }
     assert run_transitions == {
         (RunStatus.QUEUED, RunStatus.RUNNING),

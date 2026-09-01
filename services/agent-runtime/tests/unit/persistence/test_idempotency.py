@@ -10,6 +10,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import event, func, select
 from sqlalchemy.exc import IntegrityError, OperationalError
+from tests.factories import normalized_trigger
 
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
@@ -40,11 +41,6 @@ from k8s_incident_agent.persistence.repositories import (
     evidence_id,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 17, 9, 0, tzinfo=UTC)
@@ -67,21 +63,8 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
         await database.dispose()
 
 
-def _scenario(name: str = "image-pull-backoff") -> PublicScenario:
-    return PublicScenario(
-        scenario_id=name,
-        scenario_version=1,
-        display_name="Image pull failure",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(type="manual", summary="Deployment unavailable"),
-        target=ScenarioTarget(
-            cluster="k8s-incident-agent",
-            namespace="k8s-incident-scenarios",
-            api_version="apps/v1",
-            kind="Deployment",
-            name=name,
-        ),
-    )
+def _scenario(name: str = "image-pull-backoff"):
+    return normalized_trigger(name)
 
 
 MODEL = ModelSnapshot(
@@ -170,9 +153,7 @@ async def test_same_event_key_with_different_content_fails_closed(
     "corrupted_field",
     [
         "run_updated_at",
-        "incident_updated_at",
         "event_occurred_at",
-        "event_incident_id",
     ],
 )
 async def test_start_replay_rejects_inconsistent_persisted_side_effect(
@@ -182,14 +163,10 @@ async def test_start_replay_rejects_inconsistent_persisted_side_effect(
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
         created = await repository.create_incident_and_run(_scenario(), MODEL, BUDGET)
-        other = await repository.create_incident_and_run(
-            _scenario("another-scenario"), MODEL, BUDGET
-        )
         await repository.start_run(created.run_id, NOW)
 
         async with database.session_factory() as session, session.begin():
             run = await session.get(RunRow, str(created.run_id))
-            incident = await session.get(IncidentRow, str(created.incident_id))
             event_row = await session.scalar(
                 select(RunEventRow).where(
                     RunEventRow.run_id == str(created.run_id),
@@ -197,16 +174,11 @@ async def test_start_replay_rejects_inconsistent_persisted_side_effect(
                 )
             )
             assert run is not None
-            assert incident is not None
             assert event_row is not None
             if corrupted_field == "run_updated_at":
                 run.updated_at = NOW + timedelta(seconds=1)
-            elif corrupted_field == "incident_updated_at":
-                incident.updated_at = NOW + timedelta(seconds=1)
             elif corrupted_field == "event_occurred_at":
                 event_row.occurred_at = NOW + timedelta(seconds=1)
-            elif corrupted_field == "event_incident_id":
-                event_row.incident_id = str(other.incident_id)
             else:
                 raise AssertionError("Unknown persisted side effect")
 
@@ -420,10 +392,8 @@ async def test_terminal_replay_rejects_different_terminal_content(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("corrupted_owner", ["run", "incident"])
-async def test_terminal_replay_rejects_inconsistent_updated_at(
+async def test_terminal_replay_rejects_inconsistent_run_updated_at(
     tmp_path: Path,
-    corrupted_owner: str,
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
@@ -448,15 +418,8 @@ async def test_terminal_replay_rejects_inconsistent_updated_at(
 
         async with database.session_factory() as session, session.begin():
             run = await session.get(RunRow, str(created.run_id))
-            incident = await session.get(IncidentRow, str(created.incident_id))
             assert run is not None
-            assert incident is not None
-            if corrupted_owner == "run":
-                run.updated_at = terminal.completed_at + timedelta(seconds=1)
-            elif corrupted_owner == "incident":
-                incident.updated_at = terminal.completed_at + timedelta(seconds=1)
-            else:
-                raise AssertionError("Unknown terminal state owner")
+            run.updated_at = terminal.completed_at + timedelta(seconds=1)
 
         with pytest.raises(RecoveryConsistencyError):
             await repository.persist_terminal(terminal)

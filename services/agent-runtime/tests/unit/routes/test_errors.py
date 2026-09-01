@@ -38,8 +38,13 @@ class _FailingService:
         del limit, cursor
         raise InvalidCursorError
 
-    async def get_incident(self, incident_id: UUID) -> object:
-        del incident_id
+    async def get_incident(
+        self,
+        incident_id: UUID,
+        *,
+        run_id: UUID | None,
+    ) -> object:
+        del incident_id, run_id
         raise IncidentNotFoundError
 
 

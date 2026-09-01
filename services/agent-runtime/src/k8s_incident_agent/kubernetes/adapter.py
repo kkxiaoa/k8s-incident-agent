@@ -371,7 +371,8 @@ class KubernetesEvidenceAdapter:
         try:
             state = _SanitizationState()
             associations = await self._read_associations(target, state)
-            events = await self._list_events(target.namespace)
+            namespace = cast(str, target.namespace)
+            events = await self._list_events(namespace)
             projected_events: list[EventSummary] = []
             for event in events:
                 regarding = _event_regarding(event)
@@ -384,7 +385,7 @@ class KubernetesEvidenceAdapter:
                     _project_event(
                         event,
                         regarding,
-                        expected_namespace=target.namespace,
+                        expected_namespace=namespace,
                         state=state,
                     )
                 )
@@ -424,6 +425,7 @@ class KubernetesEvidenceAdapter:
         state: _SanitizationState,
     ) -> _Associations:
         workload = await self._read_deployment(target, state)
+        namespace = cast(str, target.namespace)
         references_by_uid: dict[str, RegardingSummary] = {}
         _remember_reference(
             references_by_uid,
@@ -436,7 +438,7 @@ class KubernetesEvidenceAdapter:
             ),
         )
         replica_sets = await self._list_replica_sets(
-            target.namespace,
+            namespace,
             workload.label_selector,
         )
         associated_replica_sets: list[V1ReplicaSet] = []
@@ -464,7 +466,7 @@ class KubernetesEvidenceAdapter:
                 api_version="apps/v1",
                 kind="ReplicaSet",
                 metadata=metadata,
-                expected_namespace=target.namespace,
+                expected_namespace=namespace,
             )
             _remember_reference(references_by_uid, reference)
             associated_replica_sets.append(replica_set)
@@ -472,7 +474,7 @@ class KubernetesEvidenceAdapter:
             if len(associated_replica_sets) > REPLICA_SET_LIMIT:
                 raise _budget_error()
 
-        pods = await self._list_pods(target.namespace, workload.label_selector)
+        pods = await self._list_pods(namespace, workload.label_selector)
         associated_pods: list[_AssociatedPod] = []
         for pod in pods:
             pod_view = cast(_PodView, pod)
@@ -497,7 +499,7 @@ class KubernetesEvidenceAdapter:
                 api_version="v1",
                 kind="Pod",
                 metadata=metadata,
-                expected_namespace=target.namespace,
+                expected_namespace=namespace,
             )
             _remember_reference(references_by_uid, reference)
             associated_pods.append(_AssociatedPod(pod=pod, owner=owner))
@@ -516,7 +518,7 @@ class KubernetesEvidenceAdapter:
         target: DeploymentTarget,
         state: _SanitizationState,
     ) -> _DeploymentContext:
-        require_stage_one_target_scope(
+        namespace = require_stage_one_target_scope(
             target,
             cluster_id=self._cluster_id,
             diagnostic_namespace=self._diagnostic_namespace,
@@ -524,7 +526,7 @@ class KubernetesEvidenceAdapter:
         try:
             response = await self._apps_api.read_namespaced_deployment(
                 name=target.name,
-                namespace=target.namespace,
+                namespace=namespace,
                 _request_timeout=self._timeout_seconds,
             )
         except Exception as error:

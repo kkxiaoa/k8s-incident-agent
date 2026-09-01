@@ -41,8 +41,6 @@ class _ApiContract(BaseModel):
     )
 
 
-# Evidence bodies stay recursively validated, but no current web consumer interprets
-# their evidence-kind-specific fields.
 _JsonObject = Annotated[
     dict[str, JsonValue],
     WithJsonSchema({"type": "object", "additionalProperties": True}),
@@ -64,6 +62,20 @@ class ScenarioTargetResponse(_ApiContract):
     api_version: str
     kind: str
     name: str
+
+
+class IncidentTargetResponse(_ApiContract):
+    cluster: str
+    namespace: str | None
+    api_version: str
+    kind: str
+    name: str
+
+
+class IncidentSourceResponse(_ApiContract):
+    type: Literal["scenario"]
+    ref: str | None
+    revision: str | None
 
 
 class ScenarioResponse(_ApiContract):
@@ -94,53 +106,37 @@ class CreateIncidentRequest(_ApiContract):
 
 
 class CreateIncidentResponse(_ApiContract):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     incident_id: UUID
+
+
+class CreateRunResponse(_ApiContract):
+    schema_version: Literal[2] = 2
     run_id: UUID
-    incident_status: IncidentStatus
-    run_status: RunStatus
 
 
 class IncidentListItem(_ApiContract):
     id: UUID
-    scenario_id: str
-    scenario_version: int
     display_name: str
-    target: ScenarioTargetResponse
+    target: IncidentTargetResponse
     status: IncidentStatus
-    created_at: datetime
     updated_at: datetime
 
 
 class IncidentListResponse(_ApiContract):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     items: tuple[IncidentListItem, ...]
     next_cursor: str | None
 
 
 class IncidentResponse(_ApiContract):
     id: UUID
-    scenario_id: str
-    scenario_version: int
+    source: IncidentSourceResponse
     display_name: str
     trigger_summary: str
-    target: ScenarioTargetResponse
+    target: IncidentTargetResponse
     status: IncidentStatus
     created_at: datetime
-    updated_at: datetime
-
-
-class RunBudgetResponse(_ApiContract):
-    max_model_calls: int
-    max_tool_calls: int
-    timeout_seconds: int
-
-
-class RunUsageResponse(_ApiContract):
-    model_calls: int | None
-    tool_calls: int | None
-    input_tokens: int | None
-    output_tokens: int | None
 
 
 class RunErrorResponse(_ApiContract):
@@ -148,19 +144,23 @@ class RunErrorResponse(_ApiContract):
     retryable: bool
 
 
-class RunResponse(_ApiContract):
+class RunSummaryResponse(_ApiContract):
     id: UUID
+    attempt: int = Field(ge=1)
     status: RunStatus
-    model_provider: str
-    model_id: str
-    thinking_mode: bool
-    prompt_version: str
-    budget: RunBudgetResponse
-    usage: RunUsageResponse
-    error: RunErrorResponse | None
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+
+
+class SelectedRunResponse(RunSummaryResponse):
+    error: RunErrorResponse | None
+
+
+class RunHistoryResponse(_ApiContract):
+    schema_version: Literal[2] = 2
+    items: tuple[RunSummaryResponse, ...]
+    next_cursor: str | None
 
 
 class EvidenceResponse(_ApiContract):
@@ -192,16 +192,8 @@ class DiagnosisResponse(_ApiContract):
     created_at: datetime
 
 
-class IncidentDetailResponse(_ApiContract):
-    schema_version: Literal[1] = 1
-    incident: IncidentResponse
-    run: RunResponse
-    evidence: tuple[EvidenceResponse, ...]
-    diagnosis: DiagnosisResponse | None
-
-
 class RunEventPayload(_ApiContract):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     incident_id: UUID
     run_id: UUID
     occurred_at: datetime
@@ -213,12 +205,18 @@ class RunEventPayload(_ApiContract):
 
 
 class IncidentCreatedEventPayload(RunEventPayload):
-    scenario_id: str
+    attempt: int = Field(ge=1)
     incident_status: Literal["RECEIVED"]
     run_status: Literal["QUEUED"]
 
 
+class RunQueuedEventPayload(RunEventPayload):
+    attempt: int = Field(ge=2)
+    run_status: Literal["QUEUED"]
+
+
 class RunStartedEventPayload(RunEventPayload):
+    attempt: int = Field(ge=1)
     incident_status: Literal["TRIAGING"]
     run_status: Literal["RUNNING"]
 
@@ -277,6 +275,12 @@ class IncidentCreatedStreamEvent(_ApiContract):
     data: IncidentCreatedEventPayload
 
 
+class RunQueuedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["run.queued"]
+    data: RunQueuedEventPayload
+
+
 class RunStartedStreamEvent(_ApiContract):
     id: str
     event: Literal["run.started"]
@@ -323,6 +327,7 @@ class RunEventStreamItem(
     RootModel[
         Annotated[
             IncidentCreatedStreamEvent
+            | RunQueuedStreamEvent
             | RunStartedStreamEvent
             | ToolStartedStreamEvent
             | EvidenceRecordedStreamEvent
@@ -335,6 +340,27 @@ class RunEventStreamItem(
     ]
 ):
     pass
+
+
+class EventPageResponse(_ApiContract):
+    items: tuple[RunEventStreamItem, ...]
+    next_cursor: str | None
+
+
+class RunEventHistoryResponse(_ApiContract):
+    schema_version: Literal[2] = 2
+    items: tuple[RunEventStreamItem, ...]
+    next_cursor: str | None
+
+
+class IncidentDetailResponse(_ApiContract):
+    schema_version: Literal[2] = 2
+    incident: IncidentResponse
+    selected_run: SelectedRunResponse
+    event_page: EventPageResponse
+    evidence: tuple[EvidenceResponse, ...]
+    diagnosis: DiagnosisResponse | None
+    event_cursor: str = Field(pattern=r"^[1-9][0-9]*$")
 
 
 class ErrorDetail(_ApiContract):

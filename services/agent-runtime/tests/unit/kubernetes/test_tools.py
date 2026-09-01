@@ -21,6 +21,7 @@ from langgraph.graph import (  # pyright: ignore[reportMissingTypeStubs]
 )
 from langgraph.prebuilt import ToolNode
 from sqlalchemy import select
+from tests.factories import agent_run_snapshot, normalized_trigger
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.domain.models import (
@@ -54,11 +55,7 @@ from k8s_incident_agent.persistence.repositories import (
     evidence_id,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
+from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 21, 10, 0, tzinfo=UTC)
@@ -89,18 +86,8 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
         await database.dispose()
 
 
-def _scenario() -> PublicScenario:
-    return PublicScenario(
-        scenario_id="image-pull-backoff",
-        scenario_version=1,
-        display_name="Image pull failure",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(
-            type="manual",
-            summary="The target Deployment is unavailable.",
-        ),
-        target=TARGET,
-    )
+def _scenario():
+    return normalized_trigger()
 
 
 def _credential() -> DiagnosticCredential:
@@ -195,7 +182,7 @@ def _target_ref() -> TargetRef:
     return TargetRef(
         api_version="apps/v1",
         kind="Deployment",
-        namespace=TARGET.namespace,
+        namespace=cast(str, TARGET.namespace),
         name=TARGET.name,
         uid="deployment-uid",
     )
@@ -216,7 +203,7 @@ async def _context(
         RunBudget(max_model_calls=8, max_tool_calls=6, timeout_seconds=180),
     )
     await repository.start_run(created.run_id, NOW)
-    snapshot = await repository.get_agent_run_snapshot(created.run_id)
+    snapshot = await agent_run_snapshot(repository, created.run_id)
     assert isinstance(snapshot, AgentRunSnapshot)
     return DiagnosticToolContext(
         run=snapshot,

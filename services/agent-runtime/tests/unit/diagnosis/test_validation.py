@@ -11,6 +11,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
+from tests.factories import normalized_trigger
 
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
 from k8s_incident_agent.diagnosis.validation import (
@@ -35,11 +36,6 @@ from k8s_incident_agent.persistence.repositories import (
     RecoveryConsistencyError,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 23, 9, 0, tzinfo=UTC)
@@ -69,21 +65,8 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
         await database.dispose()
 
 
-def _scenario(name: str) -> PublicScenario:
-    return PublicScenario(
-        scenario_id=name,
-        scenario_version=1,
-        display_name="Public incident",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(type="manual", summary="Deployment unavailable"),
-        target=ScenarioTarget(
-            cluster="k8s-incident-agent",
-            namespace="k8s-incident-scenarios",
-            api_version="apps/v1",
-            kind="Deployment",
-            name=name,
-        ),
-    )
+def _scenario(name: str):
+    return normalized_trigger(name)
 
 
 async def _running_run(repository: IncidentRepository, name: str) -> UUID:

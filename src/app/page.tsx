@@ -63,7 +63,7 @@ async function RuntimeOverview({
         ) : (
           <>
             <IncidentList incidents={overview.incidents.items} />
-            {overview.incidents.hasMore ? (
+            {overview.incidents.nextCursor !== null ? (
               <p className="scope-note">当前显示最近 50 条 Incident。</p>
             ) : null}
           </>

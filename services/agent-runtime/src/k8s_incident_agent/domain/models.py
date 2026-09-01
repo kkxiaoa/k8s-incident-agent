@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Final, Literal
 from uuid import UUID
 
-from k8s_incident_agent.scenarios.contracts import ScenarioTarget
+from k8s_incident_agent.domain.contracts import KubernetesTarget
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
@@ -80,6 +80,11 @@ class CreatedIncident:
 
 
 @dataclass(frozen=True, slots=True)
+class CreatedRun:
+    run_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
 class RunRecord:
     id: UUID
     incident_id: UUID
@@ -102,7 +107,7 @@ class WorkflowRunSnapshot:
     incident_id: UUID
     run_status: RunStatus
     trigger_summary: str
-    target: ScenarioTarget
+    target: KubernetesTarget
     model: ModelSnapshot
     budget: RunBudget
     started_at: datetime | None
@@ -217,9 +222,13 @@ _INCIDENT_TRANSITIONS: Final[dict[IncidentStatus, frozenset[IncidentStatus]]] = 
             IncidentStatus.FAILED,
         }
     ),
-    IncidentStatus.DIAGNOSED: frozenset(),
-    IncidentStatus.INSUFFICIENT_EVIDENCE: frozenset(),
-    IncidentStatus.FAILED: frozenset(),
+    IncidentStatus.DIAGNOSED: frozenset(
+        {IncidentStatus.TRIAGING, IncidentStatus.FAILED}
+    ),
+    IncidentStatus.INSUFFICIENT_EVIDENCE: frozenset(
+        {IncidentStatus.TRIAGING, IncidentStatus.FAILED}
+    ),
+    IncidentStatus.FAILED: frozenset({IncidentStatus.TRIAGING, IncidentStatus.FAILED}),
 }
 
 _RUN_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {

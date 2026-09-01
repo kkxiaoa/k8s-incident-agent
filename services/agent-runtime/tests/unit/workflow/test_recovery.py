@@ -24,6 +24,7 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import PrivateAttr
 from sqlalchemy import func, select
+from tests.factories import normalized_trigger
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.domain.models import (
@@ -46,11 +47,7 @@ from k8s_incident_agent.persistence.database import (
 from k8s_incident_agent.persistence.models import EvidenceRow, RunEventRow, RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository, evidence_id
 from k8s_incident_agent.runtime.paths import RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
+from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
 from k8s_incident_agent.workflow.graph import (
     GraphDependencies,
@@ -209,24 +206,8 @@ class _PauseAfterEvidenceRepository:
         return persisted
 
 
-def _scenario() -> PublicScenario:
-    return PublicScenario(
-        scenario_id="image-pull-backoff",
-        scenario_version=1,
-        display_name="Image pull failure",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(
-            type="manual",
-            summary="The target Deployment is unavailable.",
-        ),
-        target=ScenarioTarget(
-            cluster="k8s-incident-agent",
-            namespace="k8s-incident-scenarios",
-            api_version="apps/v1",
-            kind="Deployment",
-            name="image-pull-backoff",
-        ),
-    )
+def _scenario():
+    return normalized_trigger()
 
 
 def _model_snapshot() -> ModelSnapshot:

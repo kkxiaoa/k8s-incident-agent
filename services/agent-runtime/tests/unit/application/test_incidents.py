@@ -10,6 +10,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import func, select
+from tests.factories import normalized_trigger
 
 from k8s_incident_agent.api_contracts import CreateIncidentRequest
 from k8s_incident_agent.application.incidents import (
@@ -146,8 +147,9 @@ async def test_create_commits_before_schedule_and_returns_persisted_identity(
             CreateIncidentRequest(scenario_id="image-pull-backoff")
         )
 
-        assert scheduler.scheduled == [response.run_id]
-        snapshot = await repository.get_workflow_run_snapshot(response.run_id)
+        assert len(scheduler.scheduled) == 1
+        run_id = scheduler.scheduled[0]
+        snapshot = await repository.get_workflow_run_snapshot(run_id)
         assert snapshot.incident_id == response.incident_id
         assert snapshot.model.model_id == "deepseek-v4-flash"
         assert snapshot.budget == RunBudget(8, 6, 180)
@@ -166,9 +168,12 @@ async def test_schedule_failure_keeps_committed_queued_run_for_reconciliation(
             CreateIncidentRequest(scenario_id="image-pull-backoff")
         )
 
-        snapshot = await repository.get_workflow_run_snapshot(response.run_id)
+        assert len(scheduler.scheduled) == 1
+        run_id = scheduler.scheduled[0]
+        snapshot = await repository.get_workflow_run_snapshot(run_id)
         assert snapshot.run_status is RunStatus.QUEUED
-        assert await repository.list_recoverable_run_ids() == (response.run_id,)
+        assert await repository.list_recoverable_run_ids() == (run_id,)
+        assert snapshot.incident_id == response.incident_id
 
 
 @pytest.mark.asyncio
@@ -220,7 +225,7 @@ async def test_list_uses_descending_keyset_order_and_canonical_cursor(
             {
                 "id": f"{{{str(boundary.id).upper()}}}",
                 "extra": "ignored",
-                "createdAt": boundary.created_at.isoformat(),
+                "createdAt": NOW.isoformat(),
             },
             padded=True,
             compact=False,
@@ -300,6 +305,36 @@ async def test_list_rejects_semantically_invalid_cursor(
 
 
 @pytest.mark.asyncio
+async def test_run_and_event_cursors_reject_json_booleans(tmp_path: Path) -> None:
+    incident_id = UUID("00000000-0000-4000-8000-000000000001")
+    run_id = UUID("00000000-0000-4000-8000-000000000002")
+    async with _database(tmp_path) as database:
+        service, _ = _service(IncidentRepository(database.session_factory))
+
+        with pytest.raises(InvalidCursorError):
+            await service.list_runs(
+                incident_id,
+                limit=20,
+                cursor=_cursor_document(
+                    {"incidentId": str(incident_id), "attempt": True}
+                ),
+            )
+        with pytest.raises(InvalidCursorError):
+            await service.list_run_events(
+                incident_id,
+                run_id,
+                limit=100,
+                cursor=_cursor_document(
+                    {
+                        "incidentId": str(incident_id),
+                        "runId": str(run_id),
+                        "eventId": True,
+                    }
+                ),
+            )
+
+
+@pytest.mark.asyncio
 async def test_detail_projects_terminal_run_and_sorts_evidence_by_time_then_id(
     tmp_path: Path,
 ) -> None:
@@ -307,7 +342,7 @@ async def test_detail_projects_terminal_run_and_sorts_evidence_by_time_then_id(
         repository = IncidentRepository(database.session_factory)
         service, _ = _service(repository)
         created = await repository.create_incident_and_run(
-            _scenario(),
+            normalized_trigger(),
             ModelSnapshot("deepseek", "deepseek-v4-flash", False, "stage1-v1"),
             RunBudget(8, 6, 180),
         )
@@ -359,17 +394,15 @@ async def test_detail_projects_terminal_run_and_sorts_evidence_by_time_then_id(
             )
         )
 
-        response = await service.get_incident(created.incident_id)
+        response = await service.get_incident(created.incident_id, run_id=None)
 
-        assert response.run.usage.model_dump() == {
-            "modelCalls": 4,
-            "toolCalls": 3,
-            "inputTokens": 1000,
-            "outputTokens": 200,
-        }
-        assert response.run.error is None
+        assert response.selected_run.id == created.run_id
+        assert response.selected_run.attempt == 1
+        assert response.selected_run.status is RunStatus.COMPLETED
+        assert response.selected_run.error is None
         assert response.diagnosis is not None
         assert response.diagnosis.outcome is DiagnosisOutcome.DIAGNOSED
         assert [item.id for item in response.evidence] == sorted(
             item.id for item in persisted
         )
+        assert response.event_page.items[0].root.event == "diagnosis.completed"

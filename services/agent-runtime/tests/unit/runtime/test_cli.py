@@ -1,5 +1,6 @@
 import json
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -25,11 +26,13 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
 ) -> None:
     target = PruneTarget(
         incident_id=INCIDENT_ID,
-        run_id=RUN_ID,
-        artifact_directory=tmp_path / "runtime" / "runs" / str(RUN_ID),
+        updated_at=datetime(2026, 9, 1, 8, 0, tzinfo=UTC),
+        run_ids=(RUN_ID,),
+        artifact_directories=(tmp_path / "runtime" / "runs" / str(RUN_ID),),
         event_rows=5,
         evidence_rows=1,
         diagnosis_rows=1,
+        run_rows=1,
     )
 
     async def fake_preview(
@@ -54,12 +57,14 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
         "mode": mode,
         "targets": [
             {
-                "artifactDirectory": str(target.artifact_directory),
+                "artifactDirectories": [str(target.artifact_directories[0])],
                 "diagnosisRows": 1,
                 "eventRows": 5,
                 "evidenceRows": 1,
                 "incidentId": str(INCIDENT_ID),
-                "runId": str(RUN_ID),
+                "runIds": [str(RUN_ID)],
+                "runRows": 1,
+                "updatedAt": "2026-09-01T08:00:00+00:00",
             }
         ],
     }

@@ -11,6 +11,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from starlette.types import Message, Scope
+from tests.factories import normalized_trigger
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -34,11 +35,6 @@ from k8s_incident_agent.persistence.database import (
 )
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
-from k8s_incident_agent.scenarios.contracts import (
-    PublicScenario,
-    ScenarioTarget,
-    ScenarioTrigger,
-)
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 INCIDENT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -179,21 +175,8 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
         await database.dispose()
 
 
-def _scenario() -> PublicScenario:
-    return PublicScenario(
-        scenario_id="image-pull-backoff",
-        scenario_version=1,
-        display_name="Image pull failure",
-        description="A Deployment cannot pull its configured image.",
-        trigger=ScenarioTrigger(type="manual", summary="Deployment unavailable"),
-        target=ScenarioTarget(
-            cluster="k8s-incident-agent",
-            namespace="k8s-incident-scenarios",
-            api_version="apps/v1",
-            kind="Deployment",
-            name="image-pull-backoff",
-        ),
-    )
+def _scenario():
+    return normalized_trigger()
 
 
 @pytest.mark.asyncio
@@ -225,21 +208,43 @@ async def test_new_asgi_client_replays_from_real_sqlite_without_duplicates(
                 output_tokens=5,
             )
         )
-        service = IncidentEventService(
-            EventDependencies(repository=repository, notifier=notifier)
-        )
 
-        async with _client(tmp_path, service) as first_client:
+        def finite_service(event_count: int) -> IncidentEventService:
+            class _FiniteReplayService(IncidentEventService):
+                async def open_stream(
+                    self,
+                    incident_id: UUID,
+                    last_event_id_header: str | None,
+                ) -> AsyncIterator[bytes]:
+                    stream = await super().open_stream(
+                        incident_id,
+                        last_event_id_header,
+                    )
+
+                    async def finite() -> AsyncIterator[bytes]:
+                        try:
+                            for _ in range(event_count):
+                                yield await anext(stream)
+                        finally:
+                            await cast(AsyncGenerator[bytes], stream).aclose()
+
+                    return finite()
+
+            return _FiniteReplayService(
+                EventDependencies(repository=repository, notifier=notifier)
+            )
+
+        async with _client(tmp_path, finite_service(3)) as first_client:
             first_response = await first_client.get(
                 f"/api/v1/incidents/{created.incident_id}/events",
                 headers={"Last-Event-ID": "0"},
             )
-        async with _client(tmp_path, service) as reconnected_client:
+        async with _client(tmp_path, finite_service(1)) as reconnected_client:
             replay = await reconnected_client.get(
                 f"/api/v1/incidents/{created.incident_id}/events",
                 headers={"Last-Event-ID": str(started.event.id)},
             )
-        async with _client(tmp_path, service) as terminal_reconnect_client:
+        async with _client(tmp_path, finite_service(0)) as terminal_reconnect_client:
             after_terminal = await terminal_reconnect_client.get(
                 f"/api/v1/incidents/{created.incident_id}/events",
                 headers={"Last-Event-ID": str(terminal.event.id)},
@@ -347,6 +352,10 @@ async def test_http_disconnect_cancels_stream_without_changing_run_state(
             await asyncio.wait_for(request, 1)
             assert notifier.cancelled.is_set()
 
-        detail = await repository.get_incident_detail(created.incident_id)
+        detail = await repository.get_incident_detail(
+            created.incident_id,
+            run_id=None,
+            event_limit=100,
+        )
         assert detail is not None
         assert detail.run.status is RunStatus.QUEUED

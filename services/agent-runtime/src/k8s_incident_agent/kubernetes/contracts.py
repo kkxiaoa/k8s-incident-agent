@@ -5,9 +5,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from k8s_incident_agent.scenarios.contracts import ScenarioTarget
+from k8s_incident_agent.domain.contracts import KubernetesTarget
 
-DeploymentTarget = ScenarioTarget
+DeploymentTarget = KubernetesTarget
 
 
 def _camel_case(value: str) -> str:

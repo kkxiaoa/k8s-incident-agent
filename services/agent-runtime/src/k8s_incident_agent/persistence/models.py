@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import (
     Enum as SqlEnum,
@@ -54,12 +55,13 @@ class IncidentRow(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    scenario_id: Mapped[str] = mapped_column(String, nullable=False)
-    scenario_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    trigger_source: Mapped[str] = mapped_column(String, nullable=False)
+    trigger_ref: Mapped[str | None] = mapped_column(String)
+    trigger_revision: Mapped[str | None] = mapped_column(String)
     display_name: Mapped[str] = mapped_column(String, nullable=False)
     trigger_summary: Mapped[str] = mapped_column(Text, nullable=False)
     cluster: Mapped[str] = mapped_column(String, nullable=False)
-    namespace: Mapped[str] = mapped_column(String, nullable=False)
+    namespace: Mapped[str | None] = mapped_column(String)
     api_version: Mapped[str] = mapped_column(String, nullable=False)
     kind: Mapped[str] = mapped_column(String, nullable=False)
     resource_name: Mapped[str] = mapped_column(String, nullable=False)
@@ -89,12 +91,24 @@ class RunRow(Base):
             "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED')",
             name="status",
         ),
-        UniqueConstraint("incident_id", name="uq_agent_runs_incident_id"),
+        CheckConstraint("attempt >= 1", name="attempt"),
+        UniqueConstraint(
+            "incident_id",
+            "attempt",
+            name="uq_agent_runs_incident_id_attempt",
+        ),
+        Index(
+            "uq_agent_runs_active_incident_id",
+            "incident_id",
+            unique=True,
+            sqlite_where=text("status IN ('QUEUED', 'RUNNING')"),
+        ),
         Index("ix_agent_runs_status", "status"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     incident_id: Mapped[str] = mapped_column(ForeignKey("incidents.id"), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[RunStatus] = mapped_column(
         SqlEnum(
             RunStatus,
@@ -133,12 +147,11 @@ class RunEventRow(Base):
     __tablename__ = "run_events"
     __table_args__ = (
         UniqueConstraint("run_id", "event_key", name="uq_run_events_run_id_event_key"),
-        Index("ix_run_events_incident_id_id", "incident_id", "id"),
+        Index("ix_run_events_run_id_id", "run_id", "id"),
         {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    incident_id: Mapped[str] = mapped_column(ForeignKey("incidents.id"), nullable=False)
     run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
     event_key: Mapped[str] = mapped_column(String, nullable=False)
     event_type: Mapped[str] = mapped_column(String, nullable=False)

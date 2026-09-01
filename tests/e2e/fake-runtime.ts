@@ -97,19 +97,15 @@ function buildEvents(
   diagnosisId: string,
   outcome: OutcomeMode,
 ): RunEventStreamItem[] {
-  if (outcome === "waiting") {
-    return [];
-  }
-
   const events: RunEventStreamItem[] = [
     {
       id: eventId(),
       event: "incident.created",
       data: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId,
         runId,
-        scenarioId: SCENARIO.scenarioId,
+        attempt: 1,
         incidentStatus: "RECEIVED",
         runStatus: "QUEUED",
         occurredAt: CREATED_AT,
@@ -119,9 +115,10 @@ function buildEvents(
       id: eventId(),
       event: "run.started",
       data: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId,
         runId,
+        attempt: 1,
         incidentStatus: "TRIAGING",
         runStatus: "RUNNING",
         occurredAt: STARTED_AT,
@@ -131,7 +128,7 @@ function buildEvents(
       id: eventId(),
       event: "tool.started",
       data: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId,
         runId,
         toolCallId: "tool-call-1",
@@ -140,6 +137,10 @@ function buildEvents(
       },
     },
   ];
+
+  if (outcome === "waiting") {
+    return events.slice(0, 1);
+  }
 
   if (outcome === "running") {
     return events;
@@ -151,7 +152,7 @@ function buildEvents(
         id: eventId(),
         event: "tool.failed",
         data: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           incidentId,
           runId,
           toolCallId: "tool-call-1",
@@ -165,7 +166,7 @@ function buildEvents(
         id: eventId(),
         event: "run.failed",
         data: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           incidentId,
           runId,
           errorCode: "workflow_failed",
@@ -183,7 +184,7 @@ function buildEvents(
     id: eventId(),
     event: "evidence.recorded",
     data: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       incidentId,
       runId,
       evidenceId,
@@ -202,7 +203,7 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.completed",
       data: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId,
         runId,
         diagnosisId,
@@ -217,7 +218,7 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.insufficient",
       data: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         incidentId,
         runId,
         diagnosisId,
@@ -239,47 +240,42 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
   const runId = uuid("2", sequence);
   const evidenceId = uuid("3", sequence);
   const diagnosisId = uuid("4", sequence);
+  const events = buildEvents(incidentId, runId, evidenceId, diagnosisId, outcome);
+  const initialEvent = events[0];
 
   return {
     mode: outcome,
     finished: false,
-    events: buildEvents(incidentId, runId, evidenceId, diagnosisId, outcome),
+    events,
     detail: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       incident: {
         id: incidentId,
-        scenarioId: SCENARIO.scenarioId,
-        scenarioVersion: SCENARIO.scenarioVersion,
+        source: {
+          type: "scenario",
+          ref: SCENARIO.scenarioId,
+          revision: String(SCENARIO.scenarioVersion),
+        },
         displayName: SCENARIO.displayName,
         triggerSummary: SCENARIO.trigger.summary,
         status: "RECEIVED",
         target: SCENARIO.target,
         createdAt: CREATED_AT,
-        updatedAt: CREATED_AT,
       },
-      run: {
+      selectedRun: {
         id: runId,
+        attempt: 1,
         status: "QUEUED",
-        modelProvider: "deepseek",
-        modelId: "deepseek-chat",
-        thinkingMode: false,
-        promptVersion: "stage1-v1",
-        budget: {
-          maxModelCalls: 3,
-          maxToolCalls: 8,
-          timeoutSeconds: 120,
-        },
-        usage: {
-          modelCalls: null,
-          toolCalls: null,
-          inputTokens: null,
-          outputTokens: null,
-        },
         error: null,
         createdAt: CREATED_AT,
         startedAt: null,
         completedAt: null,
       },
+      eventPage: {
+        items: outcome === "waiting" ? [] : [initialEvent],
+        nextCursor: null,
+      },
+      eventCursor: initialEvent.id,
       evidence: [],
       diagnosis: null,
     },
@@ -287,15 +283,19 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
 }
 
 function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
-  record.detail.incident.updatedAt = event.data.occurredAt;
+  record.detail.eventCursor = event.id;
+  if (!record.detail.eventPage.items.some((item) => item.id === event.id)) {
+    record.detail.eventPage.items.unshift(event);
+  }
 
   switch (event.event) {
     case "incident.created":
+    case "run.queued":
       break;
     case "run.started":
       record.detail.incident.status = "TRIAGING";
-      record.detail.run.status = "RUNNING";
-      record.detail.run.startedAt = event.data.occurredAt;
+      record.detail.selectedRun.status = "RUNNING";
+      record.detail.selectedRun.startedAt = event.data.occurredAt;
       break;
     case "tool.started":
     case "tool.failed":
@@ -331,14 +331,8 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       break;
     case "diagnosis.completed":
       record.detail.incident.status = "DIAGNOSED";
-      record.detail.run.status = "COMPLETED";
-      record.detail.run.completedAt = event.data.occurredAt;
-      record.detail.run.usage = {
-        modelCalls: 1,
-        toolCalls: 1,
-        inputTokens: 420,
-        outputTokens: 96,
-      };
+      record.detail.selectedRun.status = "COMPLETED";
+      record.detail.selectedRun.completedAt = event.data.occurredAt;
       record.detail.diagnosis = {
         id: event.data.diagnosisId,
         outcome: "diagnosed",
@@ -359,14 +353,8 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       break;
     case "diagnosis.insufficient":
       record.detail.incident.status = "INSUFFICIENT_EVIDENCE";
-      record.detail.run.status = "COMPLETED";
-      record.detail.run.completedAt = event.data.occurredAt;
-      record.detail.run.usage = {
-        modelCalls: 1,
-        toolCalls: 1,
-        inputTokens: 350,
-        outputTokens: 74,
-      };
+      record.detail.selectedRun.status = "COMPLETED";
+      record.detail.selectedRun.completedAt = event.data.occurredAt;
       record.detail.diagnosis = {
         id: event.data.diagnosisId,
         outcome: "insufficient_evidence",
@@ -380,9 +368,9 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       break;
     case "run.failed":
       record.detail.incident.status = "FAILED";
-      record.detail.run.status = "FAILED";
-      record.detail.run.completedAt = event.data.occurredAt;
-      record.detail.run.error = {
+      record.detail.selectedRun.status = "FAILED";
+      record.detail.selectedRun.completedAt = event.data.occurredAt;
+      record.detail.selectedRun.error = {
         code: event.data.errorCode,
         retryable: event.data.retryable,
       };
@@ -410,7 +398,7 @@ function streamEvents(
   const lastId = lastEventId === null ? BigInt(0) : BigInt(lastEventId);
   const pending = record.events.filter((event) => BigInt(event.id) > lastId);
   const disconnectForReconnect =
-    record.mode === "diagnosed" && lastEventId === null && !record.finished;
+    record.mode === "diagnosed" && connections.length === 1 && !record.finished;
   const batch = disconnectForReconnect ? pending.slice(0, 3) : pending;
   const replay = record.finished;
 
@@ -430,20 +418,22 @@ function streamEvents(
   if (record.mode === "running" || record.mode === "waiting") {
     return;
   }
-  response.end();
+  if (disconnectForReconnect) {
+    response.end();
+  }
 }
 
 function listItem(record: FakeIncident): IncidentListItem {
   const { incident } = record.detail;
   return {
     id: incident.id,
-    scenarioId: incident.scenarioId,
-    scenarioVersion: incident.scenarioVersion,
     displayName: incident.displayName,
     target: incident.target,
     status: incident.status,
-    createdAt: incident.createdAt,
-    updatedAt: incident.updatedAt,
+    updatedAt:
+      record.detail.selectedRun.completedAt ??
+      record.detail.selectedRun.startedAt ??
+      incident.createdAt,
   };
 }
 
@@ -513,7 +503,7 @@ async function handleRequest(
 
   if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
     json(response, 200, {
-      schemaVersion: 1,
+      schemaVersion: 2,
       items: [...incidents.values()].reverse().map(listItem),
       nextCursor: null,
     });
@@ -541,11 +531,50 @@ async function handleRequest(
     const record = createIncident(mode);
     incidents.set(record.detail.incident.id, record);
     json(response, 202, {
-      schemaVersion: 1,
+      schemaVersion: 2,
       incidentId: record.detail.incident.id,
-      runId: record.detail.run.id,
-      incidentStatus: record.detail.incident.status,
-      runStatus: record.detail.run.status,
+    });
+    return;
+  }
+
+  const runsMatch = url.pathname.match(
+    /^\/api\/v1\/incidents\/([0-9a-f-]+)\/runs$/i,
+  );
+  if (request.method === "GET" && runsMatch !== null) {
+    const record = incidents.get(runsMatch[1]);
+    if (record === undefined) {
+      runtimeError(response, 404, "incident_not_found", "Incident was not found.", false);
+      return;
+    }
+    const run = record.detail.selectedRun;
+    json(response, 200, {
+      schemaVersion: 2,
+      items: [{
+        id: run.id,
+        attempt: run.attempt,
+        status: run.status,
+        createdAt: run.createdAt,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+      }],
+      nextCursor: null,
+    });
+    return;
+  }
+
+  const runEventsMatch = url.pathname.match(
+    /^\/api\/v1\/incidents\/([0-9a-f-]+)\/runs\/([0-9a-f-]+)\/events$/i,
+  );
+  if (request.method === "GET" && runEventsMatch !== null) {
+    const record = incidents.get(runEventsMatch[1]);
+    if (record === undefined || record.detail.selectedRun.id !== runEventsMatch[2]) {
+      runtimeError(response, 404, "run_not_found", "Run was not found.", false);
+      return;
+    }
+    json(response, 200, {
+      schemaVersion: 2,
+      items: [...record.detail.eventPage.items],
+      nextCursor: null,
     });
     return;
   }
@@ -581,6 +610,11 @@ async function handleRequest(
         "Incident was not found.",
         false,
       );
+      return;
+    }
+    const runId = url.searchParams.get("runId");
+    if (runId !== null && runId !== record.detail.selectedRun.id) {
+      runtimeError(response, 404, "run_not_found", "Run was not found.", false);
       return;
     }
     json(response, 200, record.detail);
