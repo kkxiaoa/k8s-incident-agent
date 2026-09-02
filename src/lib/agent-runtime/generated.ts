@@ -108,6 +108,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/monitoring/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Monitoring Health */
+        get: operations["get_monitoring_health_api_v1_monitoring_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/scenarios": {
         parameters: {
             query?: never;
@@ -691,6 +708,42 @@ export interface components {
             /** Namespace */
             namespace: string | null;
         };
+        /**
+         * MonitoringComponentState
+         * @enum {string}
+         */
+        MonitoringComponentState: "healthy" | "degraded" | "unavailable" | "stale" | "unknown";
+        /** MonitoringHealthSnapshot */
+        MonitoringHealthSnapshot: {
+            alertmanager: components["schemas"]["MonitoringComponentState"];
+            /**
+             * Checkedat
+             * Format: date-time
+             */
+            checkedAt: string;
+            kubeStateMetrics: components["schemas"]["MonitoringComponentState"];
+            notification: components["schemas"]["MonitoringComponentState"];
+            prometheus: components["schemas"]["MonitoringComponentState"];
+            ruleEvaluation: components["schemas"]["MonitoringComponentState"];
+            state: components["schemas"]["MonitoringOverallState"];
+            /** Watchdoglastreceivedat */
+            watchdogLastReceivedAt: string | null;
+        };
+        /**
+         * MonitoringOverallState
+         * @enum {string}
+         */
+        MonitoringOverallState: "healthy" | "degraded" | "unavailable";
+        /** PrometheusToolCallIdentity */
+        PrometheusToolCallIdentity: {
+            /** Panelid */
+            panelId: string;
+            /**
+             * Window
+             * @enum {string}
+             */
+            window: "15m" | "1h" | "6h";
+        };
         /** RootCauseResponse */
         RootCauseResponse: {
             /** Code */
@@ -1012,6 +1065,7 @@ export interface components {
         };
         /** ToolStartedEventPayload */
         ToolStartedEventPayload: {
+            callIdentity?: components["schemas"]["PrometheusToolCallIdentity"] | null;
             /**
              * Incidentid
              * Format: uuid
@@ -1558,6 +1612,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_monitoring_health_api_v1_monitoring_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitoringHealthSnapshot"];
                 };
             };
             /** @description Internal Server Error */

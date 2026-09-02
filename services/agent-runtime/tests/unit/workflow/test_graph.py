@@ -19,6 +19,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
+from tests.factories import prometheus_query_service_stub
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.domain.models import (
@@ -38,6 +39,8 @@ from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
 from k8s_incident_agent.kubernetes.errors import KubernetesErrorCode
 from k8s_incident_agent.kubernetes.tools import FatalDiagnosticToolError
+from k8s_incident_agent.monitoring.errors import MonitoringErrorCode
+from k8s_incident_agent.monitoring.tools import FatalPrometheusToolError
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
@@ -178,6 +181,7 @@ def _context(run: WorkflowRunSnapshot) -> DiagnosticToolContext:
         adapter=cast(KubernetesEvidenceAdapter, object()),
         repository=cast(IncidentRepository, object()),
         now=lambda: NOW,
+        prometheus=prometheus_query_service_stub(),
     )
 
 
@@ -200,6 +204,7 @@ def _dependencies(
         ),
         credential=_credential(),
         adapter=cast(KubernetesEvidenceAdapter, object()),
+        prometheus=prometheus_query_service_stub(),
         now=lambda: NOW,
     )
 
@@ -509,6 +514,10 @@ async def test_unresolved_kubernetes_failure_becomes_matching_terminal_error(
         (
             FatalDiagnosticToolError(KubernetesErrorCode.PERMISSION_DENIED),
             "permission_denied",
+        ),
+        (
+            FatalPrometheusToolError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID),
+            "prometheus_contract_invalid",
         ),
     ],
 )

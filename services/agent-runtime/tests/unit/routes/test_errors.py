@@ -7,6 +7,7 @@ from uuid import UUID
 import httpx
 import pytest
 from fastapi import FastAPI
+from tests.factories import monitoring_health_service_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -63,6 +64,7 @@ def _app(tmp_path: Path) -> FastAPI:
             incidents=cast(IncidentApplicationService, _FailingService()),
             events=cast(IncidentEventService, object()),
             alerts=None,
+            monitoring=monitoring_health_service_stub(),
         )
 
     return api.create_app(

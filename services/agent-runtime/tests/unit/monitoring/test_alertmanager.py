@@ -5,7 +5,10 @@ from typing import cast
 import pytest
 
 from k8s_incident_agent.domain.models import AlertSignalStatus
-from k8s_incident_agent.monitoring.alertmanager import parse_alertmanager_webhook
+from k8s_incident_agent.monitoring.alertmanager import (
+    ParsedAlertmanagerWebhook,
+    parse_alertmanager_webhook,
+)
 from k8s_incident_agent.monitoring.catalog import AlertCatalog, load_alert_catalog
 from k8s_incident_agent.monitoring.errors import (
     AlertPayloadInvalidError,
@@ -65,13 +68,17 @@ def _payload(*alerts: dict[str, object], truncated: int = 0) -> bytes:
     ).encode()
 
 
-def _parse(payload: bytes):
+def _parse(payload: bytes) -> ParsedAlertmanagerWebhook:
     return parse_alertmanager_webhook(
         payload,
         catalog=_catalog(),
         cluster_id="k8s-incident-agent",
         diagnostic_namespace="k8s-incident-scenarios",
     )
+
+
+def _occurrences(payload: bytes):
+    return _parse(payload).occurrences
 
 
 def _set_version_three(document: dict[str, object]) -> None:
@@ -149,8 +156,10 @@ def _first_alert(document: dict[str, object]) -> dict[str, object]:
 
 
 def test_default_v4_firing_projects_only_the_catalog_contract() -> None:
-    occurrences = _parse(_payload(_alert()))
+    parsed = _parse(_payload(_alert()))
+    occurrences = parsed.occurrences
 
+    assert parsed.watchdog_firing is False
     assert len(occurrences) == 1
     occurrence = occurrences[0]
     assert occurrence.status is AlertSignalStatus.FIRING
@@ -159,7 +168,7 @@ def test_default_v4_firing_projects_only_the_catalog_contract() -> None:
     assert occurrence.starts_at == "2026-09-02T08:00:00.123000000Z"
     assert occurrence.trigger.source.type == "alertmanager"
     assert occurrence.trigger.source.ref == "K8sIncidentImagePullBackOff"
-    assert occurrence.trigger.source.revision == "2026-09-02.2"
+    assert occurrence.trigger.source.revision == "2026-09-02.3"
     assert occurrence.trigger.target.name == "image-pull-backoff"
     serialized = repr(occurrence)
     assert "must-not-be-persisted" not in serialized
@@ -171,11 +180,14 @@ def test_unknown_alert_is_acknowledgeable_without_an_occurrence() -> None:
     alert = _alert(alert_name="UnknownAlert")
     alert["labels"] = {"alertname": "UnknownAlert"}
 
-    assert _parse(_payload(alert)) == ()
+    parsed = _parse(_payload(alert))
+
+    assert parsed.occurrences == ()
+    assert parsed.watchdog_firing is False
 
 
 def test_same_occurrence_resolved_dominates_firing_within_one_batch() -> None:
-    occurrences = _parse(
+    occurrences = _occurrences(
         _payload(
             _alert(),
             _alert(
@@ -192,7 +204,7 @@ def test_same_occurrence_resolved_dominates_firing_within_one_batch() -> None:
 
 
 def test_nanosecond_occurrence_identity_is_preserved() -> None:
-    occurrences = _parse(
+    occurrences = _occurrences(
         _payload(
             _alert(starts_at="2026-09-02T08:00:00.1234567Z"),
             _alert(starts_at="2026-09-02T08:00:00.1234568Z"),
@@ -203,6 +215,38 @@ def test_nanosecond_occurrence_identity_is_preserved() -> None:
         "2026-09-02T08:00:00.123456700Z",
         "2026-09-02T08:00:00.123456800Z",
     ]
+
+
+def test_firing_watchdog_is_projected_as_health_without_an_occurrence() -> None:
+    watchdog = _alert(alert_name="Watchdog")
+    watchdog["labels"] = {
+        "alertname": "Watchdog",
+        "cluster": "k8s-incident-agent",
+        "severity": "none",
+    }
+
+    parsed = _parse(_payload(watchdog))
+
+    assert parsed.occurrences == ()
+    assert parsed.watchdog_firing is True
+
+
+def test_resolved_watchdog_does_not_refresh_health() -> None:
+    watchdog = _alert(
+        alert_name="Watchdog",
+        status="resolved",
+        ends_at="2026-09-02T08:05:00Z",
+    )
+    watchdog["labels"] = {
+        "alertname": "Watchdog",
+        "cluster": "k8s-incident-agent",
+        "severity": "none",
+    }
+
+    parsed = _parse(_payload(watchdog))
+
+    assert parsed.occurrences == ()
+    assert parsed.watchdog_firing is False
 
 
 @pytest.mark.parametrize(

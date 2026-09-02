@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import Final, Literal, cast
 from uuid import UUID
 
@@ -37,6 +38,7 @@ from k8s_incident_agent.diagnosis.contracts import (
     DiagnosisCandidate,
     ValidatedDiagnosis,
 )
+from k8s_incident_agent.diagnosis.tool_execution import DiagnosticToolFatalError
 from k8s_incident_agent.diagnosis.validation import (
     DiagnosisValidationError,
     UnresolvedToolFailuresError,
@@ -59,9 +61,10 @@ from k8s_incident_agent.kubernetes.credentials import (
 )
 from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.kubernetes.tools import (
-    FatalDiagnosticToolError,
     build_diagnostic_tools,
 )
+from k8s_incident_agent.monitoring.service import PrometheusQueryService
+from k8s_incident_agent.monitoring.tools import build_prometheus_tool
 from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
@@ -90,6 +93,7 @@ class GraphDependencies:
     model_snapshot: ModelSnapshot
     credential: DiagnosticCredentialLease
     adapter: KubernetesEvidenceAdapter
+    prometheus: PrometheusQueryService
     now: Callable[[], datetime]
 
 
@@ -99,9 +103,10 @@ def build_incident_graph(
 ) -> IncidentGraph:
     diagnostic_agent = build_diagnostic_agent(
         dependencies.model,
-        build_diagnostic_tools(),
+        (*build_diagnostic_tools(), build_prometheus_tool()),
         max_model_calls=run.budget.max_model_calls,
         max_tool_calls=run.budget.max_tool_calls,
+        prometheus_panel_ids=dependencies.prometheus.panel_ids,
     )
     builder = StateGraph(
         IncidentGraphState,
@@ -394,8 +399,12 @@ def classify_diagnosis_failure(error: BaseException) -> tuple[str, bool] | None:
         return "structured_output_invalid", False
     if isinstance(error, ModelUpstreamError):
         return "model_upstream_failed", True
-    if isinstance(error, FatalDiagnosticToolError):
-        return error.code.value, error.retryable
+    if isinstance(error, DiagnosticToolFatalError):
+        code = error.code
+        return (
+            code.value if isinstance(code, StrEnum) else code,
+            error.retryable,
+        )
     return None
 
 

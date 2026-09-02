@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from tests.factories import prometheus_query_service_stub
 
 from k8s_incident_agent.domain.models import (
     ModelSnapshot,
@@ -99,6 +100,7 @@ def _supervisor(
             _kubeconfig={},
         ),
         adapter=cast(KubernetesEvidenceAdapter, object()),
+        prometheus=prometheus_query_service_stub(),
         now=lambda: NOW,
     )
 

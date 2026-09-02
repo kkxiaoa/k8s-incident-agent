@@ -117,6 +117,16 @@ def _install_runtime_fakes(
         async def aclose(self) -> None:
             events.append("model.async.close")
 
+    class FakePrometheusHttpClient:
+        @classmethod
+        def create(cls, _base_url: object) -> object:
+            events.append("prometheus.open")
+            fail("prometheus")
+            return cls()
+
+        async def close(self) -> None:
+            events.append("prometheus.close")
+
     class FakeSupervisor:
         def __init__(self, **_kwargs: object) -> None:
             events.append("supervisor.init")
@@ -264,6 +274,7 @@ def _install_runtime_fakes(
     monkeypatch.setattr(api.httpx, "Client", FakeSyncClient)
     monkeypatch.setattr(api.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(api, "create_deepseek_model", create_model)
+    monkeypatch.setattr(api, "PrometheusHttpClient", FakePrometheusHttpClient)
     monkeypatch.setattr(api, "RunSupervisor", FakeSupervisor)
 
 
@@ -285,6 +296,7 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
             "database.head",
             "checkpoint.open",
             "catalog",
+            "alert.catalog",
             "credential",
             "credential.window:240",
             "kubernetes.open",
@@ -293,12 +305,14 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
             "model.sync.open",
             "model.async.open",
             "model.create",
+            "prometheus.open",
             "supervisor.init",
             "supervisor.start",
         ]
 
-    assert events[-7:-1] == [
+    assert events[-8:-1] == [
         "supervisor.close",
+        "prometheus.close",
         "model.async.close",
         "model.sync.close",
         "kubernetes.close",
@@ -329,11 +343,13 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
             "database.open",
             "database.head",
             "checkpoint.open",
+            "alert.catalog",
             "kubernetes.incluster.open",
             "kubernetes.access",
             "model.sync.open",
             "model.async.open",
             "model.create",
+            "prometheus.open",
             "supervisor.init",
             "supervisor.start",
         ]
@@ -447,6 +463,10 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
         ("checkpoint", ["database.close", "lock.release"]),
         ("catalog", ["checkpoint.close", "database.close", "lock.release"]),
         (
+            "alert-catalog",
+            ["checkpoint.close", "database.close", "lock.release"],
+        ),
+        (
             "credential",
             ["checkpoint.close", "database.close", "lock.release"],
         ),
@@ -488,6 +508,18 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
             "supervisor",
             [
                 "supervisor.close",
+                "prometheus.close",
+                "model.async.close",
+                "model.sync.close",
+                "kubernetes.close",
+                "checkpoint.close",
+                "database.close",
+                "lock.release",
+            ],
+        ),
+        (
+            "prometheus",
+            [
                 "model.async.close",
                 "model.sync.close",
                 "kubernetes.close",

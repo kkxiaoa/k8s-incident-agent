@@ -18,6 +18,7 @@ from k8s_incident_agent.application.events import (
     RunEventNotifier,
 )
 from k8s_incident_agent.application.incidents import IncidentApplicationService
+from k8s_incident_agent.application.monitoring import MonitoringHealthService
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
 from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget
@@ -41,6 +42,8 @@ from k8s_incident_agent.model.factory import create_deepseek_model
 from k8s_incident_agent.monitoring.alertmanager import AlertmanagerWebhook
 from k8s_incident_agent.monitoring.auth import AlertmanagerWebhookAuthenticator
 from k8s_incident_agent.monitoring.catalog import load_alert_catalog
+from k8s_incident_agent.monitoring.prometheus import PrometheusHttpClient
+from k8s_incident_agent.monitoring.service import PrometheusQueryService
 from k8s_incident_agent.persistence.database import (
     create_business_database,
     require_alembic_head,
@@ -52,6 +55,7 @@ from k8s_incident_agent.routes.incidents import (
     manual_router as manual_incidents_router,
 )
 from k8s_incident_agent.routes.incidents import router as incidents_router
+from k8s_incident_agent.routes.monitoring import router as monitoring_router
 from k8s_incident_agent.routes.scenarios import router as scenarios_router
 from k8s_incident_agent.runtime.artifacts import open_private_directory
 from k8s_incident_agent.runtime.cutover import require_runtime_cutover_complete
@@ -66,6 +70,7 @@ class RuntimeContainer:
     incidents: IncidentApplicationService
     events: IncidentEventService
     alerts: AlertmanagerApplicationService | None
+    monitoring: MonitoringHealthService
 
 
 type RuntimeContextFactory = Callable[
@@ -141,6 +146,7 @@ def create_app(
         app.include_router(alertmanager_router)
     app.include_router(incidents_router)
     app.include_router(events_router)
+    app.include_router(monitoring_router)
     if route_alertmanager_enabled:
         _install_alertmanager_openapi_contract(app)
     return app
@@ -179,11 +185,7 @@ async def build_runtime_container(
             if settings.incident_intake_mode == "manual"
             else ()
         )
-        alert_catalog = (
-            load_alert_catalog(settings.alert_catalog_dir)
-            if settings.alertmanager_webhook_token_file is not None
-            else None
-        )
+        alert_catalog = load_alert_catalog(settings.alert_catalog_dir)
         alert_authenticator = (
             AlertmanagerWebhookAuthenticator.from_file(
                 settings.alertmanager_webhook_token_file
@@ -242,6 +244,13 @@ async def build_runtime_container(
             on_event_committed=event_notifier.notify,
         )
         adapter = KubernetesEvidenceAdapter(kubernetes_clients)
+        prometheus = PrometheusQueryService(
+            catalog=alert_catalog,
+            client=PrometheusHttpClient.create(settings.prometheus_base_url),
+            cluster_id=kubernetes_clients.cluster_id,
+            now=now,
+        )
+        resources.push_async_callback(prometheus.close)
         model_snapshot = ModelSnapshot(
             provider=settings.model_provider,
             model_id=settings.model_name,
@@ -255,6 +264,7 @@ async def build_runtime_container(
             model_snapshot=model_snapshot,
             credential=credential,
             adapter=adapter,
+            prometheus=prometheus,
             now=now,
         )
         resources.push_async_callback(supervisor.close)
@@ -286,9 +296,15 @@ async def build_runtime_container(
                     budget=budget,
                     cluster_id=kubernetes_clients.cluster_id,
                     diagnostic_namespace=kubernetes_clients.diagnostic_namespace,
+                    now=now,
                 )
-                if alert_catalog is not None and alert_authenticator is not None
+                if alert_authenticator is not None
                 else None
+            ),
+            monitoring=MonitoringHealthService(
+                prometheus=prometheus,
+                repository=repository,
+                now=now,
             ),
         )
 

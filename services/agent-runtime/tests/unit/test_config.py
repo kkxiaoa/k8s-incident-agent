@@ -31,6 +31,7 @@ MODEL_ENVIRONMENT_VARIABLES = (
     "SCENARIO_CATALOG_DIR",
     "ALERT_CATALOG_DIR",
     "ALERTMANAGER_WEBHOOK_TOKEN_FILE",
+    "PROMETHEUS_BASE_URL",
 )
 
 
@@ -71,6 +72,9 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     assert settings.scenario_catalog_dir == tmp_path / "scenarios"
     assert settings.alert_catalog_dir == tmp_path / "monitoring" / "catalog"
     assert settings.alertmanager_webhook_token_file is None
+    assert str(settings.prometheus_base_url) == (
+        "http://prometheus.k8s-incident-monitoring.svc.cluster.local:9090/"
+    )
 
 
 def test_runtime_data_dir_is_projected_once_to_runtime_paths(
@@ -274,6 +278,37 @@ def test_base_url_rejects_embedded_credentials_query_or_fragment(
 
     with pytest.raises(ValidationError):
         settings_without_dotenv()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://prometheus.k8s-incident-monitoring.svc.cluster.local:9090",
+        "http://prometheus.example:9090",
+        "http://prometheus.k8s-incident-monitoring.svc.cluster.local:9091",
+        "http://user:password@localhost:9090",
+        "http://localhost:9090/api/v1",
+        "http://localhost:9090?token=value",
+    ],
+)
+def test_prometheus_url_rejects_unmanaged_or_sensitive_locations(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("PROMETHEUS_BASE_URL", value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+def test_prometheus_url_allows_loopback_for_local_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PROMETHEUS_BASE_URL", "http://127.0.0.1:9090")
+
+    settings = settings_without_dotenv()
+
+    assert str(settings.prometheus_base_url) == "http://127.0.0.1:9090/"
 
 
 def test_api_key_uses_secret_type_and_is_redacted(

@@ -24,7 +24,7 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import PrivateAttr
 from sqlalchemy import func, select
-from tests.factories import normalized_trigger
+from tests.factories import normalized_trigger, prometheus_query_service_stub
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.domain.models import (
@@ -264,6 +264,7 @@ def _dependencies(
         model_snapshot=_model_snapshot(),
         credential=credential or _credential(),
         adapter=cast(KubernetesEvidenceAdapter, adapter or object()),
+        prometheus=prometheus_query_service_stub(),
         now=now or (lambda: NOW),
     )
 
@@ -287,6 +288,7 @@ def _context(
         adapter=cast(KubernetesEvidenceAdapter, adapter or object()),
         repository=repository,
         now=now or (lambda: NOW),
+        prometheus=prometheus_query_service_stub(),
     )
 
 
@@ -312,6 +314,7 @@ def _supervisor(
         ),
         credential=credential or _credential(),
         adapter=cast(KubernetesEvidenceAdapter, adapter or object()),
+        prometheus=prometheus_query_service_stub(),
         now=lambda: now,
     )
 

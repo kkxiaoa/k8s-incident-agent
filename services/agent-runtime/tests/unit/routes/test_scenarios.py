@@ -5,6 +5,7 @@ from typing import cast
 
 import httpx
 import pytest
+from tests.factories import monitoring_health_service_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -61,6 +62,7 @@ async def test_scenario_route_returns_only_versioned_public_projection(
             incidents=cast(IncidentApplicationService, _ScenarioService()),
             events=cast(IncidentEventService, object()),
             alerts=None,
+            monitoring=monitoring_health_service_stub(),
         )
 
     app = api.create_app(

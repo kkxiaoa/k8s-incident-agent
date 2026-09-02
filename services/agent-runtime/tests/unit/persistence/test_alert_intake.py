@@ -29,6 +29,7 @@ from k8s_incident_agent.persistence.database import (
 from k8s_incident_agent.persistence.models import (
     AlertSignalRow,
     IncidentRow,
+    MonitoringSourceStateRow,
     RunEventRow,
     RunRow,
 )
@@ -390,3 +391,78 @@ async def test_batch_consistency_failure_rolls_back_earlier_occurrences(
         assert await _count(database, RunRow) == 1
         assert await _count(database, AlertSignalRow) == 1
         assert await _count(database, RunEventRow) == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_state_keeps_only_the_latest_valid_arrival(
+    tmp_path: Path,
+) -> None:
+    first = START_TIME + timedelta(minutes=1)
+    older = START_TIME
+    latest = START_TIME + timedelta(minutes=2)
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+
+        for received_at in (first, older, latest):
+            result = await repository.apply_alert_occurrences(
+                (),
+                _model(),
+                _budget(),
+                watchdog_received_at=received_at,
+            )
+            assert result.created_run_ids == result.events == ()
+
+        assert await repository.get_watchdog_last_received_at() == latest
+        assert await _count(database, MonitoringSourceStateRow) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_watchdog_arrivals_converge_on_the_latest_time(
+    tmp_path: Path,
+) -> None:
+    earlier = START_TIME + timedelta(minutes=1)
+    later = START_TIME + timedelta(minutes=2)
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+
+        await asyncio.gather(
+            repository.apply_alert_occurrences(
+                (),
+                _model(),
+                _budget(),
+                watchdog_received_at=earlier,
+            ),
+            repository.apply_alert_occurrences(
+                (),
+                _model(),
+                _budget(),
+                watchdog_received_at=later,
+            ),
+        )
+
+        assert await repository.get_watchdog_last_received_at() == later
+        assert await _count(database, MonitoringSourceStateRow) == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_state_rolls_back_with_an_invalid_alert_batch(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        await repository.apply_alert_occurrences(
+            (_occurrence(),),
+            _model(),
+            _budget(),
+        )
+
+        with pytest.raises(RecoveryConsistencyError):
+            await repository.apply_alert_occurrences(
+                (_occurrence(name="unexpected-target"),),
+                _model(),
+                _budget(),
+                watchdog_received_at=START_TIME + timedelta(minutes=1),
+            )
+
+        assert await repository.get_watchdog_last_received_at() is None
+        assert await _count(database, MonitoringSourceStateRow) == 0

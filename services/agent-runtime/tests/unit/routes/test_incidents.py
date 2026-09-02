@@ -7,6 +7,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+from tests.factories import monitoring_health_service_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -174,6 +175,7 @@ async def _client(
             incidents=cast(IncidentApplicationService, service),
             events=cast(IncidentEventService, object()),
             alerts=None,
+            monitoring=monitoring_health_service_stub(),
         )
 
     app = api.create_app(

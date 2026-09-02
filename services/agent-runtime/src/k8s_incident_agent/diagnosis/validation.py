@@ -10,8 +10,10 @@ from k8s_incident_agent.diagnosis.contracts import (
     RootCause,
     ValidatedDiagnosis,
 )
+from k8s_incident_agent.diagnosis.tool_execution import (
+    validate_diagnostic_tool_failure_contract,
+)
 from k8s_incident_agent.domain.models import JsonValue, ToolFailureRecord
-from k8s_incident_agent.kubernetes.errors import validate_kubernetes_failure_contract
 from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
@@ -127,7 +129,8 @@ def _require_valid_failure_contracts(
 ) -> None:
     for failure in failures:
         try:
-            validate_kubernetes_failure_contract(
+            validate_diagnostic_tool_failure_contract(
+                failure.tool_name,
                 failure.error_code,
                 retryable=failure.retryable,
             )

@@ -69,6 +69,10 @@ EXPECTED_COLUMNS = {
         "status",
         "ends_at",
     ),
+    "monitoring_source_state": (
+        "singleton_id",
+        "last_watchdog_received_at",
+    ),
     "run_events": (
         "id",
         "run_id",
@@ -109,6 +113,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
     "evidence": {("run_id", "agent_runs", "id")},
     "diagnoses": {("run_id", "agent_runs", "id")},
     "alert_signals": {("incident_id", "incidents", "id")},
+    "monitoring_source_state": set(),
 }
 
 EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
@@ -118,6 +123,7 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
     "evidence": {("run_id", "tool_call_id")},
     "diagnoses": {("run_id",)},
     "alert_signals": {("fingerprint", "starts_at")},
+    "monitoring_source_state": set(),
 }
 
 EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
@@ -127,6 +133,7 @@ EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
     "evidence": set(),
     "diagnoses": set(),
     "alert_signals": set(),
+    "monitoring_source_state": set(),
 }
 
 

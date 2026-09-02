@@ -9,9 +9,13 @@ from pydantic import (
     RootModel,
     WithJsonSchema,
     field_validator,
+    model_validator,
 )
 from pydantic.alias_generators import to_camel
 
+from k8s_incident_agent.diagnosis.tool_execution import (
+    normalize_diagnostic_tool_call_identity,
+)
 from k8s_incident_agent.domain.models import (
     CANONICAL_ALERT_TIMESTAMP_PATTERN,
     AlertSignalStatus,
@@ -229,9 +233,30 @@ class RunStartedEventPayload(RunEventPayload):
     run_status: Literal["RUNNING"]
 
 
+class PrometheusToolCallIdentity(_ApiContract):
+    panel_id: str = Field(min_length=1, max_length=128)
+    window: Literal["15m", "1h", "6h"]
+
+
 class ToolStartedEventPayload(RunEventPayload):
     tool_call_id: str
     tool_name: str
+    call_identity: PrometheusToolCallIdentity | None = None
+
+    @model_validator(mode="after")
+    def require_matching_call_identity(self) -> "ToolStartedEventPayload":
+        identity = (
+            None
+            if self.call_identity is None
+            else self.call_identity.model_dump(mode="json", by_alias=True)
+        )
+        normalized = normalize_diagnostic_tool_call_identity(
+            self.tool_name,
+            identity,
+        )
+        if normalized != identity:
+            raise ValueError("Tool call identity is not normalized")
+        return self
 
 
 class EvidenceRecordedEventPayload(RunEventPayload):

@@ -32,12 +32,11 @@ from langgraph.types import Command
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
 from k8s_incident_agent.diagnosis.prompt import build_diagnostic_system_prompt
+from k8s_incident_agent.diagnosis.tool_execution import DIAGNOSTIC_TOOL_NAMES
 from k8s_incident_agent.domain.models import JsonValue
 
 _DEFAULT_MAX_MODEL_CALLS = 8
 _DEFAULT_MAX_TOOL_CALLS = 6
-_DIAGNOSTIC_TOOL_NAMES = ("get_workload", "get_pods", "get_events")
-
 type _DiagnosisPayload = dict[str, JsonValue]
 
 
@@ -238,17 +237,19 @@ def build_diagnostic_agent(
     *,
     max_model_calls: int = _DEFAULT_MAX_MODEL_CALLS,
     max_tool_calls: int = _DEFAULT_MAX_TOOL_CALLS,
+    prometheus_panel_ids: Sequence[str],
 ) -> _DiagnosticAgentGraph:
     """Build the one-shot read-only diagnosis graph embedded by the orchestrator."""
     tool_names = tuple(tool.name for tool in tools)
-    if tool_names != _DIAGNOSTIC_TOOL_NAMES:
+    if tool_names != DIAGNOSTIC_TOOL_NAMES:
         raise ValueError(
-            "diagnosis requires exactly the three diagnostic read tools in registry order"
+            "diagnosis requires exactly the four diagnostic read tools in registry order"
         )
 
     system_prompt = build_diagnostic_system_prompt(
         max_model_calls=max_model_calls,
         max_tool_calls=max_tool_calls,
+        prometheus_panel_ids=prometheus_panel_ids,
     )
     agent_factory = cast(Callable[..., object], create_agent)
     graph = agent_factory(

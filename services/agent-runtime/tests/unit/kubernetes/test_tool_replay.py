@@ -12,7 +12,11 @@ from alembic.config import Config
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
 from sqlalchemy import select
-from tests.factories import agent_run_snapshot, normalized_trigger
+from tests.factories import (
+    agent_run_snapshot,
+    normalized_trigger,
+    prometheus_query_service_stub,
+)
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.domain.models import EvidenceRecord, ModelSnapshot, RunBudget
@@ -188,6 +192,7 @@ async def _context(
         adapter=cast("KubernetesEvidenceAdapter", adapter),
         repository=repository,
         now=lambda: NOW + timedelta(seconds=30),
+        prometheus=prometheus_query_service_stub(),
     )
 
 

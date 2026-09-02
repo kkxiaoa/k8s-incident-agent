@@ -1,11 +1,14 @@
+from typing import cast
 from uuid import UUID
 
+from k8s_incident_agent.application.monitoring import MonitoringHealthService
 from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
     NormalizedIncidentTrigger,
 )
 from k8s_incident_agent.domain.models import AgentRunSnapshot
+from k8s_incident_agent.monitoring.service import PrometheusQueryService
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
@@ -63,3 +66,15 @@ async def agent_run_snapshot(
         started_at=workflow.started_at,
         timeout_seconds=workflow.budget.timeout_seconds,
     )
+
+
+class _PrometheusQueryServiceStub:
+    panel_ids = ("image-pull-affected-pods", "image-pull-waiting-containers")
+
+
+def prometheus_query_service_stub() -> PrometheusQueryService:
+    return cast(PrometheusQueryService, _PrometheusQueryServiceStub())
+
+
+def monitoring_health_service_stub() -> MonitoringHealthService:
+    return cast(MonitoringHealthService, object())

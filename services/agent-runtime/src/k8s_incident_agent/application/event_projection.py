@@ -8,8 +8,10 @@ from k8s_incident_agent.api_contracts import (
     ToolFailedEventPayload,
     ToolStartedEventPayload,
 )
+from k8s_incident_agent.diagnosis.tool_execution import (
+    validate_diagnostic_tool_failure_contract,
+)
 from k8s_incident_agent.domain.models import RunEvent
-from k8s_incident_agent.kubernetes.errors import validate_kubernetes_failure_contract
 from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
 from k8s_incident_agent.workflow.failures import require_terminal_error_contract
@@ -31,7 +33,8 @@ def validated_stream_item(event: RunEvent) -> RunEventStreamItem:
     payload = stream_item.root.data
     if isinstance(payload, ToolFailedEventPayload):
         try:
-            validate_kubernetes_failure_contract(
+            validate_diagnostic_tool_failure_contract(
+                payload.tool_name,
                 payload.error_code,
                 retryable=payload.retryable,
             )
@@ -43,11 +46,18 @@ def validated_stream_item(event: RunEvent) -> RunEventStreamItem:
         payload.incident_id != event.incident_id
         or payload.run_id != event.run_id
         or payload.occurred_at != event.occurred_at
-        or payload.model_dump(mode="json") != event.payload
+        or _event_payload(payload) != event.payload
         or event.event_key != _expected_event_key(event.event_type, payload)
     ):
         raise RecoveryConsistencyError
     return stream_item
+
+
+def _event_payload(payload: RunEventPayload) -> dict[str, object]:
+    serialized = payload.model_dump(mode="json")
+    if isinstance(payload, ToolStartedEventPayload) and payload.call_identity is None:
+        serialized.pop("callIdentity")
+    return serialized
 
 
 def validated_event_json(event: RunEvent) -> str:

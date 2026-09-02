@@ -23,6 +23,7 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredentialLease
+from k8s_incident_agent.monitoring.service import PrometheusQueryService
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     RecoveryConsistencyError,
@@ -60,6 +61,7 @@ class RunSupervisor:
         model_snapshot: ModelSnapshot,
         credential: DiagnosticCredentialLease,
         adapter: KubernetesEvidenceAdapter,
+        prometheus: PrometheusQueryService,
         now: Callable[[], datetime],
     ) -> None:
         self._dependencies = GraphDependencies(
@@ -69,6 +71,7 @@ class RunSupervisor:
             model_snapshot=model_snapshot,
             credential=credential,
             adapter=adapter,
+            prometheus=prometheus,
             now=now,
         )
         self._repository = repository
@@ -209,6 +212,7 @@ class RunSupervisor:
             adapter=self._dependencies.adapter,
             repository=self._repository,
             now=self._now,
+            prometheus=self._dependencies.prometheus,
         )
 
     async def _require_queued_checkpoint(

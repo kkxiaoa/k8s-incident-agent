@@ -1106,6 +1106,104 @@
         "title": "IncidentTargetResponse",
         "type": "object"
       },
+      "MonitoringComponentState": {
+        "enum": [
+          "healthy",
+          "degraded",
+          "unavailable",
+          "stale",
+          "unknown"
+        ],
+        "title": "MonitoringComponentState",
+        "type": "string"
+      },
+      "MonitoringHealthSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "alertmanager": {
+            "$ref": "#/components/schemas/MonitoringComponentState"
+          },
+          "checkedAt": {
+            "format": "date-time",
+            "title": "Checkedat",
+            "type": "string"
+          },
+          "kubeStateMetrics": {
+            "$ref": "#/components/schemas/MonitoringComponentState"
+          },
+          "notification": {
+            "$ref": "#/components/schemas/MonitoringComponentState"
+          },
+          "prometheus": {
+            "$ref": "#/components/schemas/MonitoringComponentState"
+          },
+          "ruleEvaluation": {
+            "$ref": "#/components/schemas/MonitoringComponentState"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MonitoringOverallState"
+          },
+          "watchdogLastReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watchdoglastreceivedat"
+          }
+        },
+        "required": [
+          "state",
+          "checkedAt",
+          "prometheus",
+          "kubeStateMetrics",
+          "ruleEvaluation",
+          "alertmanager",
+          "notification",
+          "watchdogLastReceivedAt"
+        ],
+        "title": "MonitoringHealthSnapshot",
+        "type": "object"
+      },
+      "MonitoringOverallState": {
+        "enum": [
+          "healthy",
+          "degraded",
+          "unavailable"
+        ],
+        "title": "MonitoringOverallState",
+        "type": "string"
+      },
+      "PrometheusToolCallIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "panelId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Panelid",
+            "type": "string"
+          },
+          "window": {
+            "enum": [
+              "15m",
+              "1h",
+              "6h"
+            ],
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "panelId",
+          "window"
+        ],
+        "title": "PrometheusToolCallIdentity",
+        "type": "object"
+      },
       "RootCauseResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1835,6 +1933,16 @@
       "ToolStartedEventPayload": {
         "additionalProperties": false,
         "properties": {
+          "callIdentity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrometheusToolCallIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "incidentId": {
             "format": "uuid",
             "title": "Incidentid",
@@ -2629,6 +2737,44 @@
           }
         },
         "summary": "List Run Events"
+      }
+    },
+    "/api/v1/monitoring/health": {
+      "get": {
+        "operationId": "get_monitoring_health_api_v1_monitoring_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MonitoringHealthSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Monitoring Health"
       }
     },
     "/api/v1/scenarios": {

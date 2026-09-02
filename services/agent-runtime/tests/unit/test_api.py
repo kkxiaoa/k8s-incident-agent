@@ -7,6 +7,7 @@ from typing import cast
 import httpx
 import pytest
 from fastapi.responses import StreamingResponse
+from tests.factories import monitoring_health_service_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -49,6 +50,7 @@ async def test_settings_and_runtime_context_are_entered_only_during_lifespan(
                 incidents=cast(IncidentApplicationService, _UnusedService()),
                 events=cast(IncidentEventService, _UnusedService()),
                 alerts=None,
+                monitoring=monitoring_health_service_stub(),
             )
         finally:
             assert cast(bool, app.state.ready) is False
@@ -129,6 +131,7 @@ def test_manual_route_table_contains_read_and_create_endpoints() -> None:
         ("GET", "/api/v1/incidents/{incident_id}/runs"),
         ("POST", "/api/v1/incidents/{incident_id}/runs"),
         ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
+        ("GET", "/api/v1/monitoring/health"),
     }
     assert all(method not in {"PUT", "PATCH", "DELETE"} for method, _path in routes)
 
@@ -145,6 +148,7 @@ def test_online_route_table_omits_manual_entrypoints(tmp_path: Path) -> None:
         ("GET", "/api/v1/incidents/{incident_id}/events"),
         ("GET", "/api/v1/incidents/{incident_id}/runs"),
         ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
+        ("GET", "/api/v1/monitoring/health"),
     }
 
 

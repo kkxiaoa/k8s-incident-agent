@@ -10,7 +10,11 @@ from alembic import command
 from alembic.config import Config
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
-from tests.factories import agent_run_snapshot, normalized_trigger
+from tests.factories import (
+    agent_run_snapshot,
+    normalized_trigger,
+    prometheus_query_service_stub,
+)
 
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
@@ -118,6 +122,7 @@ async def test_fixed_kind_tools_persist_three_fresh_observations(
                 adapter=KubernetesEvidenceAdapter(clients),
                 repository=repository,
                 now=lambda: datetime.now(UTC),
+                prometheus=prometheus_query_service_stub(),
             )
             tools = build_diagnostic_tools()
 

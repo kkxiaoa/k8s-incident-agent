@@ -8,12 +8,7 @@ class DuplicateJsonKeyError(ValueError):
 def load_unique_json(payload: bytes) -> object:
     try:
         return json.loads(payload, object_pairs_hook=_unique_object)
-    except (
-        DuplicateJsonKeyError,
-        RecursionError,
-        UnicodeDecodeError,
-        json.JSONDecodeError,
-    ):
+    except (RecursionError, UnicodeDecodeError, ValueError):
         raise ValueError("JSON document is invalid") from None
 
 

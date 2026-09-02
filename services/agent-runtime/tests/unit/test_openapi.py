@@ -19,6 +19,7 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/v1/incidents/{incident_id}/runs"),
     ("POST", "/api/v1/incidents/{incident_id}/runs"),
     ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
+    ("GET", "/api/v1/monitoring/health"),
 }
 
 HTTP_METHODS = frozenset(
@@ -66,6 +67,7 @@ EXPECTED_ERROR_STATUSES = {
         "500",
         "503",
     },
+    ("GET", "/api/v1/monitoring/health"): {"500", "503"},
 }
 
 EXPECTED_EVENT_COMPONENTS = {
@@ -208,6 +210,11 @@ def test_operations_reference_their_success_and_error_models(
     success_models = {
         ("GET", "/healthz", "200"): "HealthResponse",
         ("GET", "/api/v1/scenarios", "200"): "ScenarioListResponse",
+        (
+            "GET",
+            "/api/v1/monitoring/health",
+            "200",
+        ): "MonitoringHealthSnapshot",
         ("POST", "/api/v1/incidents", "202"): "CreateIncidentResponse",
         ("GET", "/api/v1/incidents", "200"): "IncidentListResponse",
         (

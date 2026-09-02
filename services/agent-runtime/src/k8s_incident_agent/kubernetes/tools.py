@@ -8,6 +8,7 @@ from langchain.tools import BaseTool, ToolRuntime, tool
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
+from k8s_incident_agent.diagnosis.tool_execution import DiagnosticToolFatalError
 from k8s_incident_agent.domain.models import (
     EvidenceRecord,
     JsonValue,
@@ -45,11 +46,9 @@ class ToolFailureEnvelope(BaseModel):
     message: str
 
 
-class FatalDiagnosticToolError(RuntimeError):
+class FatalDiagnosticToolError(DiagnosticToolFatalError):
     def __init__(self, code: KubernetesErrorCode) -> None:
-        self.code = code
-        self.retryable = False
-        super().__init__(str(KubernetesBoundaryError(code)))
+        super().__init__(code, str(KubernetesBoundaryError(code)))
 
 
 @tool("get_workload")

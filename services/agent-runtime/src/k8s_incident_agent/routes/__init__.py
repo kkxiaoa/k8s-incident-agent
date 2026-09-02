@@ -8,6 +8,7 @@ from k8s_incident_agent.application.incidents import (
     IncidentApplicationService,
     RuntimeNotReadyError,
 )
+from k8s_incident_agent.application.monitoring import MonitoringHealthService
 
 
 def incident_service(request: Request) -> IncidentApplicationService:
@@ -40,3 +41,13 @@ def alertmanager_service(request: Request) -> AlertmanagerApplicationService:
     if service is None:
         raise RuntimeNotReadyError
     return cast(AlertmanagerApplicationService, service)
+
+
+def monitoring_service(request: Request) -> MonitoringHealthService:
+    if request.app.state.ready is not True:
+        raise RuntimeNotReadyError
+    try:
+        service = request.app.state.container.monitoring
+    except AttributeError:
+        raise RuntimeNotReadyError from None
+    return cast(MonitoringHealthService, service)

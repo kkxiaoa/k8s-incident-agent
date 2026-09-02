@@ -32,6 +32,7 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
     CompiledStateGraph,
 )
 from pydantic import PrivateAttr
+from tests.factories import prometheus_query_service_stub
 from typing_extensions import TypedDict
 
 from k8s_incident_agent.diagnosis.agent import build_diagnostic_agent
@@ -120,7 +121,7 @@ def _structured_response(candidate: DiagnosisCandidate) -> AIMessage:
     )
 
 
-def _tools() -> tuple[BaseTool, BaseTool, BaseTool]:
+def _tools() -> tuple[BaseTool, BaseTool, BaseTool, BaseTool]:
     @tool("get_workload")
     async def get_workload() -> dict[str, str]:
         """Read normalized workload evidence."""
@@ -136,7 +137,13 @@ def _tools() -> tuple[BaseTool, BaseTool, BaseTool]:
         """Read normalized event evidence."""
         return {"evidenceId": EVIDENCE_ID}
 
-    return get_workload, get_pods, get_events
+    @tool("query_prometheus")
+    async def query_prometheus(panel_id: str, window: str) -> dict[str, str]:
+        """Read one catalog-owned Prometheus panel."""
+        del panel_id, window
+        return {"evidenceId": EVIDENCE_ID}
+
+    return get_workload, get_pods, get_events, query_prometheus
 
 
 def _budget_graph(
@@ -156,6 +163,7 @@ def _budget_graph(
         _tools(),
         max_model_calls=max_model_calls,
         max_tool_calls=max_tool_calls,
+        prometheus_panel_ids=("image-pull-affected-pods",),
     )
     builder = StateGraph(_BudgetState, context_schema=DiagnosticToolContext)
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
@@ -186,6 +194,7 @@ def _context(
         adapter=cast(KubernetesEvidenceAdapter, object()),
         repository=cast(IncidentRepository, repository or object()),
         now=lambda: NOW,
+        prometheus=prometheus_query_service_stub(),
     )
 
 
@@ -372,6 +381,7 @@ async def test_absolute_deadline_comes_from_persisted_started_at(
                 ),
                 credential=_credential(),
                 adapter=cast(KubernetesEvidenceAdapter, object()),
+                prometheus=prometheus_query_service_stub(),
                 now=lambda: NOW,
             ),
             run,

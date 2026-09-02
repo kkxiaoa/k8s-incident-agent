@@ -61,6 +61,9 @@ class Settings(BaseSettings):
         default=None,
         repr=False,
     )
+    prometheus_base_url: HttpUrl = HttpUrl(
+        "http://prometheus.k8s-incident-monitoring.svc.cluster.local:9090"
+    )
     runtime_paths: Annotated[RuntimePaths, NoDecode] = Field(
         default_factory=lambda: RuntimePaths.prepare(REPOSITORY_ROOT / ".runtime"),
         validation_alias="RUNTIME_DATA_DIR",
@@ -131,6 +134,29 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DEEPSEEK_BASE_URL must not contain credentials, query, or fragment"
             )
+        return value
+
+    @field_validator("prometheus_base_url")
+    @classmethod
+    def require_managed_prometheus_url(cls, value: HttpUrl) -> HttpUrl:
+        if (
+            value.username
+            or value.password
+            or value.query
+            or value.fragment
+            or value.path != "/"
+        ):
+            raise ValueError(
+                "PROMETHEUS_BASE_URL must not contain credentials, path, query, or fragment"
+            )
+        if value.host in {"127.0.0.1", "localhost", "::1"}:
+            return value
+        if (
+            value.scheme != "http"
+            or value.host != "prometheus.k8s-incident-monitoring.svc.cluster.local"
+            or value.port != 9090
+        ):
+            raise ValueError("PROMETHEUS_BASE_URL is outside the managed profile")
         return value
 
     @model_validator(mode="after")

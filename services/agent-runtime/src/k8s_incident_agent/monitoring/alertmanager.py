@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, cast
 
@@ -94,13 +95,19 @@ class AlertmanagerWebhook(_WebhookContract):
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ParsedAlertmanagerWebhook:
+    occurrences: tuple[NormalizedAlertOccurrence, ...]
+    watchdog_firing: bool
+
+
 def parse_alertmanager_webhook(
     payload: bytes,
     *,
     catalog: AlertCatalog,
     cluster_id: str,
     diagnostic_namespace: str,
-) -> tuple[NormalizedAlertOccurrence, ...]:
+) -> ParsedAlertmanagerWebhook:
     try:
         raw_document = load_unique_json(payload)
         _require_json_budget(raw_document)
@@ -115,8 +122,14 @@ def parse_alertmanager_webhook(
     occurrences: dict[
         tuple[str, CanonicalAlertTimestamp], NormalizedAlertOccurrence
     ] = {}
+    watchdog_firing = False
     for alert in document.alerts:
-        entry = catalog.find(alert.labels.get("alertname", ""))
+        alert_name = alert.labels.get("alertname", "")
+        if alert_name == "Watchdog":
+            _require_managed_watchdog(alert, cluster_id=cluster_id)
+            watchdog_firing = watchdog_firing or alert.status == "firing"
+            continue
+        entry = catalog.find(alert_name)
         if entry is None:
             continue
         occurrence = _normalize_supported_alert(
@@ -131,7 +144,22 @@ def parse_alertmanager_webhook(
         occurrences[key] = (
             occurrence if previous is None else _merge_occurrence(previous, occurrence)
         )
-    return tuple(occurrences.values())
+    return ParsedAlertmanagerWebhook(
+        occurrences=tuple(occurrences.values()),
+        watchdog_firing=watchdog_firing,
+    )
+
+
+def _require_managed_watchdog(
+    alert: AlertmanagerAlert,
+    *,
+    cluster_id: str,
+) -> None:
+    if (
+        alert.labels.get("cluster") != cluster_id
+        or alert.labels.get("severity") != "none"
+    ):
+        raise AlertTargetInvalidError
 
 
 def _normalize_supported_alert(

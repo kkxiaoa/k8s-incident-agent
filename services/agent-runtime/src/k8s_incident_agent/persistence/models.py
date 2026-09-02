@@ -132,6 +132,17 @@ class AlertSignalRow(Base):
     ends_at: Mapped[str | None] = mapped_column(String(30))
 
 
+class MonitoringSourceStateRow(Base):
+    __tablename__ = "monitoring_source_state"
+    __table_args__ = (CheckConstraint("singleton_id = 1", name="singleton"),)
+
+    singleton_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_watchdog_received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class RunRow(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (

@@ -51,12 +51,44 @@ class AlertRuleContract(_CatalogContract):
         return _require_normalized(value)
 
 
+class MetricPanelContract(_CatalogContract):
+    panel_id: str = Field(
+        pattern=r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+        max_length=128,
+    )
+    title: str = Field(min_length=1, max_length=160)
+    unit: Literal["pods", "containers"]
+    threshold: float = Field(allow_inf_nan=False)
+    recommended_window: Literal["15m", "1h", "6h"]
+    stale_after_seconds: int = Field(ge=15, le=300)
+    query_template: str = Field(min_length=1, max_length=16 * 1024)
+
+    @field_validator("title", "query_template")
+    @classmethod
+    def require_normalized_panel_text(cls, value: str) -> str:
+        return _require_normalized(value)
+
+    @field_validator("query_template")
+    @classmethod
+    def require_exact_target_placeholders(cls, value: str) -> str:
+        for placeholder in ("{{namespace}}", "{{name}}"):
+            if placeholder not in value:
+                raise ValueError(
+                    "Metric query template is missing a target placeholder"
+                )
+        without_supported = value.replace("{{namespace}}", "").replace("{{name}}", "")
+        if "{{" in without_supported or "}}" in without_supported:
+            raise ValueError("Metric query template contains an unknown placeholder")
+        return value
+
+
 class AlertCatalogEntry(_CatalogContract):
     alert_id: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
     display_name: str = Field(min_length=1, max_length=160)
     trigger_summary: str = Field(min_length=1, max_length=512)
     rule: AlertRuleContract
     target: AlertTargetMapping
+    panels: list[MetricPanelContract] = Field(min_length=1, max_length=8)
 
     @field_validator("display_name", "trigger_summary")
     @classmethod
@@ -65,7 +97,7 @@ class AlertCatalogEntry(_CatalogContract):
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,
@@ -83,6 +115,20 @@ class AlertCatalog:
         return next(
             (entry for entry in self.entries if entry.alert_id == alert_id), None
         )
+
+    def find_panel(
+        self,
+        panel_id: str,
+    ) -> tuple[AlertCatalogEntry, MetricPanelContract] | None:
+        for entry in self.entries:
+            for panel in entry.panels:
+                if panel.panel_id == panel_id:
+                    return entry, panel
+        return None
+
+    @property
+    def panel_ids(self) -> tuple[str, ...]:
+        return tuple(panel.panel_id for entry in self.entries for panel in entry.panels)
 
 
 def load_alert_catalog(directory: Path) -> AlertCatalog:
@@ -109,6 +155,9 @@ def load_alert_catalog(directory: Path) -> AlertCatalog:
         }
         if len(labels) != 3:
             raise ValueError("Alert catalog target labels must be distinct")
+    panel_ids = [panel.panel_id for entry in document.alerts for panel in entry.panels]
+    if len(set(panel_ids)) != len(panel_ids):
+        raise ValueError("Alert catalog contains duplicate panel identifiers")
     return AlertCatalog(
         version=document.catalog_version, entries=tuple(document.alerts)
     )

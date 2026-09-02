@@ -5,6 +5,7 @@ from typing import cast
 
 import httpx
 import pytest
+from tests.factories import monitoring_health_service_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -63,6 +64,7 @@ async def _client(
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),
             alerts=cast(AlertmanagerApplicationService, service),
+            monitoring=monitoring_health_service_stub(),
         )
 
     app = api.create_app(

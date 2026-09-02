@@ -338,6 +338,80 @@ async def test_serializer_rejects_invalid_failure_contracts(
 
 
 @pytest.mark.asyncio
+async def test_serializer_accepts_the_distinct_prometheus_failure_contract() -> None:
+    event = _event(
+        11,
+        "tool.failed",
+        "tool:call-metrics:failed",
+        {
+            "toolCallId": "call-metrics",
+            "toolName": "query_prometheus",
+            "errorCode": "monitoring_request_timeout",
+            "retryable": True,
+        },
+    )
+    stream = stream_incident_events(
+        INCIDENT_ID,
+        0,
+        _dependencies(_Repository((event,))),
+    )
+
+    assert (
+        await anext(stream)
+        == (
+            f"id: 11\nevent: tool.failed\ndata: {canonical_json(event.payload)}\n\n"
+        ).encode()
+    )
+
+
+@pytest.mark.asyncio
+async def test_serializer_accepts_prometheus_started_call_identity() -> None:
+    event = _event(
+        11,
+        "tool.started",
+        "tool:call-metrics:started",
+        {
+            "toolCallId": "call-metrics",
+            "toolName": "query_prometheus",
+            "callIdentity": {
+                "panelId": "image-pull-affected-pods",
+                "window": "15m",
+            },
+        },
+    )
+    stream = stream_incident_events(
+        INCIDENT_ID,
+        0,
+        _dependencies(_Repository((event,))),
+    )
+
+    assert (
+        await anext(stream)
+        == (
+            f"id: 11\nevent: tool.started\ndata: {canonical_json(event.payload)}\n\n"
+        ).encode()
+    )
+
+
+@pytest.mark.asyncio
+async def test_serializer_rejects_prometheus_started_without_call_identity() -> None:
+    event = _event(
+        11,
+        "tool.started",
+        "tool:call-metrics:started",
+        {"toolCallId": "call-metrics", "toolName": "query_prometheus"},
+    )
+    stream = stream_incident_events(
+        INCIDENT_ID,
+        0,
+        _dependencies(_Repository((event,))),
+    )
+
+    with pytest.raises(RecoveryConsistencyError):
+        await anext(stream)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("event", "field"),
     [

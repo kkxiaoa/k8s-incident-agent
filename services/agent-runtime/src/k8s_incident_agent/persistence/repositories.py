@@ -18,6 +18,9 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.sql.dml import Delete
 
 from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
+from k8s_incident_agent.diagnosis.tool_execution import (
+    normalize_diagnostic_tool_call_identity,
+)
 from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
@@ -55,6 +58,7 @@ from k8s_incident_agent.persistence.models import (
     DiagnosisRow,
     EvidenceRow,
     IncidentRow,
+    MonitoringSourceStateRow,
     RunEventRow,
     RunRow,
 )
@@ -208,6 +212,24 @@ def evidence_id(run_id: UUID, tool_call_id: str) -> UUID:
 
 def diagnosis_id(run_id: UUID) -> UUID:
     return uuid5(PROJECT_NAMESPACE, f"{run_id}:diagnosis")
+
+
+async def _record_watchdog_arrival(
+    session: AsyncSession,
+    received_at: datetime,
+) -> None:
+    state = await session.get(MonitoringSourceStateRow, 1)
+    if state is None:
+        session.add(
+            MonitoringSourceStateRow(
+                singleton_id=1,
+                last_watchdog_received_at=received_at,
+            )
+        )
+        await session.flush()
+        return
+    if _database_datetime(state.last_watchdog_received_at) < received_at:
+        state.last_watchdog_received_at = received_at
 
 
 def _require_incident_transition(
@@ -732,7 +754,15 @@ class IncidentRepository:
         run_id: UUID,
         tool_call_id: str,
         tool_name: str,
+        call_identity: dict[str, JsonValue] | None = None,
     ) -> PersistedEvidence | ToolFailureRecord | None:
+        try:
+            normalized_identity = normalize_diagnostic_tool_call_identity(
+                tool_name,
+                call_identity,
+            )
+        except ValueError:
+            raise RecoveryConsistencyError from None
         try:
             async with self._session_factory() as session:
                 _, incident = await _load_run_context(session, run_id)
@@ -752,6 +782,7 @@ class IncidentRepository:
                     run_id,
                     tool_call_id,
                     tool_name,
+                    normalized_identity,
                 )
 
                 if evidence is not None:
@@ -802,10 +833,27 @@ class IncidentRepository:
         occurrences: tuple[NormalizedAlertOccurrence, ...],
         model: ModelSnapshot,
         budget: RunBudget,
+        *,
+        watchdog_received_at: datetime | None = None,
     ) -> PersistedAlertBatch:
+        normalized_watchdog = (
+            _require_aware_datetime(watchdog_received_at)
+            if watchdog_received_at is not None
+            else None
+        )
         result = await _execute_with_replay(
-            lambda: self._apply_alert_occurrences_once(occurrences, model, budget),
-            lambda: self._apply_alert_occurrences_once(occurrences, model, budget),
+            lambda: self._apply_alert_occurrences_once(
+                occurrences,
+                model,
+                budget,
+                normalized_watchdog,
+            ),
+            lambda: self._apply_alert_occurrences_once(
+                occurrences,
+                model,
+                budget,
+                normalized_watchdog,
+            ),
         )
         for event in result.events:
             await self._notify_committed_event(event)
@@ -816,10 +864,13 @@ class IncidentRepository:
         occurrences: tuple[NormalizedAlertOccurrence, ...],
         model: ModelSnapshot,
         budget: RunBudget,
+        watchdog_received_at: datetime | None,
     ) -> PersistedAlertBatch:
         created_run_ids: list[UUID] = []
         committed_events: list[RunEvent] = []
         async with self._session_factory() as session, session.begin():
+            if watchdog_received_at is not None:
+                await _record_watchdog_arrival(session, watchdog_received_at)
             for occurrence in occurrences:
                 signal = await session.scalar(
                     select(AlertSignalRow).where(
@@ -852,6 +903,18 @@ class IncidentRepository:
             created_run_ids=tuple(created_run_ids),
             events=tuple(committed_events),
         )
+
+    async def get_watchdog_last_received_at(self) -> datetime | None:
+        try:
+            async with self._session_factory() as session:
+                state = await session.get(MonitoringSourceStateRow, 1)
+                return (
+                    None
+                    if state is None
+                    else _database_datetime(state.last_watchdog_received_at)
+                )
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
 
     async def create_run(
         self,
@@ -997,10 +1060,28 @@ class IncidentRepository:
         run_id: UUID,
         tool_call_id: str,
         tool_name: str,
+        call_identity: dict[str, JsonValue] | None = None,
     ) -> RunEvent:
+        try:
+            normalized_identity = normalize_diagnostic_tool_call_identity(
+                tool_name,
+                call_identity,
+            )
+        except ValueError:
+            raise RecoveryConsistencyError from None
         result = await _execute_with_replay(
-            lambda: self._record_tool_started_once(run_id, tool_call_id, tool_name),
-            lambda: self._replay_tool_started(run_id, tool_call_id, tool_name),
+            lambda: self._record_tool_started_once(
+                run_id,
+                tool_call_id,
+                tool_name,
+                normalized_identity,
+            ),
+            lambda: self._replay_tool_started(
+                run_id,
+                tool_call_id,
+                tool_name,
+                normalized_identity,
+            ),
         )
         await self._notify_committed_event(result)
         return result
@@ -1010,6 +1091,7 @@ class IncidentRepository:
         run_id: UUID,
         tool_call_id: str,
         tool_name: str,
+        call_identity: dict[str, JsonValue] | None,
     ) -> RunEvent:
         event_key = f"tool:{tool_call_id}:started"
         async with self._session_factory() as session, session.begin():
@@ -1023,6 +1105,7 @@ class IncidentRepository:
                     run_id,
                     tool_call_id,
                     tool_name,
+                    call_identity,
                 )
                 return _event_from_row(
                     existing,
@@ -1041,6 +1124,7 @@ class IncidentRepository:
                     tool_call_id,
                     tool_name,
                     occurred_at,
+                    call_identity,
                 ),
             )
             session.add(event_row)
@@ -1055,6 +1139,7 @@ class IncidentRepository:
         run_id: UUID,
         tool_call_id: str,
         tool_name: str,
+        call_identity: dict[str, JsonValue] | None,
     ) -> RunEvent:
         async with self._session_factory() as session:
             _, incident = await _load_run_context(session, run_id)
@@ -1069,6 +1154,7 @@ class IncidentRepository:
                 run_id,
                 tool_call_id,
                 tool_name,
+                call_identity,
             )
             return _event_from_row(
                 event_row,
@@ -2273,9 +2359,12 @@ def _tool_started_event_payload(
     tool_call_id: str,
     tool_name: str,
     occurred_at: datetime,
+    call_identity: dict[str, JsonValue] | None,
 ) -> dict[str, JsonValue]:
     payload = _base_payload(incident_id, run_id, occurred_at)
     payload.update({"toolCallId": tool_call_id, "toolName": tool_name})
+    if call_identity is not None:
+        payload["callIdentity"] = call_identity
     return payload
 
 
@@ -2357,6 +2446,7 @@ async def _require_matching_tool_started(
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
+    call_identity: dict[str, JsonValue] | None,
 ) -> None:
     event_row = await _event_by_key(session, run_id, f"tool:{tool_call_id}:started")
     if event_row is None:
@@ -2367,6 +2457,7 @@ async def _require_matching_tool_started(
         run_id,
         tool_call_id,
         tool_name,
+        call_identity,
     )
 
 
@@ -2376,8 +2467,35 @@ def _require_matching_tool_started_event(
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
+    call_identity: dict[str, JsonValue] | None,
 ) -> None:
+    actual_identity = _matching_tool_started_identity(
+        event_row,
+        incident_id,
+        run_id,
+        tool_call_id,
+        tool_name,
+    )
+    if actual_identity != call_identity:
+        raise RecoveryConsistencyError
+
+
+def _matching_tool_started_identity(
+    event_row: RunEventRow,
+    incident_id: UUID,
+    run_id: UUID,
+    tool_call_id: str,
+    tool_name: str,
+) -> dict[str, JsonValue] | None:
     occurred_at = _database_datetime(event_row.occurred_at)
+    event_payload = _event_payload(event_row)
+    try:
+        call_identity = normalize_diagnostic_tool_call_identity(
+            tool_name,
+            event_payload.get("callIdentity"),
+        )
+    except ValueError:
+        raise RecoveryConsistencyError from None
     if not _event_matches(
         event_row,
         incident_id=incident_id,
@@ -2391,9 +2509,11 @@ def _require_matching_tool_started_event(
             tool_call_id,
             tool_name,
             occurred_at,
+            call_identity,
         ),
     ):
         raise RecoveryConsistencyError
+    return call_identity
 
 
 async def _resolve_evidence_replay(
@@ -2601,7 +2721,7 @@ def _diagnosis_validation_snapshot(
 
     matched_evidence_event_ids: set[int] = set()
     matched_started_event_ids: set[int] = set()
-    successes: list[tuple[int, str, str]] = []
+    successes: list[tuple[int, str, str, dict[str, JsonValue] | None]] = []
     persisted_ids: set[UUID] = set()
     success_call_ids: set[str] = set()
     for evidence_row in evidence_rows:
@@ -2618,27 +2738,33 @@ def _diagnosis_validation_snapshot(
             evidence_row.tool_call_id,
             evidence_row.tool_name,
         )
-        matched_started_event_ids.add(
-            _require_earlier_matching_tool_started(
-                all_events_by_key,
-                event_row,
-                incident_id,
-                run_id,
-                persisted.tool_call_id,
-                persisted.tool_name,
-            )
+        started_event_id, call_identity = _require_earlier_matching_tool_started(
+            all_events_by_key,
+            event_row,
+            incident_id,
+            run_id,
+            persisted.tool_call_id,
+            persisted.tool_name,
         )
+        matched_started_event_ids.add(started_event_id)
         if persisted.id in persisted_ids or persisted.tool_call_id in success_call_ids:
             raise RecoveryConsistencyError
         persisted_ids.add(persisted.id)
         success_call_ids.add(persisted.tool_call_id)
         matched_evidence_event_ids.add(event_row.id)
-        successes.append((event_row.id, persisted.tool_call_id, persisted.tool_name))
+        successes.append(
+            (
+                event_row.id,
+                persisted.tool_call_id,
+                persisted.tool_name,
+                call_identity,
+            )
+        )
 
     if matched_evidence_event_ids != {event_row.id for event_row in evidence_events}:
         raise RecoveryConsistencyError
 
-    failures: list[tuple[int, ToolFailureRecord]] = []
+    failures: list[tuple[int, ToolFailureRecord, dict[str, JsonValue] | None]] = []
     failure_call_ids: set[str] = set()
     for event_row in failure_events:
         payload = _event_payload(event_row)
@@ -2657,35 +2783,40 @@ def _diagnosis_validation_snapshot(
             tool_call_id,
             tool_name,
         )
-        matched_started_event_ids.add(
-            _require_earlier_matching_tool_started(
-                all_events_by_key,
-                event_row,
-                incident_id,
-                run_id,
-                failure.tool_call_id,
-                failure.tool_name,
-            )
+        started_event_id, call_identity = _require_earlier_matching_tool_started(
+            all_events_by_key,
+            event_row,
+            incident_id,
+            run_id,
+            failure.tool_call_id,
+            failure.tool_name,
         )
-        failures.append((event_row.id, failure))
+        matched_started_event_ids.add(started_event_id)
+        failures.append((event_row.id, failure, call_identity))
 
     if matched_started_event_ids != {event_row.id for event_row in started_events}:
         raise RecoveryConsistencyError
 
     unresolved = tuple(
         failure
-        for failure_event_id, failure in failures
+        for failure_event_id, failure, failure_identity in failures
         if not failure.retryable
         or not any(
             success_event_id > failure_event_id
             and success_call_id != failure.tool_call_id
             and success_tool_name == failure.tool_name
-            for success_event_id, success_call_id, success_tool_name in successes
+            and success_identity == failure_identity
+            for (
+                success_event_id,
+                success_call_id,
+                success_tool_name,
+                success_identity,
+            ) in successes
         )
     )
     return DiagnosisValidationSnapshot(
         evidence_ids=frozenset(persisted_ids),
-        tool_failures=tuple(failure for _, failure in failures),
+        tool_failures=tuple(failure for _, failure, _ in failures),
         unresolved_tool_failures=unresolved,
     )
 
@@ -2718,18 +2849,18 @@ def _require_earlier_matching_tool_started(
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
-) -> int:
+) -> tuple[int, dict[str, JsonValue] | None]:
     started_event = events_by_key.get(f"tool:{tool_call_id}:started")
     if started_event is None or started_event.id >= outcome_event.id:
         raise RecoveryConsistencyError
-    _require_matching_tool_started_event(
+    call_identity = _matching_tool_started_identity(
         started_event,
         incident_id,
         run_id,
         tool_call_id,
         tool_name,
     )
-    return started_event.id
+    return started_event.id, call_identity
 
 
 def _tool_failure_event_payload(

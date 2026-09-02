@@ -19,6 +19,7 @@ from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from pydantic import PrivateAttr
+from tests.factories import prometheus_query_service_stub
 
 from k8s_incident_agent.diagnosis.agent import (
     DiagnosticDeadlineExceededError,
@@ -35,7 +36,8 @@ from k8s_incident_agent.kubernetes.tools import FatalDiagnosticToolError
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
-TOOL_NAMES = ("get_workload", "get_pods", "get_events")
+TOOL_NAMES = ("get_workload", "get_pods", "get_events", "query_prometheus")
+PANEL_IDS = ("image-pull-affected-pods", "image-pull-waiting-containers")
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 
 
@@ -168,6 +170,7 @@ def _context(
         adapter=cast(KubernetesEvidenceAdapter, object()),
         repository=cast(IncidentRepository, object()),
         now=lambda: now,
+        prometheus=prometheus_query_service_stub(),
     )
 
 
@@ -218,7 +221,7 @@ def _build_tools(
     *,
     fatal_tool: str | None = None,
     retryable_events: bool = False,
-) -> tuple[BaseTool, BaseTool, BaseTool]:
+) -> tuple[BaseTool, BaseTool, BaseTool, BaseTool]:
     event_attempts = 0
 
     @tool("get_workload")
@@ -253,7 +256,14 @@ def _build_tools(
             }
         return {"evidenceId": "00000000-0000-0000-0000-000000000003"}
 
-    return get_workload, get_pods, get_events
+    @tool("query_prometheus")
+    async def query_prometheus(panel_id: str, window: str) -> dict[str, object]:
+        """Read one catalog-owned Prometheus panel."""
+        del panel_id, window
+        calls.append("query_prometheus")
+        return {"evidenceId": "00000000-0000-0000-0000-000000000004"}
+
+    return get_workload, get_pods, get_events, query_prometheus
 
 
 @pytest.mark.asyncio
@@ -276,7 +286,9 @@ async def test_agent_executes_different_read_tool_trajectories_and_returns_schem
             _structured_response(_diagnosed_candidate(evidence_id)),
         ]
     )
-    agent = _runner(build_diagnostic_agent(model, tools))
+    agent = _runner(
+        build_diagnostic_agent(model, tools, prometheus_panel_ids=PANEL_IDS)
+    )
 
     result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": "Diagnose the public target."}]}
@@ -303,7 +315,9 @@ async def test_fatal_tool_failure_propagates_without_model_retry() -> None:
     calls: list[str] = []
     tools = _build_tools(calls, fatal_tool="get_workload")
     model = _ToolCallingFakeModel(responses=[_tool_call("get_workload", "call-fatal")])
-    agent = _runner(build_diagnostic_agent(model, tools))
+    agent = _runner(
+        build_diagnostic_agent(model, tools, prometheus_panel_ids=PANEL_IDS)
+    )
 
     with pytest.raises(FatalDiagnosticToolError) as error:
         await agent.ainvoke(
@@ -341,10 +355,22 @@ async def test_absolute_deadline_cancels_inflight_tool_call() -> None:
         """Read event evidence."""
         return {"evidenceId": "00000000-0000-0000-0000-000000000003"}
 
+    @tool("query_prometheus")
+    async def query_prometheus(panel_id: str, window: str) -> dict[str, object]:
+        """Read one catalog-owned Prometheus panel."""
+        del panel_id, window
+        return {"evidenceId": "00000000-0000-0000-0000-000000000004"}
+
     model = _ToolCallingFakeModel(
         responses=[_tool_call("get_workload", "call-workload")]
     )
-    agent = _runner(build_diagnostic_agent(model, (get_workload, get_pods, get_events)))
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            (get_workload, get_pods, get_events, query_prometheus),
+            prometheus_panel_ids=PANEL_IDS,
+        )
+    )
 
     with pytest.raises(DiagnosticDeadlineExceededError):
         async with asyncio.timeout(1):
@@ -372,7 +398,9 @@ async def test_retryable_failure_can_use_a_new_call_before_structured_output() -
             _structured_response(_diagnosed_candidate(evidence_id)),
         ]
     )
-    agent = _runner(build_diagnostic_agent(model, tools))
+    agent = _runner(
+        build_diagnostic_agent(model, tools, prometheus_panel_ids=PANEL_IDS)
+    )
 
     result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": "Diagnose the target."}]}
@@ -397,7 +425,14 @@ async def test_model_call_limit_raises_instead_of_returning_fallback_text() -> N
     model = _ToolCallingFakeModel(
         responses=[_tool_call("get_workload", "call-workload")]
     )
-    agent = _runner(build_diagnostic_agent(model, tools, max_model_calls=1))
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            max_model_calls=1,
+            prometheus_panel_ids=PANEL_IDS,
+        )
+    )
 
     with pytest.raises(ModelCallLimitExceededError):
         await agent.ainvoke(
@@ -423,6 +458,7 @@ async def test_locked_tool_limit_counts_the_structured_response_call() -> None:
             tools,
             max_model_calls=2,
             max_tool_calls=2,
+            prometheus_panel_ids=PANEL_IDS,
         )
     )
     result = await accepted.ainvoke(
@@ -436,6 +472,7 @@ async def test_locked_tool_limit_counts_the_structured_response_call() -> None:
             tools,
             max_model_calls=2,
             max_tool_calls=1,
+            prometheus_panel_ids=PANEL_IDS,
         )
     )
     with pytest.raises(ToolCallLimitExceededError):
@@ -444,15 +481,19 @@ async def test_locked_tool_limit_counts_the_structured_response_call() -> None:
         )
 
 
-def test_agent_rejects_any_registry_other_than_the_three_read_tools() -> None:
+def test_agent_rejects_any_registry_other_than_the_four_read_tools() -> None:
     calls: list[str] = []
     tools = _build_tools(calls)
     model = _ToolCallingFakeModel(
         responses=[_structured_response(_diagnosed_candidate(str(uuid4())))]
     )
 
-    with pytest.raises(ValueError, match="exactly the three diagnostic read tools"):
-        build_diagnostic_agent(model, tools[:2])
+    with pytest.raises(ValueError, match="exactly the four diagnostic read tools"):
+        build_diagnostic_agent(
+            model,
+            tools[:3],
+            prometheus_panel_ids=PANEL_IDS,
+        )
 
 
 @pytest.mark.asyncio
@@ -460,7 +501,9 @@ async def test_plain_model_answer_fails_closed_without_structured_response() -> 
     calls: list[str] = []
     tools = _build_tools(calls)
     model = _ToolCallingFakeModel(responses=[AIMessage(content="A fluent fallback")])
-    agent = _runner(build_diagnostic_agent(model, tools))
+    agent = _runner(
+        build_diagnostic_agent(model, tools, prometheus_panel_ids=PANEL_IDS)
+    )
 
     with pytest.raises(StructuredDiagnosisError) as error:
         await agent.ainvoke(
