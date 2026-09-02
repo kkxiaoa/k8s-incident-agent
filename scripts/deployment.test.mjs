@@ -672,6 +672,9 @@ function gatedCutoverPod(job, name, uid) {
   if (process.env.FAKE_CUTOVER_EXTRA_CONTAINER === "1") {
     pod.spec.containers.push({ name: "injected", image: "busybox:latest" });
   }
+  if (process.env.FAKE_CUTOVER_INIT_DRIFT === "1") {
+    pod.spec.initContainers[1].command = ["/usr/bin/false"];
+  }
   return pod;
 }
 
@@ -812,11 +815,87 @@ function response(key, args) {
     key === "get mutatingadmissionpolicies.admissionregistration.k8s.io --output=json" ||
     key === "get mutatingadmissionpolicybindings.admissionregistration.k8s.io --output=json"
   ) {
-    return {
-      apiVersion: "v1",
-      kind: "List",
-      items: process.env.FAKE_CUTOVER_MUTATOR === "1" ? [{ metadata: { name: "unexpected-mutator" } }] : [],
+    const isWebhookCollection = key.startsWith("get mutatingwebhookconfigurations");
+    const unrelatedWebhook = {
+      metadata: { name: "cert-manager-webhook" },
+      webhooks: [{
+        name: "webhook.cert-manager.io",
+        rules: [{
+          apiGroups: ["cert-manager.io"],
+          apiVersions: ["v1"],
+          operations: ["CREATE", "UPDATE"],
+          resources: ["certificaterequests"],
+          scope: "Namespaced",
+        }],
+      }],
     };
+    const relevantWebhook = {
+      metadata: { name: "unexpected-mutator" },
+      webhooks: [{
+        name: "pods.example.test",
+        rules: [{
+          apiGroups: [""],
+          apiVersions: ["v1"],
+          operations: ["CREATE", "UPDATE"],
+          resources: ["pods"],
+          scope: "Namespaced",
+        }],
+      }],
+    };
+    let items = [];
+    if (isWebhookCollection && process.env.FAKE_UNRELATED_CUTOVER_WEBHOOK === "1") {
+      items = [unrelatedWebhook];
+    } else if (isWebhookCollection && process.env.FAKE_CUTOVER_MUTATOR === "1") {
+      items = [relevantWebhook];
+    } else if (
+      isWebhookCollection &&
+      process.env.FAKE_MALFORMED_CUTOVER_WEBHOOK === "1"
+    ) {
+      items = [{ metadata: { name: "malformed-mutator" }, webhooks: [{}] }];
+    } else if (
+      isWebhookCollection &&
+      process.env.FAKE_CUTOVER_WILDCARD_GROUP === "1"
+    ) {
+      items = [{
+        metadata: { name: "wildcard-group-mutator" },
+        webhooks: [{ rules: [{ apiGroups: ["*"], resources: ["certificaterequests"] }] }],
+      }];
+    } else if (
+      isWebhookCollection &&
+      process.env.FAKE_CUTOVER_WILDCARD_RESOURCE === "1"
+    ) {
+      items = [{
+        metadata: { name: "wildcard-resource-mutator" },
+        webhooks: [{ rules: [{ apiGroups: ["cert-manager.io"], resources: ["*"] }] }],
+      }];
+    } else if (
+      isWebhookCollection &&
+      process.env.FAKE_CUTOVER_EMPTY_GROUPS === "1"
+    ) {
+      items = [{
+        metadata: { name: "empty-groups-mutator" },
+        webhooks: [{ rules: [{ apiGroups: [], resources: ["certificaterequests"] }] }],
+      }];
+    } else if (
+      isWebhookCollection &&
+      process.env.FAKE_CUTOVER_EMPTY_RESOURCES === "1"
+    ) {
+      items = [{
+        metadata: { name: "empty-resources-mutator" },
+        webhooks: [{ rules: [{ apiGroups: ["cert-manager.io"], resources: [] }] }],
+      }];
+    } else if (
+      key.startsWith("get mutatingadmissionpolicies") &&
+      process.env.FAKE_CUTOVER_POLICY === "1"
+    ) {
+      items = [{ metadata: { name: "unexpected-mutator" } }];
+    } else if (
+      key.startsWith("get mutatingadmissionpolicybindings") &&
+      process.env.FAKE_CUTOVER_POLICY_BINDING === "1"
+    ) {
+      items = [{ metadata: { name: "unexpected-mutator-binding" } }];
+    }
+    return { apiVersion: "v1", kind: "List", items };
   }
   if (
     key === "create --dry-run=server --output=json --filename=-" ||
@@ -1159,6 +1238,36 @@ test("cutover manifest is a fixed tokenless single-Pod reset Job", () => {
   assert.deepEqual(pod.schedulingGates, [
     { name: "k8s-incident-agent.io/runtime-data-cutover" },
   ]);
+  assert.equal(pod.securityContext.fsGroupChangePolicy, "OnRootMismatch");
+  assert.deepEqual(
+    pod.initContainers.map((container) => ({
+      name: container.name,
+      image: container.image,
+      command: container.command,
+    })),
+    [
+      {
+        name: "validate-runtime-data-root",
+        image: "k8s-incident-agent-runtime",
+        command: [
+          "/usr/bin/test",
+          "!",
+          "-L",
+          "/var/lib/k8s-incident-agent/runtime",
+        ],
+      },
+      {
+        name: "tighten-runtime-data-permissions",
+        image: "k8s-incident-agent-runtime",
+        command: [
+          "/usr/bin/chmod",
+          "--recursive",
+          "u=rwX,go=,a-s",
+          "/var/lib/k8s-incident-agent/runtime",
+        ],
+      },
+    ],
+  );
   assert.equal(pod.containers.length, 1);
   assert.deepEqual(pod.containers[0].command, [
     "runtime",
@@ -1365,10 +1474,45 @@ test("cutover preflight gates fail before Runtime Job creation", (t) => {
   }
 });
 
+test("cutover permits a webhook whose rules cannot match cutover resources", (t) => {
+  const fake = createFakeKubectl(t, {
+    FAKE_CUTOVER: "1",
+    FAKE_UNRELATED_CUTOVER_WEBHOOK: "1",
+  });
+  const result = runDeployment(
+    ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
+    fake.environment,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).mode, "preview");
+});
+
+test("cutover rejects malformed webhooks and both policy mutator collections", (t) => {
+  for (const variable of [
+    "FAKE_MALFORMED_CUTOVER_WEBHOOK",
+    "FAKE_CUTOVER_WILDCARD_GROUP",
+    "FAKE_CUTOVER_WILDCARD_RESOURCE",
+    "FAKE_CUTOVER_EMPTY_GROUPS",
+    "FAKE_CUTOVER_EMPTY_RESOURCES",
+    "FAKE_CUTOVER_POLICY",
+    "FAKE_CUTOVER_POLICY_BINDING",
+  ]) {
+    const fake = createFakeKubectl(t, { FAKE_CUTOVER: "1", [variable]: "1" });
+    const result = runDeployment(
+      ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, variable);
+    assert.match(result.stderr, /^FAIL cutover_mutator_present /, variable);
+    assert.equal(createdResources(fake.calls(), "Job").length, 0, variable);
+  }
+});
+
 test("admitted Pod drift is rejected before scheduling release and current Job is cleaned", (t) => {
   for (const variable of [
     "FAKE_CUTOVER_GATE_MISSING",
     "FAKE_CUTOVER_EXTRA_CONTAINER",
+    "FAKE_CUTOVER_INIT_DRIFT",
     "FAKE_CUTOVER_MULTIPLE_PODS",
   ]) {
     const fake = createFakeKubectl(t, {

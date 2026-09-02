@@ -22,6 +22,7 @@ const RUNTIME_SECRET_KEY = "api-key";
 const RUNTIME_PVC = "runtime-data";
 const CUTOVER_JOB = "runtime-data-cutover";
 const CUTOVER_CONTAINER = "runtime-reset";
+const CUTOVER_RUNTIME_ROOT = "/var/lib/k8s-incident-agent/runtime";
 const CUTOVER_GATE = "k8s-incident-agent.io/runtime-data-cutover";
 const DEFAULT_DENY_POLICY = "default-deny";
 const CUTOVER_CONFIRMATION_PATTERN = /^cutover:v1:sha256:[a-f0-9]{64}$/;
@@ -68,6 +69,11 @@ const PROFILE_DEFINITIONS = Object.freeze({
   }),
 });
 const CUTOVER_PROFILES = new Set(["kind-evaluation", "k3s-evaluation"]);
+const CUTOVER_ADMISSION_RESOURCES = Object.freeze([
+  Object.freeze({ apiGroup: "batch", resource: "jobs" }),
+  Object.freeze({ apiGroup: "", resource: "pods" }),
+  Object.freeze({ apiGroup: "networking.k8s.io", resource: "networkpolicies" }),
+]);
 
 export class DeploymentContractError extends Error {
   constructor(code, message) {
@@ -492,14 +498,23 @@ function normalizeCutoverContract(
       "cutover resources are incomplete",
     );
   }
-  const container = job.spec?.template?.spec?.containers?.[0];
-  if (container?.image !== "k8s-incident-agent-runtime") {
+  const pod = job.spec?.template?.spec;
+  const runtimeContainers = [
+    ...(pod?.initContainers ?? []),
+    ...(pod?.containers ?? []),
+  ];
+  if (
+    runtimeContainers.length !== 3 ||
+    runtimeContainers.some(
+      (container) => container?.image !== "k8s-incident-agent-runtime",
+    )
+  ) {
     throw new DeploymentContractError(
       "cutover_manifest_invalid",
-      "cutover Job does not use the locked Runtime image placeholder",
+      "cutover Job containers do not use the locked Runtime image placeholder",
     );
   }
-  container.image = runtimeImage;
+  for (const container of runtimeContainers) container.image = runtimeImage;
   requireCutoverJobContract(job, runtimeImage, [
     "runtime",
     "reset-stage-one-data",
@@ -801,19 +816,56 @@ async function requireCutoverMutatorsAbsent(request, execute) {
       ], resource),
     ),
   );
+  const [webhookConfigurations, policies, policyBindings] = collections;
   if (
-    collections.some(
-      (collection) =>
-        collection.kind !== "List" ||
-        !Array.isArray(collection.items) ||
-        collection.items.length !== 0,
-    )
+    !isKubernetesList(webhookConfigurations) ||
+    !isKubernetesList(policies) ||
+    !isKubernetesList(policyBindings) ||
+    webhookConfigurations.items.some(webhookMayMutateCutoverResource) ||
+    policies.items.length !== 0 ||
+    policyBindings.items.length !== 0
   ) {
     throw new DeploymentContractError(
       "cutover_mutator_present",
-      "cutover requires all supported API mutator collections to be empty",
+      "cutover requires mutators capable of changing its resources to be absent",
     );
   }
+}
+
+function isKubernetesList(collection) {
+  return collection?.kind === "List" && Array.isArray(collection.items);
+}
+
+function webhookMayMutateCutoverResource(configuration) {
+  if (!Array.isArray(configuration?.webhooks) || configuration.webhooks.length === 0) {
+    return true;
+  }
+  return configuration.webhooks.some((webhook) => {
+    if (!Array.isArray(webhook?.rules) || webhook.rules.length === 0) return true;
+    return webhook.rules.some((rule) => ruleMayMatchCutoverResource(rule));
+  });
+}
+
+function ruleMayMatchCutoverResource(rule) {
+  if (
+    !Array.isArray(rule?.apiGroups) ||
+    rule.apiGroups.length === 0 ||
+    !rule.apiGroups.every((group) => typeof group === "string") ||
+    !Array.isArray(rule?.resources) ||
+    rule.resources.length === 0 ||
+    !rule.resources.every(
+      (resource) => typeof resource === "string" && resource.length > 0,
+    ) ||
+    rule.apiGroups.includes("*") ||
+    rule.resources.includes("*") ||
+    rule.resources.includes("*/*")
+  ) {
+    return true;
+  }
+  return CUTOVER_ADMISSION_RESOURCES.some(
+    ({ apiGroup, resource }) =>
+      rule.apiGroups.includes(apiGroup) && rule.resources.includes(resource),
+  );
 }
 
 function cutoverConfirmation(target, planDigest) {
@@ -1434,7 +1486,7 @@ function cutoverPodSpecMatches(
     pod?.hostAliases === undefined &&
     pod?.runtimeClassName === undefined &&
     (pod?.imagePullSecrets === undefined || pod.imagePullSecrets.length === 0) &&
-    (pod?.initContainers === undefined || pod.initContainers.length === 0) &&
+    cutoverPermissionInitContainersMatch(pod?.initContainers, runtimeImage) &&
     (pod?.ephemeralContainers === undefined ||
       pod.ephemeralContainers.length === 0) &&
     isDeepStrictEqual(securityContext, {
@@ -1442,6 +1494,7 @@ function cutoverPodSpecMatches(
       runAsUser: 10001,
       runAsGroup: 10001,
       fsGroup: 10001,
+      fsGroupChangePolicy: "OnRootMismatch",
       seccompProfile: { type: "RuntimeDefault" },
     }) &&
     Array.isArray(containers) &&
@@ -1454,7 +1507,7 @@ function cutoverPodSpecMatches(
     isDeepStrictEqual(container?.env, [
       {
         name: "RUNTIME_DATA_DIR",
-        value: "/var/lib/k8s-incident-agent/runtime",
+        value: CUTOVER_RUNTIME_ROOT,
       },
     ]) &&
     container?.envFrom === undefined &&
@@ -1479,6 +1532,61 @@ function cutoverPodSpecMatches(
       name: "runtime-data",
       persistentVolumeClaim: { claimName: RUNTIME_PVC },
     })
+  );
+}
+
+function cutoverPermissionInitContainersMatch(containers, runtimeImage) {
+  if (!Array.isArray(containers) || containers.length !== 2) return false;
+  return (
+    cutoverPermissionInitContainerMatches(
+      containers[0],
+      "validate-runtime-data-root",
+      ["/usr/bin/test", "!", "-L", CUTOVER_RUNTIME_ROOT],
+      runtimeImage,
+    ) &&
+    cutoverPermissionInitContainerMatches(
+      containers[1],
+      "tighten-runtime-data-permissions",
+      [
+        "/usr/bin/chmod",
+        "--recursive",
+        "u=rwX,go=,a-s",
+        CUTOVER_RUNTIME_ROOT,
+      ],
+      runtimeImage,
+    )
+  );
+}
+
+function cutoverPermissionInitContainerMatches(
+  container,
+  name,
+  command,
+  runtimeImage,
+) {
+  return (
+    container?.name === name &&
+    container?.image === runtimeImage &&
+    container?.imagePullPolicy === "IfNotPresent" &&
+    isDeepStrictEqual(container?.command, command) &&
+    (container?.args === undefined || container.args.length === 0) &&
+    container?.env === undefined &&
+    container?.envFrom === undefined &&
+    container?.lifecycle === undefined &&
+    container?.livenessProbe === undefined &&
+    container?.readinessProbe === undefined &&
+    container?.startupProbe === undefined &&
+    (container?.ports === undefined || container.ports.length === 0) &&
+    isDeepStrictEqual(container?.securityContext, {
+      allowPrivilegeEscalation: false,
+      capabilities: { drop: ["ALL"] },
+    }) &&
+    isDeepStrictEqual(container?.volumeMounts, [
+      {
+        name: "runtime-data",
+        mountPath: "/var/lib/k8s-incident-agent",
+      },
+    ])
   );
 }
 

@@ -26,8 +26,40 @@ spec:
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: validate-runtime-data-root
+          image: k8s-incident-agent-runtime
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/test
+            - "!"
+            - -L
+            - /var/lib/k8s-incident-agent/runtime
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: runtime-data
+              mountPath: /var/lib/k8s-incident-agent
+        - name: tighten-runtime-data-permissions
+          image: k8s-incident-agent-runtime
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/chmod
+            - --recursive
+            - u=rwX,go=,a-s
+            - /var/lib/k8s-incident-agent/runtime
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: runtime-data
+              mountPath: /var/lib/k8s-incident-agent
       containers:
         - name: runtime-reset
           image: k8s-incident-agent-runtime
