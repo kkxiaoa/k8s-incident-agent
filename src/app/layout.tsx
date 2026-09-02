@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 
+import { getYamlAssistantUrl } from "@/lib/agent-runtime/server-config";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -9,10 +11,13 @@ export const metadata: Metadata = {
     default: "K8s Incident Agent",
     template: "%s · K8s Incident Agent",
   },
-  description: "Evidence-first Kubernetes incident diagnosis for a local Kind sandbox.",
+  description:
+    "Kubernetes incident response from failure discovery and evidence diagnosis to controlled remediation and recovery verification.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
+  const yamlAssistantUrl = getYamlAssistantUrl();
+
   return (
     <html lang="zh-CN">
       <body>
@@ -33,14 +38,16 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                 <small>Evidence-first runtime response</small>
               </span>
             </Link>
-            <span className="read-only-pill">
-              <span aria-hidden="true" />
-              Local Kind · 只读诊断
-            </span>
+            {yamlAssistantUrl === null ? null : (
+              <a className="product-link" href={yamlAssistantUrl}>
+                YAML 编写助手
+                <span aria-hidden="true">↗</span>
+              </a>
+            )}
           </header>
           {children}
           <footer className="site-footer">
-            <span>K8s Incident Agent · Stage 1</span>
+            <span>Evidence-first Kubernetes incident response</span>
             <span>Runtime 是 Incident、Run、Evidence 与 Diagnosis 的权威来源</span>
           </footer>
         </div>

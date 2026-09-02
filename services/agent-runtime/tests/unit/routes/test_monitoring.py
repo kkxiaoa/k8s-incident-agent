@@ -11,12 +11,21 @@ from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
 from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
-from k8s_incident_agent.application.monitoring import MonitoringHealthService
+from k8s_incident_agent.application.monitoring import MonitoringApplicationService
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.monitoring.contracts import (
+    IncidentMetricPanel,
+    IncidentMonitoringPanels,
+    MetricMarker,
+    MetricMarkerKind,
+    MetricPanelResult,
+    MetricQueryState,
+    MetricSample,
+    MetricWindow,
     MonitoringComponentState,
     MonitoringHealthSnapshot,
     MonitoringOverallState,
+    MonitoringPanelReference,
 )
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
@@ -34,6 +43,50 @@ class _MonitoringService:
             alertmanager=MonitoringComponentState.HEALTHY,
             notification=MonitoringComponentState.STALE,
             watchdog_last_received_at=NOW - timedelta(minutes=7),
+        )
+
+    async def list_panels(self, _incident_id: object) -> IncidentMonitoringPanels:
+        return IncidentMonitoringPanels(
+            panels=(
+                MonitoringPanelReference(
+                    panel_id="image-pull-affected-pods",
+                    recommended_window=MetricWindow.FIFTEEN_MINUTES,
+                ),
+                MonitoringPanelReference(
+                    panel_id="image-pull-waiting-containers",
+                    recommended_window=MetricWindow.FIFTEEN_MINUTES,
+                ),
+            )
+        )
+
+    async def get_panel(
+        self,
+        _incident_id: object,
+        *,
+        panel_id: str,
+        window: MetricWindow,
+    ) -> IncidentMetricPanel:
+        return IncidentMetricPanel(
+            result=MetricPanelResult(
+                panel_id=panel_id,
+                title="Affected pods",
+                unit="pods",
+                threshold=1.0,
+                window=window,
+                state=MetricQueryState.OK,
+                queried_at=NOW,
+                latest_sample_at=NOW,
+                current_value=0.0,
+                samples=[MetricSample(timestamp=NOW, value=0.0)],
+            ),
+            markers=(
+                MetricMarker(
+                    kind=MetricMarkerKind.RUN_STARTED,
+                    occurred_at=NOW - timedelta(minutes=1),
+                    run_attempt=1,
+                ),
+            ),
+            markers_truncated=False,
         )
 
 
@@ -55,7 +108,7 @@ async def test_monitoring_health_route_returns_the_bounded_projection(
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),
             alerts=None,
-            monitoring=cast(MonitoringHealthService, _MonitoringService()),
+            monitoring=cast(MonitoringApplicationService, _MonitoringService()),
         )
 
     app = api.create_app(
@@ -81,3 +134,93 @@ async def test_monitoring_health_route_returns_the_bounded_projection(
         "notification": "stale",
         "watchdogLastReceivedAt": "2026-09-02T08:53:00Z",
     }
+
+
+@pytest.mark.asyncio
+async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        runtime_paths=RuntimePaths.prepare(tmp_path / "runtime"),
+        scenario_catalog_dir=REPOSITORY_ROOT / "scenarios",
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+    )
+
+    @asynccontextmanager
+    async def runtime_context(
+        _settings: Settings,
+    ) -> AsyncGenerator[RuntimeContainer]:
+        yield RuntimeContainer(
+            incidents=cast(IncidentApplicationService, object()),
+            events=cast(IncidentEventService, object()),
+            alerts=None,
+            monitoring=cast(MonitoringApplicationService, _MonitoringService()),
+        )
+
+    app = api.create_app(
+        settings=settings,
+        runtime_context_factory=runtime_context,
+    )
+    incident_id = "11111111-1111-4111-8111-111111111111"
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            refs = await client.get(
+                f"/api/v1/incidents/{incident_id}/monitoring/panels"
+            )
+            panel = await client.get(
+                f"/api/v1/incidents/{incident_id}/monitoring/panels/"
+                "image-pull-affected-pods?window=1h"
+            )
+            invalid = await client.get(
+                f"/api/v1/incidents/{incident_id}/monitoring/panels/"
+                "image-pull-affected-pods?window=24h"
+            )
+            invalid_panel = await client.get(
+                f"/api/v1/incidents/{incident_id}/monitoring/panels/not_valid"
+            )
+
+    assert refs.status_code == 200
+    assert refs.json() == {
+        "schemaVersion": 1,
+        "panels": [
+            {
+                "panelId": "image-pull-affected-pods",
+                "recommendedWindow": "15m",
+            },
+            {
+                "panelId": "image-pull-waiting-containers",
+                "recommendedWindow": "15m",
+            },
+        ],
+    }
+    assert panel.status_code == 200
+    assert panel.json() == {
+        "schemaVersion": 1,
+        "result": {
+            "panelId": "image-pull-affected-pods",
+            "title": "Affected pods",
+            "unit": "pods",
+            "threshold": 1.0,
+            "window": "1h",
+            "state": "ok",
+            "queriedAt": "2026-09-02T09:00:00Z",
+            "latestSampleAt": "2026-09-02T09:00:00Z",
+            "currentValue": 0.0,
+            "samples": [{"timestamp": "2026-09-02T09:00:00Z", "value": 0.0}],
+        },
+        "markers": [
+            {
+                "kind": "run_started",
+                "occurredAt": "2026-09-02T08:59:00Z",
+                "runAttempt": 1,
+            }
+        ],
+        "markersTruncated": False,
+    }
+    assert invalid.status_code == 422
+    assert invalid_panel.status_code == 422
+    assert invalid.json()["error"]["code"] == "invalid_request"

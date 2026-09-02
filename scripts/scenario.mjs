@@ -19,7 +19,7 @@ import { runClusterCommand } from "./kind-cluster.mjs";
 const CLUSTER_NAME = "k8s-incident-agent";
 const CONTEXT_NAME = "kind-k8s-incident-agent";
 const NAMESPACE = "k8s-incident-scenarios";
-const SCENARIO_SCHEMA_VERSION = 1;
+const SCENARIO_SCHEMA_VERSION = 2;
 const SCENARIO_VERSION = 1;
 const MAX_FILE_BYTES = 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
@@ -272,6 +272,7 @@ function validateScenarioDefinition(definition, directoryName) {
     "schema_version",
     "scenario_id",
     "scenario_version",
+    "monitoring_alert_id",
     "display_name",
     "description",
     "trigger",
@@ -290,6 +291,7 @@ function validateScenarioDefinition(definition, directoryName) {
     throw new Error();
   }
   if (definition.scenario_id !== directoryName) throw new Error();
+  assertNormalizedString(definition.monitoring_alert_id);
   assertNormalizedString(definition.display_name);
   assertNormalizedString(definition.description);
 

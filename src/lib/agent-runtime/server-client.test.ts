@@ -5,6 +5,9 @@ import {
   createRun,
   fetchIncident,
   fetchIncidents,
+  fetchMonitoringHealth,
+  fetchMonitoringPanel,
+  fetchMonitoringPanels,
   fetchRunEvents,
   fetchRuns,
   fetchScenarios,
@@ -72,6 +75,112 @@ describe("fixed REST helpers", () => {
     expect(url.searchParams.toString()).toBe(
       "limit=20&cursor=cursor-value",
     );
+  });
+
+  it("maps monitoring health and catalog panels to fixed Runtime paths", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchMonitoringHealth();
+    await fetchMonitoringPanels(INCIDENT_ID);
+    await fetchMonitoringPanel(
+      INCIDENT_ID,
+      "image-pull-affected-pods",
+      new URLSearchParams([
+        ["window", "1h"],
+        ["query", "up"],
+        ["endpoint", "http://attacker.example"],
+      ]),
+    );
+
+    expect(
+      (fetchMock.mock.calls[0] as [URL])[0].href,
+    ).toBe(`${RUNTIME_URL}/api/v1/monitoring/health`);
+    expect(
+      (fetchMock.mock.calls[1] as [URL])[0].href,
+    ).toBe(
+      `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/monitoring/panels`,
+    );
+    expect(
+      (fetchMock.mock.calls[2] as [URL])[0].href,
+    ).toBe(
+      `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/monitoring/panels/image-pull-affected-pods?window=1h`,
+    );
+    for (const call of fetchMock.mock.calls) {
+      expect(new Headers((call as [URL, RequestInit])[1].headers)).toEqual(
+        new Headers(),
+      );
+    }
+  });
+
+  it.each([
+    ["invalid incident", "not-a-uuid", "image-pull-affected-pods", "15m"],
+    ["invalid panel", INCIDENT_ID, "../../query", "15m"],
+    ["missing window", INCIDENT_ID, "image-pull-affected-pods", null],
+    ["unknown window", INCIDENT_ID, "image-pull-affected-pods", "24h"],
+  ])(
+    "rejects %s before a monitoring request",
+    async (_case, incidentId, panelId, window) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const query = new URLSearchParams();
+      if (window !== null) {
+        query.set("window", window);
+      }
+
+      const { response } = await fetchMonitoringPanel(
+        incidentId,
+        panelId,
+        query,
+      );
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(response.status).toBe(422);
+      await expect(response.json()).resolves.toEqual({
+        error: {
+          code: "invalid_request",
+          message: "Request is invalid.",
+          retryable: false,
+        },
+      });
+    },
+  );
+
+  it("rejects duplicate monitoring windows before a Runtime request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { response } = await fetchMonitoringPanel(
+      INCIDENT_ID,
+      "image-pull-affected-pods",
+      new URLSearchParams([
+        ["window", "15m"],
+        ["window", "1h"],
+      ]),
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(422);
+  });
+
+  it("preserves the bounded monitoring-panel not-found contract", async () => {
+    const envelope = {
+      error: {
+        code: "monitoring_panel_not_found",
+        message: "Monitoring panel was not found.",
+        retryable: false,
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(envelope, 404)));
+
+    const { response } = await fetchMonitoringPanel(
+      INCIDENT_ID,
+      "image-pull-affected-pods",
+      new URLSearchParams({ window: "15m" }),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual(envelope);
   });
 
   it("sends the incident body unchanged with the fixed method and media type", async () => {

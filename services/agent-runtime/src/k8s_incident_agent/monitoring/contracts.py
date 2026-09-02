@@ -14,6 +14,14 @@ class MetricWindow(StrEnum):
     ONE_HOUR = "1h"
     SIX_HOURS = "6h"
 
+    @property
+    def duration(self) -> timedelta:
+        return {
+            MetricWindow.FIFTEEN_MINUTES: timedelta(minutes=15),
+            MetricWindow.ONE_HOUR: timedelta(hours=1),
+            MetricWindow.SIX_HOURS: timedelta(hours=6),
+        }[self]
+
 
 class MetricQueryState(StrEnum):
     OK = "ok"
@@ -36,6 +44,13 @@ class MonitoringOverallState(StrEnum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     UNAVAILABLE = "unavailable"
+
+
+class MetricMarkerKind(StrEnum):
+    ALERT_FIRING = "alert_firing"
+    ALERT_RESOLVED = "alert_resolved"
+    RUN_STARTED = "run_started"
+    RUN_COMPLETED = "run_completed"
 
 
 class _MonitoringContract(BaseModel):
@@ -123,6 +138,46 @@ class MetricPanelResult(_MonitoringContract):
         if self.samples and self.latest_sample_at != self.samples[-1].timestamp:
             raise ValueError("Latest metric timestamp must match the final sample")
         return self
+
+
+class MonitoringPanelReference(_MonitoringContract):
+    panel_id: str = Field(min_length=1, max_length=128)
+    recommended_window: MetricWindow
+
+
+class IncidentMonitoringPanels(_MonitoringContract):
+    schema_version: Literal[1] = 1
+    panels: tuple[MonitoringPanelReference, ...] = Field(max_length=8)
+
+
+class MetricMarker(_MonitoringContract):
+    kind: MetricMarkerKind
+    occurred_at: datetime
+    run_attempt: int | None = Field(default=None, ge=1)
+
+    @field_validator("occurred_at")
+    @classmethod
+    def require_utc_occurred_at(cls, value: datetime) -> datetime:
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("Metric marker timestamp must use UTC")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def require_marker_shape(self) -> MetricMarker:
+        is_run = self.kind in {
+            MetricMarkerKind.RUN_STARTED,
+            MetricMarkerKind.RUN_COMPLETED,
+        }
+        if is_run != (self.run_attempt is not None):
+            raise ValueError("Metric marker run attempt does not match its kind")
+        return self
+
+
+class IncidentMetricPanel(_MonitoringContract):
+    schema_version: Literal[1] = 1
+    result: MetricPanelResult
+    markers: tuple[MetricMarker, ...] = Field(max_length=102)
+    markers_truncated: bool
 
 
 class MetricTargetRef(_MonitoringContract):

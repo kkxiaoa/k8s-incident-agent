@@ -16,6 +16,11 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/v1/incidents"),
     ("GET", "/api/v1/incidents/{incident_id}"),
     ("GET", "/api/v1/incidents/{incident_id}/events"),
+    ("GET", "/api/v1/incidents/{incident_id}/monitoring/panels"),
+    (
+        "GET",
+        "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}",
+    ),
     ("GET", "/api/v1/incidents/{incident_id}/runs"),
     ("POST", "/api/v1/incidents/{incident_id}/runs"),
     ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
@@ -46,6 +51,16 @@ EXPECTED_ERROR_STATUSES = {
         "500",
         "503",
     },
+    ("GET", "/api/v1/incidents/{incident_id}/monitoring/panels"): {
+        "404",
+        "422",
+        "500",
+        "503",
+    },
+    (
+        "GET",
+        "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}",
+    ): {"404", "422", "500", "503"},
     ("GET", "/api/v1/incidents/{incident_id}/runs"): {
         "400",
         "404",
@@ -222,6 +237,16 @@ def test_operations_reference_their_success_and_error_models(
             "/api/v1/incidents/{incident_id}",
             "200",
         ): "IncidentDetailResponse",
+        (
+            "GET",
+            "/api/v1/incidents/{incident_id}/monitoring/panels",
+            "200",
+        ): "IncidentMonitoringPanels",
+        (
+            "GET",
+            "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}",
+            "200",
+        ): "IncidentMetricPanel",
         (
             "GET",
             "/api/v1/incidents/{incident_id}/runs",

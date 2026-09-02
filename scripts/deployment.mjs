@@ -3639,7 +3639,8 @@ function requireConsoleConfig(document) {
     document.metadata?.namespace !== APPLICATION_NAMESPACE ||
     Object.hasOwn(document.data ?? {}, "INCIDENT_INTAKE_MODE") ||
     document.data?.AGENT_RUNTIME_URL !==
-      "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000"
+      "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000" ||
+    document.data?.YAML_ASSISTANT_URL !== "/k8s-yaml-assistant"
   ) {
     throw stateError("Console ConfigMap does not match the selected profile");
   }

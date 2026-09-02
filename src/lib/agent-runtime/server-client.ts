@@ -20,11 +20,18 @@ const INCIDENT_RUNS_PATH =
   "/api/v1/incidents/{incident_id}/runs" satisfies RuntimePath;
 const RUN_EVENTS_PATH =
   "/api/v1/incidents/{incident_id}/runs/{run_id}/events" satisfies RuntimePath;
+const MONITORING_HEALTH_PATH =
+  "/api/v1/monitoring/health" satisfies RuntimePath;
+const MONITORING_PANELS_PATH =
+  "/api/v1/incidents/{incident_id}/monitoring/panels" satisfies RuntimePath;
+const MONITORING_PANEL_PATH =
+  "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}" satisfies RuntimePath;
 
 const REST_TIMEOUT_MILLISECONDS = 15_000;
 const SSE_CONNECT_TIMEOUT_MILLISECONDS = 10_000;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PANEL_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 const RUNTIME_ERROR_CONTRACTS = {
   invalid_request: {
@@ -40,6 +47,11 @@ const RUNTIME_ERROR_CONTRACTS = {
   incident_not_found: {
     status: 404,
     message: "Incident was not found.",
+    retryable: false,
+  },
+  monitoring_panel_not_found: {
+    status: 404,
+    message: "Monitoring panel was not found.",
     retryable: false,
   },
   run_not_found: {
@@ -128,6 +140,23 @@ const INCIDENT_EVENT_ERROR_CODES = [
   "runtime_not_ready",
   "internal_error",
 ] as const satisfies readonly RuntimeErrorCode[];
+const MONITORING_HEALTH_ERROR_CODES = [
+  "runtime_not_ready",
+  "internal_error",
+] as const satisfies readonly RuntimeErrorCode[];
+const MONITORING_PANELS_ERROR_CODES = [
+  "incident_not_found",
+  "invalid_request",
+  "runtime_not_ready",
+  "internal_error",
+] as const satisfies readonly RuntimeErrorCode[];
+const MONITORING_PANEL_ERROR_CODES = [
+  "incident_not_found",
+  "monitoring_panel_not_found",
+  "invalid_request",
+  "runtime_not_ready",
+  "internal_error",
+] as const satisfies readonly RuntimeErrorCode[];
 
 function runtimeErrorBody(code: RuntimeErrorCode): ErrorResponse {
   const contract = RUNTIME_ERROR_CONTRACTS[code];
@@ -195,6 +224,18 @@ function runPath(
   const path = incidentPath(template, incidentId);
   return path !== null && UUID_PATTERN.test(runId)
     ? path.replace("{run_id}", encodeURIComponent(runId))
+    : null;
+}
+
+function monitoringPanelPath(
+  incidentId: string,
+  panelId: string,
+): string | null {
+  const path = incidentPath(MONITORING_PANEL_PATH, incidentId);
+  return path !== null &&
+    panelId.length <= 128 &&
+    PANEL_ID_PATTERN.test(panelId)
+    ? path.replace("{panel_id}", encodeURIComponent(panelId))
     : null;
 }
 
@@ -393,6 +434,56 @@ export function fetchIncidents(
     INCIDENT_LIST_ERROR_CODES,
     { method: "GET" },
     forwardQuery(searchParams, ["limit", "cursor"]),
+  );
+}
+
+export function fetchMonitoringHealth(): Promise<RuntimeJsonResult> {
+  return requestRest(
+    MONITORING_HEALTH_PATH,
+    200,
+    MONITORING_HEALTH_ERROR_CODES,
+    { method: "GET" },
+  );
+}
+
+export function fetchMonitoringPanels(
+  incidentId: string,
+): Promise<RuntimeJsonResult> {
+  const path = incidentPath(MONITORING_PANELS_PATH, incidentId);
+  if (path === null) {
+    return Promise.resolve({
+      response: errorResponse(422, INVALID_REQUEST),
+      value: null,
+    });
+  }
+  return requestRest(path, 200, MONITORING_PANELS_ERROR_CODES, {
+    method: "GET",
+  });
+}
+
+export function fetchMonitoringPanel(
+  incidentId: string,
+  panelId: string,
+  searchParams: URLSearchParams,
+): Promise<RuntimeJsonResult> {
+  const path = monitoringPanelPath(incidentId, panelId);
+  const windows = searchParams.getAll("window");
+  if (
+    path === null ||
+    windows.length !== 1 ||
+    (windows[0] !== "15m" && windows[0] !== "1h" && windows[0] !== "6h")
+  ) {
+    return Promise.resolve({
+      response: errorResponse(422, INVALID_REQUEST),
+      value: null,
+    });
+  }
+  return requestRest(
+    path,
+    200,
+    MONITORING_PANEL_ERROR_CODES,
+    { method: "GET" },
+    new URLSearchParams({ window: windows[0] }),
   );
 }
 

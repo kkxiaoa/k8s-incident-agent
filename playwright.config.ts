@@ -27,6 +27,7 @@ export default defineConfig({
     url: `http://127.0.0.1:${webPort}`,
     env: {
       AGENT_RUNTIME_URL: `http://127.0.0.1:${runtimePort}`,
+      YAML_ASSISTANT_URL: "http://127.0.0.1:3001",
       NEXT_TELEMETRY_DISABLED: "1",
     },
     reuseExistingServer: false,

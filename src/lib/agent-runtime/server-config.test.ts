@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getAgentRuntimeBaseUrl,
   getIncidentIntakeMode,
+  getYamlAssistantUrl,
 } from "./server-config";
 
 describe("getIncidentIntakeMode", () => {
@@ -119,6 +120,35 @@ describe("getAgentRuntimeBaseUrl", () => {
 
     expect(getAgentRuntimeBaseUrl().href).toBe(
       "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000/",
+    );
+  });
+});
+
+describe("getYamlAssistantUrl", () => {
+  it("is optional until an environment supplies the ordinary navigation URL", () => {
+    delete process.env.YAML_ASSISTANT_URL;
+    expect(getYamlAssistantUrl()).toBeNull();
+
+    vi.stubEnv("YAML_ASSISTANT_URL", "https://yaml.example.test/editor/");
+    expect(getYamlAssistantUrl()).toBe("https://yaml.example.test/editor/");
+
+    vi.stubEnv("YAML_ASSISTANT_URL", "/k8s-yaml-assistant");
+    expect(getYamlAssistantUrl()).toBe("/k8s-yaml-assistant");
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "https://operator:secret@yaml.example.test",
+    "https://yaml.example.test?token=secret",
+    "https://yaml.example.test#handoff",
+    " https://yaml.example.test",
+    "//yaml.example.test/editor",
+    "/../editor",
+  ])("rejects a sensitive or non-navigation URL without exposing it", (value) => {
+    vi.stubEnv("YAML_ASSISTANT_URL", value);
+
+    expect(() => getYamlAssistantUrl()).toThrow(
+      "Agent Runtime configuration is invalid.",
     );
   });
 });

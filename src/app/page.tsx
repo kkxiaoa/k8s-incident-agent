@@ -2,6 +2,7 @@ import { Suspense } from "react";
 
 import { IncidentList } from "@/components/incidents/incident-list";
 import { ScenarioLauncher } from "@/components/incidents/scenario-launcher";
+import { MonitoringHealthOverview } from "@/components/monitoring/monitoring-health-overview";
 import {
   getIncidentIntakeMode,
   type IncidentIntakeMode,
@@ -19,57 +20,60 @@ async function RuntimeOverview({
   const manualIntake = intakeMode === "manual";
 
   return (
-    <section
-      className={`home-console${manualIntake ? "" : " home-console--online"}`}
-      aria-label="Incident Console"
-    >
-      {manualIntake ? (
-        <article className="home-panel home-panel--launcher">
+    <>
+      <MonitoringHealthOverview initialHealth={overview.monitoringHealth} />
+      <section
+        className={`home-console${manualIntake ? "" : " home-console--online"}`}
+        aria-label="Incident Console"
+      >
+        {manualIntake ? (
+          <article className="home-panel home-panel--launcher">
+            <div className="section-heading">
+              <div>
+                <span className="eyebrow">Manual trigger</span>
+                <h2>启动只读诊断</h2>
+              </div>
+              <span className="step-number">01</span>
+            </div>
+            <p className="panel-intro">
+              选择版本化场景。Runtime 会创建持久化 Incident 与受预算约束的诊断 Run。
+            </p>
+            {overview.scenarios === null ? (
+              <p className="page-alert" role="alert">
+                暂时无法加载诊断场景，请稍后重试。
+              </p>
+            ) : (
+              <ScenarioLauncher scenarios={overview.scenarios.items} />
+            )}
+          </article>
+        ) : null}
+
+        <article className="home-panel home-panel--incidents">
           <div className="section-heading">
             <div>
-              <span className="eyebrow">Manual trigger</span>
-              <h2>启动只读诊断</h2>
+              <span className="eyebrow">Persisted records</span>
+              <h2>最近的 Incident</h2>
             </div>
-            <span className="step-number">01</span>
+            <span className="step-number">{manualIntake ? "02" : "01"}</span>
           </div>
           <p className="panel-intro">
-            选择版本化场景。Runtime 会创建持久化 Incident 与受预算约束的诊断 Run。
+            页面读取 Runtime 的业务状态；刷新后仍从持久化记录恢复。
           </p>
-          {overview.scenarios === null ? (
+          {overview.incidents === null ? (
             <p className="page-alert" role="alert">
-              暂时无法加载诊断场景，请稍后重试。
+              暂时无法加载最近记录，请稍后重试。
             </p>
           ) : (
-            <ScenarioLauncher scenarios={overview.scenarios.items} />
+            <>
+              <IncidentList incidents={overview.incidents.items} />
+              {overview.incidents.nextCursor !== null ? (
+                <p className="scope-note">当前显示最近 50 条 Incident。</p>
+              ) : null}
+            </>
           )}
         </article>
-      ) : null}
-
-      <article className="home-panel home-panel--incidents">
-        <div className="section-heading">
-          <div>
-            <span className="eyebrow">Persisted records</span>
-            <h2>最近的 Incident</h2>
-          </div>
-          <span className="step-number">{manualIntake ? "02" : "01"}</span>
-        </div>
-        <p className="panel-intro">
-          页面读取 Runtime 的业务状态；刷新后仍从持久化记录恢复。
-        </p>
-        {overview.incidents === null ? (
-          <p className="page-alert" role="alert">
-            暂时无法加载最近记录，请稍后重试。
-          </p>
-        ) : (
-          <>
-            <IncidentList incidents={overview.incidents.items} />
-            {overview.incidents.nextCursor !== null ? (
-              <p className="scope-note">当前显示最近 50 条 Incident。</p>
-            ) : null}
-          </>
-        )}
-      </article>
-    </section>
+      </section>
+    </>
   );
 }
 
@@ -81,25 +85,32 @@ function RuntimeOverviewLoading({
   const manualIntake = intakeMode === "manual";
 
   return (
-    <section
-      className={`home-console${manualIntake ? "" : " home-console--online"}`}
-      aria-label="Incident Console 加载中"
-    >
-      {manualIntake ? (
+    <>
+      <section className="monitoring-health monitoring-health--loading" aria-label="监控链路加载中">
+        <span className="skeleton skeleton--short" />
+        <span className="skeleton skeleton--title" />
+        <span className="skeleton skeleton--health-path" />
+      </section>
+      <section
+        className={`home-console${manualIntake ? "" : " home-console--online"}`}
+        aria-label="Incident Console 加载中"
+      >
+        {manualIntake ? (
+          <article className="home-panel skeleton-panel">
+            <span className="skeleton skeleton--short" />
+            <span className="skeleton skeleton--title" />
+            <span className="skeleton skeleton--line" />
+            <span className="skeleton skeleton--control" />
+          </article>
+        ) : null}
         <article className="home-panel skeleton-panel">
           <span className="skeleton skeleton--short" />
           <span className="skeleton skeleton--title" />
           <span className="skeleton skeleton--line" />
-          <span className="skeleton skeleton--control" />
+          <span className="skeleton skeleton--card" />
         </article>
-      ) : null}
-      <article className="home-panel skeleton-panel">
-        <span className="skeleton skeleton--short" />
-        <span className="skeleton skeleton--title" />
-        <span className="skeleton skeleton--line" />
-        <span className="skeleton skeleton--card" />
-      </article>
-    </section>
+      </section>
+    </>
   );
 }
 

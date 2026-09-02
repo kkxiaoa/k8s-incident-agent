@@ -35,9 +35,10 @@ class _Verifier(_StrictContract):
 
 
 class _ScenarioDefinition(_StrictContract):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     scenario_id: str = Field(min_length=1)
     scenario_version: Literal[1]
+    monitoring_alert_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
     trigger: ScenarioTrigger
@@ -49,7 +50,9 @@ class _ScenarioDefinition(_StrictContract):
     forbidden_tools: tuple[str, ...] = Field(min_length=1)
     deterministic_verifier: _Verifier
 
-    @field_validator("scenario_id", "display_name", "description")
+    @field_validator(
+        "scenario_id", "monitoring_alert_id", "display_name", "description"
+    )
     @classmethod
     def normalize_scalar_text(cls, value: str) -> str:
         return _normalized_string(value)
@@ -83,6 +86,7 @@ class _ScenarioDefinition(_StrictContract):
         return PublicScenario(
             scenario_id=self.scenario_id,
             scenario_version=self.scenario_version,
+            monitoring_alert_id=self.monitoring_alert_id,
             display_name=self.display_name,
             description=self.description,
             trigger=self.trigger,

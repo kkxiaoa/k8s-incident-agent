@@ -73,6 +73,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/incidents/{incident_id}/monitoring/panels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Incident Monitoring Panels */
+        get: operations["list_incident_monitoring_panels_api_v1_incidents__incident_id__monitoring_panels_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Incident Monitoring Panel */
+        get: operations["get_incident_monitoring_panel_api_v1_incidents__incident_id__monitoring_panels__panel_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/incidents/{incident_id}/runs": {
         parameters: {
             query?: never;
@@ -658,6 +692,31 @@ export interface components {
              */
             schemaVersion: 3;
         };
+        /** IncidentMetricPanel */
+        IncidentMetricPanel: {
+            /** Markers */
+            markers: components["schemas"]["MetricMarker"][];
+            /** Markerstruncated */
+            markersTruncated: boolean;
+            result: components["schemas"]["MetricPanelResult"];
+            /**
+             * Schemaversion
+             * @default 1
+             * @constant
+             */
+            schemaVersion: 1;
+        };
+        /** IncidentMonitoringPanels */
+        IncidentMonitoringPanels: {
+            /** Panels */
+            panels: components["schemas"]["MonitoringPanelReference"][];
+            /**
+             * Schemaversion
+             * @default 1
+             * @constant
+             */
+            schemaVersion: 1;
+        };
         /** IncidentResponse */
         IncidentResponse: {
             /**
@@ -708,6 +767,66 @@ export interface components {
             /** Namespace */
             namespace: string | null;
         };
+        /** MetricMarker */
+        MetricMarker: {
+            kind: components["schemas"]["MetricMarkerKind"];
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Runattempt */
+            runAttempt?: number | null;
+        };
+        /**
+         * MetricMarkerKind
+         * @enum {string}
+         */
+        MetricMarkerKind: "alert_firing" | "alert_resolved" | "run_started" | "run_completed";
+        /** MetricPanelResult */
+        MetricPanelResult: {
+            /** Currentvalue */
+            currentValue: number | null;
+            /** Latestsampleat */
+            latestSampleAt: string | null;
+            /** Panelid */
+            panelId: string;
+            /**
+             * Queriedat
+             * Format: date-time
+             */
+            queriedAt: string;
+            /** Samples */
+            samples: components["schemas"]["MetricSample"][];
+            state: components["schemas"]["MetricQueryState"];
+            /** Threshold */
+            threshold: number;
+            /** Title */
+            title: string;
+            /** Unit */
+            unit: string;
+            window: components["schemas"]["MetricWindow"];
+        };
+        /**
+         * MetricQueryState
+         * @enum {string}
+         */
+        MetricQueryState: "ok" | "no_data" | "stale" | "partial" | "query_error" | "monitoring_unavailable";
+        /** MetricSample */
+        MetricSample: {
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp: string;
+            /** Value */
+            value: number;
+        };
+        /**
+         * MetricWindow
+         * @enum {string}
+         */
+        MetricWindow: "15m" | "1h" | "6h";
         /**
          * MonitoringComponentState
          * @enum {string}
@@ -734,6 +853,12 @@ export interface components {
          * @enum {string}
          */
         MonitoringOverallState: "healthy" | "degraded" | "unavailable";
+        /** MonitoringPanelReference */
+        MonitoringPanelReference: {
+            /** Panelid */
+            panelId: string;
+            recommendedWindow: components["schemas"]["MetricWindow"];
+        };
         /** PrometheusToolCallIdentity */
         PrometheusToolCallIdentity: {
             /** Panelid */
@@ -1386,6 +1511,125 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_incident_monitoring_panels_api_v1_incidents__incident_id__monitoring_panels_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentMonitoringPanels"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_incident_monitoring_panel_api_v1_incidents__incident_id__monitoring_panels__panel_id__get: {
+        parameters: {
+            query?: {
+                window?: components["schemas"]["MetricWindow"];
+            };
+            header?: never;
+            path: {
+                incident_id: string;
+                panel_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentMetricPanel"];
                 };
             };
             /** @description Not Found */

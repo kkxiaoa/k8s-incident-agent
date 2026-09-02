@@ -12,6 +12,9 @@ type ApiAlertSignal = components["schemas"]["AlertSignalResponse"];
 type ApiRootCause = components["schemas"]["RootCauseResponse"];
 type ApiRunError = components["schemas"]["RunErrorResponse"];
 type ApiScenario = components["schemas"]["ScenarioResponse"];
+type ApiMonitoringHealth = components["schemas"]["MonitoringHealthSnapshot"];
+type ApiMetricPanel = components["schemas"]["MetricPanelResult"];
+type ApiMetricMarker = components["schemas"]["MetricMarker"];
 
 export interface TargetView {
   kind: string;
@@ -126,6 +129,59 @@ export interface IncidentDetailView {
   alertSignal: AlertSignalView | null;
 }
 
+export type MetricWindowView = components["schemas"]["MetricWindow"];
+export type MetricQueryStateView = components["schemas"]["MetricQueryState"];
+export type MonitoringComponentStateView =
+  components["schemas"]["MonitoringComponentState"];
+export type MonitoringOverallStateView =
+  components["schemas"]["MonitoringOverallState"];
+
+export type MonitoringHealthView = Pick<
+  ApiMonitoringHealth,
+  | "state"
+  | "checkedAt"
+  | "prometheus"
+  | "kubeStateMetrics"
+  | "ruleEvaluation"
+  | "alertmanager"
+  | "notification"
+  | "watchdogLastReceivedAt"
+>;
+
+export interface MonitoringPanelReferenceView {
+  panelId: string;
+  recommendedWindow: MetricWindowView;
+}
+
+export interface MonitoringPanelListView {
+  panels: MonitoringPanelReferenceView[];
+}
+
+export type MetricSampleView = components["schemas"]["MetricSample"];
+export type MetricMarkerView = Pick<
+  ApiMetricMarker,
+  "kind" | "occurredAt" | "runAttempt"
+>;
+export type MetricPanelResultView = Pick<
+  ApiMetricPanel,
+  | "panelId"
+  | "title"
+  | "unit"
+  | "threshold"
+  | "window"
+  | "state"
+  | "queriedAt"
+  | "latestSampleAt"
+  | "currentValue"
+  | "samples"
+>;
+
+export interface IncidentMetricPanelView {
+  result: MetricPanelResultView;
+  markers: MetricMarkerView[];
+  markersTruncated: boolean;
+}
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -143,6 +199,37 @@ function isTimestamp(value: unknown): value is string {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+export function isMetricWindow(value: unknown): value is MetricWindowView {
+  return value === "15m" || value === "1h" || value === "6h";
+}
+
+function isMetricQueryState(value: unknown): value is MetricQueryStateView {
+  return (
+    value === "ok" ||
+    value === "no_data" ||
+    value === "stale" ||
+    value === "partial" ||
+    value === "query_error" ||
+    value === "monitoring_unavailable"
+  );
+}
+
+function isMonitoringComponentState(
+  value: unknown,
+): value is MonitoringComponentStateView {
+  return (
+    value === "healthy" ||
+    value === "degraded" ||
+    value === "unavailable" ||
+    value === "stale" ||
+    value === "unknown"
+  );
 }
 
 function isIncidentStatus(
@@ -565,5 +652,236 @@ export function parseIncidentDetailResponse(
     evidence: evidence as EvidenceView[],
     diagnosis,
     alertSignal,
+  };
+}
+
+export function parseMonitoringHealthResponse(
+  value: unknown,
+): MonitoringHealthView | null {
+  if (
+    !isObject(value) ||
+    (value.state !== "healthy" &&
+      value.state !== "degraded" &&
+      value.state !== "unavailable") ||
+    !isTimestamp(value.checkedAt) ||
+    !isMonitoringComponentState(value.prometheus) ||
+    !isMonitoringComponentState(value.kubeStateMetrics) ||
+    !isMonitoringComponentState(value.ruleEvaluation) ||
+    !isMonitoringComponentState(value.alertmanager) ||
+    !isMonitoringComponentState(value.notification) ||
+    (value.watchdogLastReceivedAt !== null &&
+      !isTimestamp(value.watchdogLastReceivedAt))
+  ) {
+    return null;
+  }
+  return {
+    state: value.state,
+    checkedAt: value.checkedAt,
+    prometheus: value.prometheus,
+    kubeStateMetrics: value.kubeStateMetrics,
+    ruleEvaluation: value.ruleEvaluation,
+    alertmanager: value.alertmanager,
+    notification: value.notification,
+    watchdogLastReceivedAt: value.watchdogLastReceivedAt,
+  };
+}
+
+function parseMonitoringPanelReference(
+  value: unknown,
+): MonitoringPanelReferenceView | null {
+  return isObject(value) &&
+    typeof value.panelId === "string" &&
+    /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.panelId) &&
+    value.panelId.length <= 128 &&
+    isMetricWindow(value.recommendedWindow)
+    ? {
+        panelId: value.panelId,
+        recommendedWindow: value.recommendedWindow,
+      }
+    : null;
+}
+
+export function parseMonitoringPanelListResponse(
+  value: unknown,
+): MonitoringPanelListView | null {
+  if (
+    !isObject(value) ||
+    value.schemaVersion !== 1 ||
+    !Array.isArray(value.panels) ||
+    value.panels.length > 8
+  ) {
+    return null;
+  }
+  const panels = value.panels.map(parseMonitoringPanelReference);
+  if (
+    panels.some((panel) => panel === null) ||
+    new Set(panels.map((panel) => panel?.panelId)).size !== panels.length
+  ) {
+    return null;
+  }
+  return { panels: panels as MonitoringPanelReferenceView[] };
+}
+
+function parseMetricSamples(value: unknown): MetricSampleView[] | null {
+  if (!Array.isArray(value) || value.length > 512) {
+    return null;
+  }
+  const samples: MetricSampleView[] = [];
+  let previous = Number.NEGATIVE_INFINITY;
+  for (const sample of value) {
+    if (
+      !isObject(sample) ||
+      !isTimestamp(sample.timestamp) ||
+      !isFiniteNumber(sample.value)
+    ) {
+      return null;
+    }
+    const timestamp = Date.parse(sample.timestamp);
+    if (timestamp <= previous) {
+      return null;
+    }
+    previous = timestamp;
+    samples.push({ timestamp: sample.timestamp, value: sample.value });
+  }
+  return samples;
+}
+
+function parseMetricMarker(value: unknown): MetricMarkerView | null {
+  if (
+    !isObject(value) ||
+    (value.kind !== "alert_firing" &&
+      value.kind !== "alert_resolved" &&
+      value.kind !== "run_started" &&
+      value.kind !== "run_completed") ||
+    !isTimestamp(value.occurredAt)
+  ) {
+    return null;
+  }
+  const runMarker = value.kind === "run_started" || value.kind === "run_completed";
+  let runAttempt: number | null;
+  if (runMarker) {
+    if (!isPositiveInteger(value.runAttempt)) {
+      return null;
+    }
+    runAttempt = value.runAttempt;
+  } else {
+    if (value.runAttempt !== null) {
+      return null;
+    }
+    runAttempt = null;
+  }
+  return {
+    kind: value.kind,
+    occurredAt: value.occurredAt,
+    runAttempt,
+  };
+}
+
+function metricWindowMilliseconds(window: MetricWindowView): number {
+  return window === "15m"
+    ? 15 * 60_000
+    : window === "1h"
+      ? 60 * 60_000
+      : 6 * 60 * 60_000;
+}
+
+export function parseIncidentMetricPanelResponse(
+  value: unknown,
+  expectedPanelId: string,
+  expectedWindow: MetricWindowView,
+): IncidentMetricPanelView | null {
+  if (
+    !isObject(value) ||
+    value.schemaVersion !== 1 ||
+    typeof value.markersTruncated !== "boolean" ||
+    !Array.isArray(value.markers) ||
+    value.markers.length > 102 ||
+    !isObject(value.result)
+  ) {
+    return null;
+  }
+  const result = value.result;
+  if (
+    result.panelId !== expectedPanelId ||
+    result.window !== expectedWindow ||
+    typeof result.title !== "string" ||
+    result.title.length === 0 ||
+    result.title.length > 160 ||
+    typeof result.unit !== "string" ||
+    result.unit.length === 0 ||
+    result.unit.length > 32 ||
+    !isFiniteNumber(result.threshold) ||
+    !isMetricQueryState(result.state) ||
+    !isTimestamp(result.queriedAt) ||
+    (result.latestSampleAt !== null && !isTimestamp(result.latestSampleAt)) ||
+    (result.currentValue !== null && !isFiniteNumber(result.currentValue))
+  ) {
+    return null;
+  }
+  const samples = parseMetricSamples(result.samples);
+  if (samples === null) {
+    return null;
+  }
+  const populated =
+    samples.length > 0 &&
+    result.latestSampleAt !== null &&
+    result.currentValue !== null;
+  const empty =
+    samples.length === 0 &&
+    result.latestSampleAt === null &&
+    result.currentValue === null;
+  if (
+    (!populated && !empty) ||
+    ((result.state === "no_data" ||
+      result.state === "query_error" ||
+      result.state === "monitoring_unavailable") &&
+      !empty) ||
+    ((result.state === "ok" || result.state === "stale") && !populated) ||
+    (populated &&
+      (result.latestSampleAt !== samples.at(-1)?.timestamp ||
+        result.currentValue !== samples.at(-1)?.value))
+  ) {
+    return null;
+  }
+  const queriedAt = Date.parse(result.queriedAt);
+  const windowStart = queriedAt - metricWindowMilliseconds(expectedWindow);
+  if (
+    populated &&
+    (Date.parse(result.latestSampleAt as string) > queriedAt ||
+      samples.some((sample) => Date.parse(sample.timestamp) < windowStart))
+  ) {
+    return null;
+  }
+  const markers = value.markers.map(parseMetricMarker);
+  if (markers.some((marker) => marker === null)) {
+    return null;
+  }
+  let previousMarker = Number.NEGATIVE_INFINITY;
+  for (const marker of markers as MetricMarkerView[]) {
+    const timestamp = Date.parse(marker.occurredAt);
+    if (
+      timestamp < windowStart ||
+      timestamp > queriedAt ||
+      timestamp < previousMarker
+    ) {
+      return null;
+    }
+    previousMarker = timestamp;
+  }
+  return {
+    result: {
+      panelId: expectedPanelId,
+      title: result.title,
+      unit: result.unit,
+      threshold: result.threshold,
+      window: expectedWindow,
+      state: result.state,
+      queriedAt: result.queriedAt,
+      latestSampleAt: result.latestSampleAt,
+      currentValue: result.currentValue,
+      samples,
+    },
+    markers: markers as MetricMarkerView[],
+    markersTruncated: value.markersTruncated,
   };
 }

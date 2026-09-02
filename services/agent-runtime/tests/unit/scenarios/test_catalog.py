@@ -44,6 +44,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     assert scenario.model_dump(mode="json") == {
         "scenario_id": "image-pull-backoff",
         "scenario_version": 1,
+        "monitoring_alert_id": "K8sIncidentImagePullBackOff",
         "display_name": "Image pull failure",
         "description": "A Deployment cannot pull its configured image.",
         "trigger": {

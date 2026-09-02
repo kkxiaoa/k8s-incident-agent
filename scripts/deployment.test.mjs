@@ -1407,6 +1407,7 @@ function response(key, args) {
         }
         : {
           AGENT_RUNTIME_URL: "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000",
+          YAML_ASSISTANT_URL: "/k8s-yaml-assistant",
         },
     };
   }

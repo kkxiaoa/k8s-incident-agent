@@ -148,6 +148,22 @@ class IncidentDetailRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class MonitoringRunInterval:
+    attempt: int
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentMonitoringContext:
+    source: IncidentSource
+    target: KubernetesTarget
+    alert_signal: AlertSignalRecord | None
+    runs: tuple[MonitoringRunInterval, ...]
+    runs_truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RunListPage:
     items: tuple[IncidentRunDetail, ...]
     has_more: bool
@@ -258,6 +274,56 @@ class IncidentRepository:
         try:
             async with self._session_factory() as session:
                 return await session.get(IncidentRow, str(incident_id)) is not None
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def get_incident_monitoring_context(
+        self,
+        incident_id: UUID,
+        *,
+        run_limit: int,
+    ) -> IncidentMonitoringContext | None:
+        if run_limit < 1 or run_limit > 50:
+            raise ValueError("Monitoring Run limit must be between 1 and 50")
+        try:
+            async with self._session_factory() as session:
+                incident_row = await session.get(IncidentRow, str(incident_id))
+                if incident_row is None:
+                    return None
+                incident = _incident_list_record(incident_row)
+                alert_signal = await session.get(AlertSignalRow, incident_row.id)
+                run_rows = list(
+                    await session.scalars(
+                        select(RunRow)
+                        .where(RunRow.incident_id == incident_row.id)
+                        .order_by(RunRow.attempt.desc())
+                        .limit(run_limit + 1)
+                    )
+                )
+                return IncidentMonitoringContext(
+                    source=incident.source,
+                    target=incident.target,
+                    alert_signal=_alert_signal_record(alert_signal, incident),
+                    runs=tuple(
+                        MonitoringRunInterval(
+                            attempt=row.attempt,
+                            started_at=(
+                                _database_datetime(row.started_at)
+                                if row.started_at is not None
+                                else None
+                            ),
+                            completed_at=(
+                                _database_datetime(row.completed_at)
+                                if row.completed_at is not None
+                                else None
+                            ),
+                        )
+                        for row in run_rows[:run_limit]
+                    ),
+                    runs_truncated=len(run_rows) > run_limit,
+                )
+        except RepositoryError:
+            raise
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 

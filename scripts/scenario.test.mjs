@@ -63,9 +63,10 @@ test("versioned fixture satisfies restricted Pod Security admission", () => {
 
 function validScenario() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     scenario_id: SCENARIO_ID,
     scenario_version: 1,
+    monitoring_alert_id: "K8sIncidentImagePullBackOff",
     display_name: "Image pull failure",
     description: "A Deployment cannot pull its configured image.",
     trigger: {
@@ -763,6 +764,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     "forbidden_tools",
     "deterministic_verifier",
     "fixture_manifests",
+    "monitoring_alert_id",
   ]) {
     assert.equal(serialized.includes(privateField), false);
   }
@@ -770,7 +772,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
 
 test("catalog rejects incompatible versions, extra fields, and target drift", async (t) => {
   const cases = [
-    ["schema version", (scenario) => { scenario.schema_version = 2; }],
+    ["schema version", (scenario) => { scenario.schema_version = 1; }],
     ["scenario version", (scenario) => { scenario.scenario_version = 0; }],
     ["extra field", (scenario) => { scenario.unconsumed = "value"; }],
     ["cluster", (scenario) => { scenario.target.cluster = "production"; }],

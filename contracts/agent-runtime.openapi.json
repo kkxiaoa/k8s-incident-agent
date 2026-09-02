@@ -983,6 +983,63 @@
         "title": "IncidentListResponse",
         "type": "object"
       },
+      "IncidentMetricPanel": {
+        "additionalProperties": false,
+        "properties": {
+          "markers": {
+            "items": {
+              "$ref": "#/components/schemas/MetricMarker"
+            },
+            "maxItems": 102,
+            "title": "Markers",
+            "type": "array"
+          },
+          "markersTruncated": {
+            "title": "Markerstruncated",
+            "type": "boolean"
+          },
+          "result": {
+            "$ref": "#/components/schemas/MetricPanelResult"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result",
+          "markers",
+          "markersTruncated"
+        ],
+        "title": "IncidentMetricPanel",
+        "type": "object"
+      },
+      "IncidentMonitoringPanels": {
+        "additionalProperties": false,
+        "properties": {
+          "panels": {
+            "items": {
+              "$ref": "#/components/schemas/MonitoringPanelReference"
+            },
+            "maxItems": 8,
+            "title": "Panels",
+            "type": "array"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "panels"
+        ],
+        "title": "IncidentMonitoringPanels",
+        "type": "object"
+      },
       "IncidentResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1106,6 +1163,171 @@
         "title": "IncidentTargetResponse",
         "type": "object"
       },
+      "MetricMarker": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/MetricMarkerKind"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runAttempt": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runattempt"
+          }
+        },
+        "required": [
+          "kind",
+          "occurredAt"
+        ],
+        "title": "MetricMarker",
+        "type": "object"
+      },
+      "MetricMarkerKind": {
+        "enum": [
+          "alert_firing",
+          "alert_resolved",
+          "run_started",
+          "run_completed"
+        ],
+        "title": "MetricMarkerKind",
+        "type": "string"
+      },
+      "MetricPanelResult": {
+        "additionalProperties": false,
+        "properties": {
+          "currentValue": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currentvalue"
+          },
+          "latestSampleAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latestsampleat"
+          },
+          "panelId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Panelid",
+            "type": "string"
+          },
+          "queriedAt": {
+            "format": "date-time",
+            "title": "Queriedat",
+            "type": "string"
+          },
+          "samples": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSample"
+            },
+            "maxItems": 512,
+            "title": "Samples",
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MetricQueryState"
+          },
+          "threshold": {
+            "title": "Threshold",
+            "type": "number"
+          },
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "unit": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Unit",
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/MetricWindow"
+          }
+        },
+        "required": [
+          "panelId",
+          "title",
+          "unit",
+          "threshold",
+          "window",
+          "state",
+          "queriedAt",
+          "latestSampleAt",
+          "currentValue",
+          "samples"
+        ],
+        "title": "MetricPanelResult",
+        "type": "object"
+      },
+      "MetricQueryState": {
+        "enum": [
+          "ok",
+          "no_data",
+          "stale",
+          "partial",
+          "query_error",
+          "monitoring_unavailable"
+        ],
+        "title": "MetricQueryState",
+        "type": "string"
+      },
+      "MetricSample": {
+        "additionalProperties": false,
+        "properties": {
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "timestamp",
+          "value"
+        ],
+        "title": "MetricSample",
+        "type": "object"
+      },
+      "MetricWindow": {
+        "enum": [
+          "15m",
+          "1h",
+          "6h"
+        ],
+        "title": "MetricWindow",
+        "type": "string"
+      },
       "MonitoringComponentState": {
         "enum": [
           "healthy",
@@ -1177,6 +1399,26 @@
         ],
         "title": "MonitoringOverallState",
         "type": "string"
+      },
+      "MonitoringPanelReference": {
+        "additionalProperties": false,
+        "properties": {
+          "panelId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Panelid",
+            "type": "string"
+          },
+          "recommendedWindow": {
+            "$ref": "#/components/schemas/MetricWindow"
+          }
+        },
+        "required": [
+          "panelId",
+          "recommendedWindow"
+        ],
+        "title": "MonitoringPanelReference",
+        "type": "object"
       },
       "PrometheusToolCallIdentity": {
         "additionalProperties": false,
@@ -2433,6 +2675,166 @@
           }
         },
         "summary": "Get Incident Events"
+      }
+    },
+    "/api/v1/incidents/{incident_id}/monitoring/panels": {
+      "get": {
+        "operationId": "list_incident_monitoring_panels_api_v1_incidents__incident_id__monitoring_panels_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentMonitoringPanels"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "List Incident Monitoring Panels"
+      }
+    },
+    "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}": {
+      "get": {
+        "operationId": "get_incident_monitoring_panel_api_v1_incidents__incident_id__monitoring_panels__panel_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "panel_id",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
+              "title": "Panel Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/MetricWindow",
+              "default": "15m"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentMetricPanel"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Incident Monitoring Panel"
       }
     },
     "/api/v1/incidents/{incident_id}/runs": {

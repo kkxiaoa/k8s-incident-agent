@@ -18,7 +18,7 @@ from k8s_incident_agent.application.events import (
     RunEventNotifier,
 )
 from k8s_incident_agent.application.incidents import IncidentApplicationService
-from k8s_incident_agent.application.monitoring import MonitoringHealthService
+from k8s_incident_agent.application.monitoring import MonitoringApplicationService
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
 from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget
@@ -70,7 +70,7 @@ class RuntimeContainer:
     incidents: IncidentApplicationService
     events: IncidentEventService
     alerts: AlertmanagerApplicationService | None
-    monitoring: MonitoringHealthService
+    monitoring: MonitoringApplicationService
 
 
 type RuntimeContextFactory = Callable[
@@ -301,7 +301,9 @@ async def build_runtime_container(
                 if alert_authenticator is not None
                 else None
             ),
-            monitoring=MonitoringHealthService(
+            monitoring=MonitoringApplicationService(
+                catalog=alert_catalog,
+                scenarios=catalog,
                 prometheus=prometheus,
                 repository=repository,
                 now=now,

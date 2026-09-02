@@ -3,49 +3,67 @@ import "server-only";
 import {
   parseIncidentDetailResponse,
   parseIncidentListResponse,
+  parseMonitoringHealthResponse,
+  parseMonitoringPanelListResponse,
   parseRunHistoryResponse,
   parseScenarioListResponse,
   type IncidentDetailView,
   type IncidentListView,
+  type MonitoringHealthView,
+  type MonitoringPanelListView,
   type RunHistoryView,
   type ScenarioListView,
 } from "./response-contracts";
 import {
   fetchIncident,
   fetchIncidents,
+  fetchMonitoringHealth,
+  fetchMonitoringPanels,
   fetchRuns,
   fetchScenarios,
 } from "./server-client";
 import type { IncidentIntakeMode } from "./server-config";
 
 type IncidentPageData =
-  | { state: "ready"; detail: IncidentDetailView; runs: RunHistoryView }
+  | {
+      state: "ready";
+      detail: IncidentDetailView;
+      runs: RunHistoryView;
+      monitoringPanels: MonitoringPanelListView | null;
+      monitoringHealth: MonitoringHealthView | null;
+    }
   | { state: "missing" }
   | { state: "unavailable" };
 
 interface IncidentConsoleOverview {
   scenarios: ScenarioListView | null;
   incidents: IncidentListView | null;
+  monitoringHealth: MonitoringHealthView | null;
 }
 
 export async function loadIncidentConsoleOverview(
   intakeMode: IncidentIntakeMode,
 ): Promise<IncidentConsoleOverview> {
   if (intakeMode === "online") {
-    const incidentResult = await fetchIncidents(
-      new URLSearchParams({ limit: "50" }),
-    );
+    const [incidentResult, healthResult] = await Promise.all([
+      fetchIncidents(new URLSearchParams({ limit: "50" })),
+      fetchMonitoringHealth(),
+    ]);
     return {
       scenarios: null,
       incidents: incidentResult.response.ok
         ? parseIncidentListResponse(incidentResult.value)
         : null,
+      monitoringHealth: healthResult.response.ok
+        ? parseMonitoringHealthResponse(healthResult.value)
+        : null,
     };
   }
 
-  const [scenarioResult, incidentResult] = await Promise.all([
+  const [scenarioResult, incidentResult, healthResult] = await Promise.all([
     fetchScenarios(),
     fetchIncidents(new URLSearchParams({ limit: "50" })),
+    fetchMonitoringHealth(),
   ]);
 
   return {
@@ -55,6 +73,9 @@ export async function loadIncidentConsoleOverview(
     incidents: incidentResult.response.ok
       ? parseIncidentListResponse(incidentResult.value)
       : null,
+    monitoringHealth: healthResult.response.ok
+      ? parseMonitoringHealthResponse(healthResult.value)
+      : null,
   };
 }
 
@@ -62,10 +83,13 @@ export async function loadIncidentPage(
   incidentId: string,
   runId?: string,
 ): Promise<IncidentPageData> {
-  const [detailResult, runsResult] = await Promise.all([
-    fetchIncident(incidentId, runId),
-    fetchRuns(incidentId, new URLSearchParams({ limit: "20" })),
-  ]);
+  const [detailResult, runsResult, monitoringPanelsResult, healthResult] =
+    await Promise.all([
+      fetchIncident(incidentId, runId),
+      fetchRuns(incidentId, new URLSearchParams({ limit: "20" })),
+      fetchMonitoringPanels(incidentId),
+      fetchMonitoringHealth(),
+    ]);
   if (
     detailResult.response.status === 404 ||
     detailResult.response.status === 422
@@ -81,5 +105,15 @@ export async function loadIncidentPage(
     : null;
   return detail === null || runs === null
     ? { state: "unavailable" }
-    : { state: "ready", detail, runs };
+    : {
+        state: "ready",
+        detail,
+        runs,
+        monitoringPanels: monitoringPanelsResult.response.ok
+          ? parseMonitoringPanelListResponse(monitoringPanelsResult.value)
+          : null,
+        monitoringHealth: healthResult.response.ok
+          ? parseMonitoringHealthResponse(healthResult.value)
+          : null,
+      };
 }

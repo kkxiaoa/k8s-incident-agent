@@ -30,10 +30,10 @@ const SCENARIO: ScenarioResponse = {
   displayName: "镜像拉取失败",
   description: "调查 Pod 的 ImagePullBackOff，并保留 Kubernetes Evidence 引用。",
   target: {
-    apiVersion: "v1",
-    kind: "Pod",
-    namespace: "incident-demo",
-    name: "broken-image",
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    namespace: "k8s-incident-scenarios",
+    name: "image-pull-backoff",
     cluster: "kind-k8s-incident-agent",
   },
   trigger: {
@@ -439,6 +439,60 @@ function listItem(record: FakeIncident): IncidentListItem {
   };
 }
 
+function metricMarkers(record: FakeIncident) {
+  const markers: Array<{
+    kind: "run_started" | "run_completed";
+    occurredAt: string;
+    runAttempt: number;
+  }> = [];
+  if (record.detail.selectedRun.startedAt !== null) {
+    markers.push({
+      kind: "run_started",
+      occurredAt: record.detail.selectedRun.startedAt,
+      runAttempt: record.detail.selectedRun.attempt,
+    });
+  }
+  if (record.detail.selectedRun.completedAt !== null) {
+    markers.push({
+      kind: "run_completed",
+      occurredAt: record.detail.selectedRun.completedAt,
+      runAttempt: record.detail.selectedRun.attempt,
+    });
+  }
+  return markers;
+}
+
+function metricPanel(
+  record: FakeIncident,
+  panelId: string,
+  window: string,
+) {
+  const currentValue = record.finished ? 0 : 1;
+  return {
+    schemaVersion: 1,
+    result: {
+      panelId,
+      title:
+        panelId === "image-pull-affected-pods"
+          ? "Affected pods"
+          : "Waiting containers",
+      unit: panelId === "image-pull-affected-pods" ? "pods" : "containers",
+      threshold: 1,
+      window,
+      state: "ok",
+      queriedAt: TERMINAL_AT,
+      latestSampleAt: TERMINAL_AT,
+      currentValue,
+      samples: [
+        { timestamp: STARTED_AT, value: 1 },
+        { timestamp: TERMINAL_AT, value: currentValue },
+      ],
+    },
+    markers: metricMarkers(record),
+    markersTruncated: false,
+  };
+}
+
 async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
@@ -503,6 +557,20 @@ async function handleRequest(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/v1/monitoring/health") {
+    json(response, 200, {
+      state: "healthy",
+      checkedAt: TERMINAL_AT,
+      prometheus: "healthy",
+      kubeStateMetrics: "healthy",
+      ruleEvaluation: "healthy",
+      alertmanager: "healthy",
+      notification: "healthy",
+      watchdogLastReceivedAt: TOOL_AT,
+    });
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
     json(response, 200, {
       schemaVersion: 3,
@@ -536,6 +604,58 @@ async function handleRequest(
       schemaVersion: 3,
       incidentId: record.detail.incident.id,
     });
+    return;
+  }
+
+  const panelListMatch = url.pathname.match(
+    /^\/api\/v1\/incidents\/([0-9a-f-]+)\/monitoring\/panels$/i,
+  );
+  if (request.method === "GET" && panelListMatch !== null) {
+    if (!incidents.has(panelListMatch[1])) {
+      runtimeError(response, 404, "incident_not_found", "Incident was not found.", false);
+      return;
+    }
+    json(response, 200, {
+      schemaVersion: 1,
+      panels: [
+        { panelId: "image-pull-affected-pods", recommendedWindow: "15m" },
+        {
+          panelId: "image-pull-waiting-containers",
+          recommendedWindow: "15m",
+        },
+      ],
+    });
+    return;
+  }
+
+  const panelMatch = url.pathname.match(
+    /^\/api\/v1\/incidents\/([0-9a-f-]+)\/monitoring\/panels\/([a-z0-9-]+)$/i,
+  );
+  if (request.method === "GET" && panelMatch !== null) {
+    const record = incidents.get(panelMatch[1]);
+    const window = url.searchParams.get("window");
+    if (record === undefined) {
+      runtimeError(response, 404, "incident_not_found", "Incident was not found.", false);
+      return;
+    }
+    if (
+      panelMatch[2] !== "image-pull-affected-pods" &&
+      panelMatch[2] !== "image-pull-waiting-containers"
+    ) {
+      runtimeError(
+        response,
+        404,
+        "monitoring_panel_not_found",
+        "Monitoring panel was not found.",
+        false,
+      );
+      return;
+    }
+    if (window !== "15m" && window !== "1h" && window !== "6h") {
+      runtimeError(response, 422, "invalid_request", "Request is invalid.", false);
+      return;
+    }
+    json(response, 200, metricPanel(record, panelMatch[2], window));
     return;
   }
 

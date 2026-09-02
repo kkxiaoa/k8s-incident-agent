@@ -21,6 +21,13 @@ async function createFromHome(page: Page): Promise<void> {
   await expect(
     page.locator('link[rel="icon"][type="image/x-icon"]'),
   ).toHaveAttribute("href", /^\/favicon\.ico\?/);
+  await expect(page.getByRole("link", { name: "YAML 编写助手" })).toHaveAttribute(
+    "href",
+    "http://127.0.0.1:3001/",
+  );
+  await expect(page.getByRole("heading", { name: "监控链路" })).toBeVisible();
+  await expect(page.getByLabel("监控链路正常")).toBeVisible();
+  await expect(page.getByText(/Local Kind|Stage 1/)).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "启动只读诊断" })).toBeVisible();
   await page.getByRole("button", { name: "创建 Incident" }).click();
   await expect(page).toHaveURL(/\/incidents\/[0-9a-f-]+$/);
@@ -69,6 +76,18 @@ test("create reaches terminal diagnosis, reconnects natively, and refreshes from
   await createFromHome(page);
 
   await expect(page.getByText("诊断已完成", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "监控概览" })).toBeVisible();
+  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await expect(
+    page.getByRole("img", { name: /^Affected pods 时间序列/ }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: /^Waiting containers 时间序列/ }),
+  ).toBeVisible();
+  await expect(page.locator(".metric-panel__value")).toHaveText(["0", "0"]);
+  await expect(
+    page.locator(".metric-chart__events").getByText("第 1 次诊断 Run 完成"),
+  ).toHaveCount(2);
   await expect(
     page.getByText("Pod 引用的镜像 manifest 不存在，导致 ImagePullBackOff。"),
   ).toBeVisible();

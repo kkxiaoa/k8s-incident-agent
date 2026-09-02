@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Final
 
 from k8s_incident_agent.domain.contracts import KubernetesTarget
@@ -27,10 +27,10 @@ from k8s_incident_agent.monitoring.prometheus import (
     PrometheusQueryResult,
 )
 
-_WINDOWS: Final[dict[MetricWindow, tuple[timedelta, int]]] = {
-    MetricWindow.FIFTEEN_MINUTES: (timedelta(minutes=15), 15),
-    MetricWindow.ONE_HOUR: (timedelta(hours=1), 60),
-    MetricWindow.SIX_HOURS: (timedelta(hours=6), 300),
+_WINDOW_STEPS: Final[dict[MetricWindow, int]] = {
+    MetricWindow.FIFTEEN_MINUTES: 15,
+    MetricWindow.ONE_HOUR: 60,
+    MetricWindow.SIX_HOURS: 300,
 }
 _UP_QUERY: Final = 'up{job=~"kube-state-metrics|alertmanager"}'
 _WATCHDOG_QUERY: Final = 'ALERTS{alertname="Watchdog",alertstate="firing"}'
@@ -150,11 +150,11 @@ class PrometheusQueryService:
         window: MetricWindow,
         queried_at: datetime,
     ) -> MetricPanelResult:
-        duration, step_seconds = _WINDOWS[window]
+        step_seconds = _WINDOW_STEPS[window]
         expression = _render_query(panel.query_template, target)
         result = await self._client.query_range(
             expression,
-            start=queried_at - duration,
+            start=queried_at - window.duration,
             end=queried_at,
             step_seconds=step_seconds,
             lookback_seconds=panel.stale_after_seconds,

@@ -14,6 +14,19 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function monitoringHealth() {
+  return {
+    state: "healthy",
+    checkedAt: "2026-09-03T02:15:00.000Z",
+    prometheus: "healthy",
+    kubeStateMetrics: "healthy",
+    ruleEvaluation: "healthy",
+    alertmanager: "healthy",
+    notification: "healthy",
+    watchdogLastReceivedAt: "2026-09-03T02:14:00.000Z",
+  };
+}
+
 beforeEach(() => {
   vi.stubEnv("AGENT_RUNTIME_URL", "http://127.0.0.1:8000");
 });
@@ -24,7 +37,9 @@ describe("server view data", () => {
       "fetch",
       vi.fn((url: URL) =>
         Promise.resolve(
-          url.pathname.endsWith("/scenarios")
+          url.pathname.endsWith("/monitoring/health")
+            ? jsonResponse(monitoringHealth())
+            : url.pathname.endsWith("/scenarios")
             ? jsonResponse({ schemaVersion: 1, items: [null] })
             : jsonResponse({
                 schemaVersion: 3,
@@ -40,23 +55,30 @@ describe("server view data", () => {
     expect(overview).toEqual({
       scenarios: null,
       incidents: null,
+      monitoringHealth: monitoringHealth(),
     });
   });
 
   it("loads only persisted incidents for the online profile", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ schemaVersion: 3, items: [], nextCursor: null }),
+    const fetchMock = vi.fn((url: URL) =>
+      Promise.resolve(
+        url.pathname.endsWith("/monitoring/health")
+          ? jsonResponse(monitoringHealth())
+          : jsonResponse({ schemaVersion: 3, items: [], nextCursor: null }),
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     const overview = await loadIncidentConsoleOverview("online");
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url] = fetchMock.mock.calls[0] as [URL];
-    expect(url.pathname).toBe("/api/v1/incidents");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.map((call) => (call[0] as URL).pathname).sort(),
+    ).toEqual(["/api/v1/incidents", "/api/v1/monitoring/health"]);
     expect(overview).toEqual({
       scenarios: null,
       incidents: { items: [], nextCursor: null },
+      monitoringHealth: monitoringHealth(),
     });
   });
 
@@ -75,7 +97,17 @@ describe("server view data", () => {
       "fetch",
       vi.fn((url: URL) =>
         Promise.resolve(
-          url.pathname.endsWith("/runs")
+          url.pathname.endsWith("/monitoring/panels")
+            ? jsonResponse({
+                schemaVersion: 1,
+                panels: [
+                  {
+                    panelId: "image-pull-affected-pods",
+                    recommendedWindow: "15m",
+                  },
+                ],
+              })
+            : url.pathname.endsWith("/runs")
             ? jsonResponse({
                 schemaVersion: 3,
                 items: [
@@ -105,6 +137,12 @@ describe("server view data", () => {
         error: null,
       });
       expect(pageData.runs.items).toHaveLength(1);
+      expect(pageData.monitoringPanels?.panels).toEqual([
+        {
+          panelId: "image-pull-affected-pods",
+          recommendedWindow: "15m",
+        },
+      ]);
       expect(pageData.detail.incident).not.toHaveProperty("updatedAt");
     }
   });

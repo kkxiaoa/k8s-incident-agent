@@ -1,7 +1,7 @@
 from typing import cast
 from uuid import UUID
 
-from k8s_incident_agent.application.monitoring import MonitoringHealthService
+from k8s_incident_agent.application.monitoring import MonitoringApplicationService
 from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
@@ -38,6 +38,7 @@ def public_scenario(name: str = "image-pull-backoff") -> PublicScenario:
     return PublicScenario(
         scenario_id=name,
         scenario_version=1,
+        monitoring_alert_id="K8sIncidentImagePullBackOff",
         display_name="Image pull failure",
         description="A Deployment cannot pull its configured image.",
         trigger=ScenarioTrigger(
@@ -76,5 +77,5 @@ def prometheus_query_service_stub() -> PrometheusQueryService:
     return cast(PrometheusQueryService, _PrometheusQueryServiceStub())
 
 
-def monitoring_health_service_stub() -> MonitoringHealthService:
-    return cast(MonitoringHealthService, object())
+def monitoring_health_service_stub() -> MonitoringApplicationService:
+    return cast(MonitoringApplicationService, object())

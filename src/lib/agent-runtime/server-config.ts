@@ -67,3 +67,42 @@ export function getAgentRuntimeBaseUrl(): URL {
 
   return url;
 }
+
+export function getYamlAssistantUrl(): string | null {
+  const configuredValue = process.env.YAML_ASSISTANT_URL;
+  if (configuredValue === undefined || configuredValue.trim() === "") {
+    return null;
+  }
+  if (
+    configuredValue !== configuredValue.trim() ||
+    configuredValue.includes("?") ||
+    configuredValue.includes("#")
+  ) {
+    throw new Error(INVALID_CONFIGURATION_MESSAGE);
+  }
+  if (configuredValue.startsWith("/")) {
+    const base = new URL("https://configuration.invalid");
+    const relative = new URL(configuredValue, base);
+    if (
+      relative.origin !== base.origin ||
+      relative.pathname !== configuredValue
+    ) {
+      throw new Error(INVALID_CONFIGURATION_MESSAGE);
+    }
+    return configuredValue;
+  }
+  let url: URL;
+  try {
+    url = new URL(configuredValue);
+  } catch {
+    throw new Error(INVALID_CONFIGURATION_MESSAGE);
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username !== "" ||
+    url.password !== ""
+  ) {
+    throw new Error(INVALID_CONFIGURATION_MESSAGE);
+  }
+  return url.href;
+}

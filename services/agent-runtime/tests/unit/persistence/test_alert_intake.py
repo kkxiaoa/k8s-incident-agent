@@ -166,6 +166,66 @@ async def test_firing_atomically_creates_one_incident_run_signal_and_event(
 
 
 @pytest.mark.asyncio
+async def test_monitoring_context_projects_source_target_signal_and_bounded_runs(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        firing = await repository.apply_alert_occurrences(
+            (_occurrence(),),
+            _model(),
+            _budget(),
+        )
+        run_id = firing.created_run_ids[0]
+        incident_id = firing.events[0].incident_id
+        await repository.start_run(run_id, START_TIME + timedelta(minutes=1))
+        await repository.persist_terminal(
+            TerminalRecord(
+                run_id=run_id,
+                completed_at=START_TIME + timedelta(minutes=2),
+                outcome=None,
+                summary=None,
+                root_causes=(),
+                missing_information=(),
+                redacted=False,
+                error_code="request_timeout",
+                error_retryable=True,
+                model_calls=1,
+                tool_calls=0,
+                input_tokens=None,
+                output_tokens=None,
+            )
+        )
+        await repository.apply_alert_occurrences(
+            (
+                _occurrence(
+                    status=AlertSignalStatus.RESOLVED,
+                    ends_at=_timestamp(3),
+                ),
+            ),
+            _model(),
+            _budget(),
+        )
+
+        context = await repository.get_incident_monitoring_context(
+            incident_id,
+            run_limit=1,
+        )
+
+        assert context is not None
+        assert context.source.ref == "K8sIncidentImagePullBackOff"
+        assert context.target.name == "image-pull-backoff"
+        assert context.alert_signal is not None
+        assert context.alert_signal.status is AlertSignalStatus.RESOLVED
+        assert context.alert_signal.ends_at == _timestamp(3)
+        assert len(context.runs) == 1
+        assert context.runs[0].attempt == 1
+        assert context.runs[0].started_at == START_TIME + timedelta(minutes=1)
+        assert context.runs[0].completed_at == START_TIME + timedelta(minutes=2)
+        assert context.runs_truncated is False
+
+
+@pytest.mark.asyncio
 async def test_nanosecond_distinct_occurrences_keep_distinct_database_identity(
     tmp_path: Path,
 ) -> None:

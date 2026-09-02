@@ -25,12 +25,15 @@ ScenarioTarget = KubernetesTarget
 class PublicScenario(_ImmutableContract):
     scenario_id: str = Field(min_length=1)
     scenario_version: int = Field(ge=1)
+    monitoring_alert_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
     trigger: ScenarioTrigger
     target: ScenarioTarget
 
-    @field_validator("scenario_id", "display_name", "description")
+    @field_validator(
+        "scenario_id", "monitoring_alert_id", "display_name", "description"
+    )
     @classmethod
     def require_normalized_scenario_value(cls, value: str) -> str:
         return _normalized_string(value)

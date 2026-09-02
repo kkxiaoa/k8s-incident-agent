@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useReducer, useRef, useState } from "react";
 
 import { LocalTimestamp } from "@/components/local-timestamp";
+import { IncidentMonitoringOverview } from "@/components/monitoring/incident-monitoring-overview";
 import {
   createRunFromBrowser,
   fetchIncidentFromBrowser,
@@ -14,6 +15,8 @@ import {
 import type {
   RunHistoryView,
   RunSummaryView,
+  MonitoringHealthView,
+  MonitoringPanelListView,
 } from "@/lib/agent-runtime/response-contracts";
 import {
   RUN_EVENT_NAMES,
@@ -67,11 +70,15 @@ export function IncidentStream({
   initialRuns,
   latestMode,
   manualActions,
+  monitoringPanels = null,
+  initialMonitoringHealth = null,
 }: {
   initialDetail: IncidentDetailResponse;
   initialRuns: RunHistoryView;
   latestMode: boolean;
   manualActions: boolean;
+  monitoringPanels?: MonitoringPanelListView | null;
+  initialMonitoringHealth?: MonitoringHealthView | null;
 }) {
   const router = useRouter();
   const [state, dispatch] = useReducer(
@@ -254,6 +261,12 @@ export function IncidentStream({
   const activeRun =
     detail.selectedRun.status === "QUEUED" ||
     detail.selectedRun.status === "RUNNING";
+  const monitoringRefreshKey = [
+    detail.selectedRun.status,
+    detail.selectedRun.startedAt,
+    detail.selectedRun.completedAt,
+    detail.alertSignal?.endsAt ?? "firing",
+  ].join(":");
 
   return (
     <>
@@ -305,6 +318,14 @@ export function IncidentStream({
           </div>
         </dl>
       </section>
+
+      <IncidentMonitoringOverview
+        incidentId={detail.incident.id}
+        targetLabel={targetLabel(detail.incident.target)}
+        panels={monitoringPanels}
+        initialHealth={initialMonitoringHealth}
+        refreshKey={monitoringRefreshKey}
+      />
 
       <section className="run-controls" aria-labelledby="run-controls-heading">
         <div>

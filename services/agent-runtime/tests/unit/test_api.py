@@ -128,6 +128,11 @@ def test_manual_route_table_contains_read_and_create_endpoints() -> None:
         ("GET", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents/{incident_id}"),
         ("GET", "/api/v1/incidents/{incident_id}/events"),
+        ("GET", "/api/v1/incidents/{incident_id}/monitoring/panels"),
+        (
+            "GET",
+            "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}",
+        ),
         ("GET", "/api/v1/incidents/{incident_id}/runs"),
         ("POST", "/api/v1/incidents/{incident_id}/runs"),
         ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
@@ -146,6 +151,11 @@ def test_online_route_table_omits_manual_entrypoints(tmp_path: Path) -> None:
         ("GET", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents/{incident_id}"),
         ("GET", "/api/v1/incidents/{incident_id}/events"),
+        ("GET", "/api/v1/incidents/{incident_id}/monitoring/panels"),
+        (
+            "GET",
+            "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}",
+        ),
         ("GET", "/api/v1/incidents/{incident_id}/runs"),
         ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
         ("GET", "/api/v1/monitoring/health"),

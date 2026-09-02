@@ -16,6 +16,10 @@ from k8s_incident_agent.kubernetes.credentials import (
     DiagnosticCredential,
     DiagnosticCredentialLease,
 )
+from k8s_incident_agent.monitoring.catalog import AlertCatalog
+from k8s_incident_agent.monitoring.catalog import (
+    load_alert_catalog as load_real_alert_catalog,
+)
 from k8s_incident_agent.runtime.artifacts import ArtifactTreeEntry
 from k8s_incident_agent.runtime.paths import (
     REPOSITORY_ROOT,
@@ -53,6 +57,7 @@ def _scenario() -> PublicScenario:
     return PublicScenario(
         scenario_id="image-pull-backoff",
         scenario_version=1,
+        monitoring_alert_id="K8sIncidentImagePullBackOff",
         display_name="Image pull failure",
         description="A Deployment cannot pull its configured image.",
         trigger=ScenarioTrigger(
@@ -169,10 +174,10 @@ def _install_runtime_fakes(
         fail("catalog")
         return (_scenario(),)
 
-    def alert_catalog(_path: Path) -> object:
+    def alert_catalog(path: Path) -> AlertCatalog:
         events.append("alert.catalog")
         fail("alert-catalog")
-        return object()
+        return load_real_alert_catalog(path)
 
     class FakeAlertAuthenticator:
         @classmethod

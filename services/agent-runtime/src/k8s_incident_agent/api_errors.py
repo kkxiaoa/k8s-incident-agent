@@ -16,6 +16,7 @@ from k8s_incident_agent.application.incidents import (
     RuntimeNotReadyError,
     ScenarioNotFoundError,
 )
+from k8s_incident_agent.application.monitoring import MonitoringPanelNotFoundError
 from k8s_incident_agent.monitoring.errors import (
     AlertAuthenticationError,
     AlertPayloadInvalidError,
@@ -43,6 +44,11 @@ _INCIDENT_NOT_FOUND = _ErrorContract(
     404,
     "incident_not_found",
     "Incident was not found.",
+)
+_MONITORING_PANEL_NOT_FOUND = _ErrorContract(
+    404,
+    "monitoring_panel_not_found",
+    "Monitoring panel was not found.",
 )
 _RUN_NOT_FOUND = _ErrorContract(404, "run_not_found", "Run was not found.")
 _ACTIVE_RUN_EXISTS = _ErrorContract(
@@ -113,6 +119,12 @@ def install_exception_handlers(app: FastAPI) -> None:
         _error: IncidentNotFoundError,
     ) -> JSONResponse:
         return _response(_INCIDENT_NOT_FOUND)
+
+    async def monitoring_panel_not_found_handler(
+        _request: Request,
+        _error: MonitoringPanelNotFoundError,
+    ) -> JSONResponse:
+        return _response(_MONITORING_PANEL_NOT_FOUND)
 
     async def run_not_found_handler(
         _request: Request,
@@ -194,6 +206,10 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         IncidentNotFoundError,
         cast(ExceptionHandler, incident_not_found_handler),
+    )
+    app.add_exception_handler(
+        MonitoringPanelNotFoundError,
+        cast(ExceptionHandler, monitoring_panel_not_found_handler),
     )
     app.add_exception_handler(
         RunNotFoundError,

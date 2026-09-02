@@ -51,6 +51,8 @@ export default async function IncidentPage({ params, searchParams }: IncidentPag
           key={`${pageData.detail.selectedRun.id}:${runId === undefined ? "latest" : "history"}`}
           initialDetail={pageData.detail}
           initialRuns={pageData.runs}
+          monitoringPanels={pageData.monitoringPanels}
+          initialMonitoringHealth={pageData.monitoringHealth}
           latestMode={runId === undefined}
           manualActions={getIncidentIntakeMode() === "manual"}
         />
