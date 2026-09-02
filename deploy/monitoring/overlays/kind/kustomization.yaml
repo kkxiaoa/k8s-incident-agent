@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - ../../platform/kind-storage
+patches:
+  - path: prometheus-data.yaml
+    target:
+      version: v1
+      kind: PersistentVolumeClaim
+      name: prometheus-data
+      namespace: k8s-incident-monitoring
+  - path: prometheus-volume-permissions.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: prometheus
+      namespace: k8s-incident-monitoring
+images:
+  - name: k8s-incident-agent-runtime
+    newName: k8s-incident-agent-runtime
+    digest: sha256:395f13fd3f5c01e28ff9c5656e28563b714b6018e9aa79e81b84cace9d66663d

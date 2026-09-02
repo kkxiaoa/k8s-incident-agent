@@ -1,11 +1,15 @@
 {
-  "schemaVersion": 1,
-  "catalogVersion": "2026-09-02.1",
+  "schemaVersion": 2,
+  "catalogVersion": "2026-09-02.2",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
       "displayName": "Image pull failure",
       "triggerSummary": "A Deployment cannot pull its configured container image.",
+      "rule": {
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) (kube_pod_container_status_waiting_reason{reason=~\"ErrImagePull|ImagePullBackOff\"} == 1) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "for": "30s"
+      },
       "target": {
         "apiVersion": "apps/v1",
         "kind": "Deployment",

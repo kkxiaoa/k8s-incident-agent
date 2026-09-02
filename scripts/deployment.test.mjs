@@ -12,7 +12,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { loadAll } from "js-yaml";
+import { load, loadAll } from "js-yaml";
 
 const REPOSITORY_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -38,6 +38,12 @@ const CONSOLE_IMAGE =
   "k8s-incident-agent-console@sha256:62310090946e27a4274680ab09084046e6708994a499761d0e2fed3a69b64fa1";
 const RUNTIME_IMAGE =
   "k8s-incident-agent-runtime@sha256:395f13fd3f5c01e28ff9c5656e28563b714b6018e9aa79e81b84cace9d66663d";
+const PROMETHEUS_IMAGE =
+  "quay.io/prometheus/prometheus@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893";
+const ALERTMANAGER_IMAGE =
+  "quay.io/prometheus/alertmanager@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d";
+const KUBE_STATE_METRICS_IMAGE =
+  "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b";
 
 function render(relativePath) {
   return execFileSync(
@@ -410,19 +416,233 @@ test("Console and Runtime exposure and RBAC stay within the fixed read-only boun
   );
 });
 
+test("managed monitoring render pins topology, collection, rule, and credential boundaries", () => {
+  const resources = indexDocuments(render("overlays/k3s-evaluation"));
+  const expected = [
+    ["prometheus", PROMETHEUS_IMAGE, false],
+    ["alertmanager", ALERTMANAGER_IMAGE, false],
+    ["kube-state-metrics", KUBE_STATE_METRICS_IMAGE, true],
+  ];
+  for (const [name, image, automount] of expected) {
+    const deployment = getResource(
+      resources,
+      "Deployment",
+      name,
+      "k8s-incident-monitoring",
+    );
+    assert.equal(deployment.spec.replicas, 1);
+    assert.equal(deployment.spec.template.spec.serviceAccountName, name);
+    assert.equal(
+      deployment.spec.template.spec.automountServiceAccountToken,
+      automount,
+    );
+    assert.equal(deployment.spec.template.spec.containers[0].image, image);
+    assert.deepEqual(
+      deployment.spec.template.spec.containers[0].securityContext.capabilities,
+      { drop: ["ALL"] },
+    );
+    assert.equal(
+      deployment.spec.template.spec.containers[0].securityContext
+        .readOnlyRootFilesystem,
+      true,
+    );
+  }
+
+  const kubeStateMetrics = getResource(
+    resources,
+    "Deployment",
+    "kube-state-metrics",
+    "k8s-incident-monitoring",
+  ).spec.template.spec.containers[0];
+  assert.deepEqual(kubeStateMetrics.args, [
+    "--namespaces=k8s-incident-scenarios",
+    "--resources=pods,replicasets",
+    "--metric-allowlist=kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
+    "--use-apiserver-cache",
+  ]);
+
+  const role = getResource(
+    resources,
+    "Role",
+    "managed-monitoring-read",
+    "k8s-incident-scenarios",
+  );
+  assert.deepEqual(role.rules, [
+    {
+      apiGroups: [""],
+      resources: ["pods"],
+      verbs: ["get", "list", "watch"],
+    },
+    {
+      apiGroups: ["apps"],
+      resources: ["replicasets"],
+      verbs: ["get", "list", "watch"],
+    },
+  ]);
+  assert.deepEqual(
+    getResource(
+      resources,
+      "RoleBinding",
+      "managed-monitoring-read",
+      "k8s-incident-scenarios",
+    ).subjects,
+    [
+      {
+        kind: "ServiceAccount",
+        name: "kube-state-metrics",
+        namespace: "k8s-incident-monitoring",
+      },
+    ],
+  );
+
+  const prometheusConfig = load(
+    getResource(
+      resources,
+      "ConfigMap",
+      "prometheus-config",
+      "k8s-incident-monitoring",
+    ).data["prometheus.yaml"],
+  );
+  assert.deepEqual(prometheusConfig.storage.tsdb.retention, {
+    time: "24h",
+    size: "1GB",
+  });
+  assert.equal(prometheusConfig.global.scrape_interval, "15s");
+  assert.equal(prometheusConfig.global.evaluation_interval, "15s");
+
+  const rules = load(
+    getResource(
+      resources,
+      "ConfigMap",
+      "prometheus-rules",
+      "k8s-incident-monitoring",
+    ).data["alerts.yaml"],
+  ).groups[0].rules;
+  assert.deepEqual(
+    rules.map((rule) => rule.alert),
+    ["Watchdog", "K8sIncidentImagePullBackOff"],
+  );
+  assert.deepEqual(rules[0], {
+    alert: "Watchdog",
+    expr: "vector(1)",
+    labels: { severity: "none" },
+  });
+  assert.equal(rules[1].for, "30s");
+  assert.deepEqual(rules[1].labels, { severity: "warning" });
+
+  const webhook = load(
+    getResource(
+      resources,
+      "ConfigMap",
+      "alertmanager-config",
+      "k8s-incident-monitoring",
+    ).data["alertmanager.yaml"],
+  ).receivers[0].webhook_configs[0];
+  assert.equal(webhook.send_resolved, true);
+  assert.equal(webhook.max_alerts, 0);
+  assert.equal(webhook.timeout, "10s");
+  assert.equal(
+    webhook.http_config.authorization.credentials_file,
+    "/etc/alertmanager/secrets/webhook/token",
+  );
+  assert.equal(
+    [...resources.values()].some((resource) => resource.kind === "Secret"),
+    false,
+  );
+});
+
+test("monitoring storage is retained and Kind alone prepares its fixed hostPath", () => {
+  const kind = indexDocuments(render("overlays/kind-evaluation"));
+  const k3s = indexDocuments(render("overlays/k3s-evaluation"));
+  const kindPvc = getResource(
+    kind,
+    "PersistentVolumeClaim",
+    "prometheus-data",
+    "k8s-incident-monitoring",
+  );
+  assert.equal(
+    kindPvc.spec.storageClassName,
+    "k8s-incident-agent-monitoring-kind",
+  );
+  assert.equal(kindPvc.spec.volumeName, "k8s-incident-agent-prometheus-data");
+  const kindPv = getResource(
+    kind,
+    "PersistentVolume",
+    "k8s-incident-agent-prometheus-data",
+  );
+  assert.equal(kindPv.spec.persistentVolumeReclaimPolicy, "Retain");
+  assert.equal(
+    kindPv.spec.hostPath.path,
+    "/var/local/k8s-incident-monitoring",
+  );
+  const [prepare] = getResource(
+    kind,
+    "Deployment",
+    "prometheus",
+    "k8s-incident-monitoring",
+  ).spec.template.spec.initContainers;
+  assert.equal(prepare.image, RUNTIME_IMAGE);
+  assert.deepEqual(prepare.command, [
+    "/usr/bin/chown",
+    "65534:65534",
+    "/prometheus",
+  ]);
+  assert.equal(
+    getResource(
+      k3s,
+      "Deployment",
+      "prometheus",
+      "k8s-incident-monitoring",
+    ).spec.template.spec.initContainers,
+    undefined,
+  );
+  assert.equal(
+    getResource(
+      k3s,
+      "PersistentVolumeClaim",
+      "prometheus-data",
+      "k8s-incident-monitoring",
+    ).spec.storageClassName,
+    "local-path",
+  );
+});
+
 test("NetworkPolicy render has default deny plus only the required L3/L4 paths", () => {
   const resources = indexDocuments(render("overlays/k3s-evaluation"));
-  const policies = [...resources.values()].filter(
-    (resource) => resource.kind === "NetworkPolicy",
+  const applicationPolicies = [...resources.values()].filter(
+    (resource) =>
+      resource.kind === "NetworkPolicy" &&
+      resource.metadata.namespace === "k8s-incident-agent",
   );
   assert.deepEqual(
-    policies.map((policy) => policy.metadata.name).sort(),
+    applicationPolicies.map((policy) => policy.metadata.name).sort(),
     [
+      "allow-alertmanager-to-runtime",
       "allow-console-runtime-egress",
       "allow-console-to-runtime",
       "allow-dns-egress",
       "allow-runtime-https-egress",
+      "allow-runtime-prometheus-egress",
       "allow-traefik-to-console",
+      "default-deny",
+    ],
+  );
+  const monitoringPolicies = [...resources.values()].filter(
+    (resource) =>
+      resource.kind === "NetworkPolicy" &&
+      resource.metadata.namespace === "k8s-incident-monitoring",
+  );
+  assert.deepEqual(
+    monitoringPolicies.map((policy) => policy.metadata.name).sort(),
+    [
+      "allow-alertmanager-runtime-egress",
+      "allow-dns-egress",
+      "allow-kube-state-metrics-api-egress",
+      "allow-prometheus-alertmanager-egress",
+      "allow-prometheus-kube-state-metrics-egress",
+      "allow-prometheus-to-alertmanager",
+      "allow-prometheus-to-kube-state-metrics",
+      "allow-runtime-to-prometheus",
       "default-deny",
     ],
   );
@@ -499,6 +719,27 @@ test("K3s producer contract stays exact and does not duplicate the kubectl pin",
       localPathProvisioner: "v0.0.36",
       traefik: "v3.7.4",
     },
+    monitoring: {
+      prometheus: {
+        version: "v3.13.1",
+        repository: "quay.io/prometheus/prometheus",
+        digest:
+          "sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893",
+      },
+      alertmanager: {
+        version: "v0.34.0",
+        repository: "quay.io/prometheus/alertmanager",
+        digest:
+          "sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d",
+      },
+      kubeStateMetrics: {
+        version: "v2.20.0",
+        repository:
+          "registry.k8s.io/kube-state-metrics/kube-state-metrics",
+        digest:
+          "sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b",
+      },
+    },
   });
   assert.equal(Object.hasOwn(contract, "kubectl"), false);
 });
@@ -526,41 +767,24 @@ function createFakeKubectl(t, overrides = {}) {
     k3s: indexDocuments(render("overlays/k3s-online")),
     kind: indexDocuments(render("overlays/kind-evaluation")),
   };
-  const deploymentFixtures = {
-    k3s: {
-      "agent-runtime": getResource(
-        rendered.k3s,
-        "Deployment",
-        "agent-runtime",
-        "k8s-incident-agent",
-      ),
-      "incident-console": getResource(
-        rendered.k3s,
-        "Deployment",
-        "incident-console",
-        "k8s-incident-agent",
-      ),
-    },
-    kind: {
-      "agent-runtime": getResource(
-        rendered.kind,
-        "Deployment",
-        "agent-runtime",
-        "k8s-incident-agent",
-      ),
-      "incident-console": getResource(
-        rendered.kind,
-        "Deployment",
-        "incident-console",
-        "k8s-incident-agent",
-      ),
-    },
-  };
+  const resourceFixtures = Object.fromEntries(
+    Object.entries(rendered).map(([profile, resources]) => [
+      profile,
+      Object.fromEntries(resources),
+    ]),
+  );
   const networkPolicyFixtures = Object.fromEntries(
     Object.entries(rendered).map(([profile, resources]) => [
       profile,
-      [...resources.values()].filter(
-        (resource) => resource.kind === "NetworkPolicy",
+      Object.fromEntries(
+        ["k8s-incident-agent", "k8s-incident-monitoring"].map((namespace) => [
+          namespace,
+          [...resources.values()].filter(
+            (resource) =>
+              resource.kind === "NetworkPolicy" &&
+              resource.metadata.namespace === namespace,
+          ),
+        ]),
       ),
     ]),
   );
@@ -587,7 +811,7 @@ process.stdin.on("end", () => {
   process.stdout.write(typeof output === "string" ? output : JSON.stringify(output));
 });
 
-const deploymentFixtures = ${JSON.stringify(deploymentFixtures)};
+const resourceFixtures = ${JSON.stringify(resourceFixtures)};
 const networkPolicyFixtures = ${JSON.stringify(networkPolicyFixtures)};
 const lockedImages = ${JSON.stringify([CONSOLE_IMAGE, RUNTIME_IMAGE])};
 
@@ -599,12 +823,28 @@ function saveState(value) {
   writeFileSync(process.env.FAKE_KUBECTL_STATE, JSON.stringify(value));
 }
 
-function deployment(name) {
+function fixture(kind, name, namespace) {
   const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
-  const document = structuredClone(deploymentFixtures[profile][name]);
-  if (process.env.FAKE_DEPLOYMENT_INTAKE_MODE) {
+  return structuredClone(resourceFixtures[profile][kind + "/" + namespace + "/" + name]);
+}
+
+function deployment(name, namespace = "k8s-incident-agent") {
+  const document = fixture("Deployment", name, namespace);
+  if (
+    namespace === "k8s-incident-agent" &&
+    process.env.FAKE_DEPLOYMENT_INTAKE_MODE
+  ) {
     const container = document.spec.template.spec.containers[0];
     container.env.find((entry) => entry.name === "INCIDENT_INTAKE_MODE").value = process.env.FAKE_DEPLOYMENT_INTAKE_MODE;
+  }
+  if (process.env.FAKE_MONITORING_IMAGE_DRIFT === name) {
+    document.spec.template.spec.containers[0].image = "registry.example/changed@sha256:" + "f".repeat(64);
+  }
+  if (process.env.FAKE_MONITORING_PROBE_DRIFT === name) {
+    document.spec.template.spec.containers[0].readinessProbe.httpGet.path = "/wrong";
+  }
+  if (process.env.FAKE_MONITORING_CONFIG_DIGEST_DRIFT === name) {
+    document.spec.template.metadata.annotations["k8s-incident-agent.io/config-digest"] = "sha256:" + "f".repeat(64);
   }
   document.metadata.generation = 3;
   document.status = { observedGeneration: 3, replicas: 1, updatedReplicas: 1, availableReplicas: 1 };
@@ -749,6 +989,14 @@ function response(key, args) {
   }
   if (key === 'get secret agent-runtime-model --namespace k8s-incident-agent --output=go-template={{if index .data "api-key"}}present{{else}}missing{{end}}') {
     return process.env.FAKE_SECRET_MISSING === "1" ? "missing\\n" : "present\\n";
+  }
+  if (
+    key === 'get secret alertmanager-webhook --namespace k8s-incident-agent --output=go-template={{if index .data "token"}}present{{else}}missing{{end}}' ||
+    key === 'get secret alertmanager-webhook --namespace k8s-incident-monitoring --output=go-template={{if index .data "token"}}present{{else}}missing{{end}}'
+  ) {
+    return process.env.FAKE_WEBHOOK_SECRET_MISSING === "1"
+      ? "missing\\n"
+      : "present\\n";
   }
   if (key === "get nodes --output=json") {
     const availableImages = process.env.FAKE_IMAGE_MISSING === "1"
@@ -1016,6 +1264,12 @@ function response(key, args) {
   if (key === "get deployment incident-console --namespace k8s-incident-agent --output=json") {
     return deployment("incident-console");
   }
+  const monitoringDeployment = key.match(
+    /^get deployment (prometheus|alertmanager|kube-state-metrics) --namespace k8s-incident-monitoring --output=json$/,
+  );
+  if (monitoringDeployment) {
+    return deployment(monitoringDeployment[1], "k8s-incident-monitoring");
+  }
   if (key === "get pods --namespace k8s-incident-agent --selector=app.kubernetes.io/part-of=k8s-incident-agent --output=json") {
     const pods = [
       ["agent-runtime", "runtime-current"],
@@ -1045,6 +1299,27 @@ function response(key, args) {
     }
     return { kind: "List", items: pods };
   }
+  if (key === "get pods --namespace k8s-incident-monitoring --selector=app.kubernetes.io/part-of=k8s-incident-agent --output=json") {
+    const pods = ["prometheus", "alertmanager", "kube-state-metrics"].map(
+      (appName) => ({
+        metadata: {
+          name: appName + "-current",
+          labels: {
+            "app.kubernetes.io/name": appName,
+            "app.kubernetes.io/part-of": "k8s-incident-agent",
+          },
+        },
+        status: {
+          phase: "Running",
+          containerStatuses: [{ ready: true }],
+        },
+      }),
+    );
+    if (process.env.FAKE_MONITORING_POD_UNREADY === "1") {
+      pods[0].status.containerStatuses[0].ready = false;
+    }
+    return { kind: "List", items: pods };
+  }
   const service = key.match(/^get service (agent-runtime|incident-console) --namespace k8s-incident-agent --output=json$/);
   if (service) {
     return {
@@ -1055,12 +1330,25 @@ function response(key, args) {
         clusterIP: "10.43.0.20",
         selector: { "app.kubernetes.io/name": service[1] },
         ports: [{
+          name: "http",
           port: service[1] === "agent-runtime" ? 8000 : 80,
           protocol: "TCP",
           targetPort: "http",
         }],
       },
     };
+  }
+  const monitoringService = key.match(
+    /^get service (prometheus|alertmanager|kube-state-metrics) --namespace k8s-incident-monitoring --output=json$/,
+  );
+  if (monitoringService) {
+    const document = fixture(
+      "Service",
+      monitoringService[1],
+      "k8s-incident-monitoring",
+    );
+    document.spec.clusterIP = "10.43.0.30";
+    return document;
   }
   if (key === "get persistentvolumeclaim runtime-data --namespace k8s-incident-agent --output=json" || key === "get persistentvolumeclaim runtime-data --namespace k8s-incident-agent --ignore-not-found=true --output=json") {
     const kind = process.env.FAKE_PROFILE === "kind-evaluation";
@@ -1079,6 +1367,26 @@ function response(key, args) {
       status: { phase: "Bound" },
     };
   }
+  if (
+    key === "get persistentvolumeclaim prometheus-data --namespace k8s-incident-monitoring --output=json" ||
+    key === "get persistentvolumeclaim prometheus-data --namespace k8s-incident-monitoring --ignore-not-found=true --output=json"
+  ) {
+    const kind = process.env.FAKE_PROFILE === "kind-evaluation";
+    const document = fixture(
+      "PersistentVolumeClaim",
+      "prometheus-data",
+      "k8s-incident-monitoring",
+    );
+    document.metadata.uid = "prometheus-pvc-uid";
+    document.spec.volumeName = kind
+      ? "k8s-incident-agent-prometheus-data"
+      : "prometheus-pvc-volume";
+    document.status = { phase: "Bound" };
+    if (process.env.FAKE_PROMETHEUS_PVC_DRIFT === "1") {
+      document.spec.storageClassName = "unexpected";
+    }
+    return document;
+  }
   if (key === "get configmap agent-runtime-config --namespace k8s-incident-agent --output=json" || key === "get configmap incident-console-config --namespace k8s-incident-agent --output=json") {
     const runtime = key.includes("agent-runtime-config");
     return {
@@ -1094,20 +1402,36 @@ function response(key, args) {
           KUBERNETES_DIAGNOSTIC_NAMESPACE: "k8s-incident-scenarios",
           RUNTIME_DATA_DIR: "/var/lib/k8s-incident-agent/runtime",
           SCENARIO_CATALOG_DIR: "/workspace/scenarios",
+          ALERT_CATALOG_DIR: "/workspace/monitoring/catalog",
+          ALERTMANAGER_WEBHOOK_TOKEN_FILE: "/var/run/secrets/k8s-incident-agent/alertmanager/token",
         }
         : {
           AGENT_RUNTIME_URL: "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000",
         },
     };
   }
+  const monitoringConfigMap = key.match(
+    /^get configmap (prometheus-config|prometheus-rules|alertmanager-config) --namespace k8s-incident-monitoring --output=json$/,
+  );
+  if (monitoringConfigMap) {
+    const document = fixture(
+      "ConfigMap",
+      monitoringConfigMap[1],
+      "k8s-incident-monitoring",
+    );
+    if (process.env.FAKE_MONITORING_CONFIG_DRIFT === monitoringConfigMap[1]) {
+      document.data[Object.keys(document.data)[0]] += "\\nchanged: true\\n";
+    }
+    return document;
+  }
   if (key === "get networkpolicies --namespace k8s-incident-agent --output=json") {
     const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
     const current = state();
     const items = process.env.FAKE_CUTOVER === "1"
       ? current.policyPresent
-        ? [structuredClone(networkPolicyFixtures[profile].find((item) => item.metadata.name === "default-deny"))]
+        ? [structuredClone(networkPolicyFixtures[profile]["k8s-incident-agent"].find((item) => item.metadata.name === "default-deny"))]
         : []
-      : structuredClone(networkPolicyFixtures[profile]);
+      : structuredClone(networkPolicyFixtures[profile]["k8s-incident-agent"]);
     if (process.env.FAKE_NETWORK_POLICY_DRIFT === "1") {
       const defaultDeny = items.find((item) => item.metadata.name === "default-deny");
       if (defaultDeny) defaultDeny.spec.ingress = [{}];
@@ -1118,6 +1442,38 @@ function response(key, args) {
       kind: "List",
       items,
     };
+  }
+  if (key === "get networkpolicies --namespace k8s-incident-monitoring --output=json") {
+    const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
+    const items = structuredClone(
+      networkPolicyFixtures[profile]["k8s-incident-monitoring"],
+    );
+    if (process.env.FAKE_MONITORING_NETWORK_POLICY_DRIFT === "1") {
+      items[0].spec.ingress = [{}];
+    }
+    return {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "List",
+      items,
+    };
+  }
+  if (key === "get role managed-monitoring-read --namespace k8s-incident-scenarios --output=json") {
+    const document = fixture(
+      "Role",
+      "managed-monitoring-read",
+      "k8s-incident-scenarios",
+    );
+    if (process.env.FAKE_MONITORING_RBAC_DRIFT === "1") {
+      document.rules[0].resources.push("secrets");
+    }
+    return document;
+  }
+  if (key === "get rolebinding managed-monitoring-read --namespace k8s-incident-scenarios --output=json") {
+    return fixture(
+      "RoleBinding",
+      "managed-monitoring-read",
+      "k8s-incident-scenarios",
+    );
   }
   if (key === "get ingress incident-console --namespace k8s-incident-agent --output=json") {
     return {
@@ -1135,7 +1491,38 @@ function response(key, args) {
     };
   }
   if (key.startsWith("auth can-i ")) {
-    const denied = [" get secrets ", " create pods --subresource=exec ", " create deployments.apps ", " update deployments.apps ", " patch deployments.apps ", " delete deployments.apps "];
+    const monitoringReader = key.includes(
+      "--as=system:serviceaccount:k8s-incident-monitoring:kube-state-metrics",
+    );
+    if (
+      process.env.FAKE_MONITORING_RBAC_ALLOW_DRIFT === "1" &&
+      monitoringReader &&
+      (" " + key + " ").includes(" get secrets ")
+    ) {
+      return "yes\\n";
+    }
+    if (
+      (key.includes(
+        "--as=system:serviceaccount:k8s-incident-monitoring:prometheus",
+      ) ||
+        key.includes(
+          "--as=system:serviceaccount:k8s-incident-monitoring:alertmanager",
+        )) &&
+      (" " + key + " ").includes(" list pods ")
+    ) {
+      process.exitCode = 1;
+      return "no\\n";
+    }
+    const denied = [
+      " get secrets ",
+      " list configmaps ",
+      " list persistentvolumes ",
+      " create pods ",
+      " create deployments.apps ",
+      " update deployments.apps ",
+      " patch deployments.apps ",
+      " delete deployments.apps ",
+    ];
     if (denied.some((needle) => (" " + key + " ").includes(needle))) {
       process.exitCode = 1;
       return "no\\n";
@@ -1772,12 +2159,26 @@ test("confirmed online install preflights, applies, waits, and reports the real 
     ingress: "traefik-ready",
     intakeMode: "online",
     networkPolicies: "matched",
-    networkPolicyEnforcement: "requires-task-5-live-probe",
+    networkPolicyEnforcement: "requires-live-probe",
     pods: 2,
     profile: "k3s-online",
     pvc: { name: "runtime-data", phase: "Bound", volumeName: "pvc-volume" },
     rbac: "matched",
     services: "cluster-ip-only",
+    monitoring: {
+      components: "ready",
+      networkPolicies: "matched",
+      pods: 3,
+      pvc: {
+        name: "prometheus-data",
+        phase: "Bound",
+        volumeName: "prometheus-pvc-volume",
+      },
+      rbac: "matched",
+      rules: "matched",
+      secretProjection: "configured",
+      services: "cluster-ip-only",
+    },
   });
   assert.equal(result.stdout.includes("api-key"), false);
   const calls = fake.calls().map((call) => call.args.join(" "));
@@ -1794,14 +2195,24 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       .filter((call) => call.includes("rollout status deployment/"))
       .map((call) => call.match(/deployment\/[^ ]+/)?.[0])
       .sort(),
-    ["deployment/agent-runtime", "deployment/incident-console"],
+    [
+      "deployment/agent-runtime",
+      "deployment/alertmanager",
+      "deployment/incident-console",
+      "deployment/kube-state-metrics",
+      "deployment/prometheus",
+    ],
   );
   const subject =
     "--as=system:serviceaccount:k8s-incident-agent:agent-runtime";
   const namespace = "--namespace k8s-incident-scenarios";
+  const applicationNamespace = "--namespace k8s-incident-agent";
+  const monitoringNamespace = "--namespace k8s-incident-monitoring";
   assert.deepEqual(
     calls
-      .filter((call) => call.includes("auth can-i"))
+      .filter(
+        (call) => call.includes("auth can-i") && call.includes(subject),
+      )
       .map((call) => call.slice(call.indexOf("auth can-i")))
       .sort(),
     [
@@ -1816,8 +2227,51 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       `auth can-i update deployments.apps ${subject} ${namespace}`,
       `auth can-i patch deployments.apps ${subject} ${namespace}`,
       `auth can-i delete deployments.apps ${subject} ${namespace}`,
+      `auth can-i get secrets ${subject} ${applicationNamespace}`,
     ].sort(),
   );
+  const monitoringSubject =
+    "--as=system:serviceaccount:k8s-incident-monitoring:kube-state-metrics";
+  assert.deepEqual(
+    calls
+      .filter(
+        (call) =>
+          call.includes("auth can-i") && call.includes(monitoringSubject),
+      )
+      .map((call) => call.slice(call.indexOf("auth can-i")))
+      .sort(),
+    [
+      `auth can-i get pods ${monitoringSubject} ${namespace}`,
+      `auth can-i list pods ${monitoringSubject} ${namespace}`,
+      `auth can-i watch pods ${monitoringSubject} ${namespace}`,
+      `auth can-i get replicasets.apps ${monitoringSubject} ${namespace}`,
+      `auth can-i list replicasets.apps ${monitoringSubject} ${namespace}`,
+      `auth can-i watch replicasets.apps ${monitoringSubject} ${namespace}`,
+      `auth can-i get secrets ${monitoringSubject} ${namespace}`,
+      `auth can-i list configmaps ${monitoringSubject} ${namespace}`,
+      `auth can-i list persistentvolumes ${monitoringSubject}`,
+      `auth can-i create pods ${monitoringSubject} ${namespace}`,
+      `auth can-i patch deployments.apps ${monitoringSubject} ${namespace}`,
+      `auth can-i get secrets ${monitoringSubject} ${monitoringNamespace}`,
+    ].sort(),
+  );
+  for (const serviceAccount of ["prometheus", "alertmanager"]) {
+    const monitoringIdentity =
+      `--as=system:serviceaccount:k8s-incident-monitoring:${serviceAccount}`;
+    assert.deepEqual(
+      calls
+        .filter(
+          (call) =>
+            call.includes("auth can-i") && call.includes(monitoringIdentity),
+        )
+        .map((call) => call.slice(call.indexOf("auth can-i")))
+        .sort(),
+      [
+        `auth can-i list pods ${monitoringIdentity} ${namespace}`,
+        `auth can-i get secrets ${monitoringIdentity} ${monitoringNamespace}`,
+      ].sort(),
+    );
+  }
 });
 
 test("Kind status accepts the fixed ownership init and exact producer lists", (t) => {
@@ -1841,7 +2295,7 @@ test("Kind status accepts the fixed ownership init and exact producer lists", (t
     ingress: "not-installed",
     intakeMode: "manual",
     networkPolicies: "matched",
-    networkPolicyEnforcement: "requires-task-5-live-probe",
+    networkPolicyEnforcement: "requires-live-probe",
     pods: 2,
     profile: "kind-evaluation",
     pvc: {
@@ -1851,6 +2305,20 @@ test("Kind status accepts the fixed ownership init and exact producer lists", (t
     },
     rbac: "matched",
     services: "cluster-ip-only",
+    monitoring: {
+      components: "ready",
+      networkPolicies: "matched",
+      pods: 3,
+      pvc: {
+        name: "prometheus-data",
+        phase: "Bound",
+        volumeName: "k8s-incident-agent-prometheus-data",
+      },
+      rbac: "matched",
+      rules: "matched",
+      secretProjection: "configured",
+      services: "cluster-ip-only",
+    },
   });
 });
 
@@ -1862,6 +2330,33 @@ test("status rejects an additive NetworkPolicy that broadens the fixed profile",
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^FAIL installation_not_ready /);
+});
+
+test("status rejects monitoring component, storage, config, network, and RBAC drift", (t) => {
+  const cases = [
+    { FAKE_MONITORING_IMAGE_DRIFT: "prometheus" },
+    { FAKE_MONITORING_PROBE_DRIFT: "alertmanager" },
+    { FAKE_MONITORING_CONFIG_DIGEST_DRIFT: "prometheus" },
+    { FAKE_MONITORING_POD_UNREADY: "1" },
+    { FAKE_PROMETHEUS_PVC_DRIFT: "1" },
+    { FAKE_MONITORING_CONFIG_DRIFT: "prometheus-rules" },
+    { FAKE_MONITORING_NETWORK_POLICY_DRIFT: "1" },
+    { FAKE_MONITORING_RBAC_DRIFT: "1" },
+    { FAKE_MONITORING_RBAC_ALLOW_DRIFT: "1" },
+  ];
+  for (const environment of cases) {
+    const fake = createFakeKubectl(t, environment);
+    const result = runDeployment(
+      ["status", "k3s-online", "--context", "demo-k3s"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, JSON.stringify(environment));
+    assert.match(
+      result.stderr,
+      /^FAIL (?:installation_not_ready|rbac_contract_invalid) /,
+      JSON.stringify(environment),
+    );
+  }
 });
 
 test("status rejects an Ingress without a Traefik address", (t) => {
@@ -1908,6 +2403,22 @@ test("confirmed install rejects an unavailable fixed K3s component before apply"
     fake
       .calls()
       .some((call) => call.args.includes("apply")),
+    false,
+  );
+});
+
+test("confirmed install rejects a missing namespaced webhook credential before apply", (t) => {
+  const fake = createFakeKubectl(t, {
+    FAKE_WEBHOOK_SECRET_MISSING: "1",
+  });
+  const result = runDeployment(
+    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    fake.environment,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL secret_contract_invalid /);
+  assert.equal(
+    fake.calls().some((call) => call.args.includes("apply")),
     false,
   );
 });
@@ -1987,7 +2498,7 @@ test("uninstall does not depend on a healthy model Secret and preserves the same
     action: "uninstall",
     mode: "confirmed",
     profile: "k3s-evaluation",
-    retainedPvc: "runtime-data",
+    retainedPvcs: ["runtime-data", "prometheus-data"],
   });
   const calls = fake.calls().map((call) => call.args.join(" "));
   assert.equal(calls.some((call) => call.includes("get secret")), false);

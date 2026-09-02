@@ -167,9 +167,10 @@ k3s-online
 `status` 都要求显式 `--context`，先精确核对仓库锁定的 kubectl 与目标
 Kubernetes/K3s 版本；Kind 还要求固定 context。K3s 会继续核对 CoreDNS、
 Traefik、local-path-provisioner 的固定镜像与当前可用性，以及默认 StorageClass。
-确认 install/upgrade 还要求固定单节点 Ready、两个 manifest 可解析的
+确认 install/upgrade 还要求固定单节点 Ready、两个应用 manifest 可解析的
 `docker.io/library/<repository>@<locked-digest>` identity 已导入，并通过 kubectl
-内部投影只返回固定模型 Secret key 是否非空，不把 Secret value 返回给生命周期
+内部投影只返回固定模型 Secret 与两个 namespaced `alertmanager-webhook` Secret 的
+key 是否非空，不把 Secret value 返回给生命周期
 脚本。任何检查失败都不会回退到宽权限、宿主机 Runtime 或内存数据。
 当前lock是每个逻辑镜像一个只含`linux/arm64`与`linux/amd64`的OCI index。containerd
 导入archive后默认只为顶层index保留tag；即使使用`ctr images import --digests`，也
@@ -184,12 +185,22 @@ Console 与 Runtime 的 Deployment Pod template；base 为 `manual`，`k3s-onlin
 overlay 改为 `online` 并触发 rollout。ConfigMap 不重复保存该值，status 会
 核对实际容器 env 与 rollout generation，防止 profile 已升级但进程仍使用旧 mode。
 
+Stage 2 Task 2 已让三个 profile 同时渲染 digest 锁定的 Prometheus、Alertmanager
+与 kube-state-metrics。operator 固定核对三个独立 ServiceAccount、当前
+Pod/ReplicaSet 最小 KSM RBAC 与 allow/deny、resource/metric allowlist、15秒
+scrape/evaluation、24小时与1GiB TSDB上限、Prometheus保留PVC、配置/rule与catalog、
+配置digest触发的rollout、健康probe、ClusterIP Service及两个Namespace的精确
+NetworkPolicy对象。Runtime与Alertmanager分别挂载本Namespace中同名Secret的
+`token`；两个对象的同值只能由安装流程和真实Webhook验收证明，status不读取明文。
+
 普通 `uninstall` 使用独立 Kustomize 资源集合，从结构上排除 Namespace、PVC
-和 PV。`purge` 必须先确认应用 Namespace 内标准 Pod controller 与 Pod 均已卸载，
+、PV、Secret和证书资源，并在已有Runtime/Prometheus PVC时核对卸载前后UID不变。
+现有`purge`只管理Runtime数据：它必须先确认应用 Namespace 内标准 Pod controller 与 Pod 均已卸载，
 再把当前 PVC/PV UID 组成的精确
 identity 返回给操作者；只有同一次确认仍匹配当前对象且 K3s PV 使用
 `Delete` reclaim policy 时才请求删除。Kind 静态 hostPath 无法由 Kubernetes
-对象删除证明底层数据已清理，因此该脚本拒绝 Kind purge。
+对象删除证明底层数据已清理，因此该脚本拒绝 Kind purge；Prometheus PVC 当前没有
+自动purge入口。
 
 Stage 1.6 数据 cutover 只接受 `kind-evaluation` 与 `k3s-evaluation`：
 
@@ -243,7 +254,7 @@ node --test scripts/scenario.test.mjs
 - 集群、context 和 Namespace 身份固定，脚本不会连接任意用户输入的目标；
 - 场景 ID 必须来自已经校验的 catalog，不能作为文件路径或额外命令参数；
 - deployment profile、Namespace、资源名、镜像 digest 与 manifest 路径均来自仓库固定契约；只有显式 context 由操作者选择，并在任何写操作前核对目标版本/发行版；
-- deployment lifecycle preview 默认无副作用；cutover preview 会创建并清理固定 Job，必要时创建并保留 `default-deny`；install、upgrade、uninstall、purge 与 cutover 的破坏性路径都必须使用各自的显式确认模式，普通 uninstall 永不包含 Namespace、PVC 或 PV；
+- deployment lifecycle preview 默认无副作用；cutover preview 会创建并清理固定 Job，必要时创建并保留 `default-deny`；install、upgrade、uninstall、purge 与 cutover 的破坏性路径都必须使用各自的显式确认模式，普通 uninstall 永不包含 Namespace、PVC、PV、Secret 或证书对象；
 - `up`、`bootstrap-access`、`down`、`scenario apply` 和 `scenario cleanup` 有明确副作用，运行前应确认目标状态；
 - 脚本不会自动执行完整 live 验收序列，也不会自行决定最终保留 fixture 或 cleanup；
 - kubeconfig、token、CA data 和原始敏感响应不得写入日志、测试 fixture 或版本库。

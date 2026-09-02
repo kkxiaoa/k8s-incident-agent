@@ -41,10 +41,21 @@ class AlertTargetMapping(_CatalogContract):
         return _require_normalized(value)
 
 
+class AlertRuleContract(_CatalogContract):
+    expression: str = Field(min_length=1, max_length=4096)
+    for_duration: str = Field(alias="for", pattern=r"^[1-9][0-9]*(?:ms|s|m|h)$")
+
+    @field_validator("expression")
+    @classmethod
+    def require_normalized_expression(cls, value: str) -> str:
+        return _require_normalized(value)
+
+
 class AlertCatalogEntry(_CatalogContract):
     alert_id: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
     display_name: str = Field(min_length=1, max_length=160)
     trigger_summary: str = Field(min_length=1, max_length=512)
+    rule: AlertRuleContract
     target: AlertTargetMapping
 
     @field_validator("display_name", "trigger_summary")
@@ -54,7 +65,7 @@ class AlertCatalogEntry(_CatalogContract):
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,

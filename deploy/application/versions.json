@@ -5,5 +5,22 @@
     "coredns": "v1.14.4",
     "localPathProvisioner": "v0.0.36",
     "traefik": "v3.7.4"
+  },
+  "monitoring": {
+    "prometheus": {
+      "version": "v3.13.1",
+      "repository": "quay.io/prometheus/prometheus",
+      "digest": "sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893"
+    },
+    "alertmanager": {
+      "version": "v0.34.0",
+      "repository": "quay.io/prometheus/alertmanager",
+      "digest": "sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d"
+    },
+    "kubeStateMetrics": {
+      "version": "v2.20.0",
+      "repository": "registry.k8s.io/kube-state-metrics/kube-state-metrics",
+      "digest": "sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b"
+    }
   }
 }

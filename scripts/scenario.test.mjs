@@ -265,20 +265,32 @@ function k3sStatusFixtures() {
   const resources = new Map();
   loadAll(renderedYaml, (resource) => {
     if (resource === undefined || resource === null) return;
-    resources.set(`${resource.kind}/${resource.metadata?.name}`, resource);
+    resources.set(
+      `${resource.kind}/${resource.metadata?.namespace ?? ""}/${resource.metadata?.name}`,
+      resource,
+    );
   });
   cachedK3sStatusFixtures = { renderedYaml, resources };
   return cachedK3sStatusFixtures;
 }
 
-function requireRenderedResource(fixtures, kind, name) {
-  const resource = fixtures.resources.get(`${kind}/${name}`);
-  assert.notEqual(resource, undefined, `missing ${kind}/${name}`);
+function requireRenderedResource(fixtures, kind, name, namespace = "") {
+  const resource = fixtures.resources.get(`${kind}/${namespace}/${name}`);
+  assert.notEqual(
+    resource,
+    undefined,
+    `missing ${kind}/${namespace}/${name}`,
+  );
   return structuredClone(resource);
 }
 
-function readyApplicationDeployment(fixtures, name) {
-  const deployment = requireRenderedResource(fixtures, "Deployment", name);
+function readyDeployment(fixtures, name, namespace) {
+  const deployment = requireRenderedResource(
+    fixtures,
+    "Deployment",
+    name,
+    namespace,
+  );
   deployment.metadata.generation = 3;
   deployment.status = {
     observedGeneration: 3,
@@ -361,15 +373,41 @@ function k3sStatusResponse(args, options, fixtures) {
   }
   if (
     key ===
+      'get secret alertmanager-webhook --namespace k8s-incident-agent --output=go-template={{if index .data "token"}}present{{else}}missing{{end}}' ||
+    key ===
+      'get secret alertmanager-webhook --namespace k8s-incident-monitoring --output=go-template={{if index .data "token"}}present{{else}}missing{{end}}'
+  ) {
+    return "present\n";
+  }
+  if (
+    key ===
     "get deployment agent-runtime --namespace k8s-incident-agent --output=json"
   ) {
-    return readyApplicationDeployment(fixtures, "agent-runtime");
+    return readyDeployment(
+      fixtures,
+      "agent-runtime",
+      "k8s-incident-agent",
+    );
   }
   if (
     key ===
     "get deployment incident-console --namespace k8s-incident-agent --output=json"
   ) {
-    return readyApplicationDeployment(fixtures, "incident-console");
+    return readyDeployment(
+      fixtures,
+      "incident-console",
+      "k8s-incident-agent",
+    );
+  }
+  const monitoringDeployment = key.match(
+    /^get deployment (prometheus|alertmanager|kube-state-metrics) --namespace k8s-incident-monitoring --output=json$/,
+  );
+  if (monitoringDeployment !== null) {
+    return readyDeployment(
+      fixtures,
+      monitoringDeployment[1],
+      "k8s-incident-monitoring",
+    );
   }
   if (
     key ===
@@ -392,12 +430,53 @@ function k3sStatusResponse(args, options, fixtures) {
       })),
     };
   }
+  if (
+    key ===
+    "get pods --namespace k8s-incident-monitoring --selector=app.kubernetes.io/part-of=k8s-incident-agent --output=json"
+  ) {
+    return {
+      kind: "List",
+      items: ["prometheus", "alertmanager", "kube-state-metrics"].map(
+        (name) => ({
+          metadata: {
+            name: `${name}-current`,
+            labels: {
+              "app.kubernetes.io/name": name,
+              "app.kubernetes.io/part-of": "k8s-incident-agent",
+            },
+          },
+          status: {
+            phase: "Running",
+            containerStatuses: [{ ready: true }],
+          },
+        }),
+      ),
+    };
+  }
   const service = key.match(
     /^get service (agent-runtime|incident-console) --namespace k8s-incident-agent --output=json$/,
   );
   if (service !== null) {
-    const document = requireRenderedResource(fixtures, "Service", service[1]);
+    const document = requireRenderedResource(
+      fixtures,
+      "Service",
+      service[1],
+      "k8s-incident-agent",
+    );
     document.spec.clusterIP = "10.43.0.20";
+    return document;
+  }
+  const monitoringService = key.match(
+    /^get service (prometheus|alertmanager|kube-state-metrics) --namespace k8s-incident-monitoring --output=json$/,
+  );
+  if (monitoringService !== null) {
+    const document = requireRenderedResource(
+      fixtures,
+      "Service",
+      monitoringService[1],
+      "k8s-incident-monitoring",
+    );
+    document.spec.clusterIP = "10.43.0.30";
     return document;
   }
   if (
@@ -408,8 +487,23 @@ function k3sStatusResponse(args, options, fixtures) {
       fixtures,
       "PersistentVolumeClaim",
       "runtime-data",
+      "k8s-incident-agent",
     );
     pvc.spec.volumeName = "pvc-volume";
+    pvc.status = { phase: "Bound" };
+    return pvc;
+  }
+  if (
+    key ===
+    "get persistentvolumeclaim prometheus-data --namespace k8s-incident-monitoring --output=json"
+  ) {
+    const pvc = requireRenderedResource(
+      fixtures,
+      "PersistentVolumeClaim",
+      "prometheus-data",
+      "k8s-incident-monitoring",
+    );
+    pvc.spec.volumeName = "prometheus-pvc-volume";
     pvc.status = { phase: "Bound" };
     return pvc;
   }
@@ -417,7 +511,23 @@ function k3sStatusResponse(args, options, fixtures) {
     /^get configmap (agent-runtime-config|incident-console-config) --namespace k8s-incident-agent --output=json$/,
   );
   if (configMap !== null) {
-    return requireRenderedResource(fixtures, "ConfigMap", configMap[1]);
+    return requireRenderedResource(
+      fixtures,
+      "ConfigMap",
+      configMap[1],
+      "k8s-incident-agent",
+    );
+  }
+  const monitoringConfigMap = key.match(
+    /^get configmap (prometheus-config|prometheus-rules|alertmanager-config) --namespace k8s-incident-monitoring --output=json$/,
+  );
+  if (monitoringConfigMap !== null) {
+    return requireRenderedResource(
+      fixtures,
+      "ConfigMap",
+      monitoringConfigMap[1],
+      "k8s-incident-monitoring",
+    );
   }
   if (
     key ===
@@ -427,9 +537,51 @@ function k3sStatusResponse(args, options, fixtures) {
       apiVersion: "networking.k8s.io/v1",
       kind: "List",
       items: [...fixtures.resources.values()]
-        .filter((resource) => resource.kind === "NetworkPolicy")
+        .filter(
+          (resource) =>
+            resource.kind === "NetworkPolicy" &&
+            resource.metadata?.namespace === "k8s-incident-agent",
+        )
         .map((resource) => structuredClone(resource)),
     };
+  }
+  if (
+    key ===
+    "get networkpolicies --namespace k8s-incident-monitoring --output=json"
+  ) {
+    return {
+      apiVersion: "networking.k8s.io/v1",
+      kind: "List",
+      items: [...fixtures.resources.values()]
+        .filter(
+          (resource) =>
+            resource.kind === "NetworkPolicy" &&
+            resource.metadata?.namespace === "k8s-incident-monitoring",
+        )
+        .map((resource) => structuredClone(resource)),
+    };
+  }
+  if (
+    key ===
+    "get role managed-monitoring-read --namespace k8s-incident-scenarios --output=json"
+  ) {
+    return requireRenderedResource(
+      fixtures,
+      "Role",
+      "managed-monitoring-read",
+      "k8s-incident-scenarios",
+    );
+  }
+  if (
+    key ===
+    "get rolebinding managed-monitoring-read --namespace k8s-incident-scenarios --output=json"
+  ) {
+    return requireRenderedResource(
+      fixtures,
+      "RoleBinding",
+      "managed-monitoring-read",
+      "k8s-incident-scenarios",
+    );
   }
   if (
     key ===
@@ -439,13 +591,31 @@ function k3sStatusResponse(args, options, fixtures) {
       fixtures,
       "Ingress",
       "incident-console",
+      "k8s-incident-agent",
     );
     ingress.status = { loadBalancer: { ingress: [{ ip: "192.0.2.10" }] } };
     return ingress;
   }
   if (key.startsWith("auth can-i ")) {
+    if (
+      (key.includes(
+        "--as=system:serviceaccount:k8s-incident-monitoring:prometheus",
+      ) ||
+        key.includes(
+          "--as=system:serviceaccount:k8s-incident-monitoring:alertmanager",
+        )) &&
+      ` ${key} `.includes(" list pods ")
+    ) {
+      throw Object.assign(new Error("expected RBAC deny"), {
+        exitCode: 1,
+        stdout: "no\n",
+      });
+    }
     const denied = [
       " get secrets ",
+      " list configmaps ",
+      " list persistentvolumes ",
+      " create pods ",
       " create pods --subresource=exec ",
       " create deployments.apps ",
       " update deployments.apps ",

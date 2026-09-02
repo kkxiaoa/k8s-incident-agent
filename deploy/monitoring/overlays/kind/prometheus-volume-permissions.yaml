@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: k8s-incident-monitoring
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: prepare-kind-volume
+          image: k8s-incident-agent-runtime
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/chown
+            - "65534:65534"
+            - /prometheus
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+          volumeMounts:
+            - name: data
+              mountPath: /prometheus

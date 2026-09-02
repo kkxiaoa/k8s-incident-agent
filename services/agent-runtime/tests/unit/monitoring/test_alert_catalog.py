@@ -10,7 +10,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_one_stable_stage_two_entry() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-02.1"
+    assert catalog.version == "2026-09-02.2"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff"
     ]
@@ -21,29 +21,36 @@ def test_production_catalog_has_one_stable_stage_two_entry() -> None:
         "namespace_label": "namespace",
         "name_label": "deployment",
     }
+    assert catalog.entries[0].rule.for_duration == "30s"
+    assert "kube_pod_container_status_waiting_reason" in (
+        catalog.entries[0].rule.expression
+    )
 
 
 @pytest.mark.parametrize(
     "document",
     [
-        '{"schemaVersion":1,"catalogVersion":"v1","alerts":[]}',
+        '{"schemaVersion":2,"catalogVersion":"v1","alerts":[]}',
         (
-            '{"schemaVersion":1,"catalogVersion":"v1","alerts":['
+            '{"schemaVersion":2,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
+            '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
             '"clusterLabel":"same","namespaceLabel":"same",'
             '"nameLabel":"name"}}]}'
         ),
         (
-            '{"schemaVersion":1,"schemaVersion":1,"catalogVersion":"v1",'
+            '{"schemaVersion":2,"schemaVersion":2,"catalogVersion":"v1",'
             '"alerts":[{"alertId":"A","displayName":"A",'
-            '"triggerSummary":"A","target":{"apiVersion":"v1",'
+            '"triggerSummary":"A","rule":{"expression":"vector(1)",'
+            '"for":"1s"},"target":{"apiVersion":"v1",'
             '"kind":"Pod","clusterLabel":"cluster",'
             '"namespaceLabel":"namespace","nameLabel":"name"}}]}'
         ),
         (
-            '{"schema_version":1,"catalogVersion":"v1","alerts":['
+            '{"schema_version":2,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
+            '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
             '"clusterLabel":"cluster","namespaceLabel":"namespace",'
             '"nameLabel":"name"}}]}'
@@ -68,13 +75,14 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     document = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "catalogVersion": "v1",
         "alerts": [
             {
                 "alertId": "A",
                 "displayName": "A",
                 "triggerSummary": "A",
+                "rule": {"expression": "vector(1)", "for": "1s"},
                 "target": {
                     "apiVersion": "apps/v1",
                     "kind": "Deployment",

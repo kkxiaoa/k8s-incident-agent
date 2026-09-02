@@ -23,3 +23,5 @@ data:
   KUBERNETES_DIAGNOSTIC_NAMESPACE: k8s-incident-scenarios
   RUNTIME_DATA_DIR: /var/lib/k8s-incident-agent/runtime
   SCENARIO_CATALOG_DIR: /workspace/scenarios
+  ALERT_CATALOG_DIR: /workspace/monitoring/catalog
+  ALERTMANAGER_WEBHOOK_TOKEN_FILE: /var/run/secrets/k8s-incident-agent/alertmanager/token

@@ -157,6 +157,9 @@ spec:
             - name: kubernetes-api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
+            - name: alertmanager-webhook
+              mountPath: /var/run/secrets/k8s-incident-agent/alertmanager
+              readOnly: true
       volumes:
         - name: runtime-data
           persistentVolumeClaim:
@@ -179,3 +182,10 @@ spec:
                       fieldRef:
                         apiVersion: v1
                         fieldPath: metadata.namespace
+        - name: alertmanager-webhook
+          secret:
+            secretName: alertmanager-webhook
+            defaultMode: 0400
+            items:
+              - key: token
+                path: token

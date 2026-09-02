@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: k8s-incident-monitoring
+spec:
+  storageClassName: k8s-incident-agent-monitoring-kind
+  volumeName: k8s-incident-agent-prometheus-data
