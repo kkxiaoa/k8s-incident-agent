@@ -87,6 +87,7 @@ async def _client(
         yield RuntimeContainer(
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, service),
+            alerts=None,
         )
 
     app = api.create_app(
@@ -302,6 +303,7 @@ async def test_http_disconnect_cancels_stream_without_changing_run_state(
             yield RuntimeContainer(
                 incidents=cast(IncidentApplicationService, object()),
                 events=service,
+                alerts=None,
             )
 
         app = api.create_app(

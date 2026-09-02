@@ -3,12 +3,12 @@ import binascii
 import json
 import re
 from collections.abc import Callable
-from contextlib import suppress
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import cast
 from uuid import UUID
 
 from k8s_incident_agent.api_contracts import (
+    AlertSignalResponse,
     CreateIncidentRequest,
     CreateIncidentResponse,
     CreateRunResponse,
@@ -34,6 +34,10 @@ from k8s_incident_agent.api_contracts import (
     SelectedRunResponse,
 )
 from k8s_incident_agent.application.event_projection import validated_stream_item
+from k8s_incident_agent.application.scheduling import (
+    RunScheduler,
+    schedule_committed_run,
+)
 from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
@@ -82,17 +86,13 @@ class RuntimeNotReadyError(RuntimeError):
     pass
 
 
-class _RunScheduler(Protocol):
-    async def schedule(self, run_id: UUID) -> None: ...
-
-
 class IncidentApplicationService:
     def __init__(
         self,
         *,
         catalog: tuple[PublicScenario, ...],
         repository: IncidentRepository,
-        supervisor: _RunScheduler,
+        supervisor: RunScheduler,
         credential: DiagnosticCredentialLease,
         model: ModelSnapshot,
         budget: RunBudget,
@@ -127,7 +127,7 @@ class IncidentApplicationService:
             self._model,
             self._budget,
         )
-        await self._schedule_committed_run(created.run_id)
+        await schedule_committed_run(self._supervisor, created.run_id)
         return CreateIncidentResponse(incident_id=created.incident_id)
 
     async def create_run(self, incident_id: UUID) -> CreateRunResponse:
@@ -142,7 +142,7 @@ class IncidentApplicationService:
             raise ActiveRunConflictError from None
         if created is None:
             raise IncidentNotFoundError
-        await self._schedule_committed_run(created.run_id)
+        await schedule_committed_run(self._supervisor, created.run_id)
         return CreateRunResponse(run_id=created.run_id)
 
     async def list_incidents(
@@ -263,11 +263,6 @@ class IncidentApplicationService:
         except KubernetesBoundaryError:
             raise RuntimeNotReadyError from None
 
-    async def _schedule_committed_run(self, run_id: UUID) -> None:
-        # Startup reconciliation remains the recovery path when scheduling fails.
-        with suppress(Exception):
-            await self._supervisor.schedule(run_id)
-
 
 def _normalized_scenario_trigger(scenario: PublicScenario) -> NormalizedIncidentTrigger:
     return NormalizedIncidentTrigger(
@@ -381,6 +376,13 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             redacted=detail.diagnosis.redacted,
             created_at=detail.diagnosis.created_at,
         )
+    alert_signal = None
+    if detail.alert_signal is not None:
+        alert_signal = AlertSignalResponse(
+            status=detail.alert_signal.status,
+            starts_at=detail.alert_signal.starts_at,
+            ends_at=detail.alert_signal.ends_at,
+        )
     next_cursor = None
     if detail.has_older_events and detail.events:
         next_cursor = _encode_cursor(
@@ -420,6 +422,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             for evidence in detail.evidence
         ),
         diagnosis=diagnosis,
+        alert_signal=alert_signal,
         event_cursor=str(detail.event_cursor),
     )
 

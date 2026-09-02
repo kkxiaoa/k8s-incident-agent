@@ -39,13 +39,15 @@ ENV PATH="/workspace/services/agent-runtime/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     RUNTIME_DATA_DIR=/var/lib/k8s-incident-agent/runtime \
-    SCENARIO_CATALOG_DIR=/workspace/scenarios
+    SCENARIO_CATALOG_DIR=/workspace/scenarios \
+    ALERT_CATALOG_DIR=/workspace/monitoring/catalog
 
 WORKDIR /workspace/services/agent-runtime
 
 COPY --from=builder --chown=10001:10001 \
     /workspace/services/agent-runtime /workspace/services/agent-runtime
 COPY --chown=10001:10001 scenarios /workspace/scenarios
+COPY --chown=10001:10001 monitoring/catalog /workspace/monitoring/catalog
 
 USER 10001:10001
 

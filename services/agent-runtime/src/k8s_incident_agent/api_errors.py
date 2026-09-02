@@ -16,6 +16,13 @@ from k8s_incident_agent.application.incidents import (
     RuntimeNotReadyError,
     ScenarioNotFoundError,
 )
+from k8s_incident_agent.monitoring.errors import (
+    AlertAuthenticationError,
+    AlertPayloadInvalidError,
+    AlertPayloadTooLargeError,
+    AlertPayloadTruncatedError,
+    AlertTargetInvalidError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +67,31 @@ _INTERNAL_ERROR = _ErrorContract(
     500,
     "internal_error",
     "Internal server error.",
+)
+_ALERT_AUTHENTICATION_FAILED = _ErrorContract(
+    401,
+    "alert_authentication_failed",
+    "Alertmanager authentication failed.",
+)
+_ALERT_PAYLOAD_TOO_LARGE = _ErrorContract(
+    413,
+    "alert_payload_too_large",
+    "Alertmanager payload is too large.",
+)
+_ALERT_PAYLOAD_INVALID = _ErrorContract(
+    422,
+    "alert_payload_invalid",
+    "Alertmanager payload is invalid.",
+)
+_ALERT_PAYLOAD_TRUNCATED = _ErrorContract(
+    422,
+    "alert_payload_truncated",
+    "Alertmanager payload is truncated.",
+)
+_ALERT_TARGET_INVALID = _ErrorContract(
+    422,
+    "alert_target_invalid",
+    "Alert target is invalid.",
 )
 
 
@@ -118,6 +150,39 @@ def install_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return _response(_INTERNAL_ERROR)
 
+    async def alert_authentication_handler(
+        _request: Request,
+        _error: AlertAuthenticationError,
+    ) -> JSONResponse:
+        return _response(
+            _ALERT_AUTHENTICATION_FAILED,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    async def alert_payload_too_large_handler(
+        _request: Request,
+        _error: AlertPayloadTooLargeError,
+    ) -> JSONResponse:
+        return _response(_ALERT_PAYLOAD_TOO_LARGE)
+
+    async def alert_payload_invalid_handler(
+        _request: Request,
+        _error: AlertPayloadInvalidError,
+    ) -> JSONResponse:
+        return _response(_ALERT_PAYLOAD_INVALID)
+
+    async def alert_payload_truncated_handler(
+        _request: Request,
+        _error: AlertPayloadTruncatedError,
+    ) -> JSONResponse:
+        return _response(_ALERT_PAYLOAD_TRUNCATED)
+
+    async def alert_target_invalid_handler(
+        _request: Request,
+        _error: AlertTargetInvalidError,
+    ) -> JSONResponse:
+        return _response(_ALERT_TARGET_INVALID)
+
     app.add_exception_handler(
         RequestValidationError,
         cast(ExceptionHandler, validation_handler),
@@ -150,10 +215,34 @@ def install_exception_handlers(app: FastAPI) -> None:
         RuntimeNotReadyError,
         cast(ExceptionHandler, runtime_not_ready_handler),
     )
+    app.add_exception_handler(
+        AlertAuthenticationError,
+        cast(ExceptionHandler, alert_authentication_handler),
+    )
+    app.add_exception_handler(
+        AlertPayloadTooLargeError,
+        cast(ExceptionHandler, alert_payload_too_large_handler),
+    )
+    app.add_exception_handler(
+        AlertPayloadInvalidError,
+        cast(ExceptionHandler, alert_payload_invalid_handler),
+    )
+    app.add_exception_handler(
+        AlertPayloadTruncatedError,
+        cast(ExceptionHandler, alert_payload_truncated_handler),
+    )
+    app.add_exception_handler(
+        AlertTargetInvalidError,
+        cast(ExceptionHandler, alert_target_invalid_handler),
+    )
     app.add_exception_handler(Exception, cast(ExceptionHandler, internal_handler))
 
 
-def _response(contract: _ErrorContract) -> JSONResponse:
+def _response(
+    contract: _ErrorContract,
+    *,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
     content = ErrorResponse(
         error=ErrorDetail(
             code=contract.code,
@@ -161,4 +250,8 @@ def _response(contract: _ErrorContract) -> JSONResponse:
             retryable=contract.retryable,
         )
     ).model_dump(mode="json")
-    return JSONResponse(status_code=contract.status_code, content=content)
+    return JSONResponse(
+        status_code=contract.status_code,
+        content=content,
+        headers=headers,
+    )

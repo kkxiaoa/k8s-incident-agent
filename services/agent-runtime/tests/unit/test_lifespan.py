@@ -159,6 +159,18 @@ def _install_runtime_fakes(
         fail("catalog")
         return (_scenario(),)
 
+    def alert_catalog(_path: Path) -> object:
+        events.append("alert.catalog")
+        fail("alert-catalog")
+        return object()
+
+    class FakeAlertAuthenticator:
+        @classmethod
+        def from_file(cls, _path: Path) -> object:
+            events.append("alert.auth")
+            fail("alert-auth")
+            return object()
+
     def credential(_paths: RuntimePaths, _now: datetime) -> DiagnosticCredential:
         events.append("credential")
         fail("credential")
@@ -232,6 +244,12 @@ def _install_runtime_fakes(
     monkeypatch.setattr(api, "require_alembic_head", require_head)
     monkeypatch.setattr(api, "open_checkpoint_store", checkpoint)
     monkeypatch.setattr(api, "load_scenario_catalog", catalog)
+    monkeypatch.setattr(api, "load_alert_catalog", alert_catalog)
+    monkeypatch.setattr(
+        api,
+        "AlertmanagerWebhookAuthenticator",
+        FakeAlertAuthenticator,
+    )
     monkeypatch.setattr(api, "load_diagnostic_credential", credential)
     monkeypatch.setattr(api, "require_credential_window", require_window)
     monkeypatch.setattr(api, "create_kubernetes_clients", create_kubernetes)
@@ -326,6 +344,28 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
 
 
 @pytest.mark.asyncio
+async def test_configured_alertmanager_route_loads_catalog_and_mounted_authenticator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    _install_runtime_fakes(monkeypatch, events)
+    settings = _settings(tmp_path).model_copy(
+        update={
+            "incident_intake_mode": "online",
+            "kubernetes_credential_mode": "in_cluster",
+            "alertmanager_webhook_token_file": tmp_path / "mounted" / "credential",
+        }
+    )
+
+    async with api.build_runtime_container(settings) as container:
+        assert container.alerts is not None
+
+    assert events.index("alert.catalog") < events.index("kubernetes.incluster.open")
+    assert events.index("alert.auth") < events.index("kubernetes.incluster.open")
+
+
+@pytest.mark.asyncio
 async def test_runtime_rejects_database_published_before_reset_staging_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -359,7 +399,7 @@ async def test_runtime_rejects_database_published_before_reset_staging_cleanup(
     with closing(sqlite3.connect(database_uri, uri=True)) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260901_0002",)
+        ).fetchone() == ("20260902_0003",)
     assert any(
         entry.name.startswith(".runtime-reset-stage-")
         for entry in settings.runtime_paths.root.iterdir()

@@ -417,11 +417,11 @@ async def test_success_and_failure_outcome_conflict_fails_closed(
                     run_id=str(context.run.id),
                     event_key="tool:call-1:failed",
                     event_type="tool.failed",
-                    schema_version=2,
+                    schema_version=3,
                     occurred_at=failure_time,
                     payload_json=canonical_json(
                         {
-                            "schemaVersion": 2,
+                            "schemaVersion": 3,
                             "incidentId": run.incident_id,
                             "runId": str(context.run.id),
                             "occurredAt": "2026-08-21T11:00:40Z",

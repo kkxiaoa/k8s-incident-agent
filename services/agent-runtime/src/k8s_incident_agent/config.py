@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     scenario_catalog_dir: Path = Field(
         default_factory=lambda: REPOSITORY_ROOT / "scenarios",
     )
+    alert_catalog_dir: Path = Field(
+        default_factory=lambda: REPOSITORY_ROOT / "monitoring" / "catalog",
+    )
+    alertmanager_webhook_token_file: Path | None = Field(
+        default=None,
+        repr=False,
+    )
     runtime_paths: Annotated[RuntimePaths, NoDecode] = Field(
         default_factory=lambda: RuntimePaths.prepare(REPOSITORY_ROOT / ".runtime"),
         validation_alias="RUNTIME_DATA_DIR",
@@ -68,19 +75,41 @@ class Settings(BaseSettings):
             return value
         return RuntimePaths.prepare(Path(value))
 
-    @field_validator("scenario_catalog_dir", mode="before")
+    @field_validator("scenario_catalog_dir", "alert_catalog_dir", mode="before")
     @classmethod
-    def validate_scenario_catalog_dir(cls, value: Path | str) -> Path:
+    def validate_catalog_dir(cls, value: Path | str) -> Path:
         path = Path(value)
         if not path.is_absolute():
-            raise ValueError("SCENARIO_CATALOG_DIR must be absolute")
+            raise ValueError("Catalog directory must be absolute")
         normalized = Path(os.path.normpath(path))
         if normalized in {
             Path(normalized.anchor),
             Path(os.path.normpath(Path.home())),
             REPOSITORY_ROOT,
         }:
-            raise ValueError("SCENARIO_CATALOG_DIR must be a dedicated directory")
+            raise ValueError("Catalog path must be a dedicated directory")
+        return normalized
+
+    @field_validator("alertmanager_webhook_token_file", mode="before")
+    @classmethod
+    def validate_alertmanager_webhook_token_file(
+        cls,
+        value: Path | str | None,
+    ) -> Path | None:
+        if value is None:
+            return None
+        path = Path(value)
+        if not path.is_absolute():
+            raise ValueError("ALERTMANAGER_WEBHOOK_TOKEN_FILE must be absolute")
+        normalized = Path(os.path.normpath(path))
+        if normalized in {
+            Path(normalized.anchor),
+            Path(os.path.normpath(Path.home())),
+            REPOSITORY_ROOT,
+        }:
+            raise ValueError(
+                "ALERTMANAGER_WEBHOOK_TOKEN_FILE must name a dedicated file"
+            )
         return normalized
 
     @field_validator(

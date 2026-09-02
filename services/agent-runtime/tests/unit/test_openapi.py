@@ -9,6 +9,7 @@ from k8s_incident_agent import api
 from k8s_incident_agent import openapi as openapi_exporter
 
 EXPECTED_OPERATIONS = {
+    ("POST", "/api/v1/alerts/alertmanager"),
     ("GET", "/healthz"),
     ("GET", "/api/v1/scenarios"),
     ("POST", "/api/v1/incidents"),
@@ -25,6 +26,13 @@ HTTP_METHODS = frozenset(
 )
 
 EXPECTED_ERROR_STATUSES = {
+    ("POST", "/api/v1/alerts/alertmanager"): {
+        "401",
+        "413",
+        "422",
+        "500",
+        "503",
+    },
     ("GET", "/healthz"): {"500"},
     ("GET", "/api/v1/scenarios"): {"500", "503"},
     ("POST", "/api/v1/incidents"): {"404", "422", "500", "503"},
@@ -82,6 +90,10 @@ EXPECTED_EVENT_COMPONENTS = {
         "DiagnosisInsufficientEventPayload",
     ),
     "run.failed": ("RunFailedStreamEvent", "RunFailedEventPayload"),
+    "alert.resolved": (
+        "AlertResolvedStreamEvent",
+        "AlertResolvedEventPayload",
+    ),
 }
 
 
@@ -141,7 +153,7 @@ def test_export_is_stable_and_does_not_enter_runtime_lifespan(
     )
 
 
-def test_schema_exposes_only_the_stage_one_runtime_contract(
+def test_schema_exposes_only_the_current_runtime_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -156,7 +168,15 @@ def test_schema_exposes_only_the_stage_one_runtime_contract(
     assert operations == EXPECTED_OPERATIONS
     assert schema["info"]["title"] == "K8s Incident Agent Runtime"
     assert schema["info"]["version"] == "0.1.0"
-    assert "securitySchemes" not in schema.get("components", {})
+    assert schema["components"]["securitySchemes"] == {
+        "AlertmanagerBearer": {
+            "description": (
+                "Shared bearer credential mounted in Alertmanager and Runtime."
+            ),
+            "scheme": "bearer",
+            "type": "http",
+        }
+    }
     components = schema["components"]["schemas"]
     assert "JsonScalar" not in components
     assert "JsonValue" not in components

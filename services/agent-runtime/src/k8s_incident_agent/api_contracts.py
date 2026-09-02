@@ -10,18 +10,16 @@ from pydantic import (
     WithJsonSchema,
     field_validator,
 )
+from pydantic.alias_generators import to_camel
 
 from k8s_incident_agent.domain.models import (
+    CANONICAL_ALERT_TIMESTAMP_PATTERN,
+    AlertSignalStatus,
     DiagnosisOutcome,
     IncidentStatus,
     JsonValue,
     RunStatus,
 )
-
-
-def _to_camel(value: str) -> str:
-    head, *tail = value.split("_")
-    return head + "".join(part.capitalize() for part in tail)
 
 
 def _require_utc_datetime(value: datetime, field_name: str) -> datetime:
@@ -32,7 +30,7 @@ def _require_utc_datetime(value: datetime, field_name: str) -> datetime:
 
 class _ApiContract(BaseModel):
     model_config = ConfigDict(
-        alias_generator=_to_camel,
+        alias_generator=to_camel,
         extra="forbid",
         frozen=True,
         populate_by_name=True,
@@ -44,6 +42,10 @@ class _ApiContract(BaseModel):
 _JsonObject = Annotated[
     dict[str, JsonValue],
     WithJsonSchema({"type": "object", "additionalProperties": True}),
+]
+_CanonicalAlertTimestamp = Annotated[
+    str,
+    Field(pattern=CANONICAL_ALERT_TIMESTAMP_PATTERN),
 ]
 
 
@@ -73,9 +75,9 @@ class IncidentTargetResponse(_ApiContract):
 
 
 class IncidentSourceResponse(_ApiContract):
-    type: Literal["scenario"]
-    ref: str | None
-    revision: str | None
+    type: Literal["scenario", "alertmanager"]
+    ref: str
+    revision: str
 
 
 class ScenarioResponse(_ApiContract):
@@ -106,12 +108,12 @@ class CreateIncidentRequest(_ApiContract):
 
 
 class CreateIncidentResponse(_ApiContract):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     incident_id: UUID
 
 
 class CreateRunResponse(_ApiContract):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     run_id: UUID
 
 
@@ -124,7 +126,7 @@ class IncidentListItem(_ApiContract):
 
 
 class IncidentListResponse(_ApiContract):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     items: tuple[IncidentListItem, ...]
     next_cursor: str | None
 
@@ -158,7 +160,7 @@ class SelectedRunResponse(RunSummaryResponse):
 
 
 class RunHistoryResponse(_ApiContract):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     items: tuple[RunSummaryResponse, ...]
     next_cursor: str | None
 
@@ -192,8 +194,14 @@ class DiagnosisResponse(_ApiContract):
     created_at: datetime
 
 
+class AlertSignalResponse(_ApiContract):
+    status: AlertSignalStatus
+    starts_at: _CanonicalAlertTimestamp
+    ends_at: _CanonicalAlertTimestamp | None
+
+
 class RunEventPayload(_ApiContract):
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     incident_id: UUID
     run_id: UUID
     occurred_at: datetime
@@ -269,6 +277,11 @@ class RunFailedEventPayload(RunEventPayload):
     run_status: Literal["FAILED"]
 
 
+class AlertResolvedEventPayload(RunEventPayload):
+    alert_status: Literal["RESOLVED"]
+    ends_at: _CanonicalAlertTimestamp
+
+
 class IncidentCreatedStreamEvent(_ApiContract):
     id: str
     event: Literal["incident.created"]
@@ -323,6 +336,12 @@ class RunFailedStreamEvent(_ApiContract):
     data: RunFailedEventPayload
 
 
+class AlertResolvedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["alert.resolved"]
+    data: AlertResolvedEventPayload
+
+
 class RunEventStreamItem(
     RootModel[
         Annotated[
@@ -334,7 +353,8 @@ class RunEventStreamItem(
             | ToolFailedStreamEvent
             | DiagnosisCompletedStreamEvent
             | DiagnosisInsufficientStreamEvent
-            | RunFailedStreamEvent,
+            | RunFailedStreamEvent
+            | AlertResolvedStreamEvent,
             Field(discriminator="event"),
         ]
     ]
@@ -348,18 +368,19 @@ class EventPageResponse(_ApiContract):
 
 
 class RunEventHistoryResponse(_ApiContract):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     items: tuple[RunEventStreamItem, ...]
     next_cursor: str | None
 
 
 class IncidentDetailResponse(_ApiContract):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     incident: IncidentResponse
     selected_run: SelectedRunResponse
     event_page: EventPageResponse
     evidence: tuple[EvidenceResponse, ...]
     diagnosis: DiagnosisResponse | None
+    alert_signal: AlertSignalResponse | None
     event_cursor: str = Field(pattern=r"^[1-9][0-9]*$")
 
 

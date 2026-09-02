@@ -48,6 +48,7 @@ async def test_settings_and_runtime_context_are_entered_only_during_lifespan(
             yield RuntimeContainer(
                 incidents=cast(IncidentApplicationService, _UnusedService()),
                 events=cast(IncidentEventService, _UnusedService()),
+                alerts=None,
             )
         finally:
             assert cast(bool, app.state.ready) is False
@@ -145,6 +146,24 @@ def test_online_route_table_omits_manual_entrypoints(tmp_path: Path) -> None:
         ("GET", "/api/v1/incidents/{incident_id}/runs"),
         ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
     }
+
+
+def test_configured_alertmanager_route_is_internal_runtime_only(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path).model_copy(
+        update={
+            "incident_intake_mode": "online",
+            "alertmanager_webhook_token_file": tmp_path / "mounted" / "credential",
+        }
+    )
+
+    routes = _route_table(api.create_app(settings=settings))
+
+    assert ("POST", "/api/v1/alerts/alertmanager") in routes
+    assert ("POST", "/api/v1/incidents") not in routes
+    assert ("POST", "/api/v1/incidents/{incident_id}/runs") not in routes
+    assert ("GET", "/api/v1/scenarios") not in routes
 
 
 def test_runtime_entrypoint_freezes_loopback_single_worker(

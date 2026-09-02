@@ -56,12 +56,10 @@ function mergeRuns(
 
 function sourceLabel(detail: IncidentDetailResponse): string {
   const source = detail.incident.source;
-  if (source.ref === null) {
-    return "Scenario intake";
+  if (source.type === "alertmanager") {
+    return `Alertmanager · ${source.ref} · catalog ${source.revision}`;
   }
-  return source.revision === null
-    ? `Scenario · ${source.ref}`
-    : `Scenario · ${source.ref} · v${source.revision}`;
+  return `Scenario · ${source.ref} · v${source.revision}`;
 }
 
 export function IncidentStream({
@@ -282,6 +280,25 @@ export function IncidentStream({
             <dt>创建时间</dt>
             <dd><LocalTimestamp timestamp={detail.incident.createdAt} /></dd>
           </div>
+          {detail.alertSignal === null ? null : (
+            <div>
+              <dt>告警信号</dt>
+              <dd
+                title={
+                  detail.alertSignal.status === "RESOLVED"
+                    ? "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。"
+                    : undefined
+                }
+              >
+                {detail.alertSignal.status === "FIRING"
+                  ? "告警触发中"
+                  : "告警条件解除"}
+                {detail.alertSignal.endsAt === null ? null : (
+                  <> · <LocalTimestamp timestamp={detail.alertSignal.endsAt} /></>
+                )}
+              </dd>
+            </div>
+          )}
           <div>
             <dt>Incident ID</dt>
             <dd className="mono-break">{detail.incident.id}</dd>

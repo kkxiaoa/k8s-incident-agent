@@ -1,5 +1,6 @@
 import type { components } from "./generated";
 import {
+  isCanonicalAlertTimestamp,
   isValidEventId,
   parseRunEventItem,
   type RunEventStreamItem,
@@ -7,6 +8,7 @@ import {
 
 type ApiDiagnosis = components["schemas"]["DiagnosisResponse"];
 type ApiEvidence = components["schemas"]["EvidenceResponse"];
+type ApiAlertSignal = components["schemas"]["AlertSignalResponse"];
 type ApiRootCause = components["schemas"]["RootCauseResponse"];
 type ApiRunError = components["schemas"]["RunErrorResponse"];
 type ApiScenario = components["schemas"]["ScenarioResponse"];
@@ -48,9 +50,9 @@ export interface IncidentListView {
 }
 
 export interface IncidentSourceView {
-  type: "scenario";
-  ref: string | null;
-  revision: string | null;
+  type: "scenario" | "alertmanager";
+  ref: string;
+  revision: string;
 }
 
 export interface IncidentView {
@@ -109,6 +111,11 @@ export type DiagnosisView = Pick<
   "outcome" | "summary" | "missingInformation" | "redacted"
 > & { rootCauses: RootCauseView[] };
 
+export type AlertSignalView = Pick<
+  ApiAlertSignal,
+  "status" | "startsAt" | "endsAt"
+>;
+
 export interface IncidentDetailView {
   incident: IncidentView;
   selectedRun: SelectedRunView;
@@ -116,6 +123,7 @@ export interface IncidentDetailView {
   eventCursor: string;
   evidence: EvidenceView[];
   diagnosis: DiagnosisView | null;
+  alertSignal: AlertSignalView | null;
 }
 
 const UUID_PATTERN =
@@ -231,14 +239,36 @@ function parseIncidentListItem(value: unknown): IncidentListItemView | null {
 function parseIncidentSource(value: unknown): IncidentSourceView | null {
   if (
     !isObject(value) ||
-    value.type !== "scenario" ||
-    (value.ref !== null && typeof value.ref !== "string") ||
-    (value.revision !== null && typeof value.revision !== "string")
+    (value.type !== "scenario" && value.type !== "alertmanager") ||
+    typeof value.ref !== "string" ||
+    value.ref.length === 0 ||
+    typeof value.revision !== "string" ||
+    value.revision.length === 0
   ) {
     return null;
   }
 
   return { type: value.type, ref: value.ref, revision: value.revision };
+}
+
+function parseAlertSignal(value: unknown): AlertSignalView | null {
+  if (
+    !isObject(value) ||
+    (value.status !== "FIRING" && value.status !== "RESOLVED") ||
+    !isCanonicalAlertTimestamp(value.startsAt) ||
+    (value.endsAt !== null && !isCanonicalAlertTimestamp(value.endsAt)) ||
+    (value.status === "FIRING" && value.endsAt !== null) ||
+    (value.status === "RESOLVED" && value.endsAt === null) ||
+    (typeof value.endsAt === "string" &&
+      value.endsAt < value.startsAt)
+  ) {
+    return null;
+  }
+  return {
+    status: value.status,
+    startsAt: value.startsAt,
+    endsAt: value.endsAt,
+  };
 }
 
 function parseIncident(value: unknown): IncidentView | null {
@@ -412,13 +442,13 @@ function parseDiagnosis(value: unknown): DiagnosisView | null {
 export function parseCreateIncidentResponse(
   value: unknown,
 ): CreateIncidentView | null {
-  return isObject(value) && value.schemaVersion === 2 && isUuid(value.incidentId)
+  return isObject(value) && value.schemaVersion === 3 && isUuid(value.incidentId)
     ? { incidentId: value.incidentId }
     : null;
 }
 
 export function parseCreateRunResponse(value: unknown): CreateRunView | null {
-  return isObject(value) && value.schemaVersion === 2 && isUuid(value.runId)
+  return isObject(value) && value.schemaVersion === 3 && isUuid(value.runId)
     ? { runId: value.runId }
     : null;
 }
@@ -441,7 +471,7 @@ export function parseIncidentListResponse(
 ): IncidentListView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 2 ||
+    value.schemaVersion !== 3 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -457,7 +487,7 @@ export function parseIncidentListResponse(
 export function parseRunHistoryResponse(value: unknown): RunHistoryView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 2 ||
+    value.schemaVersion !== 3 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -475,7 +505,7 @@ export function parseRunEventHistoryResponse(
   expectedIncidentId: string,
   expectedRunId: string,
 ): EventPageView | null {
-  if (!isObject(value) || value.schemaVersion !== 2) {
+  if (!isObject(value) || value.schemaVersion !== 3) {
     return null;
   }
   const page = parseEventPage(value);
@@ -494,7 +524,7 @@ export function parseIncidentDetailResponse(
 ): IncidentDetailView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 2 ||
+    value.schemaVersion !== 3 ||
     !isValidEventId(value.eventCursor) ||
     !Array.isArray(value.evidence)
   ) {
@@ -507,6 +537,8 @@ export function parseIncidentDetailResponse(
   const evidence = value.evidence.map(parseEvidence);
   const diagnosis =
     value.diagnosis === null ? null : parseDiagnosis(value.diagnosis);
+  const alertSignal =
+    value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
   if (
     incident === null ||
     selectedRun === null ||
@@ -517,7 +549,10 @@ export function parseIncidentDetailResponse(
         event.data.runId !== selectedRun.id,
     ) ||
     evidence.some((item) => item === null) ||
-    (value.diagnosis !== null && diagnosis === null)
+    (value.diagnosis !== null && diagnosis === null) ||
+    (value.alertSignal !== null && alertSignal === null) ||
+    (incident.source.type === "scenario" && value.alertSignal !== null) ||
+    (incident.source.type === "alertmanager" && alertSignal === null)
   ) {
     return null;
   }
@@ -529,5 +564,6 @@ export function parseIncidentDetailResponse(
     eventCursor: value.eventCursor,
     evidence: evidence as EvidenceView[],
     diagnosis,
+    alertSignal,
   };
 }

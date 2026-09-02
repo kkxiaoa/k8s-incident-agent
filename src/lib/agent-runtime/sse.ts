@@ -59,6 +59,9 @@ export function requiresIncidentDetailRefresh(
   selectedRunId: string,
   latestMode: boolean,
 ): boolean {
+  if (event.event === "alert.resolved") {
+    return true;
+  }
   if (latestMode && event.event === "run.queued") {
     return true;
   }
@@ -115,6 +118,7 @@ function applyIncidentStatus(
     case "tool.started":
     case "evidence.recorded":
     case "tool.failed":
+    case "alert.resolved":
       return detail;
   }
 }
@@ -144,6 +148,7 @@ function applySelectedRunStatus(
     case "tool.started":
     case "evidence.recorded":
     case "tool.failed":
+    case "alert.resolved":
       return detail;
   }
 }

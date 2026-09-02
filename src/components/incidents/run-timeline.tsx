@@ -67,6 +67,12 @@ function eventCopy(event: RunEventStreamItem): {
         detail: event.data.errorCode,
         tone: "danger",
       };
+    case "alert.resolved":
+      return {
+        title: "告警条件已解除",
+        detail: "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。",
+        tone: "success",
+      };
   }
 }
 

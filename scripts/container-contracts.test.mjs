@@ -65,7 +65,7 @@ test("console image carries the complete standalone runtime as a non-root proces
   assert.ok(command.includes("server.js"));
 });
 
-test("runtime image preserves the locked source, migration, and scenario layout", async () => {
+test("runtime image preserves the locked source, migration, and catalog layouts", async () => {
   const dockerfile = await readRepositoryFile(
     "services/agent-runtime/Dockerfile",
   );
@@ -87,11 +87,13 @@ test("runtime image preserves the locked source, migration, and scenario layout"
     "services/agent-runtime/migrations",
     "services/agent-runtime/src",
     "/workspace/scenarios",
+    "/workspace/monitoring/catalog",
   ]) {
     assert.ok(dockerfile.includes(asset), `missing runtime asset: ${asset}`);
   }
   assert.match(dockerfile, /RUNTIME_DATA_DIR=\/var\/lib\/k8s-incident-agent\/runtime/);
   assert.match(dockerfile, /SCENARIO_CATALOG_DIR=\/workspace\/scenarios/);
+  assert.match(dockerfile, /ALERT_CATALOG_DIR=\/workspace\/monitoring\/catalog/);
   assert.match(dockerfile, /^USER 10001:10001$/m);
   assert.match(dockerfile, /^STOPSIGNAL SIGTERM$/m);
   const command = readExecCommand(dockerfile);

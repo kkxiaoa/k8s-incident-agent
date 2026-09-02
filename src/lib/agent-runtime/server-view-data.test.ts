@@ -27,7 +27,7 @@ describe("server view data", () => {
           url.pathname.endsWith("/scenarios")
             ? jsonResponse({ schemaVersion: 1, items: [null] })
             : jsonResponse({
-                schemaVersion: 2,
+                schemaVersion: 3,
                 items: [null],
                 nextCursor: null,
               }),
@@ -45,7 +45,7 @@ describe("server view data", () => {
 
   it("loads only persisted incidents for the online profile", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ schemaVersion: 2, items: [], nextCursor: null }),
+      jsonResponse({ schemaVersion: 3, items: [], nextCursor: null }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -77,7 +77,7 @@ describe("server view data", () => {
         Promise.resolve(
           url.pathname.endsWith("/runs")
             ? jsonResponse({
-                schemaVersion: 2,
+                schemaVersion: 3,
                 items: [
                   {
                     id: makeIncidentDetail().selectedRun.id,

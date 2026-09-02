@@ -30,7 +30,7 @@ NOW = datetime(2026, 8, 26, 9, 0, tzinfo=UTC)
 
 def _base_payload() -> dict[str, JsonValue]:
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "incidentId": str(INCIDENT_ID),
         "runId": str(RUN_ID),
         "occurredAt": "2026-08-26T09:00:00Z",
@@ -138,6 +138,15 @@ EVENT_CASES = (
     ),
     _event(
         9,
+        "alert.resolved",
+        "alert.resolved",
+        {
+            "alertStatus": "RESOLVED",
+            "endsAt": "2026-08-26T09:05:00.000000000Z",
+        },
+    ),
+    _event(
+        10,
         "run.failed",
         "run:terminal",
         {

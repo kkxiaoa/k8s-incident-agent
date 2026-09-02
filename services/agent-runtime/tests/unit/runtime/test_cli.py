@@ -42,6 +42,7 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
         evidence_rows=1,
         diagnosis_rows=1,
         run_rows=1,
+        alert_signal_rows=1,
     )
 
     async def fake_preview(
@@ -66,6 +67,7 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
         "mode": mode,
         "targets": [
             {
+                "alertSignalRows": 1,
                 "artifactDirectories": [str(target.artifact_directories[0])],
                 "diagnosisRows": 1,
                 "eventRows": 5,
@@ -88,7 +90,7 @@ def test_stage_one_reset_cli_emits_stable_safe_json(
     plan = ResetPlan(
         state=ResetState.STAGE_ONE,
         source_head="20260814_0001",
-        target_head="20260901_0002",
+        target_head="20260902_0003",
         business_files=("incidents.sqlite3-wal", "incidents.sqlite3"),
         checkpoint_files=("checkpoints.sqlite3",),
         run_ids=(RUN_ID,),
@@ -99,7 +101,7 @@ def test_stage_one_reset_cli_emits_stable_safe_json(
         plan=plan,
         outcome=ResetOutcome.RESET,
         completed_at=datetime(2026, 9, 1, 8, 0, tzinfo=UTC),
-        new_head="20260901_0002",
+        new_head="20260902_0003",
         deleted_business_files=plan.business_files,
         deleted_checkpoint_files=plan.checkpoint_files,
         deleted_artifact_run_ids=plan.artifact_run_ids,
@@ -138,7 +140,7 @@ def test_stage_one_reset_cli_emits_stable_safe_json(
         "planDigest": reset_plan_digest(plan),
         "sourceHead": "20260814_0001",
         "state": "stage_one",
-        "targetHead": "20260901_0002",
+        "targetHead": "20260902_0003",
         "targets": {
             "artifactRunIds": [str(RUN_ID)],
             "businessFiles": ["incidents.sqlite3-wal", "incidents.sqlite3"],
@@ -157,7 +159,7 @@ def test_stage_one_reset_cli_emits_stable_safe_json(
                     ],
                     "checkpointFiles": ["checkpoints.sqlite3"],
                 },
-                "newHead": "20260901_0002",
+                "newHead": "20260902_0003",
                 "outcome": "reset",
             }
             if mode == "confirm"
@@ -246,7 +248,7 @@ def test_stage_one_reset_cli_binds_real_preview_to_confirm(
 
     assert result["planDigest"] == preview["planDigest"]
     assert result["outcome"] == "migrated"
-    assert result["newHead"] == "20260901_0002"
+    assert result["newHead"] == "20260902_0003"
 
 
 @pytest.mark.parametrize(

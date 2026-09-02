@@ -10,7 +10,7 @@ export const DIAGNOSIS_ID = "44444444-4444-4444-8444-444444444444";
 
 export function makeIncidentDetail(): IncidentDetailResponse {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     incident: {
       id: INCIDENT_ID,
       source: {
@@ -43,5 +43,6 @@ export function makeIncidentDetail(): IncidentDetailResponse {
     eventCursor: "1",
     evidence: [],
     diagnosis: null,
+    alertSignal: null,
   };
 }

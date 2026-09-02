@@ -232,6 +232,12 @@ def _head_and_counts(paths: RuntimePaths) -> tuple[str, dict[str, int]]:
         head = str(
             connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
         )
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
         counts = {
             table_name: int(
                 connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
@@ -242,7 +248,9 @@ def _head_and_counts(paths: RuntimePaths) -> tuple[str, dict[str, int]]:
                 "run_events",
                 "evidence",
                 "diagnoses",
+                "alert_signals",
             )
+            if table_name in tables
         }
     return head, counts
 
@@ -251,7 +259,7 @@ def test_reset_plan_digest_covers_every_authorized_plan_field() -> None:
     plan = ResetPlan(
         state=ResetState.STAGE_ONE,
         source_head="20260814_0001",
-        target_head="20260901_0002",
+        target_head="20260902_0003",
         business_files=("incidents.sqlite3",),
         checkpoint_files=("checkpoints.sqlite3",),
         run_ids=(RUN_ID,),
@@ -350,7 +358,7 @@ async def test_preview_then_confirm_resets_only_old_stage_one_data(
 
     assert preview.state is ResetState.STAGE_ONE
     assert preview.source_head == "20260814_0001"
-    assert preview.target_head == "20260901_0002"
+    assert preview.target_head == "20260902_0003"
     assert preview.business_files == tuple(
         path.name for path in inspected_business_targets
     )
@@ -379,20 +387,21 @@ async def test_preview_then_confirm_resets_only_old_stage_one_data(
 
     assert result.plan == preview
     assert result.outcome is ResetOutcome.RESET
-    assert result.new_head == "20260901_0002"
+    assert result.new_head == "20260902_0003"
     assert started_at <= result.completed_at <= observed_at
     assert result.deleted_business_files == preview.business_files
     assert result.deleted_checkpoint_files == preview.checkpoint_files
     assert result.deleted_artifact_run_ids == (RUN_ID,)
     assert paths.business_database.stat().st_ino != old_database_inode
     assert _head_and_counts(paths) == (
-        "20260901_0002",
+        "20260902_0003",
         {
             "incidents": 0,
             "agent_runs": 0,
             "run_events": 0,
             "evidence": 0,
             "diagnoses": 0,
+            "alert_signals": 0,
         },
     )
     assert not paths.checkpoint_database.exists()
@@ -502,7 +511,7 @@ def test_reset_resumes_allowed_empty_cutover_states(
         else ResetState.DELETION_COMPLETE
     )
     assert result.outcome is ResetOutcome.MIGRATED
-    assert _head_and_counts(paths)[0] == "20260901_0002"
+    assert _head_and_counts(paths)[0] == "20260902_0003"
 
 
 def test_new_nonempty_database_is_not_a_reset_target(tmp_path: Path) -> None:
@@ -714,7 +723,7 @@ def test_partial_private_migration_state_is_discarded_before_retry(
     real_upgrade = reset_module.command.upgrade
 
     def fail_after_partial_ddl(config: Config, revision: str) -> None:
-        assert revision == "20260901_0002"
+        assert revision == "20260902_0003"
         connection = config.attributes["reset_connection"]
         assert isinstance(connection, Connection)
         connection.exec_driver_sql("CREATE TABLE unexpected (id INTEGER PRIMARY KEY)")
@@ -1251,7 +1260,7 @@ def test_database_replaced_after_migration_is_not_reported_complete(
             except sqlite3.DatabaseError:
                 pass
             else:
-                if head == "20260901_0002":
+                if head == "20260902_0003":
                     replaced = True
                     paths.business_database.rename(moved_database)
                     replacement_paths.business_database.rename(paths.business_database)

@@ -22,7 +22,7 @@ function incidentCreated(id: string) {
     "incident.created",
     id,
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       attempt: 1,
@@ -39,7 +39,7 @@ function runQueued(id: string, runId = OTHER_RUN_ID) {
     "run.queued",
     id,
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       incidentId: INCIDENT_ID,
       runId,
       attempt: 2,
@@ -55,7 +55,7 @@ function runStarted(id: string, runId = RUN_ID) {
     "run.started",
     id,
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       incidentId: INCIDENT_ID,
       runId,
       attempt: runId === RUN_ID ? 1 : 2,
@@ -72,7 +72,7 @@ function diagnosisCompleted(id: string, runId = RUN_ID) {
     "diagnosis.completed",
     id,
     JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       incidentId: INCIDENT_ID,
       runId,
       diagnosisId: DIAGNOSIS_ID,
@@ -85,8 +85,24 @@ function diagnosisCompleted(id: string, runId = RUN_ID) {
   );
 }
 
+function alertResolved(id: string, runId = RUN_ID) {
+  return parseRunEvent(
+    "alert.resolved",
+    id,
+    JSON.stringify({
+      schemaVersion: 3,
+      incidentId: INCIDENT_ID,
+      runId,
+      alertStatus: "RESOLVED",
+      endsAt: "2026-08-29T01:05:00.000000001Z",
+      occurredAt: "2026-08-29T01:05:01Z",
+    }),
+    INCIDENT_ID,
+  );
+}
+
 describe("parseRunEvent", () => {
-  it("accepts the v2 run.queued contract and preserves int64 ids", () => {
+  it("accepts the v3 run.queued contract and preserves int64 ids", () => {
     const event = runQueued("9007199254740993");
     expect(event.id).toBe("9007199254740993");
     expect(event.event).toBe("run.queued");
@@ -94,12 +110,12 @@ describe("parseRunEvent", () => {
 
   it.each([
     ["v1 payload", { schemaVersion: 1 }],
-    ["missing attempt", { schemaVersion: 2 }],
-    ["zero attempt", { schemaVersion: 2, attempt: 0 }],
-    ["first attempt", { schemaVersion: 2, attempt: 1 }],
+    ["missing attempt", { schemaVersion: 3 }],
+    ["zero attempt", { schemaVersion: 3, attempt: 0 }],
+    ["first attempt", { schemaVersion: 3, attempt: 1 }],
     [
       "another Incident owner",
-      { schemaVersion: 2, attempt: 2, incidentId: OTHER_INCIDENT_ID },
+      { schemaVersion: 3, attempt: 2, incidentId: OTHER_INCIDENT_ID },
     ],
   ])("rejects %s", (_label, override) => {
     expect(() =>
@@ -120,7 +136,7 @@ describe("parseRunEvent", () => {
 
   it("binds REST event history to its Incident and Run owners", () => {
     const response = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       items: [runStarted("2")],
       nextCursor: null,
     };
@@ -134,6 +150,32 @@ describe("parseRunEvent", () => {
     expect(
       parseRunEventHistoryResponse(response, OTHER_INCIDENT_ID, RUN_ID),
     ).toBeNull();
+  });
+
+  it("accepts resolved only as an alert signal event", () => {
+    const event = alertResolved("3");
+
+    expect(event.event).toBe("alert.resolved");
+    expect(event.data).not.toHaveProperty("incidentStatus");
+    expect(event.data).not.toHaveProperty("runStatus");
+  });
+
+  it("rejects alert.resolved without the canonical nanosecond form", () => {
+    expect(() =>
+      parseRunEvent(
+        "alert.resolved",
+        "3",
+        JSON.stringify({
+          schemaVersion: 3,
+          incidentId: INCIDENT_ID,
+          runId: RUN_ID,
+          alertStatus: "RESOLVED",
+          endsAt: "2026-08-29T01:05:00Z",
+          occurredAt: "2026-08-29T01:05:01Z",
+        }),
+        INCIDENT_ID,
+      ),
+    ).toThrow("Invalid incident event");
   });
 });
 
@@ -234,5 +276,20 @@ describe("reduceIncidentStream", () => {
       detail: makeIncidentDetail(),
     });
     expect(stale).toBe(afterSecond);
+  });
+
+  it("refreshes an Incident-level resolved signal without changing statuses", () => {
+    const detail = makeIncidentDetail();
+    detail.eventCursor = "1";
+    detail.incident.status = "DIAGNOSED";
+    detail.selectedRun.status = "COMPLETED";
+    const afterResolved = reduceIncidentStream(
+      createIncidentStreamState(detail),
+      { type: "event", event: alertResolved("2") },
+    );
+
+    expect(afterResolved.detailRefreshEventId).toBe("2");
+    expect(afterResolved.detail.incident.status).toBe("DIAGNOSED");
+    expect(afterResolved.detail.selectedRun.status).toBe("COMPLETED");
   });
 });

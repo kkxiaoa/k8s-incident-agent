@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 import uvicorn
@@ -10,6 +11,7 @@ from fastapi import FastAPI
 
 from k8s_incident_agent.api_contracts import HealthResponse, error_responses
 from k8s_incident_agent.api_errors import install_exception_handlers
+from k8s_incident_agent.application.alerts import AlertmanagerApplicationService
 from k8s_incident_agent.application.events import (
     EventDependencies,
     IncidentEventService,
@@ -36,11 +38,15 @@ from k8s_incident_agent.kubernetes.credentials import (
 )
 from k8s_incident_agent.model.discovery import discover_models
 from k8s_incident_agent.model.factory import create_deepseek_model
+from k8s_incident_agent.monitoring.alertmanager import AlertmanagerWebhook
+from k8s_incident_agent.monitoring.auth import AlertmanagerWebhookAuthenticator
+from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.persistence.database import (
     create_business_database,
     require_alembic_head,
 )
 from k8s_incident_agent.persistence.repositories import IncidentRepository
+from k8s_incident_agent.routes.alertmanager import router as alertmanager_router
 from k8s_incident_agent.routes.events import router as events_router
 from k8s_incident_agent.routes.incidents import (
     manual_router as manual_incidents_router,
@@ -59,6 +65,7 @@ from k8s_incident_agent.workflow.supervisor import RunSupervisor
 class RuntimeContainer:
     incidents: IncidentApplicationService
     events: IncidentEventService
+    alerts: AlertmanagerApplicationService | None
 
 
 type RuntimeContextFactory = Callable[
@@ -71,11 +78,18 @@ def create_app(
     *,
     settings: Settings | None = None,
     runtime_context_factory: RuntimeContextFactory | None = None,
+    include_alertmanager_route: bool | None = None,
 ) -> FastAPI:
     route_intake_mode = (
         settings.incident_intake_mode if settings is not None else "manual"
     )
     context_factory = runtime_context_factory or build_runtime_container
+    route_alertmanager_enabled = (
+        include_alertmanager_route
+        if include_alertmanager_route is not None
+        else settings is not None
+        and settings.alertmanager_webhook_token_file is not None
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -83,6 +97,12 @@ def create_app(
         if resolved_settings.incident_intake_mode != route_intake_mode:
             raise ConfigurationInvalidError(
                 "INCIDENT_INTAKE_MODE changed after route assembly"
+            )
+        if (
+            resolved_settings.alertmanager_webhook_token_file is not None
+        ) != route_alertmanager_enabled:
+            raise ConfigurationInvalidError(
+                "ALERTMANAGER_WEBHOOK_TOKEN_FILE changed after route assembly"
             )
         async with context_factory(resolved_settings) as container:
             app.state.container = container
@@ -117,8 +137,12 @@ def create_app(
     if route_intake_mode == "manual":
         app.include_router(scenarios_router)
         app.include_router(manual_incidents_router)
+    if route_alertmanager_enabled:
+        app.include_router(alertmanager_router)
     app.include_router(incidents_router)
     app.include_router(events_router)
+    if route_alertmanager_enabled:
+        _install_alertmanager_openapi_contract(app)
     return app
 
 
@@ -154,6 +178,18 @@ async def build_runtime_container(
             load_scenario_catalog(settings.scenario_catalog_dir)
             if settings.incident_intake_mode == "manual"
             else ()
+        )
+        alert_catalog = (
+            load_alert_catalog(settings.alert_catalog_dir)
+            if settings.alertmanager_webhook_token_file is not None
+            else None
+        )
+        alert_authenticator = (
+            AlertmanagerWebhookAuthenticator.from_file(
+                settings.alertmanager_webhook_token_file
+            )
+            if settings.alertmanager_webhook_token_file is not None
+            else None
         )
 
         budget = RunBudget(
@@ -240,7 +276,40 @@ async def build_runtime_container(
                     notifier=event_notifier,
                 )
             ),
+            alerts=(
+                AlertmanagerApplicationService(
+                    catalog=alert_catalog,
+                    authenticator=alert_authenticator,
+                    repository=repository,
+                    supervisor=supervisor,
+                    model=model_snapshot,
+                    budget=budget,
+                    cluster_id=kubernetes_clients.cluster_id,
+                    diagnostic_namespace=kubernetes_clients.diagnostic_namespace,
+                )
+                if alert_catalog is not None and alert_authenticator is not None
+                else None
+            ),
         )
+
+
+def _install_alertmanager_openapi_contract(app: FastAPI) -> None:
+    default_openapi = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        schema = default_openapi()
+        components = schema.setdefault("components", {})
+        schemas = components.setdefault("schemas", {})
+        webhook_schema = AlertmanagerWebhook.model_json_schema(
+            by_alias=True,
+            ref_template="#/components/schemas/{model}",
+        )
+        definitions = webhook_schema.pop("$defs", {})
+        schemas.update(definitions)
+        schemas["AlertmanagerWebhook"] = webhook_schema
+        return schema
+
+    app.openapi = openapi
 
 
 def create_runtime_app() -> FastAPI:

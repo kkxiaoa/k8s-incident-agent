@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -23,6 +24,10 @@ from k8s_incident_agent.domain.contracts import (
     NormalizedIncidentTrigger,
 )
 from k8s_incident_agent.domain.models import (
+    CANONICAL_ALERT_TIMESTAMP_PATTERN,
+    AlertSignalRecord,
+    AlertSignalStatus,
+    CanonicalAlertTimestamp,
     CreatedIncident,
     CreatedRun,
     DiagnosisOutcome,
@@ -31,6 +36,8 @@ from k8s_incident_agent.domain.models import (
     IncidentStatus,
     JsonValue,
     ModelSnapshot,
+    NormalizedAlertOccurrence,
+    PersistedAlertBatch,
     PersistedEvidence,
     PersistedTerminal,
     RootCauseRecord,
@@ -44,6 +51,7 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.persistence.canonical import canonical_json, parse_json_object
 from k8s_incident_agent.persistence.models import (
+    AlertSignalRow,
     DiagnosisRow,
     EvidenceRow,
     IncidentRow,
@@ -52,7 +60,8 @@ from k8s_incident_agent.persistence.models import (
 )
 
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
-_SCHEMA_VERSION: Final = 2
+_SCHEMA_VERSION: Final = 3
+_CANONICAL_ALERT_TIMESTAMP = re.compile(CANONICAL_ALERT_TIMESTAMP_PATTERN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +74,7 @@ class PruneTarget:
     evidence_rows: int
     diagnosis_rows: int
     run_rows: int
+    alert_signal_rows: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +137,7 @@ class IncidentDetailRecord:
     run: IncidentRunDetail
     evidence: tuple[IncidentEvidenceDetail, ...]
     diagnosis: IncidentDiagnosisDetail | None
+    alert_signal: AlertSignalRecord | None
     events: tuple[RunEvent, ...]
     has_older_events: bool
     event_cursor: int
@@ -380,6 +391,7 @@ class IncidentRepository:
                 diagnosis = await session.scalar(
                     select(DiagnosisRow).where(DiagnosisRow.run_id == run.id)
                 )
+                alert_signal = await session.get(AlertSignalRow, incident.id)
                 start_event = await session.scalar(
                     select(RunEventRow).where(
                         RunEventRow.run_id == run.id,
@@ -425,6 +437,7 @@ class IncidentRepository:
                     incident,
                     run,
                     diagnosis,
+                    alert_signal,
                     evidence_rows,
                     workflow,
                     terminal,
@@ -660,6 +673,13 @@ class IncidentRepository:
                 )
                 await _delete_exact_rows(
                     session,
+                    delete(AlertSignalRow).where(
+                        AlertSignalRow.incident_id == str(target.incident_id)
+                    ),
+                    target.alert_signal_rows,
+                )
+                await _delete_exact_rows(
+                    session,
                     delete(RunRow).where(RunRow.id.in_(run_ids)),
                     target.run_rows,
                 )
@@ -763,75 +783,75 @@ class IncidentRepository:
         model: ModelSnapshot,
         budget: RunBudget,
     ) -> CreatedIncident:
-        incident_id = uuid4()
-        run_id = uuid4()
-        occurred_at = datetime.now(UTC)
-        payload = _base_payload(incident_id, run_id, occurred_at)
-        payload.update(
-            {
-                "attempt": 1,
-                "incidentStatus": IncidentStatus.RECEIVED.value,
-                "runStatus": RunStatus.QUEUED.value,
-            }
-        )
-
         try:
             async with self._session_factory() as session, session.begin():
-                incident_row = IncidentRow(
-                    id=str(incident_id),
-                    trigger_source=trigger.source.type,
-                    trigger_ref=trigger.source.ref,
-                    trigger_revision=trigger.source.revision,
-                    display_name=trigger.display_name,
-                    trigger_summary=trigger.trigger_summary,
-                    cluster=trigger.target.cluster,
-                    namespace=trigger.target.namespace,
-                    api_version=trigger.target.api_version,
-                    kind=trigger.target.kind,
-                    resource_name=trigger.target.name,
-                    status=IncidentStatus.RECEIVED,
-                    created_at=occurred_at,
-                    updated_at=occurred_at,
-                )
-                session.add(incident_row)
-                await session.flush()
-
-                run_row = _new_run_row(
-                    run_id=run_id,
-                    incident_id=incident_id,
-                    attempt=1,
+                created = await _create_initial_incident(
+                    session,
+                    trigger,
                     model=model,
                     budget=budget,
-                    occurred_at=occurred_at,
-                )
-                session.add(run_row)
-                await session.flush()
-
-                event_row = _new_event_row(
-                    run_id=run_id,
-                    event_key="incident.created",
-                    event_type="incident.created",
-                    occurred_at=occurred_at,
-                    payload=payload,
-                )
-                session.add(event_row)
-                await session.flush()
-                run_event = _event_from_row(
-                    event_row,
-                    expected_incident_id=incident_id,
                 )
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
-        created = CreatedIncident(
-            incident_id=incident_id,
-            run_id=run_id,
-            incident_status=IncidentStatus.RECEIVED,
-            run_status=RunStatus.QUEUED,
-            event=run_event,
-        )
         await self._notify_committed_event(created.event)
         return created
+
+    async def apply_alert_occurrences(
+        self,
+        occurrences: tuple[NormalizedAlertOccurrence, ...],
+        model: ModelSnapshot,
+        budget: RunBudget,
+    ) -> PersistedAlertBatch:
+        result = await _execute_with_replay(
+            lambda: self._apply_alert_occurrences_once(occurrences, model, budget),
+            lambda: self._apply_alert_occurrences_once(occurrences, model, budget),
+        )
+        for event in result.events:
+            await self._notify_committed_event(event)
+        return result
+
+    async def _apply_alert_occurrences_once(
+        self,
+        occurrences: tuple[NormalizedAlertOccurrence, ...],
+        model: ModelSnapshot,
+        budget: RunBudget,
+    ) -> PersistedAlertBatch:
+        created_run_ids: list[UUID] = []
+        committed_events: list[RunEvent] = []
+        async with self._session_factory() as session, session.begin():
+            for occurrence in occurrences:
+                signal = await session.scalar(
+                    select(AlertSignalRow).where(
+                        AlertSignalRow.fingerprint == occurrence.fingerprint,
+                        AlertSignalRow.starts_at == occurrence.starts_at,
+                    )
+                )
+                if signal is None:
+                    if occurrence.status is AlertSignalStatus.RESOLVED:
+                        continue
+                    created = await _create_alert_incident(
+                        session,
+                        occurrence,
+                        model,
+                        budget,
+                    )
+                    created_run_ids.append(created.run_id)
+                    committed_events.append(created.event)
+                    continue
+
+                resolved_event = await _apply_existing_alert_occurrence(
+                    session,
+                    signal,
+                    occurrence,
+                )
+                if resolved_event is not None:
+                    committed_events.append(resolved_event)
+
+        return PersistedAlertBatch(
+            created_run_ids=tuple(created_run_ids),
+            events=tuple(committed_events),
+        )
 
     async def create_run(
         self,
@@ -1309,6 +1329,179 @@ class IncidentRepository:
             await self._on_event_committed(event.incident_id)
 
 
+async def _create_initial_incident(
+    session: AsyncSession,
+    trigger: NormalizedIncidentTrigger,
+    *,
+    model: ModelSnapshot,
+    budget: RunBudget,
+) -> CreatedIncident:
+    incident_id = uuid4()
+    run_id = uuid4()
+    occurred_at = datetime.now(UTC)
+    incident = IncidentRow(
+        id=str(incident_id),
+        trigger_source=trigger.source.type,
+        trigger_ref=trigger.source.ref,
+        trigger_revision=trigger.source.revision,
+        display_name=trigger.display_name,
+        trigger_summary=trigger.trigger_summary,
+        cluster=trigger.target.cluster,
+        namespace=trigger.target.namespace,
+        api_version=trigger.target.api_version,
+        kind=trigger.target.kind,
+        resource_name=trigger.target.name,
+        status=IncidentStatus.RECEIVED,
+        created_at=occurred_at,
+        updated_at=occurred_at,
+    )
+    session.add(incident)
+    await session.flush()
+
+    run = _new_run_row(
+        run_id=run_id,
+        incident_id=incident_id,
+        attempt=1,
+        model=model,
+        budget=budget,
+        occurred_at=occurred_at,
+    )
+    session.add(run)
+    await session.flush()
+
+    payload = _base_payload(incident_id, run_id, occurred_at)
+    payload.update(
+        {
+            "attempt": 1,
+            "incidentStatus": IncidentStatus.RECEIVED.value,
+            "runStatus": RunStatus.QUEUED.value,
+        }
+    )
+    event = _new_event_row(
+        run_id=run_id,
+        event_key="incident.created",
+        event_type="incident.created",
+        occurred_at=occurred_at,
+        payload=payload,
+    )
+    session.add(event)
+    await session.flush()
+    return CreatedIncident(
+        incident_id=incident_id,
+        run_id=run_id,
+        incident_status=IncidentStatus.RECEIVED,
+        run_status=RunStatus.QUEUED,
+        event=_event_from_row(event, expected_incident_id=incident_id),
+    )
+
+
+async def _create_alert_incident(
+    session: AsyncSession,
+    occurrence: NormalizedAlertOccurrence,
+    model: ModelSnapshot,
+    budget: RunBudget,
+) -> CreatedIncident:
+    if (
+        occurrence.trigger.source.type != "alertmanager"
+        or occurrence.status is not AlertSignalStatus.FIRING
+        or occurrence.ends_at is not None
+    ):
+        raise RecoveryConsistencyError
+    created = await _create_initial_incident(
+        session,
+        occurrence.trigger,
+        model=model,
+        budget=budget,
+    )
+    signal = AlertSignalRow(
+        incident_id=str(created.incident_id),
+        fingerprint=occurrence.fingerprint,
+        starts_at=occurrence.starts_at,
+        status=AlertSignalStatus.FIRING,
+        ends_at=None,
+    )
+    session.add(signal)
+    await session.flush()
+    return created
+
+
+async def _apply_existing_alert_occurrence(
+    session: AsyncSession,
+    signal: AlertSignalRow,
+    occurrence: NormalizedAlertOccurrence,
+) -> RunEvent | None:
+    incident = await session.get(IncidentRow, signal.incident_id)
+    run = await session.scalar(
+        select(RunRow).where(
+            RunRow.incident_id == signal.incident_id,
+            RunRow.attempt == 1,
+        )
+    )
+    if incident is None or run is None:
+        raise RecoveryConsistencyError
+    _require_matching_alert_occurrence(signal, incident, occurrence)
+
+    existing_event = await _event_by_key(session, UUID(run.id), "alert.resolved")
+    if signal.status is AlertSignalStatus.RESOLVED:
+        if existing_event is None:
+            raise RecoveryConsistencyError
+        return None
+    if existing_event is not None:
+        raise RecoveryConsistencyError
+    if occurrence.status is AlertSignalStatus.FIRING:
+        return None
+    if occurrence.ends_at is None:
+        raise RecoveryConsistencyError
+
+    occurred_at = datetime.now(UTC)
+    incident_id = UUID(incident.id)
+    run_id = UUID(run.id)
+    signal.status = AlertSignalStatus.RESOLVED
+    signal.ends_at = occurrence.ends_at
+    incident.updated_at = occurred_at
+    payload = _base_payload(incident_id, run_id, occurred_at)
+    payload.update(
+        {
+            "alertStatus": AlertSignalStatus.RESOLVED.value,
+            "endsAt": occurrence.ends_at,
+        }
+    )
+    event = _new_event_row(
+        run_id=run_id,
+        event_key="alert.resolved",
+        event_type="alert.resolved",
+        occurred_at=occurred_at,
+        payload=payload,
+    )
+    session.add(event)
+    await session.flush()
+    return _event_from_row(event, expected_incident_id=incident_id)
+
+
+def _require_matching_alert_occurrence(
+    signal: AlertSignalRow,
+    incident: IncidentRow,
+    occurrence: NormalizedAlertOccurrence,
+) -> None:
+    trigger = occurrence.trigger
+    try:
+        matches = (
+            signal.fingerprint == occurrence.fingerprint
+            and signal.starts_at == occurrence.starts_at
+            and incident.trigger_source == "alertmanager"
+            and incident.trigger_ref == trigger.source.ref
+            and incident.cluster == trigger.target.cluster
+            and incident.namespace == trigger.target.namespace
+            and incident.api_version == trigger.target.api_version
+            and incident.kind == trigger.target.kind
+            and incident.resource_name == trigger.target.name
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+    if trigger.source.type != "alertmanager" or not matches:
+        raise RecoveryConsistencyError
+
+
 async def _load_run_context(
     session: AsyncSession, run_id: UUID
 ) -> tuple[RunRow, IncidentRow]:
@@ -1380,6 +1573,11 @@ async def _prune_target_from_incident(
         .select_from(DiagnosisRow)
         .where(DiagnosisRow.run_id.in_(persisted_run_ids))
     )
+    alert_signal_rows = await session.scalar(
+        select(func.count())
+        .select_from(AlertSignalRow)
+        .where(AlertSignalRow.incident_id == incident.id)
+    )
     if (
         not isinstance(event_rows, int)
         or event_rows < 0
@@ -1387,6 +1585,8 @@ async def _prune_target_from_incident(
         or evidence_rows < 0
         or not isinstance(diagnosis_rows, int)
         or diagnosis_rows < 0
+        or not isinstance(alert_signal_rows, int)
+        or alert_signal_rows < 0
     ):
         raise RecoveryConsistencyError
     return PruneTarget(
@@ -1398,6 +1598,7 @@ async def _prune_target_from_incident(
         evidence_rows=evidence_rows,
         diagnosis_rows=diagnosis_rows,
         run_rows=len(runs),
+        alert_signal_rows=alert_signal_rows,
     )
 
 
@@ -1418,7 +1619,7 @@ def _incident_list_record(row: IncidentRow) -> IncidentListRecord:
         return IncidentListRecord(
             id=UUID(row.id),
             source=IncidentSource(
-                type=cast(Literal["scenario"], row.trigger_source),
+                type=cast(Literal["scenario", "alertmanager"], row.trigger_source),
                 ref=row.trigger_ref,
                 revision=row.trigger_revision,
             ),
@@ -1438,10 +1639,42 @@ def _incident_list_record(row: IncidentRow) -> IncidentListRecord:
         raise RecoveryConsistencyError from None
 
 
+def _alert_signal_record(
+    row: AlertSignalRow | None,
+    incident: IncidentListRecord,
+) -> AlertSignalRecord | None:
+    if incident.source.type == "scenario":
+        if row is not None:
+            raise RecoveryConsistencyError
+        return None
+    if row is None:
+        raise RecoveryConsistencyError
+    try:
+        starts_at = _database_alert_timestamp(row.starts_at)
+        ends_at = (
+            _database_alert_timestamp(row.ends_at) if row.ends_at is not None else None
+        )
+        if (
+            row.incident_id != str(incident.id)
+            or (row.status is AlertSignalStatus.FIRING and ends_at is not None)
+            or (row.status is AlertSignalStatus.RESOLVED and ends_at is None)
+            or (ends_at is not None and ends_at < starts_at)
+        ):
+            raise ValueError
+        return AlertSignalRecord(
+            status=row.status,
+            starts_at=starts_at,
+            ends_at=ends_at,
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+
+
 def _incident_detail_record(
     incident: IncidentRow,
     run: RunRow,
     diagnosis: DiagnosisRow | None,
+    alert_signal: AlertSignalRow | None,
     evidence_rows: list[EvidenceRow],
     workflow: WorkflowRunSnapshot,
     terminal: TerminalRecord | None,
@@ -1498,6 +1731,7 @@ def _incident_detail_record(
                 _incident_evidence_detail(row, run_id) for row in evidence_rows
             ),
             diagnosis=diagnosis_detail,
+            alert_signal=_alert_signal_record(alert_signal, incident_record),
             events=tuple(
                 _event_from_row(
                     row,
@@ -2724,6 +2958,16 @@ def _database_datetime(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _database_alert_timestamp(value: str) -> CanonicalAlertTimestamp:
+    if _CANONICAL_ALERT_TIMESTAMP.fullmatch(value) is None:
+        raise ValueError("Persisted alert timestamp is invalid")
+    try:
+        datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        raise ValueError("Persisted alert timestamp is invalid") from None
+    return CanonicalAlertTimestamp(value)
 
 
 def _rfc3339(value: datetime) -> str:

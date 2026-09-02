@@ -1,6 +1,272 @@
 {
   "components": {
     "schemas": {
+      "AlertResolvedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "alertStatus": {
+            "const": "RESOLVED",
+            "title": "Alertstatus",
+            "type": "string"
+          },
+          "endsAt": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
+            "title": "Endsat",
+            "type": "string"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 3,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "alertStatus",
+          "endsAt"
+        ],
+        "title": "AlertResolvedEventPayload",
+        "type": "object"
+      },
+      "AlertResolvedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AlertResolvedEventPayload"
+          },
+          "event": {
+            "const": "alert.resolved",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "AlertResolvedStreamEvent",
+        "type": "object"
+      },
+      "AlertSignalResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "endsAt": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endsat"
+          },
+          "startsAt": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
+            "title": "Startsat",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AlertSignalStatus"
+          }
+        },
+        "required": [
+          "status",
+          "startsAt",
+          "endsAt"
+        ],
+        "title": "AlertSignalResponse",
+        "type": "object"
+      },
+      "AlertSignalStatus": {
+        "enum": [
+          "FIRING",
+          "RESOLVED"
+        ],
+        "title": "AlertSignalStatus",
+        "type": "string"
+      },
+      "AlertmanagerAlert": {
+        "additionalProperties": false,
+        "properties": {
+          "annotations": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 64,
+            "title": "Annotations",
+            "type": "object"
+          },
+          "endsAt": {
+            "title": "Endsat",
+            "type": "string"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "generatorURL": {
+            "maxLength": 4096,
+            "title": "Generatorurl",
+            "type": "string"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 64,
+            "title": "Labels",
+            "type": "object"
+          },
+          "startsAt": {
+            "title": "Startsat",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "firing",
+              "resolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "labels",
+          "annotations",
+          "startsAt",
+          "endsAt",
+          "generatorURL",
+          "fingerprint"
+        ],
+        "title": "AlertmanagerAlert",
+        "type": "object"
+      },
+      "AlertmanagerWebhook": {
+        "additionalProperties": false,
+        "properties": {
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/AlertmanagerAlert"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Alerts",
+            "type": "array"
+          },
+          "commonAnnotations": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 64,
+            "title": "Commonannotations",
+            "type": "object"
+          },
+          "commonLabels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 64,
+            "title": "Commonlabels",
+            "type": "object"
+          },
+          "externalURL": {
+            "maxLength": 4096,
+            "title": "Externalurl",
+            "type": "string"
+          },
+          "groupKey": {
+            "maxLength": 4096,
+            "title": "Groupkey",
+            "type": "string"
+          },
+          "groupLabels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 64,
+            "title": "Grouplabels",
+            "type": "object"
+          },
+          "notification_reason": {
+            "maxLength": 4096,
+            "title": "Notification Reason",
+            "type": "string"
+          },
+          "receiver": {
+            "maxLength": 4096,
+            "title": "Receiver",
+            "type": "string"
+          },
+          "routeLabels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 64,
+            "title": "Routelabels",
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "firing",
+              "resolved"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "truncatedAlerts": {
+            "minimum": 0,
+            "title": "Truncatedalerts",
+            "type": "integer"
+          },
+          "version": {
+            "const": "4",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "groupKey",
+          "truncatedAlerts",
+          "status",
+          "receiver",
+          "groupLabels",
+          "commonLabels",
+          "commonAnnotations",
+          "routeLabels",
+          "externalURL",
+          "notification_reason",
+          "alerts"
+        ],
+        "title": "AlertmanagerWebhook",
+        "type": "object"
+      },
       "CreateIncidentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -25,8 +291,8 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
-            "default": 2,
+            "const": 3,
+            "default": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -46,8 +312,8 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
-            "default": 2,
+            "const": 3,
+            "default": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -97,7 +363,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -178,7 +444,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -382,7 +648,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -544,7 +810,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -588,6 +854,16 @@
       "IncidentDetailResponse": {
         "additionalProperties": false,
         "properties": {
+          "alertSignal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertSignalResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "diagnosis": {
             "anyOf": [
               {
@@ -617,8 +893,8 @@
             "$ref": "#/components/schemas/IncidentResponse"
           },
           "schemaVersion": {
-            "const": 2,
-            "default": 2,
+            "const": 3,
+            "default": 3,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -632,6 +908,7 @@
           "eventPage",
           "evidence",
           "diagnosis",
+          "alertSignal",
           "eventCursor"
         ],
         "title": "IncidentDetailResponse",
@@ -693,8 +970,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 2,
-            "default": 2,
+            "const": 3,
+            "default": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -753,29 +1030,18 @@
         "additionalProperties": false,
         "properties": {
           "ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ref"
+            "title": "Ref",
+            "type": "string"
           },
           "revision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Revision"
+            "title": "Revision",
+            "type": "string"
           },
           "type": {
-            "const": "scenario",
+            "enum": [
+              "scenario",
+              "alertmanager"
+            ],
             "title": "Type",
             "type": "string"
           }
@@ -919,8 +1185,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 2,
-            "default": 2,
+            "const": 3,
+            "default": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -935,6 +1201,7 @@
       "RunEventStreamItem": {
         "discriminator": {
           "mapping": {
+            "alert.resolved": "#/components/schemas/AlertResolvedStreamEvent",
             "diagnosis.completed": "#/components/schemas/DiagnosisCompletedStreamEvent",
             "diagnosis.insufficient": "#/components/schemas/DiagnosisInsufficientStreamEvent",
             "evidence.recorded": "#/components/schemas/EvidenceRecordedStreamEvent",
@@ -974,6 +1241,9 @@
           },
           {
             "$ref": "#/components/schemas/RunFailedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AlertResolvedStreamEvent"
           }
         ],
         "title": "RunEventStreamItem"
@@ -1015,7 +1285,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1079,8 +1349,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 2,
-            "default": 2,
+            "const": 3,
+            "default": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1121,7 +1391,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1195,7 +1465,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1512,7 +1782,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -1581,7 +1851,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 2,
+            "const": 3,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -1629,6 +1899,13 @@
         "title": "ToolStartedStreamEvent",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "AlertmanagerBearer": {
+        "description": "Shared bearer credential mounted in Alertmanager and Runtime.",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -1637,6 +1914,82 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/alerts/alertmanager": {
+      "post": {
+        "operationId": "receive_alertmanager_webhook_api_v1_alerts_alertmanager_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertmanagerWebhook"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Content Too Large"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "AlertmanagerBearer": []
+          }
+        ],
+        "summary": "Receive Alertmanager Webhook"
+      }
+    },
     "/api/v1/incidents": {
       "get": {
         "operationId": "list_incidents_api_v1_incidents_get",

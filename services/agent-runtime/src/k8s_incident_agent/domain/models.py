@@ -3,13 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Final, Literal, NewType
 from uuid import UUID
 
-from k8s_incident_agent.domain.contracts import KubernetesTarget
+from k8s_incident_agent.domain.contracts import (
+    KubernetesTarget,
+    NormalizedIncidentTrigger,
+)
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+
+CANONICAL_ALERT_TIMESTAMP_PATTERN: Final = (
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z$"
+)
+CanonicalAlertTimestamp = NewType("CanonicalAlertTimestamp", str)
 
 
 class IncidentStatus(StrEnum):
@@ -31,6 +39,11 @@ class RunStatus(StrEnum):
 
     def can_transition_to(self, target: RunStatus) -> bool:
         return target in _RUN_TRANSITIONS[self]
+
+
+class AlertSignalStatus(StrEnum):
+    FIRING = "FIRING"
+    RESOLVED = "RESOLVED"
 
 
 class DiagnosisOutcome(StrEnum):
@@ -82,6 +95,28 @@ class CreatedIncident:
 @dataclass(frozen=True, slots=True)
 class CreatedRun:
     run_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedAlertOccurrence:
+    trigger: NormalizedIncidentTrigger
+    fingerprint: str
+    starts_at: CanonicalAlertTimestamp
+    status: AlertSignalStatus
+    ends_at: CanonicalAlertTimestamp | None
+
+
+@dataclass(frozen=True, slots=True)
+class AlertSignalRecord:
+    status: AlertSignalStatus
+    starts_at: CanonicalAlertTimestamp
+    ends_at: CanonicalAlertTimestamp | None
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedAlertBatch:
+    created_run_ids: tuple[UUID, ...]
+    events: tuple[RunEvent, ...]
 
 
 @dataclass(frozen=True, slots=True)

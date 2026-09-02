@@ -1,0 +1,1 @@
+"""Managed monitoring intake boundary."""

@@ -21,6 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from k8s_incident_agent.domain.models import (
+    AlertSignalStatus,
     DiagnosisOutcome,
     IncidentStatus,
     RunStatus,
@@ -47,6 +48,10 @@ class IncidentRow(Base):
     __tablename__ = "incidents"
     __table_args__ = (
         CheckConstraint(
+            "trigger_source IN ('scenario', 'alertmanager')",
+            name="trigger_source",
+        ),
+        CheckConstraint(
             "status IN ('RECEIVED', 'TRIAGING', 'DIAGNOSED', "
             "'INSUFFICIENT_EVIDENCE', 'FAILED')",
             name="status",
@@ -56,8 +61,8 @@ class IncidentRow(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     trigger_source: Mapped[str] = mapped_column(String, nullable=False)
-    trigger_ref: Mapped[str | None] = mapped_column(String)
-    trigger_revision: Mapped[str | None] = mapped_column(String)
+    trigger_ref: Mapped[str] = mapped_column(String, nullable=False)
+    trigger_revision: Mapped[str] = mapped_column(String, nullable=False)
     display_name: Mapped[str] = mapped_column(String, nullable=False)
     trigger_summary: Mapped[str] = mapped_column(Text, nullable=False)
     cluster: Mapped[str] = mapped_column(String, nullable=False)
@@ -82,6 +87,49 @@ class IncidentRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class AlertSignalRow(Base):
+    __tablename__ = "alert_signals"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('FIRING', 'RESOLVED')",
+            name="status",
+        ),
+        CheckConstraint(
+            "(status = 'FIRING' AND ends_at IS NULL) OR "
+            "(status = 'RESOLVED' AND ends_at IS NOT NULL)",
+            name="status_ends_at",
+        ),
+        CheckConstraint(
+            "ends_at IS NULL OR ends_at >= starts_at",
+            name="ends_at",
+        ),
+        UniqueConstraint(
+            "fingerprint",
+            "starts_at",
+            name="uq_alert_signals_fingerprint_starts_at",
+        ),
+    )
+
+    incident_id: Mapped[str] = mapped_column(
+        ForeignKey("incidents.id"),
+        primary_key=True,
+    )
+    fingerprint: Mapped[str] = mapped_column(String(16), nullable=False)
+    starts_at: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[AlertSignalStatus] = mapped_column(
+        SqlEnum(
+            AlertSignalStatus,
+            name="alert_signal_status",
+            native_enum=False,
+            create_constraint=False,
+            validate_strings=True,
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+    )
+    ends_at: Mapped[str | None] = mapped_column(String(30))
 
 
 class RunRow(Base):

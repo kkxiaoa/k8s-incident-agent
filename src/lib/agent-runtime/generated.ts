@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/v1/alerts/alertmanager": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Receive Alertmanager Webhook */
+        post: operations["receive_alertmanager_webhook_api_v1_alerts_alertmanager_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/incidents": {
         parameters: {
             query?: never;
@@ -129,6 +146,125 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AlertResolvedEventPayload */
+        AlertResolvedEventPayload: {
+            /**
+             * Alertstatus
+             * @constant
+             */
+            alertStatus: "RESOLVED";
+            /** Endsat */
+            endsAt: string;
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 3;
+        };
+        /** AlertResolvedStreamEvent */
+        AlertResolvedStreamEvent: {
+            data: components["schemas"]["AlertResolvedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "alert.resolved";
+            /** Id */
+            id: string;
+        };
+        /** AlertSignalResponse */
+        AlertSignalResponse: {
+            /** Endsat */
+            endsAt: string | null;
+            /** Startsat */
+            startsAt: string;
+            status: components["schemas"]["AlertSignalStatus"];
+        };
+        /**
+         * AlertSignalStatus
+         * @enum {string}
+         */
+        AlertSignalStatus: "FIRING" | "RESOLVED";
+        /** AlertmanagerAlert */
+        AlertmanagerAlert: {
+            /** Annotations */
+            annotations: {
+                [key: string]: string;
+            };
+            /** Endsat */
+            endsAt: string;
+            /** Fingerprint */
+            fingerprint: string;
+            /** Generatorurl */
+            generatorURL: string;
+            /** Labels */
+            labels: {
+                [key: string]: string;
+            };
+            /** Startsat */
+            startsAt: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "firing" | "resolved";
+        };
+        /** AlertmanagerWebhook */
+        AlertmanagerWebhook: {
+            /** Alerts */
+            alerts: components["schemas"]["AlertmanagerAlert"][];
+            /** Commonannotations */
+            commonAnnotations: {
+                [key: string]: string;
+            };
+            /** Commonlabels */
+            commonLabels: {
+                [key: string]: string;
+            };
+            /** Externalurl */
+            externalURL: string;
+            /** Groupkey */
+            groupKey: string;
+            /** Grouplabels */
+            groupLabels: {
+                [key: string]: string;
+            };
+            /** Notification Reason */
+            notification_reason: string;
+            /** Receiver */
+            receiver: string;
+            /** Routelabels */
+            routeLabels: {
+                [key: string]: string;
+            };
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "firing" | "resolved";
+            /** Truncatedalerts */
+            truncatedAlerts: number;
+            /**
+             * Version
+             * @constant
+             */
+            version: "4";
+        };
         /** CreateIncidentRequest */
         CreateIncidentRequest: {
             /** Scenarioid */
@@ -143,10 +279,10 @@ export interface components {
             incidentId: string;
             /**
              * Schemaversion
-             * @default 2
+             * @default 3
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** CreateRunResponse */
         CreateRunResponse: {
@@ -157,10 +293,10 @@ export interface components {
             runId: string;
             /**
              * Schemaversion
-             * @default 2
+             * @default 3
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** DiagnosisCompletedEventPayload */
         DiagnosisCompletedEventPayload: {
@@ -203,7 +339,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** DiagnosisCompletedStreamEvent */
         DiagnosisCompletedStreamEvent: {
@@ -257,7 +393,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** DiagnosisInsufficientStreamEvent */
         DiagnosisInsufficientStreamEvent: {
@@ -352,7 +488,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -444,7 +580,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** IncidentCreatedStreamEvent */
         IncidentCreatedStreamEvent: {
@@ -459,6 +595,7 @@ export interface components {
         };
         /** IncidentDetailResponse */
         IncidentDetailResponse: {
+            alertSignal: components["schemas"]["AlertSignalResponse"] | null;
             diagnosis: components["schemas"]["DiagnosisResponse"] | null;
             /** Eventcursor */
             eventCursor: string;
@@ -468,10 +605,10 @@ export interface components {
             incident: components["schemas"]["IncidentResponse"];
             /**
              * Schemaversion
-             * @default 2
+             * @default 3
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
             selectedRun: components["schemas"]["SelectedRunResponse"];
         };
         /** IncidentListItem */
@@ -499,10 +636,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 2
+             * @default 3
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** IncidentResponse */
         IncidentResponse: {
@@ -527,14 +664,14 @@ export interface components {
         /** IncidentSourceResponse */
         IncidentSourceResponse: {
             /** Ref */
-            ref: string | null;
+            ref: string;
             /** Revision */
-            revision: string | null;
+            revision: string;
             /**
              * Type
-             * @constant
+             * @enum {string}
              */
-            type: "scenario";
+            type: "scenario" | "alertmanager";
         };
         /**
          * IncidentStatus
@@ -583,13 +720,13 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 2
+             * @default 3
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */
@@ -625,7 +762,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** RunFailedStreamEvent */
         RunFailedStreamEvent: {
@@ -646,10 +783,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 2
+             * @default 3
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** RunQueuedEventPayload */
         RunQueuedEventPayload: {
@@ -679,7 +816,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** RunQueuedStreamEvent */
         RunQueuedStreamEvent: {
@@ -725,7 +862,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** RunStartedStreamEvent */
         RunStartedStreamEvent: {
@@ -856,7 +993,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -894,7 +1031,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -920,6 +1057,73 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    receive_alertmanager_webhook_api_v1_alerts_alertmanager_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlertmanagerWebhook"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_incidents_api_v1_incidents_get: {
         parameters: {
             query?: {

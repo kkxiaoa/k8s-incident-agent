@@ -29,6 +29,8 @@ MODEL_ENVIRONMENT_VARIABLES = (
     "DEEPSEEK_BASE_URL",
     "RUNTIME_DATA_DIR",
     "SCENARIO_CATALOG_DIR",
+    "ALERT_CATALOG_DIR",
+    "ALERTMANAGER_WEBHOOK_TOKEN_FILE",
 )
 
 
@@ -67,6 +69,8 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     assert str(settings.deepseek_base_url) == "https://api.deepseek.com/"
     assert settings.runtime_paths.root == tmp_path / ".runtime"
     assert settings.scenario_catalog_dir == tmp_path / "scenarios"
+    assert settings.alert_catalog_dir == tmp_path / "monitoring" / "catalog"
+    assert settings.alertmanager_webhook_token_file is None
 
 
 def test_runtime_data_dir_is_projected_once_to_runtime_paths(
@@ -220,6 +224,26 @@ def test_scenario_catalog_dir_must_be_absolute_and_dedicated(
     value: str,
 ) -> None:
     monkeypatch.setenv("SCENARIO_CATALOG_DIR", value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("ALERT_CATALOG_DIR", "relative/catalog"),
+        ("ALERT_CATALOG_DIR", "/"),
+        ("ALERTMANAGER_WEBHOOK_TOKEN_FILE", "relative/credential"),
+        ("ALERTMANAGER_WEBHOOK_TOKEN_FILE", "/"),
+    ],
+)
+def test_alertmanager_paths_must_be_absolute_and_dedicated(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
 
     with pytest.raises(ValidationError):
         settings_without_dotenv()

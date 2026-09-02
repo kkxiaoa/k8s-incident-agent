@@ -62,6 +62,7 @@ def _app(tmp_path: Path) -> FastAPI:
         yield RuntimeContainer(
             incidents=cast(IncidentApplicationService, _FailingService()),
             events=cast(IncidentEventService, object()),
+            alerts=None,
         )
 
     return api.create_app(

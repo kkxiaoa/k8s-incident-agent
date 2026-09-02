@@ -60,6 +60,7 @@ async def test_scenario_route_returns_only_versioned_public_projection(
         yield RuntimeContainer(
             incidents=cast(IncidentApplicationService, _ScenarioService()),
             events=cast(IncidentEventService, object()),
+            alerts=None,
         )
 
     app = api.create_app(

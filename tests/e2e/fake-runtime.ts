@@ -102,7 +102,7 @@ function buildEvents(
       id: eventId(),
       event: "incident.created",
       data: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         incidentId,
         runId,
         attempt: 1,
@@ -115,7 +115,7 @@ function buildEvents(
       id: eventId(),
       event: "run.started",
       data: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         incidentId,
         runId,
         attempt: 1,
@@ -128,7 +128,7 @@ function buildEvents(
       id: eventId(),
       event: "tool.started",
       data: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         incidentId,
         runId,
         toolCallId: "tool-call-1",
@@ -152,7 +152,7 @@ function buildEvents(
         id: eventId(),
         event: "tool.failed",
         data: {
-          schemaVersion: 2,
+          schemaVersion: 3,
           incidentId,
           runId,
           toolCallId: "tool-call-1",
@@ -166,7 +166,7 @@ function buildEvents(
         id: eventId(),
         event: "run.failed",
         data: {
-          schemaVersion: 2,
+          schemaVersion: 3,
           incidentId,
           runId,
           errorCode: "workflow_failed",
@@ -184,7 +184,7 @@ function buildEvents(
     id: eventId(),
     event: "evidence.recorded",
     data: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       incidentId,
       runId,
       evidenceId,
@@ -203,7 +203,7 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.completed",
       data: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         incidentId,
         runId,
         diagnosisId,
@@ -218,7 +218,7 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.insufficient",
       data: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         incidentId,
         runId,
         diagnosisId,
@@ -248,7 +248,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
     finished: false,
     events,
     detail: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       incident: {
         id: incidentId,
         source: {
@@ -278,6 +278,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
       eventCursor: initialEvent.id,
       evidence: [],
       diagnosis: null,
+      alertSignal: null,
     },
   };
 }
@@ -299,6 +300,7 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       break;
     case "tool.started":
     case "tool.failed":
+    case "alert.resolved":
       break;
     case "evidence.recorded":
       if (!record.detail.evidence.some((item) => item.id === event.data.evidenceId)) {
@@ -503,7 +505,7 @@ async function handleRequest(
 
   if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
     json(response, 200, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       items: [...incidents.values()].reverse().map(listItem),
       nextCursor: null,
     });
@@ -531,7 +533,7 @@ async function handleRequest(
     const record = createIncident(mode);
     incidents.set(record.detail.incident.id, record);
     json(response, 202, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       incidentId: record.detail.incident.id,
     });
     return;
@@ -548,7 +550,7 @@ async function handleRequest(
     }
     const run = record.detail.selectedRun;
     json(response, 200, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       items: [{
         id: run.id,
         attempt: run.attempt,
@@ -572,7 +574,7 @@ async function handleRequest(
       return;
     }
     json(response, 200, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       items: [...record.detail.eventPage.items],
       nextCursor: null,
     });

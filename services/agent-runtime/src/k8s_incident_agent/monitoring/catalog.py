@@ -1,0 +1,111 @@
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic.alias_generators import to_camel
+
+from k8s_incident_agent.monitoring.json import load_unique_json
+
+_MAX_CATALOG_BYTES = 64 * 1024
+
+
+class _CatalogContract(BaseModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        extra="forbid",
+        frozen=True,
+        strict=True,
+    )
+
+
+class AlertTargetMapping(_CatalogContract):
+    api_version: str = Field(min_length=1, max_length=32)
+    kind: str = Field(min_length=1, max_length=64)
+    cluster_label: str = Field(
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+    )
+    namespace_label: str = Field(
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+    )
+    name_label: str = Field(
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+    )
+
+    @field_validator("api_version", "kind")
+    @classmethod
+    def require_normalized_value(cls, value: str) -> str:
+        return _require_normalized(value)
+
+
+class AlertCatalogEntry(_CatalogContract):
+    alert_id: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
+    display_name: str = Field(min_length=1, max_length=160)
+    trigger_summary: str = Field(min_length=1, max_length=512)
+    target: AlertTargetMapping
+
+    @field_validator("display_name", "trigger_summary")
+    @classmethod
+    def require_normalized_text(cls, value: str) -> str:
+        return _require_normalized(value)
+
+
+class _AlertCatalogDocument(_CatalogContract):
+    schema_version: Literal[1]
+    catalog_version: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    alerts: list[AlertCatalogEntry] = Field(min_length=1, max_length=64)
+
+
+@dataclass(frozen=True, slots=True)
+class AlertCatalog:
+    version: str
+    entries: tuple[AlertCatalogEntry, ...]
+
+    def find(self, alert_id: str) -> AlertCatalogEntry | None:
+        return next(
+            (entry for entry in self.entries if entry.alert_id == alert_id), None
+        )
+
+
+def load_alert_catalog(directory: Path) -> AlertCatalog:
+    path = directory / "catalog.json"
+    try:
+        with path.open("rb") as catalog_file:
+            payload = catalog_file.read(_MAX_CATALOG_BYTES + 1)
+    except OSError:
+        raise ValueError("Alert catalog could not be read") from None
+    if not payload or len(payload) > _MAX_CATALOG_BYTES:
+        raise ValueError("Alert catalog size is invalid")
+    try:
+        document = _AlertCatalogDocument.model_validate(load_unique_json(payload))
+    except (ValidationError, ValueError):
+        raise ValueError("Alert catalog contract is invalid") from None
+    alert_ids = [entry.alert_id for entry in document.alerts]
+    if len(set(alert_ids)) != len(alert_ids):
+        raise ValueError("Alert catalog contains duplicate alert identifiers")
+    for entry in document.alerts:
+        labels = {
+            entry.target.cluster_label,
+            entry.target.namespace_label,
+            entry.target.name_label,
+        }
+        if len(labels) != 3:
+            raise ValueError("Alert catalog target labels must be distinct")
+    return AlertCatalog(
+        version=document.catalog_version, entries=tuple(document.alerts)
+    )
+
+
+def _require_normalized(value: str) -> str:
+    if value != value.strip() or any(
+        ord(character) < 0x20 or ord(character) == 0x7F for character in value
+    ):
+        raise ValueError("Catalog text must be normalized")
+    return value

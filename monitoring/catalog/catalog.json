@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026-09-02.1",
+  "alerts": [
+    {
+      "alertId": "K8sIncidentImagePullBackOff",
+      "displayName": "Image pull failure",
+      "triggerSummary": "A Deployment cannot pull its configured container image.",
+      "target": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "clusterLabel": "cluster",
+        "namespaceLabel": "namespace",
+        "nameLabel": "deployment"
+      }
+    }
+  ]
+}

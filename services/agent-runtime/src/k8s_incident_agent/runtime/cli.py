@@ -82,6 +82,7 @@ def _target_payload(
         "artifactDirectories": [
             str(directory) for directory in target.artifact_directories
         ],
+        "alertSignalRows": target.alert_signal_rows,
         "diagnosisRows": target.diagnosis_rows,
         "eventRows": target.event_rows,
         "evidenceRows": target.evidence_rows,

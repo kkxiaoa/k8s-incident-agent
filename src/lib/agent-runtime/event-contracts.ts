@@ -13,6 +13,7 @@ export const RUN_EVENT_NAMES = [
   "diagnosis.completed",
   "diagnosis.insufficient",
   "run.failed",
+  "alert.resolved",
 ] as const satisfies readonly RunEventStreamItem["event"][];
 
 type JsonObject = Record<string, unknown>;
@@ -23,6 +24,8 @@ const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UTC_TIMESTAMP_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const CANONICAL_ALERT_TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z$/;
 
 function invalidEvent(): never {
   throw new Error("Invalid incident event");
@@ -70,6 +73,19 @@ function timestampField(value: JsonObject, key: string): string {
     : invalidEvent();
 }
 
+export function isCanonicalAlertTimestamp(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    CANONICAL_ALERT_TIMESTAMP_PATTERN.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+function canonicalAlertTimestampField(value: JsonObject, key: string): string {
+  const field = textField(value, key);
+  return isCanonicalAlertTimestamp(field) ? field : invalidEvent();
+}
+
 function booleanField(value: JsonObject, key: string): boolean {
   const field = value[key];
   return typeof field === "boolean" ? field : invalidEvent();
@@ -97,12 +113,12 @@ function literalField<const T extends string>(
 }
 
 function commonFields(value: JsonObject) {
-  if (value.schemaVersion !== 2) {
+  if (value.schemaVersion !== 3) {
     return invalidEvent();
   }
 
   return {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     incidentId: uuidField(value, "incidentId"),
     runId: uuidField(value, "runId"),
     occurredAt: timestampField(value, "occurredAt"),
@@ -188,6 +204,12 @@ function parseEventData(
         incidentStatus: literalField(value, "incidentStatus", "FAILED"),
         retryable: booleanField(value, "retryable"),
         runStatus: literalField(value, "runStatus", "FAILED"),
+      };
+    case "alert.resolved":
+      return {
+        ...common,
+        alertStatus: literalField(value, "alertStatus", "RESOLVED"),
+        endsAt: canonicalAlertTimestampField(value, "endsAt"),
       };
   }
 }

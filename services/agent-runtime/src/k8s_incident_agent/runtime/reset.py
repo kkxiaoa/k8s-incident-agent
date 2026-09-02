@@ -50,14 +50,18 @@ from k8s_incident_agent.runtime.sqlite_identity import (
 )
 
 _SERVICE_ROOT = Path(__file__).resolve().parents[3]
-_SOURCE_HEAD = "20260814_0001"
-_TARGET_HEAD = "20260901_0002"
-_BUSINESS_TABLES = (
+_SOURCE_HEADS = frozenset(("20260814_0001", "20260901_0002"))
+_TARGET_HEAD = "20260902_0003"
+_LEGACY_BUSINESS_TABLES = (
     "incidents",
     "agent_runs",
     "run_events",
     "evidence",
     "diagnoses",
+)
+_BUSINESS_TABLES = (*_LEGACY_BUSINESS_TABLES, "alert_signals")
+_EXPECTED_LEGACY_BUSINESS_TABLES = frozenset(
+    (*_LEGACY_BUSINESS_TABLES, "alembic_version")
 )
 _EXPECTED_BUSINESS_TABLES = frozenset((*_BUSINESS_TABLES, "alembic_version"))
 _EXPECTED_CHECKPOINT_TABLES = frozenset(("checkpoints", "writes"))
@@ -320,9 +324,9 @@ def _preflight(reset_context: _ResetContext) -> _Preflight:
         artifact_run_ids = ()
     else:
         if any(count != 0 for _, count in business.row_counts):
-            raise RuntimeError("Stage 1.6 database is not empty")
+            raise RuntimeError("Current business database is not empty")
         if has_external_state:
-            raise RuntimeError("Stage 1.6 database has old external Run state")
+            raise RuntimeError("Current business database has old external Run state")
         state = ResetState.ALREADY_COMPLETE
         business_files = ()
         checkpoint_files = ()
@@ -371,7 +375,7 @@ def _inspect_business_database(
     with closing(connection):
         user_tables = _user_tables(connection)
         head = _alembic_head(connection, user_tables)
-        if head == _SOURCE_HEAD and user_tables == _EXPECTED_BUSINESS_TABLES:
+        if head in _SOURCE_HEADS and user_tables == _EXPECTED_LEGACY_BUSINESS_TABLES:
             state = _BusinessState.STAGE_ONE
         elif head == _TARGET_HEAD and user_tables == _EXPECTED_BUSINESS_TABLES:
             state = _BusinessState.STAGE_ONE_SIX
@@ -381,9 +385,14 @@ def _inspect_business_database(
             raise RuntimeError("Business database is not in an allowed reset state")
 
         if state in (_BusinessState.STAGE_ONE, _BusinessState.STAGE_ONE_SIX):
+            table_names = (
+                _LEGACY_BUSINESS_TABLES
+                if state is _BusinessState.STAGE_ONE
+                else _BUSINESS_TABLES
+            )
             row_counts = tuple(
                 (table_name, _row_count(connection, table_name))
-                for table_name in _BUSINESS_TABLES
+                for table_name in table_names
             )
             run_ids = _canonical_uuids(
                 row[0]

@@ -62,6 +62,13 @@ EXPECTED_COLUMNS = {
         "completed_at",
         "updated_at",
     ),
+    "alert_signals": (
+        "incident_id",
+        "fingerprint",
+        "starts_at",
+        "status",
+        "ends_at",
+    ),
     "run_events": (
         "id",
         "run_id",
@@ -101,6 +108,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
     "run_events": {("run_id", "agent_runs", "id")},
     "evidence": {("run_id", "agent_runs", "id")},
     "diagnoses": {("run_id", "agent_runs", "id")},
+    "alert_signals": {("incident_id", "incidents", "id")},
 }
 
 EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
@@ -109,6 +117,7 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
     "run_events": {("run_id", "event_key")},
     "evidence": {("run_id", "tool_call_id")},
     "diagnoses": {("run_id",)},
+    "alert_signals": {("fingerprint", "starts_at")},
 }
 
 EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
@@ -117,6 +126,7 @@ EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
     "run_events": {("run_id", "id")},
     "evidence": set(),
     "diagnoses": set(),
+    "alert_signals": set(),
 }
 
 
@@ -174,7 +184,7 @@ def _schema_snapshot(database: Path) -> dict[str, Any]:
         }
 
 
-def test_migration_round_trip_produces_the_exact_stage_one_six_schema(
+def test_migration_round_trip_produces_the_exact_stage_two_intake_schema(
     tmp_path: Path,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
@@ -231,7 +241,7 @@ def test_stage_one_six_upgrade_rejects_nonempty_stage_one_before_ddl(
         ).fetchone() == ("20260814_0001",)
 
 
-def test_stage_one_six_downgrade_rejects_nonempty_head_before_ddl(
+def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     tmp_path: Path,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
@@ -255,6 +265,34 @@ def test_stage_one_six_downgrade_rejects_nonempty_head_before_ddl(
         "trigger_source"
         in _schema_snapshot(paths.business_database)["columns"]["incidents"]
     )
+    with sqlite3.connect(paths.business_database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == ("20260902_0003",)
+
+
+def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(
+    tmp_path: Path,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    config = _alembic_config(paths)
+    command.upgrade(config, "20260901_0002")
+    with sqlite3.connect(paths.business_database) as connection:
+        connection.execute(
+            "INSERT INTO incidents "
+            "(id, trigger_source, trigger_ref, trigger_revision, display_name, "
+            "trigger_summary, cluster, namespace, api_version, kind, resource_name, "
+            "status, created_at, updated_at) VALUES "
+            "('incident-id', 'scenario', 'scenario', '1', 'display', 'trigger', "
+            "'cluster', NULL, 'apps/v1', 'Deployment', 'name', 'RECEIVED', "
+            "'2026-08-15T00:00:00Z', '2026-08-15T00:00:00Z')"
+        )
+
+    with pytest.raises(RuntimeError, match="requires an empty business database"):
+        command.upgrade(config, "head")
+
+    snapshot = _schema_snapshot(paths.business_database)
+    assert "alert_signals" not in snapshot["tables"]
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
@@ -287,10 +325,10 @@ def test_reset_migration_uses_only_the_provided_in_memory_connection(
     try:
         with engine.connect() as connection:
             config.attributes["reset_connection"] = connection
-            command.upgrade(config, "20260901_0002")
+            command.upgrade(config, "20260902_0003")
             assert (
                 connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "20260901_0002"
+                == "20260902_0003"
             )
             assert all(
                 not str(row[2])
@@ -319,7 +357,7 @@ def test_reset_migration_rejects_a_connection_without_the_caller_lock(
         with engine.connect() as connection:
             config.attributes["reset_connection"] = connection
             with pytest.raises(RuntimeError, match="Runtime lock is not held"):
-                command.upgrade(config, "20260901_0002")
+                command.upgrade(config, "20260902_0003")
             assert (
                 connection.scalar(
                     text(

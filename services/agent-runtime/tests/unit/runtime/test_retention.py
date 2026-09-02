@@ -554,7 +554,7 @@ async def test_count_change_before_business_transaction_fails_closed(
                             run_id=str(run_id),
                             event_key="concurrent-change",
                             event_type="test.concurrent-change",
-                            schema_version=2,
+                            schema_version=3,
                             occurred_at=NOW,
                             payload_json="{}",
                         )
