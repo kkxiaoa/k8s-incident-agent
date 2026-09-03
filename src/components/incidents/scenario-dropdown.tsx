@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
 } from "react";
 
+import { UiIcon } from "@/components/ui/ui-icon";
 import type { ScenarioResponse } from "@/lib/agent-runtime/view-models";
 
 export function ScenarioDropdown({
@@ -137,7 +138,7 @@ export function ScenarioDropdown({
         onKeyDown={handleKeyDown}
       >
         <span>{selected.displayName}</span>
-        <span className="scenario-dropdown__chevron" aria-hidden="true" />
+        <UiIcon name="chevron-down" className="scenario-dropdown__chevron" />
       </button>
 
       {open ? (
@@ -163,7 +164,7 @@ export function ScenarioDropdown({
               >
                 <span>{scenario.displayName}</span>
                 <span className="scenario-dropdown__check" aria-hidden="true">
-                  {selectedOption ? "✓" : ""}
+                  {selectedOption ? <UiIcon name="check" /> : null}
                 </span>
               </li>
             );

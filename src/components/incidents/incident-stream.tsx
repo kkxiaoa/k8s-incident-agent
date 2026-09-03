@@ -65,6 +65,28 @@ function sourceLabel(detail: IncidentDetailResponse): string {
   return `Scenario · ${source.ref} · v${source.revision}`;
 }
 
+function latestActivityAt(
+  detail: IncidentDetailResponse,
+  events: ReadonlyArray<{ data: { occurredAt: string } }>,
+): string {
+  const timestamps = [
+    detail.incident.createdAt,
+    detail.selectedRun.createdAt,
+    detail.selectedRun.startedAt,
+    detail.selectedRun.completedAt,
+    detail.alertSignal?.startsAt,
+    detail.alertSignal?.endsAt,
+    ...detail.evidence.map((item) => item.observedAt),
+    ...events.map((event) => event.data.occurredAt),
+  ];
+  return timestamps.reduce<string>((latest, value) => {
+    if (value === null || value === undefined) {
+      return latest;
+    }
+    return Date.parse(value) > Date.parse(latest) ? value : latest;
+  }, detail.incident.createdAt);
+}
+
 export function IncidentStream({
   initialDetail,
   initialRuns,
@@ -267,64 +289,83 @@ export function IncidentStream({
     detail.selectedRun.completedAt,
     detail.alertSignal?.endsAt ?? "firing",
   ].join(":");
+  const updatedAt = latestActivityAt(detail, state.events);
 
   return (
     <>
+      <div className="detail-toolbar">
+        <nav className="breadcrumb" aria-label="面包屑">
+          <Link href="/">Incident 列表</Link>
+          <span aria-hidden="true">/</span>
+          <span>Incident 详情</span>
+        </nav>
+        <span className="detail-toolbar__updated">
+          最近更新 <LocalTimestamp timestamp={updatedAt} />
+        </span>
+      </div>
+
       <section className="incident-overview" aria-labelledby="incident-heading">
         <div className="incident-overview__main">
-          <span className="eyebrow">Incident</span>
-          <h1 id="incident-heading">{detail.incident.displayName}</h1>
-          <p>{detail.incident.triggerSummary}</p>
-          <div className="marker-row marker-row--spaced">
-            <IncidentStatusBadge status={detail.incident.status} />
-            <RunStatusBadge status={detail.selectedRun.status} />
-          </div>
-        </div>
-        <dl className="incident-facts">
-          <div>
-            <dt>目标</dt>
-            <dd>{targetLabel(detail.incident.target)}</dd>
-          </div>
-          <div>
-            <dt>来源</dt>
-            <dd>{sourceLabel(detail)}</dd>
-          </div>
-          <div>
-            <dt>创建时间</dt>
-            <dd><LocalTimestamp timestamp={detail.incident.createdAt} /></dd>
-          </div>
-          {detail.alertSignal === null ? null : (
-            <div>
-              <dt>告警信号</dt>
-              <dd
-                title={
-                  detail.alertSignal.status === "RESOLVED"
-                    ? "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。"
-                    : undefined
-                }
-              >
-                {detail.alertSignal.status === "FIRING"
-                  ? "告警触发中"
-                  : "告警条件解除"}
-                {detail.alertSignal.endsAt === null ? null : (
-                  <> · <LocalTimestamp timestamp={detail.alertSignal.endsAt} /></>
-                )}
-              </dd>
+          <div className="incident-overview__title-row">
+            <h1 id="incident-heading">{detail.incident.displayName}</h1>
+            <div className="marker-row">
+              <IncidentStatusBadge status={detail.incident.status} />
+              <RunStatusBadge status={detail.selectedRun.status} />
             </div>
-          )}
-          <div>
-            <dt>Incident ID</dt>
-            <dd className="mono-break">{detail.incident.id}</dd>
           </div>
-        </dl>
+          <p>{detail.incident.triggerSummary}</p>
+        </div>
+        <div className="incident-facts">
+          <dl className="incident-facts__column incident-facts__column--primary">
+            <div>
+              <dt>目标</dt>
+              <dd>{targetLabel(detail.incident.target)}</dd>
+            </div>
+            <div>
+              <dt>来源</dt>
+              <dd>{sourceLabel(detail)}</dd>
+            </div>
+            <div>
+              <dt>创建时间</dt>
+              <dd><LocalTimestamp timestamp={detail.incident.createdAt} /></dd>
+            </div>
+          </dl>
+          <dl className="incident-facts__column incident-facts__column--secondary">
+            {detail.alertSignal === null ? null : (
+              <div>
+                <dt>告警信号</dt>
+                <dd
+                  title={
+                    detail.alertSignal.status === "RESOLVED"
+                      ? "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。"
+                      : undefined
+                  }
+                >
+                  {detail.alertSignal.status === "FIRING"
+                    ? "告警中"
+                    : "告警条件解除"}
+                  {detail.alertSignal.endsAt === null ? null : (
+                    <> · <LocalTimestamp timestamp={detail.alertSignal.endsAt} /></>
+                  )}
+                </dd>
+              </div>
+            )}
+            <div>
+              <dt>Incident ID</dt>
+              <dd className="mono-break">{detail.incident.id}</dd>
+            </div>
+          </dl>
+        </div>
       </section>
 
       <IncidentMonitoringOverview
         incidentId={detail.incident.id}
         targetLabel={targetLabel(detail.incident.target)}
         panels={monitoringPanels}
+        evidence={detail.evidence}
         initialHealth={initialMonitoringHealth}
         refreshKey={monitoringRefreshKey}
+        alertStatus={detail.alertSignal?.status ?? null}
       />
 
       <section className="run-controls" aria-labelledby="run-controls-heading">
@@ -391,6 +432,7 @@ export function IncidentStream({
         </div>
         <DiagnosisPanel
           diagnosis={detail.diagnosis}
+          evidence={detail.evidence}
           runStatus={detail.selectedRun.status}
           runError={detail.selectedRun.error}
         />

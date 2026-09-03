@@ -13,6 +13,10 @@ type ApiRootCause = components["schemas"]["RootCauseResponse"];
 type ApiRunError = components["schemas"]["RunErrorResponse"];
 type ApiScenario = components["schemas"]["ScenarioResponse"];
 type ApiMonitoringHealth = components["schemas"]["MonitoringHealthSnapshot"];
+type ApiMonitoringOverview = components["schemas"]["MonitoringOverviewSnapshot"];
+type ApiMonitoringOverviewCounts = components["schemas"]["MonitoringOverviewCounts"];
+type ApiMonitoringOverviewFamily = components["schemas"]["MonitoringOverviewFamily"];
+type ApiMonitoringOverviewSample = components["schemas"]["MonitoringOverviewSample"];
 type ApiMetricPanel = components["schemas"]["MetricPanelResult"];
 type ApiMetricMarker = components["schemas"]["MetricMarker"];
 
@@ -148,9 +152,19 @@ export type MonitoringHealthView = Pick<
   | "watchdogLastReceivedAt"
 >;
 
+export interface MonitoringOverviewView {
+  window: ApiMonitoringOverview["window"];
+  generatedAt: string;
+  counts: ApiMonitoringOverviewCounts;
+  families: ApiMonitoringOverviewFamily[];
+  samples: ApiMonitoringOverviewSample[];
+}
+
 export interface MonitoringPanelReferenceView {
   panelId: string;
   recommendedWindow: MetricWindowView;
+  riskDirection: "higher_is_worse" | "lower_is_worse";
+  thresholdDuration: string | null;
 }
 
 export interface MonitoringPanelListView {
@@ -164,6 +178,7 @@ export type MetricMarkerView = Pick<
 >;
 export type MetricPanelResultView = Pick<
   ApiMetricPanel,
+  | "riskDirection"
   | "panelId"
   | "title"
   | "unit"
@@ -199,6 +214,10 @@ function isTimestamp(value: unknown): value is string {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -686,17 +705,124 @@ export function parseMonitoringHealthResponse(
   };
 }
 
+export function parseMonitoringOverviewResponse(
+  value: unknown,
+): MonitoringOverviewView | null {
+  if (
+    !isObject(value) ||
+    value.schemaVersion !== 1 ||
+    value.window !== "24h" ||
+    !isTimestamp(value.generatedAt) ||
+    !isObject(value.counts) ||
+    !Array.isArray(value.families) ||
+    value.families.length > 64 ||
+    !Array.isArray(value.samples) ||
+    value.samples.length !== 24
+  ) {
+    return null;
+  }
+  const counts = value.counts;
+  if (
+    !isNonNegativeInteger(counts.totalIncidents) ||
+    !isNonNegativeInteger(counts.firingAlerts) ||
+    !isNonNegativeInteger(counts.triagingIncidents) ||
+    !isNonNegativeInteger(counts.diagnosedIncidents)
+  ) {
+    return null;
+  }
+  const families: ApiMonitoringOverviewFamily[] = [];
+  const familyRefs = new Set<string>();
+  for (const family of value.families) {
+    if (
+      !isObject(family) ||
+      typeof family.sourceRef !== "string" ||
+      family.sourceRef.length === 0 ||
+      family.sourceRef.length > 128 ||
+      typeof family.displayName !== "string" ||
+      family.displayName.length === 0 ||
+      family.displayName.length > 160 ||
+      !isPositiveInteger(family.count) ||
+      familyRefs.has(family.sourceRef)
+    ) {
+      return null;
+    }
+    familyRefs.add(family.sourceRef);
+    families.push({
+      sourceRef: family.sourceRef,
+      displayName: family.displayName,
+      count: family.count,
+    });
+  }
+  if (
+    families.reduce((total, family) => total + family.count, 0) !==
+    counts.firingAlerts
+  ) {
+    return null;
+  }
+  const samples: ApiMonitoringOverviewSample[] = [];
+  let previous = Number.NEGATIVE_INFINITY;
+  for (const sample of value.samples) {
+    if (
+      !isObject(sample) ||
+      !isTimestamp(sample.timestamp) ||
+      !isNonNegativeInteger(sample.incidentsCreated) ||
+      !isNonNegativeInteger(sample.alertConditionsResolved)
+    ) {
+      return null;
+    }
+    const timestamp = Date.parse(sample.timestamp);
+    if (
+      timestamp % 3_600_000 !== 0 ||
+      (previous !== Number.NEGATIVE_INFINITY &&
+        timestamp - previous !== 3_600_000)
+    ) {
+      return null;
+    }
+    previous = timestamp;
+    samples.push({
+      timestamp: sample.timestamp,
+      incidentsCreated: sample.incidentsCreated,
+      alertConditionsResolved: sample.alertConditionsResolved,
+    });
+  }
+  const generatedAt = Date.parse(value.generatedAt);
+  const currentHour = Math.floor(generatedAt / 3_600_000) * 3_600_000;
+  if (previous !== currentHour) {
+    return null;
+  }
+  return {
+    window: "24h",
+    generatedAt: value.generatedAt,
+    counts: {
+      totalIncidents: counts.totalIncidents,
+      firingAlerts: counts.firingAlerts,
+      triagingIncidents: counts.triagingIncidents,
+      diagnosedIncidents: counts.diagnosedIncidents,
+    },
+    families,
+    samples,
+  };
+}
+
 function parseMonitoringPanelReference(
   value: unknown,
 ): MonitoringPanelReferenceView | null {
+  const thresholdDuration = isObject(value) ? value.thresholdDuration : undefined;
   return isObject(value) &&
     typeof value.panelId === "string" &&
     /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.panelId) &&
     value.panelId.length <= 128 &&
-    isMetricWindow(value.recommendedWindow)
+    isMetricWindow(value.recommendedWindow) &&
+    (value.riskDirection === "higher_is_worse" ||
+      value.riskDirection === "lower_is_worse") &&
+    (thresholdDuration === null ||
+      (typeof thresholdDuration === "string" &&
+        /^[1-9][0-9]*(?:ms|s|m|h)$/.test(thresholdDuration)))
     ? {
         panelId: value.panelId,
         recommendedWindow: value.recommendedWindow,
+        riskDirection: value.riskDirection,
+        thresholdDuration,
       }
     : null;
 }
@@ -706,7 +832,7 @@ export function parseMonitoringPanelListResponse(
 ): MonitoringPanelListView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
     !Array.isArray(value.panels) ||
     value.panels.length > 8
   ) {
@@ -810,7 +936,11 @@ export function parseIncidentMetricPanelResponse(
     typeof result.unit !== "string" ||
     result.unit.length === 0 ||
     result.unit.length > 32 ||
-    !isFiniteNumber(result.threshold) ||
+    (result.riskDirection !== "higher_is_worse" &&
+      result.riskDirection !== "lower_is_worse") ||
+    (result.threshold !== null && !isFiniteNumber(result.threshold)) ||
+    ((result.riskDirection === "higher_is_worse") !==
+      (result.threshold !== null)) ||
     !isMetricQueryState(result.state) ||
     !isTimestamp(result.queriedAt) ||
     (result.latestSampleAt !== null && !isTimestamp(result.latestSampleAt)) ||
@@ -874,6 +1004,7 @@ export function parseIncidentMetricPanelResponse(
       title: result.title,
       unit: result.unit,
       threshold: result.threshold,
+      riskDirection: result.riskDirection,
       window: expectedWindow,
       state: result.state,
       queriedAt: result.queriedAt,

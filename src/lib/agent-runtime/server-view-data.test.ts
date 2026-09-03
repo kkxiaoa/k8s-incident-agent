@@ -27,6 +27,38 @@ function monitoringHealth() {
   };
 }
 
+function monitoringOverview() {
+  const start = Date.parse("2026-09-02T03:00:00.000Z");
+  return {
+    schemaVersion: 1,
+    window: "24h",
+    generatedAt: "2026-09-03T02:15:00.000Z",
+    counts: {
+      totalIncidents: 0,
+      firingAlerts: 0,
+      triagingIncidents: 0,
+      diagnosedIncidents: 0,
+    },
+    families: [],
+    samples: Array.from({ length: 24 }, (_, index) => ({
+      timestamp: new Date(start + index * 3_600_000).toISOString(),
+      incidentsCreated: 0,
+      alertConditionsResolved: 0,
+    })),
+  };
+}
+
+function monitoringOverviewView() {
+  const overview = monitoringOverview();
+  return {
+    window: overview.window,
+    generatedAt: overview.generatedAt,
+    counts: overview.counts,
+    families: overview.families,
+    samples: overview.samples,
+  };
+}
+
 beforeEach(() => {
   vi.stubEnv("AGENT_RUNTIME_URL", "http://127.0.0.1:8000");
 });
@@ -39,6 +71,8 @@ describe("server view data", () => {
         Promise.resolve(
           url.pathname.endsWith("/monitoring/health")
             ? jsonResponse(monitoringHealth())
+            : url.pathname.endsWith("/monitoring/overview")
+            ? jsonResponse(monitoringOverview())
             : url.pathname.endsWith("/scenarios")
             ? jsonResponse({ schemaVersion: 1, items: [null] })
             : jsonResponse({
@@ -56,6 +90,7 @@ describe("server view data", () => {
       scenarios: null,
       incidents: null,
       monitoringHealth: monitoringHealth(),
+      monitoringOverview: monitoringOverviewView(),
     });
   });
 
@@ -64,6 +99,8 @@ describe("server view data", () => {
       Promise.resolve(
         url.pathname.endsWith("/monitoring/health")
           ? jsonResponse(monitoringHealth())
+          : url.pathname.endsWith("/monitoring/overview")
+          ? jsonResponse(monitoringOverview())
           : jsonResponse({ schemaVersion: 3, items: [], nextCursor: null }),
       ),
     );
@@ -71,14 +108,19 @@ describe("server view data", () => {
 
     const overview = await loadIncidentConsoleOverview("online");
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(
       fetchMock.mock.calls.map((call) => (call[0] as URL).pathname).sort(),
-    ).toEqual(["/api/v1/incidents", "/api/v1/monitoring/health"]);
+    ).toEqual([
+      "/api/v1/incidents",
+      "/api/v1/monitoring/health",
+      "/api/v1/monitoring/overview",
+    ]);
     expect(overview).toEqual({
       scenarios: null,
       incidents: { items: [], nextCursor: null },
       monitoringHealth: monitoringHealth(),
+      monitoringOverview: monitoringOverviewView(),
     });
   });
 
@@ -99,11 +141,13 @@ describe("server view data", () => {
         Promise.resolve(
           url.pathname.endsWith("/monitoring/panels")
             ? jsonResponse({
-                schemaVersion: 1,
+                schemaVersion: 2,
                 panels: [
                   {
                     panelId: "image-pull-affected-pods",
                     recommendedWindow: "15m",
+                    riskDirection: "higher_is_worse",
+                    thresholdDuration: "30s",
                   },
                 ],
               })
@@ -141,6 +185,8 @@ describe("server view data", () => {
         {
           panelId: "image-pull-affected-pods",
           recommendedWindow: "15m",
+          riskDirection: "higher_is_worse",
+          thresholdDuration: "30s",
         },
       ]);
       expect(pageData.detail.incident).not.toHaveProperty("updatedAt");

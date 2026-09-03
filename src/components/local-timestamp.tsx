@@ -1,54 +1,45 @@
 "use client";
 
-import { useId } from "react";
+import { useSyncExternalStore } from "react";
 
 const LOCALE = "zh-CN";
 const FORMAT_OPTIONS = {
   day: "2-digit",
-  fractionalSecondDigits: 3,
   hour: "2-digit",
   hourCycle: "h23",
   minute: "2-digit",
   month: "2-digit",
   second: "2-digit",
-  timeZoneName: "shortOffset",
   year: "numeric",
 } as const satisfies Intl.DateTimeFormatOptions;
 
-function formatTimestamp(timestamp: string): string {
-  const date = new Date(timestamp);
-  return Number.isNaN(date.valueOf())
-    ? timestamp
-    : new Intl.DateTimeFormat(LOCALE, FORMAT_OPTIONS).format(date);
-}
+const TIMESTAMP_FORMATTER = new Intl.DateTimeFormat(LOCALE, FORMAT_OPTIONS);
 
-function scriptLiteral(value: string): string {
-  return JSON.stringify(value)
-    .replaceAll("<", "\\u003c")
-    .replaceAll("\u2028", "\\u2028")
-    .replaceAll("\u2029", "\\u2029");
-}
-
-function InlineScript({ html }: { html: string }) {
-  return (
-    <script
-      type={typeof window === "undefined" ? "text/javascript" : "text/plain"}
-      suppressHydrationWarning
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+function subscribeToHydration(): () => void {
+  return () => undefined;
 }
 
 export function LocalTimestamp({ timestamp }: { timestamp: string }) {
-  const id = useId();
-  const script = `{var n=document.getElementById(${scriptLiteral(id)}),d=new Date(${scriptLiteral(timestamp)});if(n&&!Number.isNaN(d.valueOf()))n.textContent=new Intl.DateTimeFormat(${scriptLiteral(LOCALE)},${JSON.stringify(FORMAT_OPTIONS)}).format(d)}`;
+  // The server cannot know the browser timezone, so local formatting starts
+  // after hydration instead of rendering a potentially incorrect time first.
+  const hydrated = useSyncExternalStore(
+    subscribeToHydration,
+    () => true,
+    () => false,
+  );
+  const date = new Date(timestamp);
+  const valid = !Number.isNaN(date.valueOf());
+  const pending = valid && !hydrated;
+  const displayValue = valid ? TIMESTAMP_FORMATTER.format(date) : timestamp;
 
   return (
-    <>
-      <time id={id} dateTime={timestamp} suppressHydrationWarning>
-        {formatTimestamp(timestamp)}
-      </time>
-      <InlineScript html={script} />
-    </>
+    <time
+      className={pending ? "local-timestamp local-timestamp--pending" : "local-timestamp"}
+      dateTime={timestamp}
+      aria-busy={pending || undefined}
+      aria-label={pending ? "本地时间加载中" : undefined}
+    >
+      {pending ? "\u00a0" : displayValue}
+    </time>
   );
 }

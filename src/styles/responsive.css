@@ -1,0 +1,195 @@
+@media (max-width: 900px) {
+  .incident-overview,
+  .console-grid,
+  .monitoring-panels {
+    grid-template-columns: 1fr;
+  }
+
+  .incident-overview {
+    gap: 34px;
+  }
+
+  .incident-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .run-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .run-controls__actions {
+    justify-content: flex-start;
+  }
+
+  .incident-monitoring__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .incident-monitoring__header p {
+    text-align: left;
+  }
+
+  .evidence-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .site-header {
+    position: static;
+    padding-block: 14px;
+  }
+
+  .brand small,
+  .read-only-pill {
+    display: none;
+  }
+
+  .product-link {
+    padding: 8px 10px;
+    font-size: 0.68rem;
+  }
+
+  .console-section,
+  .incident-overview,
+  .run-controls,
+  .incident-monitoring {
+    padding: 23px;
+    border-radius: 17px;
+  }
+
+  .monitoring-health {
+    padding: 22px;
+  }
+
+  .monitoring-health__path {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .monitoring-health__path::before {
+    top: calc(var(--monitoring-node-size) / 2);
+    bottom: 18px;
+    left: calc(var(--monitoring-node-size) / 2 - 1px);
+    width: 2px;
+    height: auto;
+  }
+
+  .monitoring-health__node {
+    grid-template-columns: 24px minmax(0, 1fr);
+    justify-items: start;
+    text-align: left;
+  }
+
+  .monitoring-health__node strong {
+    align-self: center;
+  }
+
+  .metric-panel {
+    padding: 20px;
+  }
+
+  .metric-panel__header,
+  .metric-panel__header-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .metric-panel__header-actions,
+  .metric-panel__toolbar {
+    width: 100%;
+  }
+
+  .metric-panel__toolbar {
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .metric-panel__summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric-panel__summary > div:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .window-dropdown {
+    width: 100%;
+  }
+
+  .metric-chart__events li {
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .metric-chart__events time {
+    text-align: left;
+  }
+
+  .incident-overview h1 {
+    font-size: 2.4rem;
+  }
+
+  .incident-facts,
+  .evidence-meta,
+  .failure-detail {
+    grid-template-columns: 1fr;
+  }
+
+  .section-heading {
+    align-items: flex-start;
+  }
+
+  .connection-state {
+    max-width: 135px;
+    white-space: normal;
+  }
+
+  .evidence-card__header,
+  .root-cause-list__heading,
+  .evidence-dialog__header {
+    flex-direction: column;
+  }
+
+  .evidence-dialog {
+    width: calc(100vw - 22px);
+  }
+
+  .evidence-dialog__header .evidence-code-actions {
+    align-self: stretch;
+  }
+
+  .site-footer {
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .timeline-waiting__text {
+    color: var(--muted);
+    background: none;
+  }
+
+  .timeline__item--running .timeline__dot::after {
+    display: none;
+  }
+
+  .metric-panel__empty {
+    background: var(--surface-soft);
+  }
+}

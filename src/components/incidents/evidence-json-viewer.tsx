@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
+import { UiIcon } from "@/components/ui/ui-icon";
 import type { EvidenceResponse } from "@/lib/agent-runtime/view-models";
 
 type CopyState = "idle" | "copied" | "failed";
@@ -72,19 +73,29 @@ export function EvidenceJsonViewer({
         <div className="evidence-code-toolbar">
           <span>JSON</span>
           <div className="evidence-code-actions">
-            <button type="button" onClick={copyPayload} aria-label={copyLabel}>
-              {copyState === "copied"
-                ? "已复制"
-                : copyState === "failed"
-                  ? "复制失败"
-                  : "复制"}
+            <button
+              type="button"
+              onClick={copyPayload}
+              aria-label={copyLabel}
+              title={copyLabel}
+            >
+              <UiIcon
+                name={
+                  copyState === "copied"
+                    ? "check"
+                    : copyState === "failed"
+                      ? "alert"
+                      : "copy"
+                }
+              />
             </button>
             <button
               type="button"
               aria-label="展开 JSON"
+              title="展开 JSON"
               onClick={openDialog}
             >
-              展开
+              <UiIcon name="expand" />
             </button>
           </div>
         </div>
@@ -106,12 +117,21 @@ export function EvidenceJsonViewer({
               <h2 id={titleId}>{evidenceKind} JSON</h2>
             </div>
             <div className="evidence-code-actions">
-              <button type="button" onClick={copyPayload} aria-label={copyLabel}>
-                {copyState === "copied"
-                  ? "已复制"
-                  : copyState === "failed"
-                    ? "复制失败"
-                    : "复制"}
+              <button
+                type="button"
+                onClick={copyPayload}
+                aria-label={copyLabel}
+                title={copyLabel}
+              >
+                <UiIcon
+                  name={
+                    copyState === "copied"
+                      ? "check"
+                      : copyState === "failed"
+                        ? "alert"
+                      : "copy"
+                  }
+                />
               </button>
               <button
                 type="button"

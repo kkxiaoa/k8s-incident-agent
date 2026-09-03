@@ -37,7 +37,7 @@ from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 TOOL_NAMES = ("get_workload", "get_pods", "get_events", "query_prometheus")
-PANEL_IDS = ("image-pull-affected-pods", "image-pull-waiting-containers")
+PANEL_IDS = ("image-pull-affected-pods", "image-pull-available-replicas")
 REQUIRED_EVIDENCE = ("workload",)
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 

@@ -457,8 +457,8 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   ).spec.template.spec.containers[0];
   assert.deepEqual(kubeStateMetrics.args, [
     "--namespaces=k8s-incident-scenarios",
-    "--resources=pods,replicasets",
-    "--metric-allowlist=kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
+    "--resources=deployments,pods,replicasets",
+    "--metric-allowlist=kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
     "--use-apiserver-cache",
   ]);
 
@@ -476,7 +476,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
     },
     {
       apiGroups: ["apps"],
-      resources: ["replicasets"],
+      resources: ["deployments", "replicasets"],
       verbs: ["get", "list", "watch"],
     },
   ]);
@@ -2258,6 +2258,9 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       `auth can-i get pods ${monitoringSubject} ${namespace}`,
       `auth can-i list pods ${monitoringSubject} ${namespace}`,
       `auth can-i watch pods ${monitoringSubject} ${namespace}`,
+      `auth can-i get deployments.apps ${monitoringSubject} ${namespace}`,
+      `auth can-i list deployments.apps ${monitoringSubject} ${namespace}`,
+      `auth can-i watch deployments.apps ${monitoringSubject} ${namespace}`,
       `auth can-i get replicasets.apps ${monitoringSubject} ${namespace}`,
       `auth can-i list replicasets.apps ${monitoringSubject} ${namespace}`,
       `auth can-i watch replicasets.apps ${monitoringSubject} ${namespace}`,

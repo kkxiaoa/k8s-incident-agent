@@ -159,6 +159,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/monitoring/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Monitoring Overview */
+        get: operations["get_monitoring_overview_api_v1_monitoring_overview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/scenarios": {
         parameters: {
             query?: never;
@@ -712,10 +729,10 @@ export interface components {
             panels: components["schemas"]["MonitoringPanelReference"][];
             /**
              * Schemaversion
-             * @default 1
+             * @default 2
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** IncidentResponse */
         IncidentResponse: {
@@ -796,11 +813,12 @@ export interface components {
              * Format: date-time
              */
             queriedAt: string;
+            riskDirection: components["schemas"]["MetricRiskDirection"];
             /** Samples */
             samples: components["schemas"]["MetricSample"][];
             state: components["schemas"]["MetricQueryState"];
             /** Threshold */
-            threshold: number;
+            threshold: number | null;
             /** Title */
             title: string;
             /** Unit */
@@ -812,6 +830,11 @@ export interface components {
          * @enum {string}
          */
         MetricQueryState: "ok" | "no_data" | "stale" | "partial" | "query_error" | "monitoring_unavailable";
+        /**
+         * MetricRiskDirection
+         * @enum {string}
+         */
+        MetricRiskDirection: "higher_is_worse" | "lower_is_worse";
         /** MetricSample */
         MetricSample: {
             /**
@@ -853,11 +876,71 @@ export interface components {
          * @enum {string}
          */
         MonitoringOverallState: "healthy" | "degraded" | "unavailable";
+        /** MonitoringOverviewCounts */
+        MonitoringOverviewCounts: {
+            /** Diagnosedincidents */
+            diagnosedIncidents: number;
+            /** Firingalerts */
+            firingAlerts: number;
+            /** Totalincidents */
+            totalIncidents: number;
+            /** Triagingincidents */
+            triagingIncidents: number;
+        };
+        /** MonitoringOverviewFamily */
+        MonitoringOverviewFamily: {
+            /** Count */
+            count: number;
+            /** Displayname */
+            displayName: string;
+            /** Sourceref */
+            sourceRef: string;
+        };
+        /** MonitoringOverviewSample */
+        MonitoringOverviewSample: {
+            /** Alertconditionsresolved */
+            alertConditionsResolved: number;
+            /** Incidentscreated */
+            incidentsCreated: number;
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp: string;
+        };
+        /** MonitoringOverviewSnapshot */
+        MonitoringOverviewSnapshot: {
+            counts: components["schemas"]["MonitoringOverviewCounts"];
+            /** Families */
+            families: components["schemas"]["MonitoringOverviewFamily"][];
+            /**
+             * Generatedat
+             * Format: date-time
+             */
+            generatedAt: string;
+            /** Samples */
+            samples: components["schemas"]["MonitoringOverviewSample"][];
+            /**
+             * Schemaversion
+             * @default 1
+             * @constant
+             */
+            schemaVersion: 1;
+            /**
+             * Window
+             * @default 24h
+             * @constant
+             */
+            window: "24h";
+        };
         /** MonitoringPanelReference */
         MonitoringPanelReference: {
             /** Panelid */
             panelId: string;
             recommendedWindow: components["schemas"]["MetricWindow"];
+            riskDirection: components["schemas"]["MetricRiskDirection"];
+            /** Thresholdduration */
+            thresholdDuration: string | null;
         };
         /** PrometheusToolCallIdentity */
         PrometheusToolCallIdentity: {
@@ -1894,6 +1977,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MonitoringHealthSnapshot"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_monitoring_overview_api_v1_monitoring_overview_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonitoringOverviewSnapshot"];
                 };
             };
             /** @description Internal Server Error */

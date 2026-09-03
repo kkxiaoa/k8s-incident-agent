@@ -22,6 +22,8 @@ const RUN_EVENTS_PATH =
   "/api/v1/incidents/{incident_id}/runs/{run_id}/events" satisfies RuntimePath;
 const MONITORING_HEALTH_PATH =
   "/api/v1/monitoring/health" satisfies RuntimePath;
+const MONITORING_OVERVIEW_PATH =
+  "/api/v1/monitoring/overview" satisfies RuntimePath;
 const MONITORING_PANELS_PATH =
   "/api/v1/incidents/{incident_id}/monitoring/panels" satisfies RuntimePath;
 const MONITORING_PANEL_PATH =
@@ -440,6 +442,15 @@ export function fetchIncidents(
 export function fetchMonitoringHealth(): Promise<RuntimeJsonResult> {
   return requestRest(
     MONITORING_HEALTH_PATH,
+    200,
+    MONITORING_HEALTH_ERROR_CODES,
+    { method: "GET" },
+  );
+}
+
+export function fetchMonitoringOverview(): Promise<RuntimeJsonResult> {
+  return requestRest(
+    MONITORING_OVERVIEW_PATH,
     200,
     MONITORING_HEALTH_ERROR_CODES,
     { method: "GET" },

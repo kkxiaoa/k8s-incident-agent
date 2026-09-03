@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const FAKE_RUNTIME_URL = "http://127.0.0.1:18080";
+import type { components } from "../../src/lib/agent-runtime/generated";
+
+type IncidentMetricPanel = components["schemas"]["IncidentMetricPanel"];
+
+const FAKE_RUNTIME_URL = `http://127.0.0.1:${process.env.PLAYWRIGHT_RUNTIME_PORT ?? "18080"}`;
 
 async function control(path: string, body?: unknown): Promise<Response> {
   const response = await fetch(`${FAKE_RUNTIME_URL}${path}`, {
@@ -25,16 +29,96 @@ async function createFromHome(page: Page): Promise<void> {
     "href",
     "http://127.0.0.1:3001/",
   );
-  await expect(page.getByRole("heading", { name: "监控链路" })).toBeVisible();
-  await expect(page.getByLabel("监控链路正常")).toBeVisible();
+  await expect(page.getByRole("region", { name: "监控链路" })).toBeVisible();
+  await expect(page.getByLabel("Runtime：正常")).toBeVisible();
   await expect(page.getByText(/Local Kind|Stage 1/)).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "启动只读诊断" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "离线评估入口" })).toBeVisible();
   await page.getByRole("button", { name: "创建 Incident" }).click();
   await expect(page).toHaveURL(/\/incidents\/[0-9a-f-]+$/);
 }
 
 test.beforeEach(async () => {
   await control("/__test__/reset", {});
+});
+
+test("renders the tests-only chart showcase with drill-down data", async ({
+  page,
+}) => {
+  const seedResponse = await control("/__test__/showcase", {});
+  await expect(seedResponse.json()).resolves.toEqual({ incidents: 12, ok: true });
+
+  const metricPath =
+    "/api/v1/incidents/10000000-0000-4000-8000-000000000005/monitoring/panels/image-pull-affected-pods";
+  const fifteenMinutePanel = (await (
+    await control(`${metricPath}?window=15m`)
+  ).json()) as IncidentMetricPanel;
+  const oneHourPanel = (await (
+    await control(`${metricPath}?window=1h`)
+  ).json()) as IncidentMetricPanel;
+  const firstThresholdSample = (panel: IncidentMetricPanel) => {
+    expect(panel.result.threshold).not.toBeNull();
+    const threshold = panel.result.threshold as number;
+    return panel.result.samples.find((sample) => sample.value >= threshold);
+  };
+  const firingMarker = fifteenMinutePanel.markers.find(
+    (marker) => marker.kind === "alert_firing",
+  );
+  const runStartedMarker = fifteenMinutePanel.markers.find(
+    (marker) => marker.kind === "run_started",
+  );
+
+  expect(firstThresholdSample(fifteenMinutePanel)?.timestamp).toBe(
+    "2026-08-29T01:59:30.000Z",
+  );
+  expect(firstThresholdSample(oneHourPanel)?.timestamp).toBe(
+    firstThresholdSample(fifteenMinutePanel)?.timestamp,
+  );
+  expect(
+    Date.parse(firingMarker?.occurredAt ?? "") -
+      Date.parse(firstThresholdSample(fifteenMinutePanel)?.timestamp ?? ""),
+  ).toBe(30_000);
+  expect(
+    Date.parse(runStartedMarker?.occurredAt ?? "") -
+      Date.parse(firingMarker?.occurredAt ?? ""),
+  ).toBe(1_000);
+  expect(fifteenMinutePanel.result.currentValue).toBe(3);
+
+  await page.goto("/");
+  await expect(page.getByLabel("Incident 状态统计")).toContainText(
+    /活跃 Incident.*12告警中9诊断中4已诊断6/,
+  );
+  await expect(
+    page.getByRole("img", {
+      name: "告警中的 Incident 共 9 个，分布于 5 个故障族",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("list", { name: "告警中 Incident 故障族分布" }),
+  ).toContainText("容器反复重启3");
+  await expect(
+    page.getByRole("img", {
+      name: "最近 24 小时新增 Incident 与告警条件解除趋势",
+    }),
+  ).toBeVisible();
+  await expect(page.locator(".incident-list__link")).toHaveCount(12);
+  const activeInfo = page.getByLabel("说明活跃 Incident 的统计口径");
+  await activeInfo.hover();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+
+  await page.goto(
+    "/incidents/10000000-0000-4000-8000-000000000005",
+  );
+  await expect(page.getByRole("heading", { name: "监控概览" })).toBeVisible();
+  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await expect(page.locator(".metric-signal-state.is-firing")).toHaveCount(2);
+  await expect(page.getByText("告警中", { exact: true })).toHaveCount(3);
+  await expect(page.getByText("< 3", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: /概览趋势/ }),
+  ).toHaveCount(2);
+  await expect(
+    page.getByRole("img", { name: /时间序列。当前值/ }),
+  ).toHaveCount(2);
 });
 
 test("shows which incident list edges contain clipped records", async ({ page }) => {
@@ -79,30 +163,36 @@ test("create reaches terminal diagnosis, reconnects natively, and refreshes from
   await expect(page.getByRole("heading", { name: "监控概览" })).toBeVisible();
   await expect(page.locator(".metric-panel")).toHaveCount(2);
   await expect(
-    page.getByRole("img", { name: /^Affected pods 时间序列/ }),
+    page.getByRole("img", { name: /^镜像拉取失败 Pod 时间序列/ }),
   ).toBeVisible();
   await expect(
-    page.getByRole("img", { name: /^Waiting containers 时间序列/ }),
+    page.getByRole("img", { name: /^Deployment 可用副本 时间序列/ }),
   ).toBeVisible();
-  await expect(page.locator(".metric-panel__value")).toHaveText(["0", "0"]);
+  await expect(page.locator(".metric-panel__value")).toHaveText([
+    "3",
+    "0 / 3",
+  ]);
   await expect(
     page.locator(".metric-chart__events").getByText("第 1 次诊断 Run 完成"),
   ).toHaveCount(2);
   await expect(
     page.getByText("Pod 引用的镜像 manifest 不存在，导致 ImagePullBackOff。"),
   ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "kubernetes.pod" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "workload" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "pods", exact: true })).toBeVisible();
   await expect(page.getByText("实时追踪中")).toBeVisible();
-  await expect(page.locator(".timeline__item")).toHaveCount(5);
+  await expect(page.locator(".timeline__item")).toHaveCount(7);
   await expect(page.locator(".timeline__item--success .timeline__dot").first()).toHaveCSS(
     "box-shadow",
     "rgba(36, 123, 97, 0.22) 0px 0px 0px 1.5px",
   );
   await expect(page.locator(".incident-facts time")).toHaveText(
-    "2026/08/28 GMT-7 19:00:00.000",
+    "2026/08/28 19:00:00",
   );
 
-  const evidence = page.locator(".evidence-card").first();
+  const evidence = page.locator(".evidence-card").filter({
+    has: page.getByRole("heading", { name: "pods" }),
+  });
   await expect(evidence.getByText("JSON", { exact: true })).toBeVisible();
   await expect(evidence.locator("code.language-json").first()).toContainText(
     "ImagePullBackOff",
@@ -112,7 +202,7 @@ test("create reaches terminal diagnosis, reconnects natively, and refreshes from
     evidence.getByRole("button", { name: "JSON 已复制" }).first(),
   ).toBeVisible();
   await evidence.getByRole("button", { name: "展开 JSON" }).click();
-  const dialog = page.getByRole("dialog", { name: "kubernetes.pod JSON" });
+  const dialog = page.getByRole("dialog", { name: "pods JSON" });
   await expect(dialog).toBeVisible();
   await expect(page.locator("html")).toHaveClass(/dialog-scroll-locked/);
   await expect(page.locator("html")).toHaveCSS("overflow", "hidden");
@@ -136,11 +226,11 @@ test("create reaches terminal diagnosis, reconnects natively, and refreshes from
   await expect(
     page.getByText("Pod 引用的镜像 manifest 不存在，导致 ImagePullBackOff。"),
   ).toBeVisible();
-  await expect(page.locator(".timeline__item")).toHaveCount(5);
+  await expect(page.locator(".timeline__item")).toHaveCount(7);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: /让每个结论/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "运行概览" })).toBeVisible();
   const dropdown = page.getByRole("combobox", { name: "诊断场景" });
   await dropdown.click();
   await expect(page.getByRole("listbox", { name: "诊断场景" })).toBeVisible();
@@ -243,14 +333,13 @@ test("renders insufficient evidence with missing information", async ({ page }) 
   ).toBeVisible();
   await expect(page.getByText("镜像仓库端的拉取审计记录")).toBeVisible();
   await expect(page.getByText("诊断文本已脱敏")).toBeVisible();
-  await expect(page.getByText("当前切片不包含指标证据。")).toBeVisible();
 });
 
 test("renders typed tool and terminal failures", async ({ page }) => {
   await control("/__test__/mode", { mode: "failed" });
   await createFromHome(page);
 
-  await expect(page.getByText("get_pod 失败")).toBeVisible();
+  await expect(page.getByText("get_workload 失败")).toBeVisible();
   await expect(page.getByText("kubernetes_forbidden")).toBeVisible();
   await expect(page.getByRole("heading", { name: "诊断运行失败" })).toBeVisible();
   await expect(

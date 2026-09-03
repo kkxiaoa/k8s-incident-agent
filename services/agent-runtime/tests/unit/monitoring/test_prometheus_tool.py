@@ -31,6 +31,7 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricPanelPayload,
     MetricPanelResult,
     MetricQueryState,
+    MetricRiskDirection,
     MetricSample,
     MetricTargetRef,
     MetricWindow,
@@ -116,6 +117,7 @@ def _observation(
                 title="Affected pods",
                 unit="pods",
                 threshold=1.0,
+                risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
                 window=window,
                 state=MetricQueryState.OK,
                 queried_at=NOW,
@@ -290,7 +292,7 @@ async def test_success_replay_rejects_changed_panel_arguments(tmp_path: Path) ->
                 tools,
                 context,
                 tool_call_id="call-metrics",
-                panel_id="image-pull-waiting-containers",
+                panel_id="image-pull-available-replicas",
             )
 
         assert error.value.code == "recovery_consistency_error"
@@ -340,7 +342,7 @@ async def test_failure_replay_rejects_changed_query_arguments(tmp_path: Path) ->
                 tools,
                 context,
                 tool_call_id="call-timeout",
-                panel_id="image-pull-waiting-containers",
+                panel_id="image-pull-available-replicas",
             )
 
         assert error.value.code == "recovery_consistency_error"
@@ -365,7 +367,7 @@ async def test_success_with_different_query_identity_does_not_resolve_failure(
             tools,
             context,
             tool_call_id="call-success",
-            panel_id="image-pull-waiting-containers",
+            panel_id="image-pull-available-replicas",
         )
 
         snapshot = await repository.get_diagnosis_validation_snapshot(context.run.id)

@@ -6,6 +6,7 @@ import {
   fetchIncident,
   fetchIncidents,
   fetchMonitoringHealth,
+  fetchMonitoringOverview,
   fetchMonitoringPanel,
   fetchMonitoringPanels,
   fetchRunEvents,
@@ -77,11 +78,12 @@ describe("fixed REST helpers", () => {
     );
   });
 
-  it("maps monitoring health and catalog panels to fixed Runtime paths", async () => {
+  it("maps monitoring endpoints and catalog panels to fixed Runtime paths", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
     vi.stubGlobal("fetch", fetchMock);
 
     await fetchMonitoringHealth();
+    await fetchMonitoringOverview();
     await fetchMonitoringPanels(INCIDENT_ID);
     await fetchMonitoringPanel(
       INCIDENT_ID,
@@ -98,11 +100,14 @@ describe("fixed REST helpers", () => {
     ).toBe(`${RUNTIME_URL}/api/v1/monitoring/health`);
     expect(
       (fetchMock.mock.calls[1] as [URL])[0].href,
+    ).toBe(`${RUNTIME_URL}/api/v1/monitoring/overview`);
+    expect(
+      (fetchMock.mock.calls[2] as [URL])[0].href,
     ).toBe(
       `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/monitoring/panels`,
     );
     expect(
-      (fetchMock.mock.calls[2] as [URL])[0].href,
+      (fetchMock.mock.calls[3] as [URL])[0].href,
     ).toBe(
       `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/monitoring/panels/image-pull-affected-pods?window=1h`,
     );

@@ -6,6 +6,7 @@ import {
   parseIncidentDetailResponse,
   parseIncidentMetricPanelResponse,
   parseMonitoringHealthResponse,
+  parseMonitoringOverviewResponse,
   parseMonitoringPanelListResponse,
 } from "./response-contracts";
 
@@ -17,6 +18,7 @@ function metricPanel() {
       title: "Affected pods",
       unit: "pods",
       threshold: 1,
+      riskDirection: "higher_is_worse",
       window: "15m",
       state: "ok",
       queriedAt: "2026-09-03T02:15:00.000Z",
@@ -128,17 +130,86 @@ describe("monitoring response contracts", () => {
     ).toBeNull();
   });
 
+  it("accepts a complete 24-hour overview and rejects inconsistent totals", () => {
+    const start = Date.parse("2026-09-02T03:00:00.000Z");
+    const overview = {
+      schemaVersion: 1,
+      window: "24h",
+      generatedAt: "2026-09-03T02:15:00.000Z",
+      counts: {
+        totalIncidents: 8,
+        firingAlerts: 2,
+        triagingIncidents: 1,
+        diagnosedIncidents: 5,
+      },
+      families: [
+        {
+          sourceRef: "K8sIncidentImagePullBackOff",
+          displayName: "Image pull failure",
+          count: 2,
+        },
+      ],
+      samples: Array.from({ length: 24 }, (_, index) => ({
+        timestamp: new Date(start + index * 3_600_000).toISOString(),
+        incidentsCreated: index === 23 ? 1 : 0,
+        alertConditionsResolved: index === 22 ? 1 : 0,
+      })),
+    };
+
+    expect(parseMonitoringOverviewResponse(overview)).toEqual({
+      window: "24h",
+      generatedAt: overview.generatedAt,
+      counts: overview.counts,
+      families: overview.families,
+      samples: overview.samples,
+    });
+    expect(
+      parseMonitoringOverviewResponse({
+        ...overview,
+        counts: { ...overview.counts, firingAlerts: 3 },
+      }),
+    ).toBeNull();
+    expect(
+      parseMonitoringOverviewResponse({
+        ...overview,
+        samples: overview.samples.slice(1),
+      }),
+    ).toBeNull();
+    expect(
+      parseMonitoringOverviewResponse({
+        ...overview,
+        counts: { ...overview.counts, firingAlerts: 4 },
+        families: [overview.families[0], overview.families[0]],
+      }),
+    ).toBeNull();
+    expect(
+      parseMonitoringOverviewResponse({
+        ...overview,
+        samples: overview.samples.map((sample) => ({
+          ...sample,
+          timestamp: new Date(
+            Date.parse(sample.timestamp) - 3_600_000,
+          ).toISOString(),
+        })),
+      }),
+    ).toBeNull();
+  });
+
   it("accepts unique catalog panel references and rejects duplicates", () => {
     const panels = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       panels: [
         {
           panelId: "image-pull-affected-pods",
           recommendedWindow: "15m",
+          riskDirection: "higher_is_worse",
+          thresholdDuration: "30s",
         },
         {
-          panelId: "image-pull-waiting-containers",
+          panelId: "image-pull-available-replicas",
           recommendedWindow: "1h",
+          riskDirection: "lower_is_worse",
+          thresholdDuration: null,
         },
       ],
     };
@@ -190,12 +261,13 @@ describe("monitoring response contracts", () => {
     "sample-order",
     "sample-window",
     "current",
+    "risk-threshold",
     "marker-shape",
     "marker-window",
   ])("rejects invalid %s responses", (mutation) => {
     const panel = metricPanel();
     if (mutation === "panel") {
-      panel.result.panelId = "image-pull-waiting-containers";
+      panel.result.panelId = "image-pull-available-replicas";
     } else if (mutation === "window") {
       panel.result.window = "1h";
     } else if (mutation === "state-shape") {
@@ -206,6 +278,8 @@ describe("monitoring response contracts", () => {
       panel.result.samples[0].timestamp = "2026-09-03T01:59:59.999Z";
     } else if (mutation === "current") {
       panel.result.currentValue = 2;
+    } else if (mutation === "risk-threshold") {
+      panel.result.riskDirection = "lower_is_worse";
     } else if (mutation === "marker-shape") {
       panel.markers[0].runAttempt = 1;
     } else {

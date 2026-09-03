@@ -1,6 +1,6 @@
 import { LocalTimestamp } from "@/components/local-timestamp";
 import type { EvidenceResponse } from "@/lib/agent-runtime/view-models";
-import { targetLabel } from "@/lib/agent-runtime/view-models";
+import { evidenceTargetLabel } from "@/lib/agent-runtime/view-models";
 
 import { EvidenceJsonViewer } from "./evidence-json-viewer";
 
@@ -35,17 +35,7 @@ function EvidenceCard({ evidence, index }: { evidence: EvidenceResponse; index: 
         </div>
         <div>
           <dt>目标</dt>
-          <dd>
-            {typeof evidence.targetRef.kind === "string" &&
-            typeof evidence.targetRef.namespace === "string" &&
-            typeof evidence.targetRef.name === "string"
-              ? targetLabel({
-                  kind: evidence.targetRef.kind,
-                  namespace: evidence.targetRef.namespace,
-                  name: evidence.targetRef.name,
-                })
-              : "由工具契约记录"}
-          </dd>
+          <dd>{evidenceTargetLabel(evidence.targetRef)}</dd>
         </div>
       </dl>
 
@@ -78,7 +68,6 @@ export function EvidenceList({ evidence }: { evidence: EvidenceResponse[] }) {
         </div>
       )}
 
-      <p className="scope-note">当前切片不包含指标证据。</p>
     </section>
   );
 }

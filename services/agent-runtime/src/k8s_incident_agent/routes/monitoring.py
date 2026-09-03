@@ -10,6 +10,7 @@ from k8s_incident_agent.monitoring.contracts import (
     IncidentMonitoringPanels,
     MetricWindow,
     MonitoringHealthSnapshot,
+    MonitoringOverviewSnapshot,
 )
 from k8s_incident_agent.routes import monitoring_service
 
@@ -34,6 +35,17 @@ async def get_monitoring_health(
     service: _MonitoringService,
 ) -> MonitoringHealthSnapshot:
     return await service.get_health()
+
+
+@router.get(
+    "/monitoring/overview",
+    response_model=MonitoringOverviewSnapshot,
+    responses=error_responses(500, 503),
+)
+async def get_monitoring_overview(
+    service: _MonitoringService,
+) -> MonitoringOverviewSnapshot:
+    return await service.get_overview()
 
 
 @router.get(

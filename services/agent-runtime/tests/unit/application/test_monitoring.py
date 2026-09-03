@@ -21,6 +21,7 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricMarkerKind,
     MetricPanelResult,
     MetricQueryState,
+    MetricRiskDirection,
     MetricSample,
     MetricWindow,
     MonitoringComponentState,
@@ -35,6 +36,9 @@ from k8s_incident_agent.monitoring.service import PrometheusQueryService
 from k8s_incident_agent.persistence.repositories import (
     IncidentMonitoringContext,
     IncidentRepository,
+    MonitoringOverviewFamilyRecord,
+    MonitoringOverviewRecord,
+    MonitoringOverviewSampleRecord,
     MonitoringRunInterval,
 )
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
@@ -95,6 +99,19 @@ class _PanelRepository:
     ) -> IncidentMonitoringContext | None:
         self.run_limits.append(run_limit)
         return self.context
+
+
+class _OverviewRepository:
+    def __init__(self, overview: MonitoringOverviewRecord) -> None:
+        self.overview = overview
+        self.generated_at: datetime | None = None
+
+    async def get_monitoring_overview(
+        self,
+        generated_at: datetime,
+    ) -> MonitoringOverviewRecord:
+        self.generated_at = generated_at
+        return self.overview
 
 
 def _service(
@@ -168,6 +185,7 @@ def _panel_result() -> MetricPanelResult:
         title="Affected pods",
         unit="pods",
         threshold=1.0,
+        risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
         window=MetricWindow.FIFTEEN_MINUTES,
         state=MetricQueryState.OK,
         queried_at=NOW,
@@ -193,6 +211,59 @@ def _panel_service(
 
 
 @pytest.mark.asyncio
+async def test_overview_maps_current_catalog_families_and_preserves_hourly_counts() -> (
+    None
+):
+    samples = tuple(
+        MonitoringOverviewSampleRecord(
+            timestamp=NOW.replace(minute=0) - timedelta(hours=23 - offset),
+            incidents_created=1 if offset == 22 else 0,
+            alert_conditions_resolved=1 if offset == 23 else 0,
+        )
+        for offset in range(24)
+    )
+    repository = _OverviewRepository(
+        MonitoringOverviewRecord(
+            total_incidents=7,
+            firing_alerts=2,
+            triaging_incidents=1,
+            diagnosed_incidents=4,
+            families=(
+                MonitoringOverviewFamilyRecord(
+                    source_ref="K8sIncidentImagePullBackOff",
+                    count=1,
+                ),
+                MonitoringOverviewFamilyRecord(
+                    source_ref="retired-alert",
+                    count=1,
+                ),
+            ),
+            samples=samples,
+        )
+    )
+    service = MonitoringApplicationService(
+        catalog=_alert_catalog(),
+        scenarios=(public_scenario(),),
+        prometheus=cast(PrometheusQueryService, object()),
+        repository=cast(IncidentRepository, repository),
+        now=lambda: NOW,
+    )
+
+    result = await service.get_overview()
+
+    assert repository.generated_at == NOW
+    assert result.counts.total_incidents == 7
+    assert result.counts.firing_alerts == 2
+    assert [family.display_name for family in result.families] == [
+        "Image pull failure",
+        "retired-alert",
+    ]
+    assert len(result.samples) == 24
+    assert result.samples[-2].incidents_created == 1
+    assert result.samples[-1].alert_conditions_resolved == 1
+
+
+@pytest.mark.asyncio
 async def test_catalog_drives_alertmanager_and_evaluation_panel_references() -> None:
     service, repository, _ = _panel_service(_monitoring_context())
 
@@ -212,10 +283,14 @@ async def test_catalog_drives_alertmanager_and_evaluation_panel_references() -> 
         {
             "panelId": "image-pull-affected-pods",
             "recommendedWindow": "15m",
+            "riskDirection": "higher_is_worse",
+            "thresholdDuration": "30s",
         },
         {
-            "panelId": "image-pull-waiting-containers",
+            "panelId": "image-pull-available-replicas",
             "recommendedWindow": "15m",
+            "riskDirection": "lower_is_worse",
+            "thresholdDuration": None,
         },
     ]
     assert repository.run_limits == [1, 1]

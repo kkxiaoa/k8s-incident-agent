@@ -9,10 +9,15 @@ from k8s_incident_agent.monitoring.contracts import (
     IncidentMonitoringPanels,
     MetricMarker,
     MetricMarkerKind,
+    MetricRiskDirection,
     MetricWindow,
     MonitoringComponentState,
     MonitoringHealthSnapshot,
     MonitoringOverallState,
+    MonitoringOverviewCounts,
+    MonitoringOverviewFamily,
+    MonitoringOverviewSample,
+    MonitoringOverviewSnapshot,
     MonitoringPanelReference,
 )
 from k8s_incident_agent.monitoring.errors import (
@@ -144,6 +149,40 @@ class MonitoringApplicationService:
             watchdog_last_received_at=last_watchdog,
         )
 
+    async def get_overview(self) -> MonitoringOverviewSnapshot:
+        generated_at = self._now()
+        overview = await self._repository.get_monitoring_overview(generated_at)
+        families: list[MonitoringOverviewFamily] = []
+        for family in overview.families:
+            entry = self._catalog.find(family.source_ref)
+            families.append(
+                MonitoringOverviewFamily(
+                    source_ref=family.source_ref,
+                    display_name=(
+                        entry.display_name if entry is not None else family.source_ref
+                    ),
+                    count=family.count,
+                )
+            )
+        return MonitoringOverviewSnapshot(
+            generated_at=generated_at,
+            counts=MonitoringOverviewCounts(
+                total_incidents=overview.total_incidents,
+                firing_alerts=overview.firing_alerts,
+                triaging_incidents=overview.triaging_incidents,
+                diagnosed_incidents=overview.diagnosed_incidents,
+            ),
+            families=tuple(families),
+            samples=tuple(
+                MonitoringOverviewSample(
+                    timestamp=sample.timestamp,
+                    incidents_created=sample.incidents_created,
+                    alert_conditions_resolved=sample.alert_conditions_resolved,
+                )
+                for sample in overview.samples
+            ),
+        )
+
     async def list_panels(self, incident_id: UUID) -> IncidentMonitoringPanels:
         context = await self._monitoring_context(incident_id, run_limit=1)
         entry = self._entry_for_context(context)
@@ -155,6 +194,8 @@ class MonitoringApplicationService:
                     MonitoringPanelReference(
                         panel_id=panel.panel_id,
                         recommended_window=MetricWindow(panel.recommended_window),
+                        risk_direction=MetricRiskDirection(panel.risk_direction),
+                        threshold_duration=panel.threshold_duration,
                     )
                     for panel in entry.panels
                 )

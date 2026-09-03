@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const webPort = 3100;
-const runtimePort = 18080;
+const webPort = Number(process.env.PLAYWRIGHT_WEB_PORT ?? "3100");
+const runtimePort = Number(process.env.PLAYWRIGHT_RUNTIME_PORT ?? "18080");
 
 export default defineConfig({
   testDir: "./tests/e2e",

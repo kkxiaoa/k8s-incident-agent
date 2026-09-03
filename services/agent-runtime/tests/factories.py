@@ -77,7 +77,7 @@ async def agent_run_snapshot(
 
 
 class _PrometheusQueryServiceStub:
-    panel_ids = ("image-pull-affected-pods", "image-pull-waiting-containers")
+    panel_ids = ("image-pull-affected-pods", "image-pull-available-replicas")
 
 
 def prometheus_query_service_stub() -> PrometheusQueryService:

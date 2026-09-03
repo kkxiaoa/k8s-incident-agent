@@ -1,19 +1,30 @@
 "use client";
 
-import { useId } from "react";
+import { useState } from "react";
+import type {
+  ChartData,
+  ChartOptions,
+  Point,
+  Plugin,
+  ScriptableContext,
+} from "chart.js";
+import { Chart } from "react-chartjs-2";
 
+import {
+  ensureChartJsRegistered,
+  TOOLTIP_LINE_MARKER,
+  tooltipLineLabelStyle,
+  tooltipLinePointStyle,
+  useReducedChartMotion,
+} from "@/components/charts/chart-js";
 import { LocalTimestamp } from "@/components/local-timestamp";
 import type {
   MetricMarkerView,
   MetricPanelResultView,
 } from "@/lib/agent-runtime/response-contracts";
 
-const WIDTH = 760;
-const HEIGHT = 220;
-const LEFT = 48;
-const RIGHT = 18;
-const TOP = 20;
-const BOTTOM = 34;
+import { METRIC_WINDOW_LABELS } from "./metric-window";
+import { metricUnitLabel } from "./metric-presentation";
 
 const MARKER_LABELS = {
   alert_firing: "告警触发",
@@ -21,6 +32,21 @@ const MARKER_LABELS = {
   run_started: "诊断 Run 开始",
   run_completed: "诊断 Run 完成",
 } as const;
+
+const AXIS_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit",
+  hourCycle: "h23",
+  minute: "2-digit",
+});
+
+const TOOLTIP_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
+  minute: "2-digit",
+  month: "2-digit",
+  second: "2-digit",
+});
 
 function windowMilliseconds(window: MetricPanelResultView["window"]): number {
   return window === "15m"
@@ -42,6 +68,131 @@ function markerTooltip(marker: MetricMarkerView): string {
   return marker.kind === "alert_resolved"
     ? `${label}。Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。`
     : label;
+}
+
+function riskSeriesFill(
+  context: ScriptableContext<"line">,
+): string | CanvasGradient {
+  const { chart } = context;
+  const area = chart.chartArea;
+  if (area === undefined) {
+    return "rgba(229, 72, 77, 0.1)";
+  }
+  const gradient = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
+  gradient.addColorStop(0, "rgba(229, 72, 77, 0.2)");
+  gradient.addColorStop(1, "rgba(229, 72, 77, 0.025)");
+  return gradient;
+}
+
+export function MetricSparkline({
+  result,
+  riskDirection,
+}: {
+  result: MetricPanelResultView;
+  riskDirection: "higher_is_worse" | "lower_is_worse";
+}) {
+  ensureChartJsRegistered();
+  const reducedMotion = useReducedChartMotion();
+  const [hoveredSample, setHoveredSample] = useState<{
+    left: number;
+    timestamp: string;
+    value: number;
+  } | null>(null);
+  const windowLabel = METRIC_WINDOW_LABELS[result.window];
+  const seriesColor =
+    riskDirection === "higher_is_worse" ? "#e5484d" : "#0f8f86";
+  if (result.samples.length === 0) {
+    return null;
+  }
+
+  const data: ChartData<"line", Point[]> = {
+    datasets: [
+      {
+        data: result.samples.map((sample) => ({
+          x: Date.parse(sample.timestamp),
+          y: sample.value,
+        })),
+        borderCapStyle: "round",
+        borderColor: seriesColor,
+        borderJoinStyle: "round",
+        borderWidth: 2,
+        fill: false,
+        pointHitRadius: 8,
+        pointHoverRadius: 3,
+        pointRadius: 0,
+        stepped: true,
+        tension: 0,
+      },
+    ],
+  };
+  const options: ChartOptions<"line"> = {
+    animation: reducedMotion ? false : { duration: 360 },
+    interaction: { intersect: true, mode: "nearest" },
+    maintainAspectRatio: false,
+    onHover(_event, elements, chart) {
+      if (_event.type === "mouseout") {
+        setHoveredSample(null);
+        return;
+      }
+      const activePoint = elements[0];
+      const sample =
+        activePoint === undefined ? undefined : result.samples[activePoint.index];
+      if (activePoint === undefined || sample === undefined) {
+        setHoveredSample(null);
+        return;
+      }
+      const renderedPoint = chart.getDatasetMeta(activePoint.datasetIndex).data[
+        activePoint.index
+      ];
+      const rawLeft = renderedPoint?.x ?? chart.width / 2;
+      const left = Math.max(72, Math.min(chart.width - 72, rawLeft));
+      setHoveredSample((current) =>
+        current?.timestamp === sample.timestamp && current.left === left
+          ? current
+          : { left, timestamp: sample.timestamp, value: sample.value },
+      );
+    },
+    parsing: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: { enabled: false },
+    },
+    scales: {
+      x: { display: false, type: "linear" },
+      y: { display: false },
+    },
+  };
+
+  return (
+    <div
+      className="metric-sparkline"
+      onMouseLeave={() => setHoveredSample(null)}
+      onPointerCancel={() => setHoveredSample(null)}
+      onPointerLeave={() => setHoveredSample(null)}
+    >
+      <div className="metric-sparkline__plot">
+        <Chart
+          type="line"
+          data={data}
+          options={options}
+          role="img"
+          aria-label={`${result.title} ${windowLabel}概览趋势，共 ${result.samples.length} 个样本。`}
+        />
+      </div>
+      {hoveredSample === null ? null : (
+        <span
+          className="metric-sparkline__tooltip"
+          role="tooltip"
+          style={{ left: hoveredSample.left }}
+        >
+          <span>{TOOLTIP_TIME_FORMAT.format(new Date(hoveredSample.timestamp))}</span>
+          <strong>
+            {hoveredSample.value} {metricUnitLabel(result.unit)}
+          </strong>
+        </span>
+      )}
+    </div>
+  );
 }
 
 export function MetricMarkerEvents({
@@ -84,109 +235,242 @@ export function TimeSeriesChart({
   result,
   markers,
   markersTruncated,
+  riskDirection,
+  referenceValue,
 }: {
   result: MetricPanelResultView;
   markers: MetricMarkerView[];
   markersTruncated: boolean;
+  riskDirection: "higher_is_worse" | "lower_is_worse";
+  referenceValue: number | null;
 }) {
-  const titleId = useId();
-  const descriptionId = useId();
+  ensureChartJsRegistered();
+  const reducedMotion = useReducedChartMotion();
   const queriedAt = Date.parse(result.queriedAt);
   const start = queriedAt - windowMilliseconds(result.window);
-  const values = [...result.samples.map((sample) => sample.value), result.threshold];
+  const staticThreshold =
+    riskDirection === "higher_is_worse" ? result.threshold : null;
+  const values = [
+    ...result.samples.map((sample) => sample.value),
+    ...(staticThreshold !== null
+      ? [staticThreshold]
+      : referenceValue === null
+        ? []
+        : [referenceValue]),
+  ];
   const minimum = Math.min(0, ...values);
   const maximum = Math.max(1, ...values);
-  const padding = Math.max((maximum - minimum) * 0.12, 0.25);
+  const padding = Math.max((maximum - minimum) * 0.12, 0.5);
   const yMin = minimum - (minimum < 0 ? padding : 0);
-  const yMax = maximum + padding;
-  const x = (timestamp: string) =>
-    LEFT +
-    ((Date.parse(timestamp) - start) / (queriedAt - start)) *
-      (WIDTH - LEFT - RIGHT);
-  const y = (value: number) =>
-    TOP +
-    ((yMax - value) / (yMax - yMin)) * (HEIGHT - TOP - BOTTOM);
-  const path = result.samples
-    .map(
-      (sample, index) =>
-        `${index === 0 ? "M" : "L"} ${x(sample.timestamp).toFixed(2)} ${y(sample.value).toFixed(2)}`,
-    )
-    .join(" ");
+  const yMax = Math.ceil(maximum + padding);
+  const higherIsWorse = staticThreshold !== null;
+  const seriesColor = higherIsWorse ? "#e5484d" : "#0f8f86";
+  const points = result.samples.map((sample) => ({
+    x: Date.parse(sample.timestamp),
+    y: sample.value,
+  }));
+  const labeledMarkers = [
+    markers.find((marker) => marker.kind === "alert_firing"),
+    markers.find((marker) => marker.kind === "run_started"),
+  ].filter((marker): marker is MetricMarkerView => marker !== undefined);
+  const markerLabelPlugin: Plugin<"line"> = {
+    id: "metric-event-labels",
+    afterDraw(chart) {
+      const xScale = chart.scales.x;
+      if (xScale === undefined) {
+        return;
+      }
+      const positions = labeledMarkers.map((marker) =>
+        xScale.getPixelForValue(Date.parse(marker.occurredAt)),
+      );
+      chart.ctx.save();
+      chart.ctx.font = "600 11px system-ui, sans-serif";
+      chart.ctx.textBaseline = "bottom";
+      labeledMarkers.forEach((marker, index) => {
+        const x = positions[index];
+        if (
+          x === undefined ||
+          x < chart.chartArea.left ||
+          x > chart.chartArea.right
+        ) {
+          return;
+        }
+        const closeToPrevious =
+          index > 0 &&
+          positions[index - 1] !== undefined &&
+          Math.abs(x - positions[index - 1]!) < 90;
+        chart.ctx.fillStyle =
+          marker.kind === "alert_firing" ? "#e5484d" : "#0f8f86";
+        chart.ctx.textAlign =
+          x > chart.chartArea.right - 64 ? "right" : "left";
+        chart.ctx.fillText(
+          marker.kind === "alert_firing" ? "告警触发" : "诊断开始",
+          x,
+          chart.chartArea.top - (closeToPrevious ? 24 : 8),
+        );
+      });
+      chart.ctx.restore();
+    },
+  };
+  const data: ChartData<"line", Point[]> = {
+    datasets: [
+      {
+        label: result.title,
+        data: points,
+        backgroundColor: higherIsWorse ? riskSeriesFill : "transparent",
+        borderCapStyle: "round",
+        borderColor: seriesColor,
+        borderJoinStyle: "round",
+        borderWidth: 2.5,
+        fill: higherIsWorse ? "origin" : false,
+        pointBackgroundColor: "#ffffff",
+        pointBorderColor: seriesColor,
+        pointHoverRadius: 4,
+        pointRadius: 0,
+        stepped: true,
+        tension: 0,
+        order: 1,
+      },
+      ...(higherIsWorse
+        ? [
+            {
+              label: `阈值 ≥ ${staticThreshold}`,
+              data: [
+                { x: start, y: staticThreshold },
+                { x: queriedAt, y: staticThreshold },
+              ],
+              borderColor: "rgba(229, 72, 77, 0.55)",
+              borderDash: [6, 5],
+              borderWidth: 1.5,
+              pointRadius: 0,
+              tension: 0,
+              order: 2,
+            },
+          ]
+        : referenceValue === null
+          ? []
+          : [
+              {
+                label: `期望副本数 ${referenceValue}`,
+                data: [
+                  { x: start, y: referenceValue },
+                  { x: queriedAt, y: referenceValue },
+                ],
+                borderColor: "rgba(15, 143, 134, 0.66)",
+                borderDash: [6, 5],
+                borderWidth: 1.5,
+                pointRadius: 0,
+                tension: 0,
+                order: 2,
+              },
+            ]),
+      ...markers.map((marker) => ({
+        label: markerTooltip(marker),
+        data: [
+          { x: Date.parse(marker.occurredAt), y: yMin },
+          { x: Date.parse(marker.occurredAt), y: yMax },
+        ],
+        borderColor: marker.kind.startsWith("alert_")
+          ? "rgba(229, 72, 77, 0.62)"
+          : "rgba(15, 143, 134, 0.62)",
+        borderDash: marker.kind.startsWith("alert_") ? [4, 4] : [2, 4],
+        borderWidth: 1.2,
+        pointRadius: 0,
+        tension: 0,
+        order: 3,
+      })),
+    ],
+  };
+  const options: ChartOptions<"line"> = {
+    animation: reducedMotion ? false : { duration: 420 },
+    interaction: { intersect: false, mode: "nearest" },
+    layout: { padding: { top: 42 } },
+    maintainAspectRatio: false,
+    parsing: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        ...TOOLTIP_LINE_MARKER,
+        callbacks: {
+          title(items) {
+            const timestamp = items[0]?.parsed.x;
+            return typeof timestamp === "number"
+              ? TOOLTIP_TIME_FORMAT.format(new Date(timestamp))
+              : "";
+          },
+          label(context) {
+            return context.datasetIndex === 0
+              ? `${result.title} ${context.parsed.y} ${metricUnitLabel(result.unit)}`
+              : context.dataset.label ?? "";
+          },
+          labelColor(context) {
+            const color = context.dataset.borderColor;
+            return tooltipLineLabelStyle(
+              typeof color === "string" ? color : seriesColor,
+            );
+          },
+          labelPointStyle(context) {
+            const color = context.dataset.borderColor;
+            const borderDash = context.dataset.borderDash;
+            return tooltipLinePointStyle(
+              typeof color === "string" ? color : seriesColor,
+              Array.isArray(borderDash) && borderDash.length > 0,
+            );
+          },
+        },
+      },
+    },
+    scales: {
+      x: {
+        type: "linear",
+        min: start,
+        max: queriedAt,
+        border: { display: false },
+        grid: { display: false },
+        ticks: {
+          callback(value) {
+            return AXIS_TIME_FORMAT.format(new Date(Number(value)));
+          },
+          color: "#8294a4",
+          maxTicksLimit: 6,
+        },
+      },
+      y: {
+        min: yMin,
+        max: yMax,
+        border: { display: false },
+        grid: { color: "rgba(186, 203, 213, 0.38)" },
+        ticks: { color: "#8294a4", precision: 0 },
+      },
+    },
+  };
+
   return (
     <div className="metric-chart">
-      <svg
-        className="metric-chart__plot"
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        role="img"
-        aria-labelledby={`${titleId} ${descriptionId}`}
-      >
-        <title id={titleId}>{result.title} 时间序列</title>
-        <desc id={descriptionId}>
-          当前值 {result.currentValue} {result.unit}，阈值 {result.threshold}，
-          共 {result.samples.length} 个样本和 {markers.length} 个独立事件标记。
-        </desc>
-        {[0, 0.5, 1].map((ratio) => {
-          const lineY = TOP + ratio * (HEIGHT - TOP - BOTTOM);
-          return (
-            <line
-              key={ratio}
-              className="metric-chart__grid"
-              x1={LEFT}
-              x2={WIDTH - RIGHT}
-              y1={lineY}
-              y2={lineY}
-            />
-          );
-        })}
-        <line
-          className="metric-chart__threshold"
-          x1={LEFT}
-          x2={WIDTH - RIGHT}
-          y1={y(result.threshold)}
-          y2={y(result.threshold)}
-        >
-          <title>阈值 {result.threshold}</title>
-        </line>
-        {markers.map((marker, index) => (
-          <line
-            key={`${marker.kind}:${marker.occurredAt}:${marker.runAttempt ?? "alert"}:${index}`}
-            className={`metric-chart__marker is-${marker.kind}`}
-            x1={x(marker.occurredAt)}
-            x2={x(marker.occurredAt)}
-            y1={TOP}
-            y2={HEIGHT - BOTTOM}
-          >
-            <title>{markerTooltip(marker)}</title>
-          </line>
-        ))}
-        <path className="metric-chart__line" d={path} />
-        {result.samples.map((sample) => (
-          <circle
-            key={sample.timestamp}
-            className="metric-chart__point"
-            cx={x(sample.timestamp)}
-            cy={y(sample.value)}
-            r="2.6"
-          >
-            <title>{sample.value}</title>
-          </circle>
-        ))}
-        <text className="metric-chart__axis-label" x={LEFT} y={HEIGHT - 8}>
-          窗口开始
-        </text>
-        <text
-          className="metric-chart__axis-label"
-          x={WIDTH - RIGHT}
-          y={HEIGHT - 8}
-          textAnchor="end"
-        >
-          查询时刻
-        </text>
-      </svg>
-
       <div className="metric-chart__legend" aria-label="图表图例">
-        <span><i className="is-series" />指标值</span>
-        <span><i className="is-threshold" />阈值</span>
+        <span>
+          <i className={higherIsWorse ? "is-risk-series" : "is-series"} />
+          {higherIsWorse ? `${result.title} 数量` : "可用副本数"}
+        </span>
+        {higherIsWorse ? (
+          <span><i className="is-threshold-zone" />阈值区间（≥ {staticThreshold}）</span>
+        ) : referenceValue === null ? null : (
+          <span><i className="is-reference" />期望副本数（{referenceValue}）</span>
+        )}
+      </div>
+
+      <div className="metric-chart__plot">
+        <Chart
+          type="line"
+          data={data}
+          options={options}
+          plugins={[markerLabelPlugin]}
+          role="img"
+          aria-label={`${result.title} 时间序列。当前值 ${result.currentValue} ${result.unit}，风险条件 ${higherIsWorse ? `≥ ${staticThreshold}` : referenceValue === null ? "等待期望副本 Evidence" : `< ${referenceValue}`}，共 ${result.samples.length} 个样本和 ${markers.length} 个独立事件标记。`}
+        />
+      </div>
+
+      <div className="metric-chart__marker-legend" aria-label="事件标记图例">
         {markers.some((marker) => marker.kind.startsWith("alert_")) ? (
           <span><i className="is-alert" />告警信号</span>
         ) : null}

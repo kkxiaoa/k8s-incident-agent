@@ -47,12 +47,110 @@ const STARTED_AT = "2026-08-29T02:00:01Z";
 const TOOL_AT = "2026-08-29T02:00:02Z";
 const EVIDENCE_AT = "2026-08-29T02:00:03Z";
 const TERMINAL_AT = "2026-08-29T02:00:04Z";
+const ALERT_PENDING_AT = "2026-08-29T01:59:30Z";
+const ALERT_STARTS_AT = "2026-08-29T02:00:00.000000000Z";
+const ALERT_ENDS_AT = "2026-08-29T02:00:15.000000000Z";
+const RESOLVED_QUERY_AT = "2026-08-29T02:00:16Z";
 
 let mode: RuntimeMode = "diagnosed";
 let nextIncident = 1;
 let nextEventId = 1;
+let showcaseEnabled = false;
 const incidents = new Map<string, FakeIncident>();
 const eventConnections = new Map<string, Array<string | null>>();
+
+const SHOWCASE_INCIDENTS: Array<{
+  alertStatus: "FIRING" | "RESOLVED";
+  displayName: string;
+  outcome: OutcomeMode;
+  sourceRef: string;
+  targetName: string;
+}> = [
+  {
+    alertStatus: "FIRING",
+    displayName: "容器反复重启",
+    outcome: "running",
+    sourceRef: "K8sIncidentCrashLoopBackOff",
+    targetName: "checkout-api",
+  },
+  {
+    alertStatus: "FIRING",
+    displayName: "容器反复重启",
+    outcome: "diagnosed",
+    sourceRef: "K8sIncidentCrashLoopBackOff",
+    targetName: "payment-worker",
+  },
+  {
+    alertStatus: "FIRING",
+    displayName: "容器反复重启",
+    outcome: "diagnosed",
+    sourceRef: "K8sIncidentCrashLoopBackOff",
+    targetName: "notification-api",
+  },
+  {
+    alertStatus: "FIRING",
+    displayName: "镜像拉取失败",
+    outcome: "running",
+    sourceRef: "K8sIncidentImagePullBackOff",
+    targetName: "catalog-api",
+  },
+  {
+    alertStatus: "FIRING",
+    displayName: "镜像拉取失败",
+    outcome: "diagnosed",
+    sourceRef: "K8sIncidentImagePullBackOff",
+    targetName: "search-indexer",
+  },
+  {
+    alertStatus: "FIRING",
+    displayName: "Service 路由异常",
+    outcome: "running",
+    sourceRef: "K8sIncidentServiceRoutingMismatch",
+    targetName: "orders-api",
+  },
+  {
+    alertStatus: "FIRING",
+    displayName: "Service 路由异常",
+    outcome: "insufficient",
+    sourceRef: "K8sIncidentServiceRoutingMismatch",
+    targetName: "inventory-api",
+  },
+  {
+    alertStatus: "FIRING",
+    displayName: "健康检查失败",
+    outcome: "running",
+    sourceRef: "K8sIncidentProbeFailure",
+    targetName: "session-api",
+  },
+  {
+    alertStatus: "FIRING",
+    displayName: "存储卷待绑定",
+    outcome: "failed",
+    sourceRef: "K8sIncidentPVCPending",
+    targetName: "reporting-worker",
+  },
+  {
+    alertStatus: "RESOLVED",
+    displayName: "容器反复重启",
+    outcome: "diagnosed",
+    sourceRef: "K8sIncidentCrashLoopBackOff",
+    targetName: "profile-api",
+  },
+  {
+    alertStatus: "RESOLVED",
+    displayName: "Service 路由异常",
+    outcome: "diagnosed",
+    sourceRef: "K8sIncidentServiceRoutingMismatch",
+    targetName: "pricing-api",
+  },
+  {
+    alertStatus: "RESOLVED",
+    displayName: "镜像拉取失败",
+    outcome: "diagnosed",
+    sourceRef: "K8sIncidentImagePullBackOff",
+    targetName: "image-resizer",
+  },
+];
 
 function uuid(prefix: string, sequence: number): string {
   return `${prefix}0000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
@@ -93,7 +191,8 @@ async function requestBody(request: IncomingMessage): Promise<unknown> {
 function buildEvents(
   incidentId: string,
   runId: string,
-  evidenceId: string,
+  workloadEvidenceId: string,
+  podsEvidenceId: string,
   diagnosisId: string,
   outcome: OutcomeMode,
 ): RunEventStreamItem[] {
@@ -132,7 +231,7 @@ function buildEvents(
         incidentId,
         runId,
         toolCallId: "tool-call-1",
-        toolName: "get_pod",
+        toolName: "get_workload",
         occurredAt: TOOL_AT,
       },
     },
@@ -156,7 +255,7 @@ function buildEvents(
           incidentId,
           runId,
           toolCallId: "tool-call-1",
-          toolName: "get_pod",
+          toolName: "get_workload",
           errorCode: "kubernetes_forbidden",
           retryable: false,
           occurredAt: EVIDENCE_AT,
@@ -180,23 +279,54 @@ function buildEvents(
     return events;
   }
 
-  events.push({
-    id: eventId(),
-    event: "evidence.recorded",
-    data: {
-      schemaVersion: 3,
-      incidentId,
-      runId,
-      evidenceId,
-      evidenceKind: "kubernetes.pod",
-      observedAt: EVIDENCE_AT,
-      redacted: false,
-      toolCallId: "tool-call-1",
-      toolName: "get_pod",
-      truncated: false,
-      occurredAt: EVIDENCE_AT,
+  events.push(
+    {
+      id: eventId(),
+      event: "evidence.recorded",
+      data: {
+        schemaVersion: 3,
+        incidentId,
+        runId,
+        evidenceId: workloadEvidenceId,
+        evidenceKind: "workload",
+        observedAt: EVIDENCE_AT,
+        redacted: false,
+        toolCallId: "tool-call-1",
+        toolName: "get_workload",
+        truncated: false,
+        occurredAt: EVIDENCE_AT,
+      },
     },
-  });
+    {
+      id: eventId(),
+      event: "tool.started",
+      data: {
+        schemaVersion: 3,
+        incidentId,
+        runId,
+        toolCallId: "tool-call-2",
+        toolName: "get_pods",
+        occurredAt: EVIDENCE_AT,
+      },
+    },
+    {
+      id: eventId(),
+      event: "evidence.recorded",
+      data: {
+        schemaVersion: 3,
+        incidentId,
+        runId,
+        evidenceId: podsEvidenceId,
+        evidenceKind: "pods",
+        observedAt: EVIDENCE_AT,
+        redacted: false,
+        toolCallId: "tool-call-2",
+        toolName: "get_pods",
+        truncated: false,
+        occurredAt: EVIDENCE_AT,
+      },
+    },
+  );
 
   if (outcome === "diagnosed") {
     events.push({
@@ -238,9 +368,17 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
   nextIncident += 1;
   const incidentId = uuid("1", sequence);
   const runId = uuid("2", sequence);
-  const evidenceId = uuid("3", sequence);
+  const workloadEvidenceId = uuid("3", sequence);
+  const podsEvidenceId = uuid("5", sequence);
   const diagnosisId = uuid("4", sequence);
-  const events = buildEvents(incidentId, runId, evidenceId, diagnosisId, outcome);
+  const events = buildEvents(
+    incidentId,
+    runId,
+    workloadEvidenceId,
+    podsEvidenceId,
+    diagnosisId,
+    outcome,
+  );
   const initialEvent = events[0];
 
   return {
@@ -304,28 +442,73 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       break;
     case "evidence.recorded":
       if (!record.detail.evidence.some((item) => item.id === event.data.evidenceId)) {
+        const target = record.detail.incident.target;
+        const workloadPayload = {
+          workload: {
+            resourceVersion: "101",
+            generation: 1,
+            observedGeneration: 1,
+            replicas: { desired: 3, updated: 3, ready: 0, available: 0 },
+            selector: { matchLabels: { app: target.name } },
+            containers: [
+              {
+                name: "app",
+                image: "example.invalid/missing:v1",
+                imagePullPolicy: "IfNotPresent",
+                command: [],
+                args: [],
+              },
+            ],
+            conditions: [],
+          },
+        };
+        const podsPayload = {
+          sourceWorkload: {
+            resourceVersion: "101",
+            selector: { matchLabels: { app: target.name } },
+          },
+          pods: Array.from({ length: 3 }, (_, index) => ({
+            apiVersion: "v1",
+            kind: "Pod",
+            namespace: target.namespace,
+            name: `${target.name}-${index + 1}`,
+            uid: `showcase-pod-${index + 1}`,
+            resourceVersion: String(201 + index),
+            owner: {
+              apiVersion: "apps/v1",
+              kind: "ReplicaSet",
+              name: `${target.name}-rs`,
+              uid: "showcase-replicaset",
+              controller: true,
+            },
+            phase: "Pending",
+            conditions: [],
+            containers: [
+              {
+                name: "app",
+                image: "example.invalid/missing:v1",
+                imageId: null,
+                restartCount: 0,
+                state: {
+                  status: "waiting",
+                  reason: index === 0 ? "ErrImagePull" : "ImagePullBackOff",
+                  message: "manifest unknown",
+                },
+              },
+            ],
+          })),
+        };
         record.detail.evidence.push({
           id: event.data.evidenceId,
           toolCallId: event.data.toolCallId,
           toolName: event.data.toolName,
           evidenceKind: event.data.evidenceKind,
-          targetRef: SCENARIO.target,
+          targetRef: record.detail.incident.target,
           observedAt: event.data.observedAt,
-          payload: {
-            metadata: {
-              namespace: SCENARIO.target.namespace,
-              name: SCENARIO.target.name,
-            },
-            spec: {
-              containers: [{ name: "app", image: "example.invalid/missing:v1" }],
-            },
-            status: {
-              waiting: {
-                reason: "ImagePullBackOff",
-                message: "manifest unknown",
-              },
-            },
-          },
+          payload:
+            event.data.evidenceKind === "workload"
+              ? workloadPayload
+              : podsPayload,
           truncated: event.data.truncated,
           redacted: event.data.redacted,
         });
@@ -378,6 +561,40 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       };
       record.finished = true;
       break;
+  }
+}
+
+function seedShowcase(): void {
+  mode = "diagnosed";
+  nextIncident = 1;
+  nextEventId = 1;
+  showcaseEnabled = true;
+  incidents.clear();
+  eventConnections.clear();
+
+  for (const definition of SHOWCASE_INCIDENTS) {
+    const record = createIncident(definition.outcome);
+    record.detail.incident.source = {
+      type: "alertmanager",
+      ref: definition.sourceRef,
+      revision: "showcase-v1",
+    };
+    record.detail.incident.displayName = definition.displayName;
+    record.detail.incident.triggerSummary = `${definition.displayName}测试告警。`;
+    record.detail.incident.target = {
+      ...record.detail.incident.target,
+      name: definition.targetName,
+    };
+    record.detail.alertSignal = {
+      status: definition.alertStatus,
+      startsAt: ALERT_STARTS_AT,
+      endsAt: definition.alertStatus === "RESOLVED" ? ALERT_ENDS_AT : null,
+    };
+
+    for (const event of record.events) {
+      applyEvent(record, event);
+    }
+    incidents.set(record.detail.incident.id, record);
   }
 }
 
@@ -439,12 +656,91 @@ function listItem(record: FakeIncident): IncidentListItem {
   };
 }
 
+function monitoringOverview() {
+  const generatedAt = new Date(TERMINAL_AT);
+  const currentHour = new Date(generatedAt);
+  currentHour.setUTCMinutes(0, 0, 0);
+  const showcaseCreated = new Map([
+    [1, 1],
+    [4, 2],
+    [6, 1],
+    [9, 1],
+    [11, 2],
+    [14, 1],
+    [17, 1],
+    [19, 1],
+    [21, 1],
+    [23, 1],
+  ]);
+  const showcaseResolved = new Set([8, 16, 22]);
+  const samples = Array.from({ length: 24 }, (_, index) => {
+    const timestamp = new Date(
+      currentHour.valueOf() - (23 - index) * 3_600_000,
+    );
+    return {
+      timestamp: timestamp.toISOString(),
+      incidentsCreated: showcaseEnabled
+        ? (showcaseCreated.get(index) ?? 0)
+        : index === 23
+          ? incidents.size
+          : 0,
+      alertConditionsResolved:
+        showcaseEnabled && showcaseResolved.has(index) ? 1 : 0,
+    };
+  });
+  const records = [...incidents.values()];
+  const firingRecords = records.filter(
+    (record) => record.detail.alertSignal?.status === "FIRING",
+  );
+  const families = new Map<string, { displayName: string; count: number }>();
+  for (const record of firingRecords) {
+    const sourceRef = record.detail.incident.source.ref;
+    const current = families.get(sourceRef);
+    families.set(sourceRef, {
+      displayName: record.detail.incident.displayName,
+      count: (current?.count ?? 0) + 1,
+    });
+  }
+  return {
+    schemaVersion: 1,
+    window: "24h",
+    generatedAt: generatedAt.toISOString(),
+    counts: {
+      totalIncidents: records.length,
+      firingAlerts: firingRecords.length,
+      triagingIncidents: records.filter(
+        (record) => record.detail.incident.status === "TRIAGING",
+      ).length,
+      diagnosedIncidents: records.filter(
+        (record) => record.detail.incident.status === "DIAGNOSED",
+      ).length,
+    },
+    families: [...families].map(([sourceRef, family]) => ({
+      sourceRef,
+      ...family,
+    })),
+    samples,
+  };
+}
+
 function metricMarkers(record: FakeIncident) {
   const markers: Array<{
-    kind: "run_started" | "run_completed";
+    kind:
+      | "alert_firing"
+      | "alert_resolved"
+      | "run_started"
+      | "run_completed";
     occurredAt: string;
-    runAttempt: number;
+    runAttempt: number | null;
   }> = [];
+  const alertSignal = record.detail.alertSignal;
+  if (alertSignal !== null) {
+    markers.push({
+      kind: "alert_firing",
+      occurredAt: alertSignal.startsAt,
+      runAttempt: null,
+    });
+  }
   if (record.detail.selectedRun.startedAt !== null) {
     markers.push({
       kind: "run_started",
@@ -459,6 +755,13 @@ function metricMarkers(record: FakeIncident) {
       runAttempt: record.detail.selectedRun.attempt,
     });
   }
+  if (alertSignal?.endsAt !== null && alertSignal?.endsAt !== undefined) {
+    markers.push({
+      kind: "alert_resolved",
+      occurredAt: alertSignal.endsAt,
+      runAttempt: null,
+    });
+  }
   return markers;
 }
 
@@ -467,26 +770,81 @@ function metricPanel(
   panelId: string,
   window: string,
 ) {
-  const currentValue = record.finished ? 0 : 1;
+  const alertResolved = record.detail.alertSignal?.status === "RESOLVED";
+  const affectedPods = alertResolved ? 0 : 3;
+  const availableReplicas = alertResolved ? 3 : 0;
+  const windowMilliseconds =
+    window === "15m" ? 15 * 60_000 : window === "1h" ? 60 * 60_000 : 6 * 60 * 60_000;
+  const queriedAt = Date.parse(alertResolved ? RESOLVED_QUERY_AT : TERMINAL_AT);
+  const queriedAtTimestamp = new Date(queriedAt).toISOString();
+  const windowStartsAt = queriedAt - windowMilliseconds;
+  const healthyValue =
+    panelId === "image-pull-affected-pods" ? 0 : 3;
+  const failingValue =
+    panelId === "image-pull-affected-pods" ? affectedPods : availableReplicas;
+  const alertSignal = record.detail.alertSignal;
+  const samplesByTimestamp = new Map<number, number>();
+  const addSample = (timestamp: number, value: number) => {
+    if (timestamp >= windowStartsAt && timestamp <= queriedAt) {
+      samplesByTimestamp.set(timestamp, value);
+    }
+  };
+
+  addSample(windowStartsAt, healthyValue);
+  if (alertSignal === null) {
+    const incidentCreatedAt = Date.parse(record.detail.incident.createdAt);
+    addSample(incidentCreatedAt - 15_000, healthyValue);
+    addSample(incidentCreatedAt, failingValue);
+  } else {
+    const pendingAt = Date.parse(ALERT_PENDING_AT);
+    const firingAt = Date.parse(alertSignal.startsAt);
+    addSample(pendingAt - 5 * 60_000, healthyValue);
+    addSample(pendingAt - 15_000, healthyValue);
+    addSample(
+      pendingAt,
+      panelId === "image-pull-affected-pods" ? 1 : 2,
+    );
+    addSample(
+      pendingAt + 15_000,
+      panelId === "image-pull-affected-pods" ? 2 : 1,
+    );
+    addSample(firingAt, panelId === "image-pull-affected-pods" ? 3 : 0);
+    addSample(Date.parse(TERMINAL_AT), panelId === "image-pull-affected-pods" ? 3 : 0);
+    if (alertResolved) {
+      addSample(Date.parse(ALERT_ENDS_AT), healthyValue);
+    }
+  }
+  addSample(queriedAt, failingValue);
+  const samples = [...samplesByTimestamp]
+    .sort(([left], [right]) => left - right)
+    .map(([timestamp, value]) => ({
+      timestamp: new Date(timestamp).toISOString(),
+      value,
+    }));
+
   return {
     schemaVersion: 1,
     result: {
       panelId,
       title:
         panelId === "image-pull-affected-pods"
-          ? "Affected pods"
-          : "Waiting containers",
-      unit: panelId === "image-pull-affected-pods" ? "pods" : "containers",
-      threshold: 1,
+          ? "镜像拉取失败 Pod"
+          : "Deployment 可用副本",
+      unit: panelId === "image-pull-affected-pods" ? "pods" : "replicas",
+      threshold: panelId === "image-pull-affected-pods" ? 1 : null,
+      riskDirection:
+        panelId === "image-pull-affected-pods"
+          ? "higher_is_worse"
+          : "lower_is_worse",
       window,
       state: "ok",
-      queriedAt: TERMINAL_AT,
-      latestSampleAt: TERMINAL_AT,
-      currentValue,
-      samples: [
-        { timestamp: STARTED_AT, value: 1 },
-        { timestamp: TERMINAL_AT, value: currentValue },
-      ],
+      queriedAt: queriedAtTimestamp,
+      latestSampleAt: queriedAtTimestamp,
+      currentValue:
+        panelId === "image-pull-affected-pods"
+          ? affectedPods
+          : availableReplicas,
+      samples,
     },
     markers: metricMarkers(record),
     markersTruncated: false,
@@ -503,9 +861,16 @@ async function handleRequest(
     mode = "diagnosed";
     nextIncident = 1;
     nextEventId = 1;
+    showcaseEnabled = false;
     incidents.clear();
     eventConnections.clear();
     json(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/__test__/showcase") {
+    seedShowcase();
+    json(response, 200, { incidents: incidents.size, ok: true });
     return;
   }
 
@@ -571,6 +936,11 @@ async function handleRequest(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/v1/monitoring/overview") {
+    json(response, 200, monitoringOverview());
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
     json(response, 200, {
       schemaVersion: 3,
@@ -616,12 +986,19 @@ async function handleRequest(
       return;
     }
     json(response, 200, {
-      schemaVersion: 1,
+      schemaVersion: 2,
       panels: [
-        { panelId: "image-pull-affected-pods", recommendedWindow: "15m" },
         {
-          panelId: "image-pull-waiting-containers",
+          panelId: "image-pull-affected-pods",
           recommendedWindow: "15m",
+          riskDirection: "higher_is_worse",
+          thresholdDuration: "30s",
+        },
+        {
+          panelId: "image-pull-available-replicas",
+          recommendedWindow: "15m",
+          riskDirection: "lower_is_worse",
+          thresholdDuration: null,
         },
       ],
     });
@@ -640,7 +1017,7 @@ async function handleRequest(
     }
     if (
       panelMatch[2] !== "image-pull-affected-pods" &&
-      panelMatch[2] !== "image-pull-waiting-containers"
+      panelMatch[2] !== "image-pull-available-replicas"
     ) {
       runtimeError(
         response,

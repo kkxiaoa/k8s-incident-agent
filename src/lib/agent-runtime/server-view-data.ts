@@ -4,12 +4,14 @@ import {
   parseIncidentDetailResponse,
   parseIncidentListResponse,
   parseMonitoringHealthResponse,
+  parseMonitoringOverviewResponse,
   parseMonitoringPanelListResponse,
   parseRunHistoryResponse,
   parseScenarioListResponse,
   type IncidentDetailView,
   type IncidentListView,
   type MonitoringHealthView,
+  type MonitoringOverviewView,
   type MonitoringPanelListView,
   type RunHistoryView,
   type ScenarioListView,
@@ -18,6 +20,7 @@ import {
   fetchIncident,
   fetchIncidents,
   fetchMonitoringHealth,
+  fetchMonitoringOverview,
   fetchMonitoringPanels,
   fetchRuns,
   fetchScenarios,
@@ -39,15 +42,17 @@ interface IncidentConsoleOverview {
   scenarios: ScenarioListView | null;
   incidents: IncidentListView | null;
   monitoringHealth: MonitoringHealthView | null;
+  monitoringOverview: MonitoringOverviewView | null;
 }
 
 export async function loadIncidentConsoleOverview(
   intakeMode: IncidentIntakeMode,
 ): Promise<IncidentConsoleOverview> {
   if (intakeMode === "online") {
-    const [incidentResult, healthResult] = await Promise.all([
+    const [incidentResult, healthResult, overviewResult] = await Promise.all([
       fetchIncidents(new URLSearchParams({ limit: "50" })),
       fetchMonitoringHealth(),
+      fetchMonitoringOverview(),
     ]);
     return {
       scenarios: null,
@@ -57,14 +62,19 @@ export async function loadIncidentConsoleOverview(
       monitoringHealth: healthResult.response.ok
         ? parseMonitoringHealthResponse(healthResult.value)
         : null,
+      monitoringOverview: overviewResult.response.ok
+        ? parseMonitoringOverviewResponse(overviewResult.value)
+        : null,
     };
   }
 
-  const [scenarioResult, incidentResult, healthResult] = await Promise.all([
-    fetchScenarios(),
-    fetchIncidents(new URLSearchParams({ limit: "50" })),
-    fetchMonitoringHealth(),
-  ]);
+  const [scenarioResult, incidentResult, healthResult, overviewResult] =
+    await Promise.all([
+      fetchScenarios(),
+      fetchIncidents(new URLSearchParams({ limit: "50" })),
+      fetchMonitoringHealth(),
+      fetchMonitoringOverview(),
+    ]);
 
   return {
     scenarios: scenarioResult.response.ok
@@ -75,6 +85,9 @@ export async function loadIncidentConsoleOverview(
       : null,
     monitoringHealth: healthResult.response.ok
       ? parseMonitoringHealthResponse(healthResult.value)
+      : null,
+    monitoringOverview: overviewResult.response.ok
+      ? parseMonitoringOverviewResponse(overviewResult.value)
       : null,
   };
 }

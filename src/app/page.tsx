@@ -2,7 +2,7 @@ import { Suspense } from "react";
 
 import { IncidentList } from "@/components/incidents/incident-list";
 import { ScenarioLauncher } from "@/components/incidents/scenario-launcher";
-import { MonitoringHealthOverview } from "@/components/monitoring/monitoring-health-overview";
+import { HomeMonitoringDashboard } from "@/components/monitoring/home-monitoring-dashboard";
 import {
   getIncidentIntakeMode,
   type IncidentIntakeMode,
@@ -21,44 +21,22 @@ async function RuntimeOverview({
 
   return (
     <>
-      <MonitoringHealthOverview initialHealth={overview.monitoringHealth} />
-      <section
-        className={`home-console${manualIntake ? "" : " home-console--online"}`}
-        aria-label="Incident Console"
-      >
-        {manualIntake ? (
-          <article className="home-panel home-panel--launcher">
-            <div className="section-heading">
-              <div>
-                <span className="eyebrow">Manual trigger</span>
-                <h2>启动只读诊断</h2>
-              </div>
-              <span className="step-number">01</span>
-            </div>
-            <p className="panel-intro">
-              选择版本化场景。Runtime 会创建持久化 Incident 与受预算约束的诊断 Run。
-            </p>
-            {overview.scenarios === null ? (
-              <p className="page-alert" role="alert">
-                暂时无法加载诊断场景，请稍后重试。
-              </p>
-            ) : (
-              <ScenarioLauncher scenarios={overview.scenarios.items} />
-            )}
-          </article>
-        ) : null}
+      <HomeMonitoringDashboard
+        initialHealth={overview.monitoringHealth}
+        initialOverview={overview.monitoringOverview}
+      />
 
-        <article className="home-panel home-panel--incidents">
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow">Persisted records</span>
-              <h2>最近的 Incident</h2>
-            </div>
-            <span className="step-number">{manualIntake ? "02" : "01"}</span>
+      <section className="recent-incidents" aria-labelledby="recent-incidents-heading">
+        <header className="recent-incidents__header">
+          <div>
+            <span className="eyebrow">Persisted records</span>
+            <h2 id="recent-incidents-heading">最近 Incident</h2>
           </div>
-          <p className="panel-intro">
-            页面读取 Runtime 的业务状态；刷新后仍从持久化记录恢复。
-          </p>
+          {overview.incidents !== null && overview.incidents.nextCursor !== null ? (
+            <span>显示最近 50 条</span>
+          ) : null}
+        </header>
+        <div className="recent-incidents__body">
           {overview.incidents === null ? (
             <p className="page-alert" role="alert">
               暂时无法加载最近记录，请稍后重试。
@@ -66,13 +44,29 @@ async function RuntimeOverview({
           ) : (
             <>
               <IncidentList incidents={overview.incidents.items} />
-              {overview.incidents.nextCursor !== null ? (
-                <p className="scope-note">当前显示最近 50 条 Incident。</p>
-              ) : null}
             </>
           )}
-        </article>
+        </div>
       </section>
+
+      {manualIntake ? (
+        <section className="developer-intake" aria-labelledby="developer-intake-heading">
+          <header>
+            <div>
+              <span className="eyebrow">Development only</span>
+              <h2 id="developer-intake-heading">离线评估入口</h2>
+            </div>
+            <p>仅在 manual intake 模式下使用版本化场景创建只读诊断。</p>
+          </header>
+          {overview.scenarios === null ? (
+            <p className="page-alert" role="alert">
+              暂时无法加载诊断场景，请稍后重试。
+            </p>
+          ) : (
+            <ScenarioLauncher scenarios={overview.scenarios.items} />
+          )}
+        </section>
+      ) : null}
     </>
   );
 }
@@ -86,30 +80,77 @@ function RuntimeOverviewLoading({
 
   return (
     <>
-      <section className="monitoring-health monitoring-health--loading" aria-label="监控链路加载中">
-        <span className="skeleton skeleton--short" />
-        <span className="skeleton skeleton--title" />
-        <span className="skeleton skeleton--health-path" />
+      <section className="home-monitoring home-monitoring--loading" aria-label="运行概览加载中">
+        <div className="home-monitoring__status-grid">
+          <article className="monitoring-health monitoring-health--loading">
+            <span className="skeleton skeleton--health-path" />
+          </article>
+          <div className="overview-counts">
+            {Array.from({ length: 4 }, (_, index) => (
+              <span className="skeleton skeleton--count" key={index} />
+            ))}
+          </div>
+        </div>
+        <div className="home-monitoring__charts">
+          <span className="skeleton skeleton--overview-chart" />
+          <span className="skeleton skeleton--overview-chart" />
+        </div>
       </section>
       <section
-        className={`home-console${manualIntake ? "" : " home-console--online"}`}
-        aria-label="Incident Console 加载中"
+        className="recent-incidents recent-incidents--loading"
+        aria-busy="true"
+        aria-label="最近 Incident 加载中"
       >
-        {manualIntake ? (
-          <article className="home-panel skeleton-panel">
-            <span className="skeleton skeleton--short" />
-            <span className="skeleton skeleton--title" />
-            <span className="skeleton skeleton--line" />
-            <span className="skeleton skeleton--control" />
-          </article>
-        ) : null}
-        <article className="home-panel skeleton-panel">
-          <span className="skeleton skeleton--short" />
-          <span className="skeleton skeleton--title" />
-          <span className="skeleton skeleton--line" />
-          <span className="skeleton skeleton--card" />
-        </article>
+        <header className="recent-incidents__header" aria-hidden="true">
+          <div>
+            <span className="skeleton skeleton--section-eyebrow" />
+            <span className="skeleton skeleton--section-title" />
+          </div>
+          <span className="skeleton skeleton--recent-meta" />
+        </header>
+        <div className="recent-incidents__body">
+          <div className="incident-table-skeleton" aria-hidden="true">
+            <div className="incident-table-skeleton__header">
+              {Array.from({ length: 5 }, (_, index) => (
+                <span className="skeleton" key={index} />
+              ))}
+            </div>
+            {Array.from({ length: 4 }, (_, rowIndex) => (
+              <div className="incident-table-skeleton__row" key={rowIndex}>
+                {Array.from({ length: 5 }, (_, cellIndex) => (
+                  <span className="skeleton" key={cellIndex} />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
+      {manualIntake ? (
+        <section
+          className="developer-intake developer-intake--loading"
+          aria-busy="true"
+          aria-label="离线评估入口加载中"
+        >
+          <header aria-hidden="true">
+            <div>
+              <span className="skeleton skeleton--section-eyebrow" />
+              <span className="skeleton skeleton--section-title" />
+            </div>
+            <p>
+              <span className="skeleton skeleton--intake-description" />
+            </p>
+          </header>
+          <div
+            className="scenario-launcher scenario-launcher--loading"
+            aria-hidden="true"
+          >
+            <span className="skeleton skeleton--field-label" />
+            <span className="skeleton skeleton--scenario-select" />
+            <span className="skeleton skeleton--scenario-copy" />
+            <span className="skeleton skeleton--scenario-action" />
+          </div>
+        </section>
+      ) : null}
     </>
   );
 }
@@ -119,28 +160,14 @@ export default function Home() {
 
   return (
     <main className="page-shell home-page">
-      <section className="hero">
-        <div className="hero__copy">
-          <span className="eyebrow eyebrow--hero">Kubernetes Incident Response</span>
-          <h1>
-            让每个结论，
-            <span>都能回到证据。</span>
-          </h1>
-          <p>
-            向受支持的真实 Kubernetes 环境，构建从故障发现、证据诊断到受控修复与恢复验证的
-            Incident Agent。
-          </p>
-        </div>
-        <aside className="boundary-card" aria-label="安全边界">
-          <span className="boundary-card__index">BOUNDARY / 01</span>
-          <h2>安全边界</h2>
-          <ul>
-            <li>浏览器只连接 Next.js BFF</li>
-            <li>集群事实必须引用持久化 Evidence</li>
-            <li>修复执行必须通过权限、策略、审批与审计门禁</li>
-          </ul>
-        </aside>
-      </section>
+      <header className="home-heading">
+        <span className="eyebrow">Kubernetes Incident Response</span>
+        <h1>运行概览</h1>
+        <p>
+          向受支持的真实 Kubernetes 环境，构建从故障发现、证据诊断到受控修复与恢复验证的
+          Incident Agent。
+        </p>
+      </header>
 
       <Suspense fallback={<RuntimeOverviewLoading intakeMode={intakeMode} />}>
         <RuntimeOverview intakeMode={intakeMode} />

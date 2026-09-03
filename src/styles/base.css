@@ -1,0 +1,72 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: #eef4f6;
+  scroll-behavior: smooth;
+}
+
+html.dialog-scroll-locked {
+  overflow: hidden;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 8% 5%, rgb(25 183 168 / 9%), transparent 29rem),
+    linear-gradient(180deg, #f8fbfc 0%, #eef4f6 70%, #e9f0f3 100%);
+  font-family: var(--font-body);
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+select {
+  font: inherit;
+}
+
+button,
+a,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 3px solid rgb(15 143 134 / 42%);
+  outline-offset: 3px;
+}
+
+.ui-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.local-timestamp {
+  font-variant-numeric: tabular-nums;
+}
+
+.local-timestamp--pending {
+  display: inline-block;
+  width: 19ch;
+  height: 0.9em;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #e7eef1 15%, #f5f8f9 48%, #e7eef1 80%);
+  background-size: 240% 100%;
+  vertical-align: -0.08em;
+  animation: local-timestamp-shimmer 1.45s infinite linear;
+}
+
+@keyframes local-timestamp-shimmer {
+  to {
+    background-position: -240% 0;
+  }
+}

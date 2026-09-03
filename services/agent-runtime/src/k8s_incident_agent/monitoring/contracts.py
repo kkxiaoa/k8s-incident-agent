@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from itertools import pairwise
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -30,6 +31,11 @@ class MetricQueryState(StrEnum):
     PARTIAL = "partial"
     QUERY_ERROR = "query_error"
     MONITORING_UNAVAILABLE = "monitoring_unavailable"
+
+
+class MetricRiskDirection(StrEnum):
+    HIGHER_IS_WORSE = "higher_is_worse"
+    LOWER_IS_WORSE = "lower_is_worse"
 
 
 class MonitoringComponentState(StrEnum):
@@ -87,7 +93,8 @@ class MetricPanelResult(_MonitoringContract):
     panel_id: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=160)
     unit: str = Field(min_length=1, max_length=32)
-    threshold: float
+    threshold: float | None
+    risk_direction: MetricRiskDirection
     window: MetricWindow
     state: MetricQueryState
     queried_at: datetime
@@ -97,8 +104,8 @@ class MetricPanelResult(_MonitoringContract):
 
     @field_validator("threshold")
     @classmethod
-    def require_finite_threshold(cls, value: float) -> float:
-        if not math.isfinite(value):
+    def require_finite_threshold(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
             raise ValueError("Metric threshold must be finite")
         return value
 
@@ -120,6 +127,11 @@ class MetricPanelResult(_MonitoringContract):
 
     @model_validator(mode="after")
     def require_state_shape(self) -> MetricPanelResult:
+        has_static_threshold = self.threshold is not None
+        if (
+            self.risk_direction is MetricRiskDirection.HIGHER_IS_WORSE
+        ) is not has_static_threshold:
+            raise ValueError("Metric threshold does not match its risk direction")
         has_samples = bool(self.samples)
         has_latest = self.latest_sample_at is not None
         has_current = self.current_value is not None
@@ -143,10 +155,14 @@ class MetricPanelResult(_MonitoringContract):
 class MonitoringPanelReference(_MonitoringContract):
     panel_id: str = Field(min_length=1, max_length=128)
     recommended_window: MetricWindow
+    risk_direction: MetricRiskDirection
+    threshold_duration: str | None = Field(
+        pattern=r"^[1-9][0-9]*(?:ms|s|m|h)$",
+    )
 
 
 class IncidentMonitoringPanels(_MonitoringContract):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     panels: tuple[MonitoringPanelReference, ...] = Field(max_length=8)
 
 
@@ -241,3 +257,68 @@ class MonitoringHealthSnapshot(_MonitoringContract):
         if value.utcoffset() != timedelta(0):
             raise ValueError("Monitoring health timestamps must use UTC")
         return value.astimezone(UTC)
+
+
+class MonitoringOverviewCounts(_MonitoringContract):
+    total_incidents: int = Field(ge=0)
+    firing_alerts: int = Field(ge=0)
+    triaging_incidents: int = Field(ge=0)
+    diagnosed_incidents: int = Field(ge=0)
+
+
+class MonitoringOverviewFamily(_MonitoringContract):
+    source_ref: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=160)
+    count: int = Field(ge=1)
+
+
+class MonitoringOverviewSample(_MonitoringContract):
+    timestamp: datetime
+    incidents_created: int = Field(ge=0)
+    alert_conditions_resolved: int = Field(ge=0)
+
+    @field_validator("timestamp")
+    @classmethod
+    def require_utc_hour(cls, value: datetime) -> datetime:
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("Monitoring overview timestamps must use UTC")
+        normalized = value.astimezone(UTC)
+        if normalized != normalized.replace(minute=0, second=0, microsecond=0):
+            raise ValueError("Monitoring overview samples must start on an hour")
+        return normalized
+
+
+class MonitoringOverviewSnapshot(_MonitoringContract):
+    schema_version: Literal[1] = 1
+    window: Literal["24h"] = "24h"
+    generated_at: datetime
+    counts: MonitoringOverviewCounts
+    families: tuple[MonitoringOverviewFamily, ...] = Field(max_length=64)
+    samples: tuple[MonitoringOverviewSample, ...] = Field(
+        min_length=24,
+        max_length=24,
+    )
+
+    @field_validator("generated_at")
+    @classmethod
+    def require_utc_generated_at(cls, value: datetime) -> datetime:
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("Monitoring overview generation time must use UTC")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def require_consistent_overview(self) -> MonitoringOverviewSnapshot:
+        timestamps = [sample.timestamp for sample in self.samples]
+        if any(
+            current - previous != timedelta(hours=1)
+            for previous, current in pairwise(timestamps)
+        ):
+            raise ValueError("Monitoring overview samples must be consecutive")
+        current_bucket = self.generated_at.replace(minute=0, second=0, microsecond=0)
+        if timestamps[-1] != current_bucket:
+            raise ValueError(
+                "Monitoring overview samples must end at the current UTC hour"
+            )
+        if sum(family.count for family in self.families) != self.counts.firing_alerts:
+            raise ValueError("Monitoring overview families must cover firing alerts")
+        return self

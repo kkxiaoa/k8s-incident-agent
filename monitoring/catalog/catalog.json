@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 4,
-  "catalogVersion": "2026-09-03.4",
+  "schemaVersion": 5,
+  "catalogVersion": "2026-09-03.6",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -31,21 +31,25 @@
       "panels": [
         {
           "panelId": "image-pull-affected-pods",
-          "title": "Affected pods",
+          "title": "镜像拉取失败 Pod",
           "unit": "pods",
           "threshold": 1,
+          "riskDirection": "higher_is_worse",
+          "thresholdDuration": "30s",
           "recommendedWindow": "15m",
           "staleAfterSeconds": 60,
           "queryTemplate": "sum(max by (namespace, pod) ((kube_pod_container_status_waiting_reason{namespace=\"{{namespace}}\",reason=~\"ErrImagePull|ImagePullBackOff\"} == 1) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"))) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"
         },
         {
-          "panelId": "image-pull-waiting-containers",
-          "title": "Waiting containers",
-          "unit": "containers",
-          "threshold": 1,
+          "panelId": "image-pull-available-replicas",
+          "title": "Deployment 可用副本",
+          "unit": "replicas",
+          "threshold": null,
+          "riskDirection": "lower_is_worse",
+          "thresholdDuration": null,
           "recommendedWindow": "15m",
           "staleAfterSeconds": 60,
-          "queryTemplate": "sum((kube_pod_container_status_waiting_reason{namespace=\"{{namespace}}\",reason=~\"ErrImagePull|ImagePullBackOff\"} == 1) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"
+          "queryTemplate": "max(kube_deployment_status_replicas_available{namespace=\"{{namespace}}\",deployment=\"{{name}}\"})"
         }
       ]
     },
@@ -83,6 +87,8 @@
           "title": "Container restarts",
           "unit": "restarts",
           "threshold": 1,
+          "riskDirection": "higher_is_worse",
+          "thresholdDuration": null,
           "recommendedWindow": "15m",
           "staleAfterSeconds": 60,
           "queryTemplate": "sum(kube_pod_container_status_restarts_total{namespace=\"{{namespace}}\"} * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"
@@ -92,6 +98,8 @@
           "title": "CrashLoopBackOff containers",
           "unit": "containers",
           "threshold": 1,
+          "riskDirection": "higher_is_worse",
+          "thresholdDuration": "30s",
           "recommendedWindow": "15m",
           "staleAfterSeconds": 60,
           "queryTemplate": "sum((kube_pod_container_status_waiting_reason{namespace=\"{{namespace}}\",reason=\"CrashLoopBackOff\"} == 1) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"

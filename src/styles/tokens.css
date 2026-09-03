@@ -1,0 +1,26 @@
+:root {
+  --ink: #102a43;
+  --muted: #5b7083;
+  --faint: #8294a4;
+  --line: #d8e2e8;
+  --line-strong: #bacbd5;
+  --surface: #ffffff;
+  --surface-soft: #f4f8fa;
+  --navy: #082b45;
+  --navy-deep: #061f32;
+  --teal: #0f8f86;
+  --teal-bright: #19b7a8;
+  --teal-soft: #e1f5f1;
+  --amber: #a66a05;
+  --amber-soft: #fff4d6;
+  --red: #b83c46;
+  --red-soft: #fdebed;
+  --green: #247b61;
+  --green-soft: #e4f4ed;
+  --shadow: 0 24px 70px rgb(17 53 75 / 10%);
+  --radius-large: 22px;
+  --radius-medium: 14px;
+  --font-body: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}

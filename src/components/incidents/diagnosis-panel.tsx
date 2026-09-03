@@ -1,8 +1,11 @@
 import type {
   DiagnosisResponse,
+  EvidenceResponse,
   RunErrorResponse,
   RunStatus,
 } from "@/lib/agent-runtime/view-models";
+import { evidenceSummary } from "@/lib/agent-runtime/view-models";
+import { UiIcon } from "@/components/ui/ui-icon";
 
 const CONFIDENCE_LABELS = {
   low: "低置信度",
@@ -12,10 +15,12 @@ const CONFIDENCE_LABELS = {
 
 export function DiagnosisPanel({
   diagnosis,
+  evidence = [],
   runStatus,
   runError,
 }: {
   diagnosis: DiagnosisResponse | null;
+  evidence?: EvidenceResponse[];
   runStatus: RunStatus;
   runError: RunErrorResponse | null;
 }) {
@@ -51,6 +56,8 @@ export function DiagnosisPanel({
     );
   }
 
+  const evidenceById = new Map(evidence.map((item) => [item.id, item]));
+
   return (
     <section className="console-section diagnosis-panel" aria-labelledby="diagnosis-heading">
       <div className="section-heading">
@@ -80,19 +87,48 @@ export function DiagnosisPanel({
           {diagnosis.rootCauses.map((cause) => (
             <li key={cause.code}>
               <div className="root-cause-list__heading">
-                <strong>{cause.statement}</strong>
-                <span className={`confidence confidence--${cause.confidence}`}>
-                  {CONFIDENCE_LABELS[cause.confidence]}
-                </span>
+                <strong>
+                  <span>根因（{CONFIDENCE_LABELS[cause.confidence]}）</span>
+                  {cause.statement}
+                </strong>
+                <code>{cause.code}</code>
               </div>
-              <code>{cause.code}</code>
-              <div className="evidence-links">
-                {cause.evidenceIds.map((evidenceId, index) => (
-                  <a key={evidenceId} href={`#evidence-${evidenceId}`}>
-                    证据 {index + 1}
-                  </a>
-                ))}
-              </div>
+              {cause.evidenceIds.length === 0 ? null : (
+                <div className="diagnosis-evidence">
+                  <h3>关键证据</h3>
+                  <ul>
+                    {cause.evidenceIds.map((evidenceId) => {
+                      const item = evidenceById.get(evidenceId);
+                      const label =
+                        item === undefined
+                          ? "关联 Evidence"
+                          : evidenceSummary(item);
+                      return (
+                        <li key={evidenceId}>
+                          <span>
+                            {item === undefined ? (
+                              label
+                            ) : (
+                              <>
+                                {label}
+                                {item.redacted ? " · 已脱敏" : null}
+                                {item.truncated ? " · 已截断" : null}
+                              </>
+                            )}
+                          </span>
+                          <a
+                            href={`#evidence-${evidenceId}`}
+                            aria-label={`查看证据：${label}`}
+                          >
+                            查看证据
+                            <UiIcon name="external-link" />
+                          </a>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
             </li>
           ))}
         </ol>

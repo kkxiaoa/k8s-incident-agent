@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 
+import { ScrollTop } from "@/components/ui/scroll-top";
+import { UiIcon } from "@/components/ui/ui-icon";
 import { getYamlAssistantUrl } from "@/lib/agent-runtime/server-config";
 
 import "./globals.css";
@@ -19,7 +21,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   const yamlAssistantUrl = getYamlAssistantUrl();
 
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" data-scroll-behavior="smooth">
       <body>
         <div className="app-shell">
           <header className="site-header">
@@ -41,7 +43,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             {yamlAssistantUrl === null ? null : (
               <a className="product-link" href={yamlAssistantUrl}>
                 YAML 编写助手
-                <span aria-hidden="true">↗</span>
+                <UiIcon name="external-link" />
               </a>
             )}
           </header>
@@ -51,6 +53,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <span>Runtime 是 Incident、Run、Evidence 与 Diagnosis 的权威来源</span>
           </footer>
         </div>
+        <ScrollTop />
       </body>
     </html>
   );

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final, Literal, cast
 from uuid import UUID, uuid4, uuid5
@@ -66,6 +66,7 @@ from k8s_incident_agent.persistence.models import (
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
 _SCHEMA_VERSION: Final = 3
 _CANONICAL_ALERT_TIMESTAMP = re.compile(CANONICAL_ALERT_TIMESTAMP_PATTERN)
+_OVERVIEW_HOUR = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +162,29 @@ class IncidentMonitoringContext:
     alert_signal: AlertSignalRecord | None
     runs: tuple[MonitoringRunInterval, ...]
     runs_truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MonitoringOverviewFamilyRecord:
+    source_ref: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class MonitoringOverviewSampleRecord:
+    timestamp: datetime
+    incidents_created: int
+    alert_conditions_resolved: int
+
+
+@dataclass(frozen=True, slots=True)
+class MonitoringOverviewRecord:
+    total_incidents: int
+    firing_alerts: int
+    triaging_incidents: int
+    diagnosed_incidents: int
+    families: tuple[MonitoringOverviewFamilyRecord, ...]
+    samples: tuple[MonitoringOverviewSampleRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +298,135 @@ class IncidentRepository:
         try:
             async with self._session_factory() as session:
                 return await session.get(IncidentRow, str(incident_id)) is not None
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def get_monitoring_overview(
+        self,
+        generated_at: datetime,
+    ) -> MonitoringOverviewRecord:
+        generated_at = _require_aware_datetime(generated_at).astimezone(UTC)
+        current_hour = generated_at.replace(minute=0, second=0, microsecond=0)
+        first_hour = current_hour - timedelta(hours=23)
+        first_alert_timestamp = _canonical_alert_datetime(first_hour)
+        generated_alert_timestamp = _canonical_alert_datetime(generated_at)
+        try:
+            async with self._session_factory() as session:
+                total_incidents = _overview_count(
+                    await session.scalar(select(func.count()).select_from(IncidentRow))
+                )
+                firing_alerts = _overview_count(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(AlertSignalRow)
+                        .where(AlertSignalRow.status == AlertSignalStatus.FIRING)
+                    )
+                )
+                triaging_incidents = _overview_count(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(IncidentRow)
+                        .where(IncidentRow.status == IncidentStatus.TRIAGING)
+                    )
+                )
+                diagnosed_incidents = _overview_count(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(IncidentRow)
+                        .where(IncidentRow.status == IncidentStatus.DIAGNOSED)
+                    )
+                )
+
+                family_rows = (
+                    await session.execute(
+                        select(
+                            IncidentRow.trigger_source,
+                            IncidentRow.trigger_ref,
+                            func.count(),
+                        )
+                        .join(
+                            AlertSignalRow,
+                            AlertSignalRow.incident_id == IncidentRow.id,
+                        )
+                        .where(AlertSignalRow.status == AlertSignalStatus.FIRING)
+                        .group_by(
+                            IncidentRow.trigger_source,
+                            IncidentRow.trigger_ref,
+                        )
+                        .order_by(func.count().desc(), IncidentRow.trigger_ref)
+                    )
+                ).all()
+                families = tuple(
+                    _overview_family_record(
+                        source_type,
+                        source_ref,
+                        count,
+                    )
+                    for source_type, source_ref, count in family_rows
+                )
+
+                incident_hour = func.strftime(
+                    "%Y-%m-%dT%H",
+                    IncidentRow.created_at,
+                )
+                incident_rows = (
+                    (
+                        await session.execute(
+                            select(incident_hour, func.count())
+                            .where(
+                                IncidentRow.created_at >= first_hour,
+                                IncidentRow.created_at <= generated_at,
+                            )
+                            .group_by(incident_hour)
+                        )
+                    )
+                    .tuples()
+                    .all()
+                )
+                resolved_hour = func.substr(AlertSignalRow.ends_at, 1, 13)
+                resolved_rows = (
+                    (
+                        await session.execute(
+                            select(resolved_hour, func.count())
+                            .where(
+                                AlertSignalRow.ends_at.is_not(None),
+                                AlertSignalRow.ends_at >= first_alert_timestamp,
+                                AlertSignalRow.ends_at <= generated_alert_timestamp,
+                            )
+                            .group_by(resolved_hour)
+                        )
+                    )
+                    .tuples()
+                    .all()
+                )
+                incident_counts = _overview_hour_counts(incident_rows)
+                resolved_counts = _overview_hour_counts(resolved_rows)
+                samples = tuple(
+                    MonitoringOverviewSampleRecord(
+                        timestamp=timestamp,
+                        incidents_created=incident_counts.get(
+                            timestamp.strftime("%Y-%m-%dT%H"),
+                            0,
+                        ),
+                        alert_conditions_resolved=resolved_counts.get(
+                            timestamp.strftime("%Y-%m-%dT%H"),
+                            0,
+                        ),
+                    )
+                    for timestamp in (
+                        first_hour + timedelta(hours=offset) for offset in range(24)
+                    )
+                )
+                return MonitoringOverviewRecord(
+                    total_incidents=total_incidents,
+                    firing_alerts=firing_alerts,
+                    triaging_incidents=triaging_incidents,
+                    diagnosed_incidents=diagnosed_incidents,
+                    families=families,
+                    samples=samples,
+                )
+        except RepositoryError:
+            raise
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
@@ -1762,6 +1915,50 @@ async def _delete_exact_rows(
     result = await session.execute(statement)
     if getattr(result, "rowcount", None) != expected_rows:
         raise RecoveryConsistencyError
+
+
+def _canonical_alert_datetime(value: datetime) -> str:
+    normalized = _require_aware_datetime(value).astimezone(UTC)
+    return (
+        normalized.strftime("%Y-%m-%dT%H:%M:%S.") + f"{normalized.microsecond:06d}000Z"
+    )
+
+
+def _overview_count(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise RecoveryConsistencyError
+    return value
+
+
+def _overview_family_record(
+    source_type: object,
+    source_ref: object,
+    count: object,
+) -> MonitoringOverviewFamilyRecord:
+    if (
+        source_type != "alertmanager"
+        or not isinstance(source_ref, str)
+        or not source_ref
+    ):
+        raise RecoveryConsistencyError
+    normalized_count = _overview_count(count)
+    if normalized_count == 0:
+        raise RecoveryConsistencyError
+    return MonitoringOverviewFamilyRecord(
+        source_ref=source_ref,
+        count=normalized_count,
+    )
+
+
+def _overview_hour_counts(
+    rows: Iterable[tuple[object, object]],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for hour, count in rows:
+        if not isinstance(hour, str) or _OVERVIEW_HOUR.fullmatch(hour) is None:
+            raise RecoveryConsistencyError
+        counts[hour] = _overview_count(count)
+    return counts
 
 
 def _incident_list_record(row: IncidentRow) -> IncidentListRecord:

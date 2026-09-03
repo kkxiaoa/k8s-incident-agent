@@ -1,0 +1,210 @@
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+}
+
+.site-header {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 18px clamp(20px, 5vw, 72px);
+  border-bottom: 1px solid rgb(186 203 213 / 65%);
+  background: rgb(248 251 252 / 88%);
+  backdrop-filter: blur(16px);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+}
+
+.brand__mark {
+  display: block;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  filter: drop-shadow(0 9px 11px rgb(15 143 134 / 23%));
+}
+
+.brand > span:last-child {
+  display: grid;
+  gap: 1px;
+}
+
+.brand strong {
+  color: var(--navy);
+  font-size: 0.94rem;
+  letter-spacing: 0.01em;
+}
+
+.brand small {
+  color: var(--muted);
+  font-size: 0.69rem;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.read-only-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid #c7e5df;
+  border-radius: 999px;
+  color: #11675f;
+  background: rgb(225 245 241 / 80%);
+  font-size: 0.77rem;
+  font-weight: 700;
+}
+
+.read-only-pill > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--teal-bright);
+  box-shadow: 0 0 0 4px rgb(25 183 168 / 12%);
+}
+
+.page-shell {
+  width: min(100%, 1440px);
+  flex: 1;
+  margin: 0 auto;
+  padding-inline: clamp(20px, 5vw, 72px);
+}
+
+.product-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--navy);
+  background: rgb(255 255 255 / 82%);
+  font-size: 0.76rem;
+  font-weight: 760;
+  text-decoration: none;
+  box-shadow: 0 7px 18px rgb(17 53 75 / 5%);
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.product-link:hover {
+  border-color: #9ccfc8;
+  box-shadow: 0 9px 22px rgb(15 143 134 / 11%);
+  transform: translateY(-1px);
+}
+
+.product-link .ui-icon {
+  width: 15px;
+  height: 15px;
+  color: var(--teal);
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--teal);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: var(--teal-bright);
+  transform: rotate(12deg);
+}
+
+.icon-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.icon-button .ui-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.scroll-top {
+  position: fixed;
+  z-index: 9;
+  right: clamp(18px, 3vw, 38px);
+  bottom: clamp(18px, 3vw, 34px);
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgb(15 143 134 / 24%);
+  border-radius: 50%;
+  opacity: 0;
+  color: var(--teal);
+  background: rgb(255 255 255 / 90%);
+  box-shadow: 0 12px 30px rgb(17 53 75 / 16%);
+  pointer-events: none;
+  cursor: pointer;
+  transform: translateY(10px) scale(0.92);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+  backdrop-filter: blur(12px);
+}
+
+.scroll-top--visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+.scroll-top:hover {
+  border-color: rgb(15 143 134 / 48%);
+  box-shadow: 0 15px 34px rgb(15 143 134 / 20%);
+  transform: translateY(-2px) scale(1.04);
+}
+
+.scroll-top .ui-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.is-spinning {
+  animation: monitoring-spin 800ms linear infinite;
+}
+
+@keyframes monitoring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.site-footer {
+  display: flex;
+  width: min(100%, 1320px);
+  justify-content: space-between;
+  gap: 24px;
+  margin: auto auto 0;
+  padding: 28px clamp(20px, 5vw, 72px);
+  border-top: 1px solid rgb(186 203 213 / 65%);
+  color: var(--faint);
+  font-size: 0.68rem;
+}

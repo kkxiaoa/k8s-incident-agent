@@ -20,16 +20,45 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricMarkerKind,
     MetricPanelResult,
     MetricQueryState,
+    MetricRiskDirection,
     MetricSample,
     MetricWindow,
     MonitoringComponentState,
     MonitoringHealthSnapshot,
     MonitoringOverallState,
+    MonitoringOverviewCounts,
+    MonitoringOverviewFamily,
+    MonitoringOverviewSample,
+    MonitoringOverviewSnapshot,
     MonitoringPanelReference,
 )
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
 NOW = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
+
+
+def test_monitoring_overview_rejects_a_stale_24_hour_window() -> None:
+    first_hour = NOW - timedelta(hours=24)
+
+    with pytest.raises(ValueError, match="end at the current UTC hour"):
+        MonitoringOverviewSnapshot(
+            generated_at=NOW,
+            counts=MonitoringOverviewCounts(
+                total_incidents=0,
+                firing_alerts=0,
+                triaging_incidents=0,
+                diagnosed_incidents=0,
+            ),
+            families=(),
+            samples=tuple(
+                MonitoringOverviewSample(
+                    timestamp=first_hour + timedelta(hours=offset),
+                    incidents_created=0,
+                    alert_conditions_resolved=0,
+                )
+                for offset in range(24)
+            ),
+        )
 
 
 class _MonitoringService:
@@ -45,16 +74,47 @@ class _MonitoringService:
             watchdog_last_received_at=NOW - timedelta(minutes=7),
         )
 
+    async def get_overview(self) -> MonitoringOverviewSnapshot:
+        first_hour = NOW - timedelta(hours=23)
+        return MonitoringOverviewSnapshot(
+            generated_at=NOW,
+            counts=MonitoringOverviewCounts(
+                total_incidents=8,
+                firing_alerts=2,
+                triaging_incidents=1,
+                diagnosed_incidents=5,
+            ),
+            families=(
+                MonitoringOverviewFamily(
+                    source_ref="K8sIncidentImagePullBackOff",
+                    display_name="Image pull failure",
+                    count=2,
+                ),
+            ),
+            samples=tuple(
+                MonitoringOverviewSample(
+                    timestamp=first_hour + timedelta(hours=offset),
+                    incidents_created=1 if offset == 23 else 0,
+                    alert_conditions_resolved=1 if offset == 22 else 0,
+                )
+                for offset in range(24)
+            ),
+        )
+
     async def list_panels(self, _incident_id: object) -> IncidentMonitoringPanels:
         return IncidentMonitoringPanels(
             panels=(
                 MonitoringPanelReference(
                     panel_id="image-pull-affected-pods",
                     recommended_window=MetricWindow.FIFTEEN_MINUTES,
+                    risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
+                    threshold_duration="30s",
                 ),
                 MonitoringPanelReference(
-                    panel_id="image-pull-waiting-containers",
+                    panel_id="image-pull-available-replicas",
                     recommended_window=MetricWindow.FIFTEEN_MINUTES,
+                    risk_direction=MetricRiskDirection.LOWER_IS_WORSE,
+                    threshold_duration=None,
                 ),
             )
         )
@@ -72,6 +132,7 @@ class _MonitoringService:
                 title="Affected pods",
                 unit="pods",
                 threshold=1.0,
+                risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
                 window=window,
                 state=MetricQueryState.OK,
                 queried_at=NOW,
@@ -137,6 +198,58 @@ async def test_monitoring_health_route_returns_the_bounded_projection(
 
 
 @pytest.mark.asyncio
+async def test_monitoring_overview_route_returns_fixed_24_hour_projection(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        runtime_paths=RuntimePaths.prepare(tmp_path / "runtime"),
+        scenario_catalog_dir=REPOSITORY_ROOT / "scenarios",
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+    )
+
+    @asynccontextmanager
+    async def runtime_context(
+        _settings: Settings,
+    ) -> AsyncGenerator[RuntimeContainer]:
+        yield RuntimeContainer(
+            incidents=cast(IncidentApplicationService, object()),
+            events=cast(IncidentEventService, object()),
+            alerts=None,
+            monitoring=cast(MonitoringApplicationService, _MonitoringService()),
+        )
+
+    app = api.create_app(settings=settings, runtime_context_factory=runtime_context)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/api/v1/monitoring/overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schemaVersion"] == 1
+    assert payload["window"] == "24h"
+    assert payload["counts"] == {
+        "totalIncidents": 8,
+        "firingAlerts": 2,
+        "triagingIncidents": 1,
+        "diagnosedIncidents": 5,
+    }
+    assert payload["families"] == [
+        {
+            "sourceRef": "K8sIncidentImagePullBackOff",
+            "displayName": "Image pull failure",
+            "count": 2,
+        }
+    ]
+    assert len(payload["samples"]) == 24
+    assert payload["samples"][-1]["incidentsCreated"] == 1
+    assert payload["samples"][-2]["alertConditionsResolved"] == 1
+
+
+@pytest.mark.asyncio
 async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
     tmp_path: Path,
 ) -> None:
@@ -185,15 +298,19 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
 
     assert refs.status_code == 200
     assert refs.json() == {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "panels": [
             {
                 "panelId": "image-pull-affected-pods",
                 "recommendedWindow": "15m",
+                "riskDirection": "higher_is_worse",
+                "thresholdDuration": "30s",
             },
             {
-                "panelId": "image-pull-waiting-containers",
+                "panelId": "image-pull-available-replicas",
                 "recommendedWindow": "15m",
+                "riskDirection": "lower_is_worse",
+                "thresholdDuration": None,
             },
         ],
     }
@@ -205,6 +322,7 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
             "title": "Affected pods",
             "unit": "pods",
             "threshold": 1.0,
+            "riskDirection": "higher_is_worse",
             "window": "1h",
             "state": "ok",
             "queriedAt": "2026-09-02T09:00:00Z",

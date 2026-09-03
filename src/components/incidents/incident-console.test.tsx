@@ -597,6 +597,14 @@ describe("read-only incident presentation", () => {
       detail.incident.createdAt,
     );
     expect(screen.queryByText(/ UTC$/)).toBeNull();
+    expect(document.querySelector('td[data-label="Incident"]')).toHaveAttribute(
+      "headers",
+      "incident-column-name",
+    );
+    expect(document.querySelector("#incident-column-name")).toHaveAttribute(
+      "scope",
+      "col",
+    );
   });
 
   it("shows normalized evidence with safe JSON copy and expansion actions", async () => {
@@ -634,7 +642,14 @@ describe("read-only incident presentation", () => {
       within(evidence).getAllByText(/<img src=x/)[0].closest("code"),
     ).toHaveClass("language-json");
 
-    await user.click(within(evidence).getByRole("button", { name: "复制 JSON" }));
+    const copyButton = within(evidence).getByRole("button", { name: "复制 JSON" });
+    const expandButton = within(evidence).getByRole("button", { name: "展开 JSON" });
+    expect(copyButton).toHaveTextContent("");
+    expect(copyButton.querySelector(".ui-icon")).not.toBeNull();
+    expect(expandButton).toHaveTextContent("");
+    expect(expandButton.querySelector(".ui-icon")).not.toBeNull();
+
+    await user.click(copyButton);
     expect(writeText).toHaveBeenCalledWith(
       JSON.stringify(detail.evidence[0].payload, null, 2),
     );
@@ -642,7 +657,7 @@ describe("read-only incident presentation", () => {
       within(evidence).getByRole("button", { name: "JSON 已复制" }),
     ).toBeVisible();
 
-    await user.click(within(evidence).getByRole("button", { name: "展开 JSON" }));
+    await user.click(expandButton);
     const dialog = screen.getByRole("dialog", { name: "kubernetes.pod JSON" });
     expect(dialog).toHaveAttribute("open");
     expect(document.documentElement).toHaveClass("dialog-scroll-locked");
@@ -650,7 +665,6 @@ describe("read-only incident presentation", () => {
     await user.click(within(dialog).getByRole("button", { name: "关闭" }));
     expect(dialog).not.toHaveAttribute("open");
     expect(document.documentElement).not.toHaveClass("dialog-scroll-locked");
-    expect(screen.getByText("当前切片不包含指标证据。")).toBeVisible();
   });
 
   it("marks only unresolved tool calls as running", () => {
@@ -756,21 +770,51 @@ describe("read-only incident presentation", () => {
       redacted: true,
       createdAt: "2026-08-29T01:00:04Z",
     };
+    detail.evidence = [
+      {
+        id: EVIDENCE_ID,
+        toolCallId: "tool-call-1",
+        toolName: "get_pods",
+        evidenceKind: "pods",
+        targetRef: {
+          kind: "Deployment",
+          namespace: "incident-demo",
+          name: "broken-image",
+        },
+        observedAt: "2026-08-29T01:00:02Z",
+        payload: { pods: [] },
+        truncated: true,
+        redacted: true,
+      },
+    ];
 
     render(
       <DiagnosisPanel
         diagnosis={detail.diagnosis}
+        evidence={detail.evidence}
         runStatus="COMPLETED"
         runError={null}
       />,
     );
 
     expect(screen.getByText("证据不足")).toBeVisible();
-    expect(screen.getByText("低置信度")).toBeVisible();
-    expect(screen.getByRole("link", { name: "证据 1" })).toHaveAttribute(
+    expect(screen.getByText(/根因（低置信度）/)).toBeVisible();
+    expect(
+      screen.getByRole("link", {
+        name: "查看证据：Pod：未发现关联 Pod",
+      }),
+    ).toHaveAttribute(
       "href",
       `#evidence-${EVIDENCE_ID}`,
     );
+    const evidenceRow = screen
+      .getByRole("link", {
+        name: "查看证据：Pod：未发现关联 Pod",
+      })
+      .closest("li");
+    expect(evidenceRow).toHaveTextContent("Pod：未发现关联 Pod");
+    expect(evidenceRow).toHaveTextContent("已脱敏 · 已截断");
+    expect(evidenceRow).not.toHaveTextContent("2026");
     expect(screen.getByText("镜像仓库端的拉取审计记录")).toBeVisible();
     expect(screen.getByText("诊断文本已脱敏")).toBeVisible();
   });

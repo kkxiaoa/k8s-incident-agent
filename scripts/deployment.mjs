@@ -580,7 +580,7 @@ function normalizeMonitoringContract(rawVersions, rawImages, rawAlertCatalog) {
 function normalizeAlertRuleCatalog(rawAlertCatalog) {
   const document = parseJsonObject(rawAlertCatalog, "alert catalog");
   if (
-    document.schemaVersion !== 4 ||
+    document.schemaVersion !== 5 ||
     typeof document.catalogVersion !== "string" ||
     document.catalogVersion === "" ||
     !Array.isArray(document.alerts) ||
@@ -2860,6 +2860,24 @@ async function requireMonitoringAccess(request, execute) {
       { verb: "watch", resource: "pods", expected: true, namespaced: true },
       {
         verb: "get",
+        resource: "deployments.apps",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "list",
+        resource: "deployments.apps",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "watch",
+        resource: "deployments.apps",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "get",
         resource: "replicasets.apps",
         expected: true,
         namespaced: true,
@@ -3412,8 +3430,8 @@ function requireReadyMonitoringDeployment(
   if (
     !isDeepStrictEqual(container.args, [
       "--namespaces=k8s-incident-scenarios",
-      "--resources=pods,replicasets",
-      "--metric-allowlist=kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
+      "--resources=deployments,pods,replicasets",
+      "--metric-allowlist=kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
       "--use-apiserver-cache",
     ])
   ) {

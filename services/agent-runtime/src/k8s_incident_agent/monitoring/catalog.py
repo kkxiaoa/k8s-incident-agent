@@ -69,8 +69,12 @@ class MetricPanelContract(_CatalogContract):
         max_length=128,
     )
     title: str = Field(min_length=1, max_length=160)
-    unit: Literal["pods", "containers", "restarts"]
-    threshold: float = Field(allow_inf_nan=False)
+    unit: Literal["pods", "containers", "replicas", "restarts"]
+    threshold: float | None = Field(allow_inf_nan=False)
+    risk_direction: Literal["higher_is_worse", "lower_is_worse"]
+    threshold_duration: str | None = Field(
+        pattern=r"^[1-9][0-9]*(?:ms|s|m|h)$",
+    )
     recommended_window: Literal["15m", "1h", "6h"]
     stale_after_seconds: int = Field(ge=15, le=300)
     query_template: str = Field(min_length=1, max_length=16 * 1024)
@@ -92,6 +96,13 @@ class MetricPanelContract(_CatalogContract):
         if "{{" in without_supported or "}}" in without_supported:
             raise ValueError("Metric query template contains an unknown placeholder")
         return value
+
+    @model_validator(mode="after")
+    def require_threshold_for_risk_direction(self) -> Self:
+        has_static_threshold = self.threshold is not None
+        if (self.risk_direction == "higher_is_worse") is not has_static_threshold:
+            raise ValueError("Metric threshold does not match its risk direction")
+        return self
 
 
 class AlertCatalogEntry(_CatalogContract):
@@ -119,7 +130,7 @@ class AlertCatalogEntry(_CatalogContract):
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[4]
+    schema_version: Literal[5]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,

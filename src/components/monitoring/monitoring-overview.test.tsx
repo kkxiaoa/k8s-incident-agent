@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  EvidenceView,
   IncidentMetricPanelView,
   MetricQueryStateView,
   MetricWindowView,
@@ -14,6 +15,24 @@ import { IncidentMonitoringOverview } from "./incident-monitoring-overview";
 import { MetricPanelCard } from "./metric-panel-card";
 import { MonitoringHealthOverview } from "./monitoring-health-overview";
 
+vi.mock("react-chartjs-2", () => ({
+  Chart: (props: Record<string, unknown>) => {
+    const options = props["options"] as
+      | { interaction?: { intersect?: boolean } }
+      | undefined;
+    return (
+      <div
+        role="img"
+        aria-label={String(props["aria-label"])}
+        data-intersect={String(options?.interaction?.intersect)}
+      />
+    );
+  },
+  Doughnut: (props: Record<string, unknown>) => (
+    <div role="img" aria-label={String(props["aria-label"])} />
+  ),
+}));
+
 const HEALTHY: MonitoringHealthView = {
   state: "healthy",
   checkedAt: "2026-09-03T02:15:00.000Z",
@@ -24,6 +43,60 @@ const HEALTHY: MonitoringHealthView = {
   notification: "healthy",
   watchdogLastReceivedAt: "2026-09-03T02:14:00.000Z",
 };
+
+const AFFECTED_PODS_PANEL = {
+  panelId: "image-pull-affected-pods",
+  recommendedWindow: "15m",
+  riskDirection: "higher_is_worse",
+  thresholdDuration: "30s",
+} as const;
+
+const AVAILABLE_REPLICAS_PANEL = {
+  panelId: "image-pull-available-replicas",
+  recommendedWindow: "1h",
+  riskDirection: "lower_is_worse",
+  thresholdDuration: null,
+} as const;
+
+const EVIDENCE: EvidenceView[] = [
+  {
+    id: "33333333-3333-4333-8333-333333333331",
+    toolName: "get_workload",
+    evidenceKind: "workload",
+    observedAt: "2026-09-03T02:14:58.000Z",
+    targetRef: {},
+    payload: {
+      workload: {
+        replicas: { desired: 3, available: 0 },
+      },
+    },
+    redacted: false,
+    truncated: false,
+  },
+  {
+    id: "33333333-3333-4333-8333-333333333332",
+    toolName: "get_pods",
+    evidenceKind: "pods",
+    observedAt: "2026-09-03T02:15:00.000Z",
+    targetRef: {},
+    payload: {
+      pods: [
+        {
+          containers: [
+            { state: { status: "waiting", reason: "ImagePullBackOff" } },
+          ],
+        },
+        {
+          containers: [
+            { state: { status: "waiting", reason: "ErrImagePull" } },
+          ],
+        },
+      ],
+    },
+    redacted: false,
+    truncated: false,
+  },
+];
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -42,16 +115,20 @@ function panelResponse(
     state === "query_error" ||
     state === "monitoring_unavailable";
   const title =
-    panelId === "image-pull-waiting-containers"
-      ? "Waiting containers"
-      : "Affected pods";
+    panelId === "image-pull-available-replicas"
+      ? "Deployment 可用副本"
+      : "镜像拉取失败 Pod";
   return {
     schemaVersion: 1,
     result: {
       panelId,
       title,
-      unit: "pods",
-      threshold: 1,
+      unit: panelId === "image-pull-available-replicas" ? "replicas" : "pods",
+      threshold: panelId === "image-pull-available-replicas" ? null : 1,
+      riskDirection:
+        panelId === "image-pull-available-replicas"
+          ? "lower_is_worse"
+          : "higher_is_worse",
       window,
       state,
       queriedAt: "2026-09-03T02:15:00.000Z",
@@ -83,43 +160,32 @@ function panelResponse(
 }
 
 describe("MonitoringHealthOverview", () => {
-  it("uses checks without repeating healthy text and refreshes a degraded chain", async () => {
-    const user = userEvent.setup();
+  it("renders a lightweight status path without title, overall state, or refresh", () => {
+    render(<MonitoringHealthOverview initialHealth={HEALTHY} />);
+
+    expect(screen.getByRole("region", { name: "监控链路" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "监控链路" })).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByText("正常")).toBeNull();
+    expect(screen.getByLabelText("规则计算：正常")).toBeVisible();
+  });
+
+  it("puts abnormal detail on the focusable node instead of visible status text", () => {
     const degraded = {
       ...HEALTHY,
       state: "degraded",
       ruleEvaluation: "degraded",
     } satisfies MonitoringHealthView;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(degraded)));
 
-    render(<MonitoringHealthOverview initialHealth={HEALTHY} />);
+    render(<MonitoringHealthOverview initialHealth={degraded} />);
 
-    expect(screen.getByLabelText("监控链路正常")).toBeVisible();
-    expect(screen.queryByText("正常")).toBeNull();
-    expect(screen.getByLabelText("规则计算：正常")).toBeVisible();
-
-    await user.click(screen.getByRole("button", { name: "刷新监控链路状态" }));
-
-    await waitFor(() => expect(screen.getByText("链路需关注")).toBeVisible());
-    expect(screen.getByText("需关注")).toBeVisible();
-  });
-
-  it("does not keep presenting a healthy snapshot after refresh fails", async () => {
-    const user = userEvent.setup();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 503)));
-
-    render(<MonitoringHealthOverview initialHealth={HEALTHY} />);
-
-    await user.click(screen.getByRole("button", { name: "刷新监控链路状态" }));
-
-    await waitFor(() =>
-      expect(screen.getByText("链路不可用")).toBeVisible(),
+    const ruleNode = screen.getByLabelText("规则计算：需关注");
+    expect(ruleNode).toHaveAttribute("tabindex", "0");
+    expect(ruleNode).toHaveAttribute("data-tooltip", "规则计算：需关注");
+    expect(screen.getByLabelText("Prometheus：正常")).not.toHaveAttribute(
+      "data-tooltip",
     );
-    expect(screen.queryByLabelText("监控链路正常")).toBeNull();
-    expect(screen.getByLabelText("Prometheus：未知")).toBeVisible();
-    expect(
-      screen.getByText("暂时无法确认完整链路状态，不能据此判断集群正常。"),
-    ).toBeVisible();
+    expect(screen.queryByText("需关注")).toBeNull();
   });
 });
 
@@ -153,32 +219,85 @@ describe("IncidentMonitoringOverview", () => {
         incidentId={INCIDENT_ID}
         targetLabel="Deployment · default/image-pull-backoff"
         panels={{
-          panels: [
-            {
-              panelId: "image-pull-affected-pods",
-              recommendedWindow: "15m",
-            },
-            {
-              panelId: "image-pull-waiting-containers",
-              recommendedWindow: "1h",
-            },
-          ],
+          panels: [AFFECTED_PODS_PANEL, AVAILABLE_REPLICAS_PANEL],
         }}
+        evidence={EVIDENCE}
         initialHealth={HEALTHY}
         refreshKey="completed"
+        alertStatus="RESOLVED"
       />,
     );
 
-    expect(await screen.findByRole("heading", { name: "Affected pods" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Waiting containers" })).toBeVisible();
     expect(
-      screen.getByRole("img", { name: /^Affected pods 时间序列/ }),
+      await screen.findByRole("heading", { name: "镜像拉取失败 Pod" }),
     ).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "Deployment 可用副本" }),
+    ).toBeVisible();
+    expect(
+      screen.getAllByLabelText("镜像拉取失败 Pod，数值越高表示影响范围越大。"),
+    ).toHaveLength(2);
+    expect(
+      screen.getAllByLabelText(
+        "Deployment 可用副本，按“当前可用副本 / 期望副本”展示；低于期望值表示容量未达标。",
+      ),
+    ).toHaveLength(2);
+    expect(
+      screen.getAllByLabelText("Prometheus 返回的最新有效样本值。"),
+    ).toHaveLength(1);
+    expect(
+      screen.getByLabelText(
+        "前一个数字是 Prometheus 观测到的当前可用副本，后一个数字是同一次诊断 Run 的 workload Evidence 中记录的期望副本。",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByLabelText("达到或超过此值时进入风险区间。"),
+    ).toBeVisible();
+    expect(
+      screen.getByLabelText("可用副本少于期望的 3 个时进入风险区间。"),
+    ).toBeVisible();
+    expect(screen.getByText("< 3")).toBeVisible();
+    expect(
+      screen.getByLabelText(
+        "来自诊断 Evidence 中 Pod 容器的 waiting.reason，不是 Prometheus 指标或模型推断。",
+      ),
+    ).toBeVisible();
+    const summary = document.querySelector(".incident-metric-facts");
+    expect(summary).not.toBeNull();
+    expect(
+      await within(summary as HTMLElement).findByText("镜像拉取失败 Pod"),
+    ).toBeVisible();
+    expect(
+      within(summary as HTMLElement).getByText("Deployment 可用副本"),
+    ).toBeVisible();
+    expect(within(summary as HTMLElement).getByText("0/3")).toBeVisible();
+    expect(screen.getByText("等待原因").closest("article")).toHaveTextContent(
+      "ErrImagePull、ImagePullBackOff",
+    );
+    expect(
+      within(summary as HTMLElement).getAllByRole("img", {
+        name: /概览趋势/,
+      }),
+    ).toHaveLength(2);
+    expect(
+      within(summary as HTMLElement).getByRole("img", {
+        name: /^镜像拉取失败 Pod 最近 15 分钟概览趋势/,
+      }),
+    ).toHaveAttribute("data-intersect", "true");
+    expect(
+      screen.getByRole("img", { name: /^镜像拉取失败 Pod 时间序列/ }),
+    ).toBeVisible();
+    expect(screen.getByText("镜像拉取失败 Pod 数量")).toBeVisible();
+    expect(screen.getByText("阈值区间（≥ 1）")).toBeVisible();
+    expect(screen.getByText("可用副本数")).toBeVisible();
+    expect(screen.getByText("期望副本数（3）")).toBeVisible();
+    expect(screen.getByText("持续 30 秒")).toBeVisible();
+    expect(screen.getAllByText("条件已解除")).toHaveLength(2);
     expect(screen.getAllByText("告警条件解除")).toHaveLength(2);
     expect(
-      screen.getAllByText(
-        /Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成/,
-      ),
+      screen.getAllByRole("listitem", {
+        name: /Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成/,
+      }),
     ).toHaveLength(2);
     for (const eventList of screen.getAllByRole("list", {
       name: "最近图表标记",
@@ -189,6 +308,7 @@ describe("IncidentMonitoringOverview", () => {
 
   it("switches only to an allowlisted window and preserves a valid zero", async () => {
     const user = userEvent.setup();
+    const onLoadSnapshot = vi.fn();
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = new URL(
         typeof input === "string"
@@ -198,20 +318,27 @@ describe("IncidentMonitoringOverview", () => {
             : input.url,
         "http://console.test",
       );
-      const window = (url.searchParams.get("window") ?? "15m") as MetricWindowView;
-      return Promise.resolve(jsonResponse(panelResponse("image-pull-affected-pods", window)));
+      const window = (url.searchParams.get("window") ??
+        "15m") as MetricWindowView;
+      return Promise.resolve(
+        jsonResponse(panelResponse("image-pull-affected-pods", window)),
+      );
     });
     vi.stubGlobal("fetch", fetchMock);
 
     render(
       <MetricPanelCard
         incidentId={INCIDENT_ID}
-        panel={{ panelId: "image-pull-affected-pods", recommendedWindow: "15m" }}
+        panel={AFFECTED_PODS_PANEL}
         refreshKey="running"
+        alertStatus="FIRING"
+        onLoadSnapshot={onLoadSnapshot}
       />,
     );
 
-    const heading = await screen.findByRole("heading", { name: "Affected pods" });
+    const heading = await screen.findByRole("heading", {
+      name: "镜像拉取失败 Pod",
+    });
     const card = heading.closest("article");
     expect(card).not.toBeNull();
     expect(
@@ -219,10 +346,26 @@ describe("IncidentMonitoringOverview", () => {
         selector: ".metric-panel__value",
       }),
     ).toBeVisible();
+    expect(within(card as HTMLElement).getByText("告警中")).toBeVisible();
+    expect(within(card as HTMLElement).queryByText("数据有效")).toBeNull();
 
-    await user.click(within(card as HTMLElement).getByRole("button", { name: "1 小时" }));
+    await user.selectOptions(
+      within(card as HTMLElement).getByRole("combobox", {
+        name: "镜像拉取失败 Pod 时间窗口",
+      }),
+      "1h",
+    );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain("window=1h");
+    await waitFor(() =>
+      expect(onLoadSnapshot).toHaveBeenLastCalledWith(
+        "image-pull-affected-pods",
+        expect.objectContaining({
+          state: "ready",
+          result: expect.objectContaining({ window: "1h" }),
+        }),
+      ),
+    );
   });
 });
 
@@ -234,15 +377,17 @@ describe("MetricPanelCard states", () => {
   ] as const)("renders %s without inventing a value", async (state, copy) => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        jsonResponse(panelResponse("image-pull-affected-pods", "15m", state)),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(panelResponse("image-pull-affected-pods", "15m", state)),
+        ),
     );
 
     render(
       <MetricPanelCard
         incidentId={INCIDENT_ID}
-        panel={{ panelId: "image-pull-affected-pods", recommendedWindow: "15m" }}
+        panel={AFFECTED_PODS_PANEL}
         refreshKey={state}
       />,
     );
@@ -274,7 +419,7 @@ describe("MetricPanelCard states", () => {
     render(
       <MetricPanelCard
         incidentId={INCIDENT_ID}
-        panel={{ panelId: "image-pull-affected-pods", recommendedWindow: "15m" }}
+        panel={AFFECTED_PODS_PANEL}
         refreshKey="no-data-with-markers"
       />,
     );
@@ -295,32 +440,37 @@ describe("MetricPanelCard states", () => {
   ] as const)("keeps verified samples visible for %s", async (state, copy) => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        jsonResponse(panelResponse("image-pull-affected-pods", "15m", state)),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(panelResponse("image-pull-affected-pods", "15m", state)),
+        ),
     );
 
     render(
       <MetricPanelCard
         incidentId={INCIDENT_ID}
-        panel={{ panelId: "image-pull-affected-pods", recommendedWindow: "15m" }}
+        panel={AFFECTED_PODS_PANEL}
         refreshKey={state}
       />,
     );
 
     expect(await screen.findByText(copy)).toBeVisible();
     expect(
-      screen.getByRole("img", { name: /^Affected pods 时间序列/ }),
+      screen.getByRole("img", { name: /^镜像拉取失败 Pod 时间序列/ }),
     ).toBeVisible();
   });
 
   it("shows a safe retry state for an invalid upstream response", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ schemaVersion: 1 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ schemaVersion: 1 })),
+    );
 
     render(
       <MetricPanelCard
         incidentId={INCIDENT_ID}
-        panel={{ panelId: "image-pull-affected-pods", recommendedWindow: "15m" }}
+        panel={AFFECTED_PODS_PANEL}
         refreshKey="invalid"
       />,
     );

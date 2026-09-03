@@ -231,8 +231,8 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - --namespaces=k8s-incident-scenarios
-            - --resources=pods,replicasets
-            - --metric-allowlist=kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner
+            - --resources=deployments,pods,replicasets
+            - --metric-allowlist=kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner
             - --use-apiserver-cache
           ports:
             - name: http

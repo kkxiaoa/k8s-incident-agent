@@ -1028,8 +1028,8 @@
             "type": "array"
           },
           "schemaVersion": {
-            "const": 1,
-            "default": 1,
+            "const": 2,
+            "default": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1241,6 +1241,9 @@
             "title": "Queriedat",
             "type": "string"
           },
+          "riskDirection": {
+            "$ref": "#/components/schemas/MetricRiskDirection"
+          },
           "samples": {
             "items": {
               "$ref": "#/components/schemas/MetricSample"
@@ -1253,8 +1256,15 @@
             "$ref": "#/components/schemas/MetricQueryState"
           },
           "threshold": {
-            "title": "Threshold",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold"
           },
           "title": {
             "maxLength": 160,
@@ -1277,6 +1287,7 @@
           "title",
           "unit",
           "threshold",
+          "riskDirection",
           "window",
           "state",
           "queriedAt",
@@ -1297,6 +1308,14 @@
           "monitoring_unavailable"
         ],
         "title": "MetricQueryState",
+        "type": "string"
+      },
+      "MetricRiskDirection": {
+        "enum": [
+          "higher_is_worse",
+          "lower_is_worse"
+        ],
+        "title": "MetricRiskDirection",
         "type": "string"
       },
       "MetricSample": {
@@ -1400,6 +1419,145 @@
         "title": "MonitoringOverallState",
         "type": "string"
       },
+      "MonitoringOverviewCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosedIncidents": {
+            "minimum": 0.0,
+            "title": "Diagnosedincidents",
+            "type": "integer"
+          },
+          "firingAlerts": {
+            "minimum": 0.0,
+            "title": "Firingalerts",
+            "type": "integer"
+          },
+          "totalIncidents": {
+            "minimum": 0.0,
+            "title": "Totalincidents",
+            "type": "integer"
+          },
+          "triagingIncidents": {
+            "minimum": 0.0,
+            "title": "Triagingincidents",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "totalIncidents",
+          "firingAlerts",
+          "triagingIncidents",
+          "diagnosedIncidents"
+        ],
+        "title": "MonitoringOverviewCounts",
+        "type": "object"
+      },
+      "MonitoringOverviewFamily": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "displayName": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Displayname",
+            "type": "string"
+          },
+          "sourceRef": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Sourceref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceRef",
+          "displayName",
+          "count"
+        ],
+        "title": "MonitoringOverviewFamily",
+        "type": "object"
+      },
+      "MonitoringOverviewSample": {
+        "additionalProperties": false,
+        "properties": {
+          "alertConditionsResolved": {
+            "minimum": 0.0,
+            "title": "Alertconditionsresolved",
+            "type": "integer"
+          },
+          "incidentsCreated": {
+            "minimum": 0.0,
+            "title": "Incidentscreated",
+            "type": "integer"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "incidentsCreated",
+          "alertConditionsResolved"
+        ],
+        "title": "MonitoringOverviewSample",
+        "type": "object"
+      },
+      "MonitoringOverviewSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/MonitoringOverviewCounts"
+          },
+          "families": {
+            "items": {
+              "$ref": "#/components/schemas/MonitoringOverviewFamily"
+            },
+            "maxItems": 64,
+            "title": "Families",
+            "type": "array"
+          },
+          "generatedAt": {
+            "format": "date-time",
+            "title": "Generatedat",
+            "type": "string"
+          },
+          "samples": {
+            "items": {
+              "$ref": "#/components/schemas/MonitoringOverviewSample"
+            },
+            "maxItems": 24,
+            "minItems": 24,
+            "title": "Samples",
+            "type": "array"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "title": "Schemaversion",
+            "type": "integer"
+          },
+          "window": {
+            "const": "24h",
+            "default": "24h",
+            "title": "Window",
+            "type": "string"
+          }
+        },
+        "required": [
+          "generatedAt",
+          "counts",
+          "families",
+          "samples"
+        ],
+        "title": "MonitoringOverviewSnapshot",
+        "type": "object"
+      },
       "MonitoringPanelReference": {
         "additionalProperties": false,
         "properties": {
@@ -1411,11 +1569,28 @@
           },
           "recommendedWindow": {
             "$ref": "#/components/schemas/MetricWindow"
+          },
+          "riskDirection": {
+            "$ref": "#/components/schemas/MetricRiskDirection"
+          },
+          "thresholdDuration": {
+            "anyOf": [
+              {
+                "pattern": "^[1-9][0-9]*(?:ms|s|m|h)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thresholdduration"
           }
         },
         "required": [
           "panelId",
-          "recommendedWindow"
+          "recommendedWindow",
+          "riskDirection",
+          "thresholdDuration"
         ],
         "title": "MonitoringPanelReference",
         "type": "object"
@@ -3177,6 +3352,44 @@
           }
         },
         "summary": "Get Monitoring Health"
+      }
+    },
+    "/api/v1/monitoring/overview": {
+      "get": {
+        "operationId": "get_monitoring_overview_api_v1_monitoring_overview_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MonitoringOverviewSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Get Monitoring Overview"
       }
     },
     "/api/v1/scenarios": {

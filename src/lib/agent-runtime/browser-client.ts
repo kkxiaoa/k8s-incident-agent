@@ -3,7 +3,6 @@ import {
   parseCreateRunResponse,
   parseIncidentDetailResponse,
   parseIncidentMetricPanelResponse,
-  parseMonitoringHealthResponse,
   parseRunEventHistoryResponse,
   parseRunHistoryResponse,
   type CreateIncidentView,
@@ -12,7 +11,6 @@ import {
   type IncidentDetailView,
   type IncidentMetricPanelView,
   type MetricWindowView,
-  type MonitoringHealthView,
   type RunHistoryView,
 } from "./response-contracts";
 
@@ -91,27 +89,6 @@ export async function fetchIncidentFromBrowser(
 
   const body = await jsonBody(response);
   const data = parseIncidentDetailResponse(body);
-  return data !== null
-    ? { ok: true, data }
-    : { ok: false, failure: "invalid_response" };
-}
-
-export async function fetchMonitoringHealthFromBrowser(): Promise<
-  BrowserRuntimeResult<MonitoringHealthView>
-> {
-  let response: Response;
-  try {
-    response = await fetch("/api/runtime/monitoring/health", {
-      method: "GET",
-      cache: "no-store",
-    });
-  } catch {
-    return { ok: false, failure: "unavailable" };
-  }
-  if (!response.ok) {
-    return { ok: false, failure: failureForStatus(response.status) };
-  }
-  const data = parseMonitoringHealthResponse(await jsonBody(response));
   return data !== null
     ? { ok: true, data }
     : { ok: false, failure: "invalid_response" };
