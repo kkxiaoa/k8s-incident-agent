@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from k8s_incident_agent.config import Settings
-from k8s_incident_agent.kubernetes.access import verify_stage_one_access
+from k8s_incident_agent.kubernetes.access import verify_diagnostic_access
 from k8s_incident_agent.kubernetes.client import create_kubernetes_clients
 from k8s_incident_agent.kubernetes.credentials import (
     load_diagnostic_credential,
@@ -26,6 +26,6 @@ async def test_fixed_kind_diagnostic_access_gate() -> None:
         diagnostic_namespace=settings.kubernetes_diagnostic_namespace,
     )
     try:
-        await verify_stage_one_access(clients)
+        await verify_diagnostic_access(clients)
     finally:
         await clients.close()

@@ -254,6 +254,23 @@ describe("monitoring response contracts", () => {
     expect(parsed?.result.samples).toEqual([]);
   });
 
+  it("accepts a static lower bound for a lower-is-worse metric", () => {
+    const panel = metricPanel();
+    panel.result.panelId = "service-ready-endpoints";
+    panel.result.title = "Service 就绪 Endpoint";
+    panel.result.unit = "endpoints";
+    panel.result.riskDirection = "lower_is_worse";
+
+    const parsed = parseIncidentMetricPanelResponse(
+      panel,
+      "service-ready-endpoints",
+      "15m",
+    );
+
+    expect(parsed?.result.threshold).toBe(1);
+    expect(parsed?.result.riskDirection).toBe("lower_is_worse");
+  });
+
   it.each([
     "panel",
     "window",
@@ -279,7 +296,7 @@ describe("monitoring response contracts", () => {
     } else if (mutation === "current") {
       panel.result.currentValue = 2;
     } else if (mutation === "risk-threshold") {
-      panel.result.riskDirection = "lower_is_worse";
+      panel.result.threshold = null as unknown as number;
     } else if (mutation === "marker-shape") {
       panel.markers[0].runAttempt = 1;
     } else {

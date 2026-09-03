@@ -25,15 +25,23 @@ const MAX_FILE_BYTES = 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const COMMAND_TIMEOUT_MILLISECONDS = 30_000;
 const EXPECTED_IMAGE = "registry.invalid/k8s-incident-agent/missing:v1";
-const CRASH_LOOP_IMAGE =
+const AGNHOST_IMAGE =
   "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85";
 const WAITING_REASONS = new Set(["ErrImagePull", "ImagePullBackOff"]);
-const VALID_VERIFIERS = new Set(["image_pull_backoff", "crash_loop_backoff"]);
+const SERVICE_ASSOCIATION_LABEL = "k8s-incident-agent.io/service";
+const SERVICE_MONITORING_LABEL = "k8s-incident-agent.io/monitor-selector";
+const ENDPOINT_SLICE_SERVICE_LABEL = "kubernetes.io/service-name";
+const VALID_VERIFIERS = new Set([
+  "image_pull_backoff",
+  "crash_loop_backoff",
+  "service_selector_mismatch",
+]);
 const DIAGNOSTIC_EVIDENCE_TOOLS = new Map([
   ["workload", "get_workload"],
   ["pods", "get_pods"],
   ["events", "get_events"],
   ["container_logs", "get_container_logs"],
+  ["service_network", "get_service_network"],
   ["metrics", "query_prometheus"],
 ]);
 const VALID_DIAGNOSTIC_TOOLS = new Set(DIAGNOSTIC_EVIDENCE_TOOLS.values());
@@ -270,7 +278,7 @@ function loadScenarioEntry(catalogDirectory, scenarioDirectoryName) {
       scenarioDirectory,
       manifestPath,
     );
-    validateDeploymentManifest(manifestPath, relativePath, definition);
+    validateScenarioManifest(manifestPath, relativePath, definition);
     return manifestPath;
   });
 
@@ -319,11 +327,16 @@ function validateScenarioDefinition(definition, directoryName) {
     "kind",
     "name",
   ]);
+  const verifierKind = definition.deterministic_verifier?.kind;
+  const targetType =
+    verifierKind === "service_selector_mismatch"
+      ? ["v1", "Service"]
+      : ["apps/v1", "Deployment"];
   if (
     definition.target.cluster !== CLUSTER_NAME ||
     definition.target.namespace !== NAMESPACE ||
-    definition.target.api_version !== "apps/v1" ||
-    definition.target.kind !== "Deployment" ||
+    definition.target.api_version !== targetType[0] ||
+    definition.target.kind !== targetType[1] ||
     definition.target.name !== definition.scenario_id
   ) {
     throw new Error();
@@ -381,12 +394,16 @@ function validateManifestRelativePath(relativePath) {
   }
 }
 
+function validateScenarioManifest(manifestPath, relativePath, definition) {
+  if (definition.deterministic_verifier.kind === "service_selector_mismatch") {
+    validateServiceSelectorManifest(manifestPath, relativePath, definition);
+    return;
+  }
+  validateDeploymentManifest(manifestPath, relativePath, definition);
+}
+
 function validateDeploymentManifest(manifestPath, relativePath, definition) {
-  const source = readBoundedFile(manifestPath);
-  const documents = [];
-  loadAll(source, (document) => documents.push(document));
-  if (documents.length !== 1) throw new Error();
-  const manifest = documents[0];
+  const manifest = loadSingleManifest(manifestPath);
   assertPlainObject(manifest);
   if (
     manifest.apiVersion !== definition.target.api_version ||
@@ -445,7 +462,7 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
     definition.fixture_manifests.length !== 2 ||
     !definition.fixture_manifests.includes("manifests/deployment.yaml") ||
     !definition.fixture_manifests.includes("manifests/healthy-control.yaml") ||
-    workload.image !== CRASH_LOOP_IMAGE ||
+    workload.image !== AGNHOST_IMAGE ||
     workload.imagePullPolicy !== "IfNotPresent" ||
     !Array.isArray(workload.args) ||
     workload.args.length !== 1 ||
@@ -454,6 +471,99 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
   ) {
     throw new Error();
   }
+}
+
+function validateServiceSelectorManifest(manifestPath, relativePath, definition) {
+  const requiredPaths = new Set([
+    "manifests/deployment.yaml",
+    "manifests/service.yaml",
+    "manifests/healthy-control-deployment.yaml",
+    "manifests/healthy-control-service.yaml",
+  ]);
+  if (
+    definition.fixture_manifests.length !== requiredPaths.size ||
+    definition.fixture_manifests.some((item) => !requiredPaths.has(item))
+  ) {
+    throw new Error();
+  }
+  const manifest = loadSingleManifest(manifestPath);
+  assertPlainObject(manifest);
+  assertPlainObject(manifest.metadata);
+  if (manifest.metadata.namespace !== NAMESPACE) throw new Error();
+  const healthy = relativePath.includes("healthy-control");
+  const serviceName = healthy
+    ? `${definition.target.name}-healthy-control`
+    : definition.target.name;
+  const appLabel = healthy
+    ? "service-selector-healthy-control"
+    : "service-selector-backend";
+
+  if (relativePath.endsWith("service.yaml")) {
+    if (
+      manifest.apiVersion !== "v1" ||
+      manifest.kind !== "Service" ||
+      manifest.metadata.name !== serviceName ||
+      manifest.metadata.labels?.[SERVICE_MONITORING_LABEL] !== "true"
+    ) {
+      throw new Error();
+    }
+    assertPlainObject(manifest.spec);
+    if (manifest.spec.type !== "ClusterIP") throw new Error();
+    const selector = validateLabelMap(manifest.spec.selector);
+    const expectedApp = healthy ? appLabel : "service-selector-wrong";
+    if (
+      Object.keys(selector).length !== 1 ||
+      selector.app !== expectedApp ||
+      !Array.isArray(manifest.spec.ports) ||
+      manifest.spec.ports.length !== 1
+    ) {
+      throw new Error();
+    }
+    return;
+  }
+
+  if (
+    manifest.apiVersion !== "apps/v1" ||
+    manifest.kind !== "Deployment" ||
+    manifest.metadata.name !== `${serviceName}-backend`
+  ) {
+    throw new Error();
+  }
+  assertPlainObject(manifest.spec);
+  assertPlainObject(manifest.spec.selector);
+  const matchLabels = validateLabelMap(manifest.spec.selector.matchLabels);
+  assertPlainObject(manifest.spec.template);
+  assertPlainObject(manifest.spec.template.metadata);
+  const templateLabels = validateLabelMap(manifest.spec.template.metadata.labels);
+  if (
+    Object.keys(matchLabels).length !== 1 ||
+    matchLabels.app !== appLabel ||
+    templateLabels.app !== appLabel ||
+    templateLabels[SERVICE_ASSOCIATION_LABEL] !== serviceName
+  ) {
+    throw new Error();
+  }
+  const containers = manifest.spec.template.spec?.containers;
+  if (
+    !Array.isArray(containers) ||
+    containers.length !== 1 ||
+    containers[0]?.name !== "workload" ||
+    containers[0]?.image !== AGNHOST_IMAGE ||
+    containers[0]?.imagePullPolicy !== "IfNotPresent" ||
+    !Array.isArray(containers[0]?.args) ||
+    containers[0].args.length !== 1 ||
+    containers[0].args[0] !== "pause"
+  ) {
+    throw new Error();
+  }
+}
+
+function loadSingleManifest(manifestPath) {
+  const source = readBoundedFile(manifestPath);
+  const documents = [];
+  loadAll(source, (document) => documents.push(document));
+  if (documents.length !== 1) throw new Error();
+  return documents[0];
 }
 
 function publicScenario(definition) {
@@ -549,7 +659,171 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
   if (definition.deterministic_verifier.kind === "crash_loop_backoff") {
     return verifyCrashLoopOnce(definition, context, executeKubectlQuery);
   }
+  if (definition.deterministic_verifier.kind === "service_selector_mismatch") {
+    return verifyServiceSelectorMismatchOnce(
+      definition,
+      context,
+      executeKubectlQuery,
+    );
+  }
   return verifyImagePullOnce(definition, context, executeKubectlQuery);
+}
+
+async function verifyServiceSelectorMismatchOnce(
+  definition,
+  context,
+  executeKubectlQuery,
+) {
+  const mismatch = await readServiceNetworkState(
+    definition.target.name,
+    context,
+    executeKubectlQuery,
+  );
+  if (mismatch.candidatePods.length === 0) {
+    throw new VerificationPending("service_candidate_pod_not_observed");
+  }
+  if (mismatch.selectorMatches !== 0) {
+    throw new VerificationPending("service_selector_mismatch_not_observed");
+  }
+  if (mismatch.readyEndpoints !== 0) {
+    throw new VerificationPending("mismatched_service_has_ready_endpoint");
+  }
+
+  const healthy = await readServiceNetworkState(
+    `${definition.target.name}-healthy-control`,
+    context,
+    executeKubectlQuery,
+  );
+  if (
+    healthy.candidatePods.length === 0 ||
+    healthy.selectorMatches !== healthy.candidatePods.length ||
+    healthy.readyEndpoints === 0
+  ) {
+    throw new VerificationPending("service_healthy_control_not_ready");
+  }
+  return {
+    status: "verified",
+    scenario_id: definition.scenario_id,
+    service: {
+      name: mismatch.service.metadata.name,
+      candidate_pods: mismatch.candidatePods.length,
+      selector_matches: mismatch.selectorMatches,
+      ready_endpoints: mismatch.readyEndpoints,
+    },
+    healthy_control: {
+      name: healthy.service.metadata.name,
+      ready_endpoints: healthy.readyEndpoints,
+    },
+  };
+}
+
+async function readServiceNetworkState(serviceName, context, executeKubectlQuery) {
+  const serviceRaw = await executeKubectlQuery(
+    [
+      "--context",
+      context,
+      "--namespace",
+      NAMESPACE,
+      "get",
+      "service",
+      serviceName,
+      "--ignore-not-found=true",
+      "--output=json",
+      "--request-timeout=30s",
+    ],
+    "service_not_found",
+  );
+  if (serviceRaw.trim() === "") {
+    throw new VerificationPending("service_not_found");
+  }
+  const service = parseKubectlObject(serviceRaw, "v1", "Service");
+  const serviceMetadata = requireMetadata(service, {
+    namespace: NAMESPACE,
+    name: serviceName,
+  });
+  if (
+    serviceMetadata.labels?.[SERVICE_MONITORING_LABEL] !== "true" ||
+    service.spec?.type !== "ClusterIP" ||
+    service.spec?.clusterIP === "None" ||
+    service.spec?.publishNotReadyAddresses === true
+  ) {
+    throw upstreamContractError();
+  }
+  const selector = validateUpstreamLabelMap(service.spec?.selector);
+  const pods = parseKubectlList(
+    await executeKubectlQuery(
+      [
+        "--context",
+        context,
+        "--namespace",
+        NAMESPACE,
+        "get",
+        "pods",
+        "--selector",
+        `${SERVICE_ASSOCIATION_LABEL}=${serviceName}`,
+        "--output=json",
+        "--request-timeout=30s",
+      ],
+      "service_candidate_pod_not_observed",
+    ),
+    "v1",
+    "Pod",
+  );
+  const candidatePods = pods.items.filter((pod) => {
+    const metadata = requireMetadata(pod, { namespace: NAMESPACE });
+    return metadata.labels?.[SERVICE_ASSOCIATION_LABEL] === serviceName;
+  });
+  const selectorMatches = candidatePods.filter((pod) => {
+    const metadata = requireMetadata(pod, { namespace: NAMESPACE });
+    return Object.entries(selector).every(
+      ([key, value]) => metadata.labels?.[key] === value,
+    );
+  }).length;
+
+  const slices = parseKubectlList(
+    await executeKubectlQuery(
+      [
+        "--context",
+        context,
+        "--namespace",
+        NAMESPACE,
+        "get",
+        "endpointslices.discovery.k8s.io",
+        "--selector",
+        `${ENDPOINT_SLICE_SERVICE_LABEL}=${serviceName}`,
+        "--output=json",
+        "--request-timeout=30s",
+      ],
+      "service_endpoint_slice_not_observed",
+    ),
+    "discovery.k8s.io/v1",
+    "EndpointSlice",
+  );
+  let readyEndpoints = 0;
+  for (const slice of slices.items) {
+    const metadata = requireMetadata(slice, { namespace: NAMESPACE });
+    if (
+      metadata.labels?.[ENDPOINT_SLICE_SERVICE_LABEL] !== serviceName ||
+      !hasControllerOwner(metadata, {
+        apiVersion: "v1",
+        kind: "Service",
+        name: serviceName,
+        uid: serviceMetadata.uid,
+      }) ||
+      !Array.isArray(slice.endpoints)
+    ) {
+      throw upstreamContractError();
+    }
+    readyEndpoints += slice.endpoints.filter(
+      (endpoint) => endpoint?.conditions?.ready === true,
+    ).length;
+  }
+  return {
+    service,
+    candidatePods,
+    selectorMatches,
+    readyEndpoints,
+  };
 }
 
 async function verifyImagePullOnce(definition, context, executeKubectlQuery) {

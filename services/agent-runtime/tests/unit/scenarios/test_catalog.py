@@ -42,6 +42,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     assert [scenario.scenario_id for scenario in scenarios] == [
         "crash-loop-backoff",
         "image-pull-backoff",
+        "service-selector-mismatch",
     ]
     scenario = next(
         item for item in scenarios if item.scenario_id == "image-pull-backoff"

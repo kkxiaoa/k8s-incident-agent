@@ -71,7 +71,7 @@ from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     RecoveryConsistencyError,
 )
-from k8s_incident_agent.scenarios.contracts import validate_stage_one_target
+from k8s_incident_agent.scenarios.contracts import validate_supported_target
 from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 from k8s_incident_agent.workflow.state import IncidentGraphInput, IncidentGraphState
 
@@ -245,7 +245,7 @@ def _triage_target_node(
                 or target != scheduled.target
             ):
                 raise RecoveryConsistencyError
-            validate_stage_one_target(target)
+            validate_supported_target(target)
             _require_context_identity(runtime.context, scheduled)
         except (KeyError, RecoveryConsistencyError, ValidationError, ValueError):
             return _terminal_error(_RECOVERY_ERROR, retryable=False)

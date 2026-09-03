@@ -17,9 +17,10 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.kubernetes.contracts import (
     ContainerLogsObservation,
-    DeploymentTarget,
+    DiagnosticTarget,
     EventsObservation,
     PodsObservation,
+    ServiceNetworkObservation,
     WorkloadObservation,
 )
 from k8s_incident_agent.kubernetes.credentials import require_credential_window
@@ -31,10 +32,20 @@ from k8s_incident_agent.kubernetes.errors import (
 from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
 
 type DiagnosticObservation = (
-    WorkloadObservation | PodsObservation | EventsObservation | ContainerLogsObservation
+    WorkloadObservation
+    | PodsObservation
+    | EventsObservation
+    | ContainerLogsObservation
+    | ServiceNetworkObservation
 )
-type ObservationReader = Callable[[DeploymentTarget], Awaitable[DiagnosticObservation]]
-type EvidenceKind = Literal["workload", "pods", "events", "container_logs"]
+type ObservationReader = Callable[[DiagnosticTarget], Awaitable[DiagnosticObservation]]
+type EvidenceKind = Literal[
+    "workload",
+    "pods",
+    "events",
+    "container_logs",
+    "service_network",
+]
 
 
 class ToolFailureEnvelope(BaseModel):
@@ -106,8 +117,27 @@ async def _get_container_logs(
     )
 
 
-def build_diagnostic_tools() -> tuple[BaseTool, BaseTool, BaseTool, BaseTool]:
-    return _get_workload, _get_pods, _get_events, _get_container_logs
+@tool("get_service_network")
+async def _get_service_network(
+    runtime: ToolRuntime[DiagnosticToolContext, object],
+) -> dict[str, JsonValue]:
+    """Observe the exact Service, owned EndpointSlices, and bounded candidate Pods."""
+    return await _execute_tool(
+        runtime,
+        tool_name="get_service_network",
+        evidence_kind="service_network",
+        reader=runtime.context.adapter.read_service_network,
+    )
+
+
+def build_diagnostic_tools() -> tuple[BaseTool, ...]:
+    return (
+        _get_workload,
+        _get_pods,
+        _get_events,
+        _get_container_logs,
+        _get_service_network,
+    )
 
 
 async def _execute_tool(
@@ -296,8 +326,10 @@ def _success_output(
             observation = PodsObservation.model_validate(document)
         elif evidence_kind == "events":
             observation = EventsObservation.model_validate(document)
-        else:
+        elif evidence_kind == "container_logs":
             observation = ContainerLogsObservation.model_validate(document)
+        else:
+            observation = ServiceNetworkObservation.model_validate(document)
     except ValidationError:
         raise FatalDiagnosticToolError(
             KubernetesErrorCode.RECOVERY_CONSISTENCY_ERROR

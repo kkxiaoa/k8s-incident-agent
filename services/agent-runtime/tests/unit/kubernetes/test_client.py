@@ -19,6 +19,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     AuthorizationV1Api,
     Configuration,
     CoreV1Api,
+    DiscoveryV1Api,
     EventsV1Api,
     EventsV1Event,
     EventsV1EventList,
@@ -227,6 +228,7 @@ async def test_factory_creates_scoped_direct_clients_without_mutating_proxy_env(
             assert clients.diagnostic_namespace == DIAGNOSTIC_NAMESPACE
             assert isinstance(clients.apps_api, AppsV1Api)
             assert isinstance(clients.core_api, CoreV1Api)
+            assert isinstance(clients.discovery_api, DiscoveryV1Api)
             assert isinstance(clients.events_api, EventsV1Api)
             assert isinstance(clients.version_api, VersionApi)
             assert isinstance(clients.authorization_api, AuthorizationV1Api)

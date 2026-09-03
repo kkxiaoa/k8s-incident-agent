@@ -127,11 +127,11 @@ class MetricPanelResult(_MonitoringContract):
 
     @model_validator(mode="after")
     def require_state_shape(self) -> MetricPanelResult:
-        has_static_threshold = self.threshold is not None
         if (
             self.risk_direction is MetricRiskDirection.HIGHER_IS_WORSE
-        ) is not has_static_threshold:
-            raise ValueError("Metric threshold does not match its risk direction")
+            and self.threshold is None
+        ):
+            raise ValueError("Higher-is-worse results require a static threshold")
         has_samples = bool(self.samples)
         has_latest = self.latest_sample_at is not None
         has_current = self.current_value is not None

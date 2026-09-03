@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "scenario_id": "service-selector-mismatch",
+  "scenario_version": 1,
+  "monitoring_alert_id": "K8sIncidentServiceEndpointsUnavailable",
+  "display_name": "Service selector mismatch",
+  "description": "A monitored Service selector does not match the labels of its explicitly associated candidate Pods.",
+  "trigger": {
+    "type": "manual",
+    "summary": "The target Service has candidate Pods but no ready EndpointSlice endpoints."
+  },
+  "target": {
+    "cluster": "k8s-incident-agent",
+    "namespace": "k8s-incident-scenarios",
+    "api_version": "v1",
+    "kind": "Service",
+    "name": "service-selector-mismatch"
+  },
+  "fixture_manifests": [
+    "manifests/deployment.yaml",
+    "manifests/service.yaml",
+    "manifests/healthy-control-deployment.yaml",
+    "manifests/healthy-control-service.yaml"
+  ],
+  "expected_root_causes": [
+    "service_selector_mismatch"
+  ],
+  "required_evidence": [
+    "service_network"
+  ],
+  "allowed_tools": [
+    "get_service_network",
+    "query_prometheus"
+  ],
+  "forbidden_tools": [
+    "apply_patch",
+    "execute_shell"
+  ],
+  "deterministic_verifier": {
+    "kind": "service_selector_mismatch",
+    "timeout_seconds": 120,
+    "poll_interval_seconds": 2
+  }
+}

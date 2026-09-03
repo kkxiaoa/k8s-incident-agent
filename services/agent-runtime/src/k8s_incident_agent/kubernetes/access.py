@@ -18,7 +18,7 @@ from k8s_incident_agent.kubernetes.errors import (
     map_kubernetes_exception,
 )
 from k8s_incident_agent.scenarios.contracts import (
-    validate_stage_one_target,
+    validate_supported_target,
 )
 
 
@@ -62,7 +62,7 @@ class _AccessCheck:
     subresource: str | None = None
 
 
-async def verify_stage_one_access(
+async def verify_diagnostic_access(
     clients: KubernetesClients,
 ) -> None:
     try:
@@ -77,18 +77,18 @@ async def verify_stage_one_access(
     if version_view.major != "1" or version_view.minor != "36":
         raise _contract_invalid()
 
-    for check in _stage_one_checks(clients.diagnostic_namespace):
+    for check in _diagnostic_checks(clients.diagnostic_namespace):
         await _verify_access_check(clients, check)
 
 
-def require_stage_one_target_scope(
+def require_diagnostic_target_scope(
     target: KubernetesTarget,
     *,
     cluster_id: str,
     diagnostic_namespace: str,
 ) -> str:
     try:
-        validate_stage_one_target(target)
+        validate_supported_target(target)
     except ValueError:
         raise _contract_invalid() from None
     if target.cluster != cluster_id or target.namespace != diagnostic_namespace:
@@ -98,7 +98,7 @@ def require_stage_one_target_scope(
     return target.namespace
 
 
-def _stage_one_checks(namespace: str) -> tuple[_AccessCheck, ...]:
+def _diagnostic_checks(namespace: str) -> tuple[_AccessCheck, ...]:
     return (
         _AccessCheck(
             group="apps",
@@ -137,6 +137,22 @@ def _stage_one_checks(namespace: str) -> tuple[_AccessCheck, ...]:
             group="events.k8s.io",
             version="v1",
             resource="events",
+            verb="list",
+            namespace=namespace,
+            expected_allowed=True,
+        ),
+        _AccessCheck(
+            group="",
+            version="v1",
+            resource="services",
+            verb="get",
+            namespace=namespace,
+            expected_allowed=True,
+        ),
+        _AccessCheck(
+            group="discovery.k8s.io",
+            version="v1",
+            resource="endpointslices",
             verb="list",
             namespace=namespace,
             expected_allowed=True,

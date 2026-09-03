@@ -21,6 +21,10 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1DeploymentCondition,
     V1DeploymentSpec,
     V1DeploymentStatus,
+    V1Endpoint,
+    V1EndpointConditions,
+    V1EndpointSlice,
+    V1EndpointSliceList,
     V1LabelSelector,
     V1ListMeta,
     V1ObjectMeta,
@@ -34,13 +38,15 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1PodTemplateSpec,
     V1ReplicaSet,
     V1ReplicaSetList,
+    V1Service,
+    V1ServiceSpec,
 )
 from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingTypeStubs]
     ApiException,
 )
 
 from k8s_incident_agent.domain.models import JsonValue
-from k8s_incident_agent.kubernetes.access import require_stage_one_target_scope
+from k8s_incident_agent.kubernetes.access import require_diagnostic_target_scope
 from k8s_incident_agent.kubernetes.client import KubernetesClients
 from k8s_incident_agent.kubernetes.contracts import (
     ConditionSummary,
@@ -50,7 +56,8 @@ from k8s_incident_agent.kubernetes.contracts import (
     ContainerLogsPayload,
     ContainerLogSummary,
     ContainerStateSummary,
-    DeploymentTarget,
+    DiagnosticTarget,
+    EndpointSliceSummary,
     EventsObservation,
     EventsPayload,
     EventSummary,
@@ -62,6 +69,12 @@ from k8s_incident_agent.kubernetes.contracts import (
     RegardingSummary,
     ReplicaSummary,
     Selector,
+    ServiceCandidatePod,
+    ServiceDetail,
+    ServiceNetworkObservation,
+    ServiceNetworkPayload,
+    ServiceNetworkState,
+    ServiceNetworkSummary,
     SourceWorkload,
     TargetRef,
     WorkloadContainer,
@@ -83,6 +96,10 @@ LIST_MAX_PAGES = 5
 REPLICA_SET_LIMIT = 100
 POD_LIMIT = 100
 EVENT_LIMIT = 200
+SERVICE_CANDIDATE_POD_LIMIT = 32
+SERVICE_ENDPOINT_SLICE_LIMIT = 64
+SERVICE_ENDPOINT_LIMIT = 256
+SERVICE_SELECTOR_LABEL_LIMIT = 16
 LOG_CONTAINER_LIMIT = 4
 LOG_LINE_LIMIT = 80
 LOG_RESPONSE_LIMIT_BYTES = 4 * 1024
@@ -90,6 +107,10 @@ LOG_SINCE_SECONDS = 10 * 60
 LOG_LINE_MAX_CODE_POINTS = 512
 WORKLOAD_ARGUMENT_LIMIT = 16
 WORKLOAD_ARGUMENT_MAX_CODE_POINTS = 512
+
+SERVICE_ASSOCIATION_LABEL = "k8s-incident-agent.io/service"
+SERVICE_MONITORING_LABEL = "k8s-incident-agent.io/monitor-selector"
+ENDPOINT_SLICE_SERVICE_LABEL = "kubernetes.io/service-name"
 
 _LABEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
 _DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")
@@ -116,6 +137,13 @@ class _AppsApi(Protocol):
 
 
 class _CoreApi(Protocol):
+    def read_namespaced_service(
+        self,
+        name: str,
+        namespace: str,
+        **kwargs: object,
+    ) -> Awaitable[object]: ...
+
     def list_namespaced_pod(
         self,
         namespace: str,
@@ -125,6 +153,14 @@ class _CoreApi(Protocol):
     def read_namespaced_pod_log(
         self,
         name: str,
+        namespace: str,
+        **kwargs: object,
+    ) -> Awaitable[object]: ...
+
+
+class _DiscoveryApi(Protocol):
+    def list_namespaced_endpoint_slice(
+        self,
         namespace: str,
         **kwargs: object,
     ) -> Awaitable[object]: ...
@@ -158,6 +194,7 @@ class _MetadataView(Protocol):
     resource_version: object
     generation: object
     owner_references: object
+    labels: object
 
 
 class _DeploymentSpecView(Protocol):
@@ -221,6 +258,38 @@ class _PodView(Protocol):
     metadata: object
     spec: object
     status: object
+
+
+class _ServiceView(Protocol):
+    api_version: object
+    kind: object
+    metadata: object
+    spec: object
+
+
+class _ServiceSpecView(Protocol):
+    type: object
+    cluster_ip: object
+    selector: object
+    publish_not_ready_addresses: object
+
+
+class _EndpointSliceView(Protocol):
+    api_version: object
+    kind: object
+    metadata: object
+    address_type: object
+    endpoints: object
+
+
+class _EndpointView(Protocol):
+    conditions: object
+
+
+class _EndpointConditionsView(Protocol):
+    ready: object
+    serving: object
+    terminating: object
 
 
 class _PodStatusView(Protocol):
@@ -355,6 +424,7 @@ class KubernetesEvidenceAdapter:
         self._apps_api = cast(_AppsApi, clients.apps_api)
         self._core_api = cast(_CoreApi, clients.core_api)
         self._events_api = cast(_EventsApi, clients.events_api)
+        self._discovery_api = cast(_DiscoveryApi, clients.discovery_api)
         self._timeout_seconds = clients.timeout_seconds
         self._cluster_id = clients.cluster_id
         self._diagnostic_namespace = clients.diagnostic_namespace
@@ -363,7 +433,7 @@ class KubernetesEvidenceAdapter:
 
     async def read_workload(
         self,
-        target: DeploymentTarget,
+        target: DiagnosticTarget,
     ) -> WorkloadObservation:
         try:
             state = _SanitizationState()
@@ -385,7 +455,7 @@ class KubernetesEvidenceAdapter:
 
     async def read_pods(
         self,
-        target: DeploymentTarget,
+        target: DiagnosticTarget,
     ) -> PodsObservation:
         try:
             state = _SanitizationState()
@@ -416,7 +486,7 @@ class KubernetesEvidenceAdapter:
 
     async def read_events(
         self,
-        target: DeploymentTarget,
+        target: DiagnosticTarget,
     ) -> EventsObservation:
         try:
             state = _SanitizationState()
@@ -471,7 +541,7 @@ class KubernetesEvidenceAdapter:
 
     async def read_container_logs(
         self,
-        target: DeploymentTarget,
+        target: DiagnosticTarget,
     ) -> ContainerLogsObservation:
         try:
             state = _SanitizationState()
@@ -532,6 +602,149 @@ class KubernetesEvidenceAdapter:
             raise
         except Exception as error:
             raise map_kubernetes_exception(error) from None
+
+    async def read_service_network(
+        self,
+        target: DiagnosticTarget,
+    ) -> ServiceNetworkObservation:
+        try:
+            state = _SanitizationState()
+            namespace = require_diagnostic_target_scope(
+                target,
+                cluster_id=self._cluster_id,
+                diagnostic_namespace=self._diagnostic_namespace,
+            )
+            if target.api_version != "v1" or target.kind != "Service":
+                raise _contract_error()
+            service = await self._read_service(target.name, namespace)
+            service_detail, target_ref, raw_selector = _project_service(
+                service,
+                target,
+                state,
+            )
+            candidate_pods = await self._list_service_candidate_pods(
+                namespace,
+                target.name,
+            )
+            if len(candidate_pods) > SERVICE_CANDIDATE_POD_LIMIT:
+                raise _budget_error()
+            candidates = sorted(
+                (
+                    _project_service_candidate_pod(
+                        pod,
+                        namespace=namespace,
+                        service_name=target.name,
+                        selector=raw_selector,
+                        state=state,
+                    )
+                    for pod in candidate_pods
+                ),
+                key=lambda pod: (pod.pod_ref.name, pod.pod_ref.uid),
+            )
+            endpoint_slices = await self._list_service_endpoint_slices(
+                namespace,
+                target.name,
+            )
+            if len(endpoint_slices) > SERVICE_ENDPOINT_SLICE_LIMIT:
+                raise _budget_error()
+            projected_slices = sorted(
+                (
+                    _project_endpoint_slice(
+                        endpoint_slice,
+                        service_ref=target_ref,
+                        expected_namespace=namespace,
+                    )
+                    for endpoint_slice in endpoint_slices
+                ),
+                key=lambda item: (
+                    item.endpoint_slice_ref.name,
+                    item.endpoint_slice_ref.uid,
+                ),
+            )
+            endpoint_count = sum(item.endpoint_count for item in projected_slices)
+            if endpoint_count > SERVICE_ENDPOINT_LIMIT:
+                raise _budget_error()
+            ready_endpoint_count = sum(item.ready_count for item in projected_slices)
+            selector_match_count = sum(
+                candidate.matches_selector for candidate in candidates
+            )
+            payload = ServiceNetworkPayload(
+                service=service_detail,
+                summary=ServiceNetworkSummary(
+                    state=_service_network_state(
+                        service_detail,
+                        candidate_count=len(candidates),
+                        selector_match_count=selector_match_count,
+                        ready_endpoint_count=ready_endpoint_count,
+                    ),
+                    candidate_count=len(candidates),
+                    selector_match_count=selector_match_count,
+                    endpoint_slice_count=len(projected_slices),
+                    ready_endpoint_count=ready_endpoint_count,
+                ),
+                candidate_pods=candidates,
+                endpoint_slices=projected_slices,
+            )
+            _enforce_payload_budget(payload)
+            return ServiceNetworkObservation(
+                evidence_kind="service_network",
+                target_ref=target_ref,
+                observed_at=_observation_time(self._clock),
+                payload=payload,
+                truncated=state.truncated,
+                redacted=state.redacted,
+            )
+        except KubernetesBoundaryError:
+            raise
+        except Exception as error:
+            raise map_kubernetes_exception(error) from None
+
+    async def _read_service(self, name: str, namespace: str) -> V1Service:
+        try:
+            response = await self._core_api.read_namespaced_service(
+                name=name,
+                namespace=namespace,
+                _request_timeout=self._timeout_seconds,
+            )
+        except Exception as error:
+            raise map_kubernetes_exception(error, resource_not_found=True) from None
+        if not isinstance(response, V1Service):
+            raise _contract_error()
+        return response
+
+    async def _list_service_candidate_pods(
+        self,
+        namespace: str,
+        service_name: str,
+    ) -> list[V1Pod]:
+        return await self._list_pods(
+            namespace,
+            f"{SERVICE_ASSOCIATION_LABEL}={service_name}",
+        )
+
+    async def _list_service_endpoint_slices(
+        self,
+        namespace: str,
+        service_name: str,
+    ) -> list[V1EndpointSlice]:
+        discovery_api = self._discovery_api
+
+        async def fetch(continue_token: str | None) -> object:
+            kwargs = self._list_kwargs(continue_token)
+            kwargs["label_selector"] = f"{ENDPOINT_SLICE_SERVICE_LABEL}={service_name}"
+            try:
+                return await discovery_api.list_namespaced_endpoint_slice(
+                    namespace=namespace,
+                    **kwargs,
+                )
+            except Exception as error:
+                raise map_kubernetes_exception(error) from None
+
+        return await _collect_pages(
+            fetch,
+            list_type=V1EndpointSliceList,
+            item_type=V1EndpointSlice,
+        )
 
     async def _read_container_log_snapshot(
         self,
@@ -594,7 +807,7 @@ class KubernetesEvidenceAdapter:
 
     async def _read_associations(
         self,
-        target: DeploymentTarget,
+        target: DiagnosticTarget,
         state: _SanitizationState,
     ) -> _Associations:
         workload = await self._read_deployment(target, state)
@@ -688,10 +901,12 @@ class KubernetesEvidenceAdapter:
 
     async def _read_deployment(
         self,
-        target: DeploymentTarget,
+        target: DiagnosticTarget,
         state: _SanitizationState,
     ) -> _DeploymentContext:
-        namespace = require_stage_one_target_scope(
+        if target.api_version != "apps/v1" or target.kind != "Deployment":
+            raise _contract_error()
+        namespace = require_diagnostic_target_scope(
             target,
             cluster_id=self._cluster_id,
             diagnostic_namespace=self._diagnostic_namespace,
@@ -815,9 +1030,279 @@ async def _collect_pages[Item](
     raise _budget_error()
 
 
+def _project_service(
+    service: V1Service,
+    target: DiagnosticTarget,
+    state: _SanitizationState,
+) -> tuple[ServiceDetail, TargetRef, dict[str, str]]:
+    service_view = cast(_ServiceView, service)
+    if service_view.api_version != "v1" or service_view.kind != "Service":
+        raise _contract_error()
+    metadata = _metadata(service_view.metadata)
+    namespace = _required_string(metadata.namespace)
+    name = _required_string(metadata.name)
+    if namespace != target.namespace or name != target.name:
+        raise _contract_error()
+    target_ref = TargetRef(
+        api_version="v1",
+        kind="Service",
+        namespace=namespace,
+        name=name,
+        uid=_required_string(metadata.uid),
+    )
+    spec = service_view.spec
+    if not isinstance(spec, V1ServiceSpec):
+        raise _contract_error()
+    spec_view = cast(_ServiceSpecView, spec)
+    service_type = _required_string(spec_view.type)
+    if service_type not in {"ClusterIP", "NodePort", "LoadBalancer", "ExternalName"}:
+        raise _contract_error()
+    selector, raw_selector = _project_service_selector(spec_view.selector, state)
+    labels = _metadata_labels(metadata)
+    monitoring_value = labels.get(SERVICE_MONITORING_LABEL)
+    if monitoring_value is not None and not _valid_label_value(monitoring_value):
+        raise _contract_error()
+    publish_not_ready = spec_view.publish_not_ready_addresses
+    if publish_not_ready is None:
+        publish_not_ready = False
+    if not isinstance(publish_not_ready, bool):
+        raise _contract_error()
+    return (
+        ServiceDetail(
+            resource_version=_required_string(metadata.resource_version),
+            service_type=cast(
+                Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"],
+                service_type,
+            ),
+            cluster_ip=state.optional(spec_view.cluster_ip),
+            selector=selector,
+            monitoring_enabled=monitoring_value == "true",
+            publish_not_ready_addresses=publish_not_ready,
+        ),
+        target_ref,
+        raw_selector,
+    )
+
+
+def _project_service_selector(
+    value: object,
+    state: _SanitizationState,
+) -> tuple[Selector | None, dict[str, str]]:
+    if value is None:
+        return None, {}
+    if not isinstance(value, dict):
+        raise _contract_error()
+    labels = cast(dict[object, object], value)
+    if not labels:
+        return None, {}
+    if len(labels) > SERVICE_SELECTOR_LABEL_LIMIT:
+        raise _budget_error()
+    raw_selector: dict[str, str] = {}
+    projected_selector: dict[str, str] = {}
+    for raw_key, raw_value in sorted(
+        labels.items(),
+        key=lambda item: _required_string(item[0]),
+    ):
+        key = _required_string(raw_key)
+        label_value = _required_string(raw_value, allow_empty=True)
+        if not _valid_label_key(key) or not _valid_label_value(label_value):
+            raise _contract_error()
+        raw_selector[key] = label_value
+        normalized = state.required(f"{key}={label_value}")
+        projected_key, separator, projected_value = normalized.partition("=")
+        if not separator:
+            raise _contract_error()
+        projected_selector[projected_key] = projected_value
+    return Selector(match_labels=projected_selector), raw_selector
+
+
+def _project_service_candidate_pod(
+    pod: V1Pod,
+    *,
+    namespace: str,
+    service_name: str,
+    selector: dict[str, str],
+    state: _SanitizationState,
+) -> ServiceCandidatePod:
+    pod_view = cast(_PodView, pod)
+    _validate_list_item_type_meta(
+        pod_view.api_version,
+        pod_view.kind,
+        expected_api_version="v1",
+        expected_kind="Pod",
+    )
+    metadata = _metadata(pod_view.metadata)
+    if _required_string(metadata.namespace) != namespace:
+        raise _contract_error()
+    labels = _metadata_labels(metadata)
+    if labels.get(SERVICE_ASSOCIATION_LABEL) != service_name:
+        raise _contract_error()
+    selector_labels: dict[str, str | None] = {}
+    for key in selector:
+        raw_value = labels.get(key)
+        if raw_value is None:
+            selector_labels[key] = None
+            continue
+        if not _valid_label_value(raw_value):
+            raise _contract_error()
+        selector_labels[key] = state.required(raw_value)
+    status = pod_view.status
+    if status is not None and not isinstance(status, V1PodStatus):
+        raise _contract_error()
+    return ServiceCandidatePod(
+        pod_ref=TargetRef(
+            api_version="v1",
+            kind="Pod",
+            namespace=namespace,
+            name=_required_string(metadata.name),
+            uid=_required_string(metadata.uid),
+        ),
+        resource_version=_required_string(metadata.resource_version),
+        selector_labels=selector_labels,
+        matches_selector=bool(selector)
+        and all(labels.get(key) == value for key, value in selector.items()),
+        ready=_pod_ready_condition(status),
+    )
+
+
+def _pod_ready_condition(status: V1PodStatus | None) -> bool | None:
+    if status is None:
+        return None
+    raw_conditions = cast(_PodStatusView, status).conditions
+    if raw_conditions is None:
+        return None
+    if not isinstance(raw_conditions, list):
+        raise _contract_error()
+    ready: bool | None = None
+    ready_seen = False
+    for condition in cast(list[object], raw_conditions):
+        if not isinstance(condition, V1PodCondition):
+            raise _contract_error()
+        condition_view = cast(_ConditionView, condition)
+        if condition_view.type != "Ready":
+            continue
+        if ready_seen:
+            raise _contract_error()
+        ready_seen = True
+        raw_status = _required_string(condition_view.status)
+        if raw_status == "True":
+            ready = True
+        elif raw_status == "False":
+            ready = False
+        elif raw_status != "Unknown":
+            raise _contract_error()
+    return ready
+
+
+def _project_endpoint_slice(
+    endpoint_slice: V1EndpointSlice,
+    *,
+    service_ref: TargetRef,
+    expected_namespace: str,
+) -> EndpointSliceSummary:
+    endpoint_slice_view = cast(_EndpointSliceView, endpoint_slice)
+    _validate_list_item_type_meta(
+        endpoint_slice_view.api_version,
+        endpoint_slice_view.kind,
+        expected_api_version="discovery.k8s.io/v1",
+        expected_kind="EndpointSlice",
+    )
+    metadata = _metadata(endpoint_slice_view.metadata)
+    if _required_string(metadata.namespace) != expected_namespace:
+        raise _contract_error()
+    labels = _metadata_labels(metadata)
+    if labels.get(ENDPOINT_SLICE_SERVICE_LABEL) != service_ref.name:
+        raise _contract_error()
+    owner = _controller_owner(
+        metadata,
+        expected_api_version="v1",
+        expected_kind="Service",
+        expected_uids={service_ref.uid},
+    )
+    if owner is None or _required_string(owner.name) != service_ref.name:
+        raise _contract_error()
+    address_type = _required_string(endpoint_slice_view.address_type)
+    if address_type not in {"IPv4", "IPv6", "FQDN"}:
+        raise _contract_error()
+    raw_endpoints = endpoint_slice_view.endpoints
+    if not isinstance(raw_endpoints, list) or not all(
+        isinstance(endpoint, V1Endpoint)
+        for endpoint in cast(list[object], raw_endpoints)
+    ):
+        raise _contract_error()
+    endpoints = cast(list[V1Endpoint], raw_endpoints)
+    ready_count = 0
+    not_ready_count = 0
+    unknown_ready_count = 0
+    serving_count = 0
+    terminating_count = 0
+    for endpoint in endpoints:
+        conditions = cast(_EndpointView, endpoint).conditions
+        if conditions is None:
+            unknown_ready_count += 1
+            continue
+        if not isinstance(conditions, V1EndpointConditions):
+            raise _contract_error()
+        conditions_view = cast(_EndpointConditionsView, conditions)
+        ready = _optional_bool(conditions_view.ready)
+        serving = _optional_bool(conditions_view.serving)
+        terminating = _optional_bool(conditions_view.terminating)
+        if ready is True:
+            ready_count += 1
+        elif ready is False:
+            not_ready_count += 1
+        else:
+            unknown_ready_count += 1
+        serving_count += serving is True
+        terminating_count += terminating is True
+    return EndpointSliceSummary(
+        endpoint_slice_ref=TargetRef(
+            api_version="discovery.k8s.io/v1",
+            kind="EndpointSlice",
+            namespace=expected_namespace,
+            name=_required_string(metadata.name),
+            uid=_required_string(metadata.uid),
+        ),
+        resource_version=_required_string(metadata.resource_version),
+        address_type=cast(Literal["IPv4", "IPv6", "FQDN"], address_type),
+        endpoint_count=len(endpoints),
+        ready_count=ready_count,
+        not_ready_count=not_ready_count,
+        unknown_ready_count=unknown_ready_count,
+        serving_count=serving_count,
+        terminating_count=terminating_count,
+    )
+
+
+def _service_network_state(
+    service: ServiceDetail,
+    *,
+    candidate_count: int,
+    selector_match_count: int,
+    ready_endpoint_count: int,
+) -> ServiceNetworkState:
+    if not service.monitoring_enabled:
+        return "monitoring_not_enabled"
+    if service.service_type == "ExternalName":
+        return "external_name"
+    if service.cluster_ip == "None":
+        return "headless"
+    if service.publish_not_ready_addresses:
+        return "publish_not_ready"
+    if service.selector is None:
+        return "no_selector"
+    if candidate_count == 0:
+        return "no_candidates"
+    if ready_endpoint_count > 0:
+        return "endpoints_ready"
+    if selector_match_count == 0:
+        return "selector_mismatch"
+    return "endpoints_unready"
+
+
 def _deployment_context(
     deployment: V1Deployment,
-    target: DeploymentTarget,
+    target: DiagnosticTarget,
     state: _SanitizationState,
 ) -> _DeploymentContext:
     deployment_view = cast(_DeploymentView, deployment)
@@ -1433,6 +1918,23 @@ def _metadata(value: object) -> _MetadataView:
     return cast(_MetadataView, value)
 
 
+def _metadata_labels(metadata: _MetadataView) -> dict[str, str]:
+    value = metadata.labels
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise _contract_error()
+    raw_labels = cast(dict[object, object], value)
+    labels: dict[str, str] = {}
+    for raw_key, raw_value in raw_labels.items():
+        key = _required_string(raw_key)
+        label_value = _required_string(raw_value, allow_empty=True)
+        if not _valid_label_key(key) or not _valid_label_value(label_value):
+            raise _contract_error()
+        labels[key] = label_value
+    return labels
+
+
 def _validate_list_item_type_meta(
     api_version: object,
     kind: object,
@@ -1467,6 +1969,14 @@ def _optional_nonnegative_int(value: object) -> int | None:
     if value is None:
         return None
     return _nonnegative_int(value)
+
+
+def _optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise _contract_error()
+    return value
 
 
 def _zero_if_missing(value: object) -> int:
@@ -1598,7 +2108,13 @@ def _utc_now() -> datetime:
 
 
 def _enforce_payload_budget(
-    payload: WorkloadPayload | PodsPayload | EventsPayload | ContainerLogsPayload,
+    payload: (
+        WorkloadPayload
+        | PodsPayload
+        | EventsPayload
+        | ContainerLogsPayload
+        | ServiceNetworkPayload
+    ),
 ) -> None:
     value = cast(JsonValue, payload.model_dump(mode="json", by_alias=True))
     if len(canonical_json(value).encode("utf-8")) > CANONICAL_PAYLOAD_LIMIT_BYTES:

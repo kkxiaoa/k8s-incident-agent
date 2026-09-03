@@ -69,7 +69,7 @@ class MetricPanelContract(_CatalogContract):
         max_length=128,
     )
     title: str = Field(min_length=1, max_length=160)
-    unit: Literal["pods", "containers", "replicas", "restarts"]
+    unit: Literal["pods", "containers", "replicas", "restarts", "endpoints"]
     threshold: float | None = Field(allow_inf_nan=False)
     risk_direction: Literal["higher_is_worse", "lower_is_worse"]
     threshold_duration: str | None = Field(
@@ -98,10 +98,9 @@ class MetricPanelContract(_CatalogContract):
         return value
 
     @model_validator(mode="after")
-    def require_threshold_for_risk_direction(self) -> Self:
-        has_static_threshold = self.threshold is not None
-        if (self.risk_direction == "higher_is_worse") is not has_static_threshold:
-            raise ValueError("Metric threshold does not match its risk direction")
+    def require_threshold_for_higher_risk(self) -> Self:
+        if self.risk_direction == "higher_is_worse" and self.threshold is None:
+            raise ValueError("Higher-is-worse panels require a static threshold")
         return self
 
 

@@ -20,7 +20,7 @@ spec:
         app.kubernetes.io/name: prometheus
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:b25cd921db250e1a378b1bc1e68734106c754f8fc7fd48e542d48c1bf5c62d51"
+        k8s-incident-agent.io/config-digest: "sha256:4355200c13bec4d48c51acc0905473a255616360a88408e75754096aee43a1b5"
     spec:
       serviceAccountName: prometheus
       automountServiceAccountToken: false
@@ -117,7 +117,7 @@ spec:
         app.kubernetes.io/name: alertmanager
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:553defe7951155a04de1164e3b19defe2b07139296e5ede2f92eaaa093ed45c7"
+        k8s-incident-agent.io/config-digest: "sha256:4386038d665c371b2348033aa8ee6fae4cd8c7cb24c70cf2b574d12602a04f0c"
     spec:
       serviceAccountName: alertmanager
       automountServiceAccountToken: false
@@ -231,8 +231,9 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - --namespaces=k8s-incident-scenarios
-            - --resources=deployments,pods,replicasets
-            - --metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner
+            - --resources=deployments,endpointslices,pods,replicasets,services
+            - --metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type
+            - --metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]
             - --use-apiserver-cache
           ports:
             - name: http

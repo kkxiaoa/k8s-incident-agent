@@ -248,8 +248,7 @@ export function TimeSeriesChart({
   const reducedMotion = useReducedChartMotion();
   const queriedAt = Date.parse(result.queriedAt);
   const start = queriedAt - windowMilliseconds(result.window);
-  const staticThreshold =
-    riskDirection === "higher_is_worse" ? result.threshold : null;
+  const staticThreshold = result.threshold;
   const values = [
     ...result.samples.map((sample) => sample.value),
     ...(staticThreshold !== null
@@ -263,7 +262,9 @@ export function TimeSeriesChart({
   const padding = Math.max((maximum - minimum) * 0.12, 0.5);
   const yMin = minimum - (minimum < 0 ? padding : 0);
   const yMax = Math.ceil(maximum + padding);
-  const higherIsWorse = staticThreshold !== null;
+  const higherIsWorse = riskDirection === "higher_is_worse";
+  const seriesLabel =
+    result.unit === "replicas" ? "可用副本数" : `${result.title} 数量`;
   const seriesColor = higherIsWorse ? "#e5484d" : "#0f8f86";
   const points = result.samples.map((sample) => ({
     x: Date.parse(sample.timestamp),
@@ -331,15 +332,17 @@ export function TimeSeriesChart({
         tension: 0,
         order: 1,
       },
-      ...(higherIsWorse
+      ...(staticThreshold !== null
         ? [
             {
-              label: `阈值 ≥ ${staticThreshold}`,
+              label: `阈值 ${higherIsWorse ? "≥" : "<"} ${staticThreshold}`,
               data: [
                 { x: start, y: staticThreshold },
                 { x: queriedAt, y: staticThreshold },
               ],
-              borderColor: "rgba(229, 72, 77, 0.55)",
+              borderColor: higherIsWorse
+                ? "rgba(229, 72, 77, 0.55)"
+                : "rgba(15, 143, 134, 0.66)",
               borderDash: [6, 5],
               borderWidth: 1.5,
               pointRadius: 0,
@@ -450,10 +453,16 @@ export function TimeSeriesChart({
       <div className="metric-chart__legend" aria-label="图表图例">
         <span>
           <i className={higherIsWorse ? "is-risk-series" : "is-series"} />
-          {higherIsWorse ? `${result.title} 数量` : "可用副本数"}
+          {seriesLabel}
         </span>
-        {higherIsWorse ? (
-          <span><i className="is-threshold-zone" />阈值区间（≥ {staticThreshold}）</span>
+        {staticThreshold !== null ? (
+          <span>
+            <i
+              className={higherIsWorse ? "is-threshold-zone" : "is-reference"}
+            />
+            {higherIsWorse ? "阈值区间" : "下限阈值"}（
+            {higherIsWorse ? "≥" : "<"} {staticThreshold}）
+          </span>
         ) : referenceValue === null ? null : (
           <span><i className="is-reference" />期望副本数（{referenceValue}）</span>
         )}
@@ -466,7 +475,7 @@ export function TimeSeriesChart({
           options={options}
           plugins={[markerLabelPlugin]}
           role="img"
-          aria-label={`${result.title} 时间序列。当前值 ${result.currentValue} ${result.unit}，风险条件 ${higherIsWorse ? `≥ ${staticThreshold}` : referenceValue === null ? "等待期望副本 Evidence" : `< ${referenceValue}`}，共 ${result.samples.length} 个样本和 ${markers.length} 个独立事件标记。`}
+          aria-label={`${result.title} 时间序列。当前值 ${result.currentValue} ${result.unit}，风险条件 ${staticThreshold !== null ? `${higherIsWorse ? "≥" : "<"} ${staticThreshold}` : referenceValue === null ? "等待期望副本 Evidence" : `< ${referenceValue}`}，共 ${result.samples.length} 个样本和 ${markers.length} 个独立事件标记。`}
         />
       </div>
 

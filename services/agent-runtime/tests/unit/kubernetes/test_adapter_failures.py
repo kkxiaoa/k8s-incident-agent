@@ -213,6 +213,7 @@ def _adapter(
         SimpleNamespace(
             apps_api=apps_api,
             core_api=core_api or _CoreApi(),
+            discovery_api=object(),
             events_api=events_api or _EventsApi(),
             timeout_seconds=10.0,
             cluster_id=TARGET.cluster,

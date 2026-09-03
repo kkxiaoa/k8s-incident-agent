@@ -934,6 +934,25 @@ test("the versioned fixture exposes only the public scenario contract", async ()
         name: SCENARIO_ID,
       },
     },
+    {
+      scenario_id: "service-selector-mismatch",
+      scenario_version: 1,
+      display_name: "Service selector mismatch",
+      description:
+        "A monitored Service selector does not match the labels of its explicitly associated candidate Pods.",
+      trigger: {
+        type: "manual",
+        summary:
+          "The target Service has candidate Pods but no ready EndpointSlice endpoints.",
+      },
+      target: {
+        cluster: CLUSTER_NAME,
+        namespace: NAMESPACE,
+        api_version: "v1",
+        kind: "Service",
+        name: "service-selector-mismatch",
+      },
+    },
   ]);
   const serialized = JSON.stringify(publicItems);
   for (const privateField of [
@@ -989,6 +1008,104 @@ test("CrashLoop verifier proves restart, BackOff, previous log, and healthy cont
     "--limit-bytes=4096",
     "--request-timeout=30s",
   ]);
+});
+
+test("Service verifier proves mismatch and a ready selector-matched control", async () => {
+  const scenarioName = "service-selector-mismatch";
+  const serviceDocument = (name, selector, uid) =>
+    JSON.stringify({
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: {
+        name,
+        namespace: NAMESPACE,
+        uid,
+        labels: { "k8s-incident-agent.io/monitor-selector": "true" },
+      },
+      spec: { type: "ClusterIP", clusterIP: "10.96.0.20", selector },
+    });
+  const listDocument = (items) =>
+    JSON.stringify({ apiVersion: "v1", kind: "List", items });
+  const executor = createExecutor({
+    resolveOutput: ({ args, resource }) => {
+      const healthy = args.some((value) =>
+        value.includes(`${scenarioName}-healthy-control`),
+      );
+      const serviceName = healthy ? `${scenarioName}-healthy-control` : scenarioName;
+      const serviceUid = healthy ? "healthy-service-uid" : "service-uid";
+      if (resource === "service") {
+        return serviceDocument(
+          serviceName,
+          { app: healthy ? "healthy" : "wrong" },
+          serviceUid,
+        );
+      }
+      if (resource === "pods") {
+        return listDocument([
+          {
+            apiVersion: "v1",
+            kind: "Pod",
+            metadata: {
+              name: `${serviceName}-pod`,
+              namespace: NAMESPACE,
+              uid: `${serviceName}-pod-uid`,
+              labels: {
+                app: healthy ? "healthy" : "actual",
+                "k8s-incident-agent.io/service": serviceName,
+              },
+            },
+          },
+        ]);
+      }
+      if (resource === "endpointslices.discovery.k8s.io") {
+        return listDocument([
+          {
+            apiVersion: "discovery.k8s.io/v1",
+            kind: "EndpointSlice",
+            metadata: {
+              name: `${serviceName}-slice`,
+              namespace: NAMESPACE,
+              uid: `${serviceName}-slice-uid`,
+              labels: { "kubernetes.io/service-name": serviceName },
+              ownerReferences: [
+                {
+                  apiVersion: "v1",
+                  kind: "Service",
+                  name: serviceName,
+                  uid: serviceUid,
+                  controller: true,
+                },
+              ],
+            },
+            addressType: "IPv4",
+            endpoints: healthy ? [{ conditions: { ready: true } }] : [],
+          },
+        ]);
+      }
+      return undefined;
+    },
+  });
+
+  const result = await runScenarioCommand("verify", scenarioName, {
+    repositoryRoot: REPOSITORY_ROOT,
+    environment: {},
+    execute: executor.execute,
+  });
+
+  assert.deepEqual(result, {
+    status: "verified",
+    scenario_id: scenarioName,
+    service: {
+      name: scenarioName,
+      candidate_pods: 1,
+      selector_matches: 0,
+      ready_endpoints: 0,
+    },
+    healthy_control: {
+      name: `${scenarioName}-healthy-control`,
+      ready_endpoints: 1,
+    },
+  });
 });
 
 test("catalog rejects incompatible versions, extra fields, and target drift", async (t) => {

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from k8s_incident_agent.domain.models import AgentRunSnapshot
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
-from k8s_incident_agent.kubernetes.contracts import DeploymentTarget
+from k8s_incident_agent.kubernetes.contracts import DiagnosticTarget
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredentialLease
 from k8s_incident_agent.monitoring.service import PrometheusQueryService
 from k8s_incident_agent.persistence.repositories import IncidentRepository
@@ -13,7 +13,7 @@ from k8s_incident_agent.persistence.repositories import IncidentRepository
 @dataclass(frozen=True, slots=True)
 class DiagnosticToolContext:
     run: AgentRunSnapshot
-    target: DeploymentTarget
+    target: DiagnosticTarget
     credential: DiagnosticCredentialLease
     adapter: KubernetesEvidenceAdapter
     repository: IncidentRepository

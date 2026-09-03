@@ -26,6 +26,13 @@ TARGET = KubernetesTarget(
     kind="Deployment",
     name='image-pull-"quoted\\name',
 )
+SERVICE_TARGET = KubernetesTarget(
+    cluster="k8s-incident-agent",
+    namespace="k8s-incident-scenarios",
+    api_version="v1",
+    kind="Service",
+    name="frontend",
+)
 
 
 def _response(document: str, *, status: int = 200) -> httpx.Response:
@@ -88,6 +95,34 @@ async def test_range_query_keeps_zero_and_escapes_target_labels() -> None:
     assert requests[0].url.path == "/api/v1/query_range"
     assert 'namespace="k8s-incident-scenarios"' in form["query"]
     assert 'owner_name="image-pull-\\"quoted\\\\name"' in form["query"]
+
+
+@pytest.mark.asyncio
+async def test_service_endpoint_panel_preserves_multiple_ready_endpoints() -> None:
+    service, requests = _service(
+        _response(
+            '{"status":"success","data":{"resultType":"matrix","result":['
+            '{"metric":{},"values":['
+            '[1788339540,"1"],[1788339600,"2"]]}]}}'
+        )
+    )
+
+    result = await service.query_panel(
+        target=SERVICE_TARGET,
+        panel_id="service-ready-endpoints",
+        window=MetricWindow.FIFTEEN_MINUTES,
+    )
+    await service.close()
+
+    assert result.state is MetricQueryState.OK
+    assert result.current_value == 2
+    assert [sample.value for sample in result.samples] == [1, 2]
+    form = dict(httpx.QueryParams(requests[0].content.decode()))
+    assert (
+        'kube_endpointslice_endpoints{namespace="k8s-incident-scenarios",ready="true"} > 0'
+        in form["query"]
+    )
+    assert 'label_kubernetes_io_service_name="frontend"' in form["query"]
 
 
 @pytest.mark.asyncio

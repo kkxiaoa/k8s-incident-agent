@@ -9,6 +9,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     AuthorizationV1Api,
     Configuration,
     CoreV1Api,
+    DiscoveryV1Api,
     EventsV1Api,
     V1SelfSubjectAccessReview,
     V1SubjectAccessReviewStatus,
@@ -20,8 +21,8 @@ from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingT
 )
 
 from k8s_incident_agent.kubernetes.access import (
-    require_stage_one_target_scope,
-    verify_stage_one_access,
+    require_diagnostic_target_scope,
+    verify_diagnostic_access,
 )
 from k8s_incident_agent.kubernetes.client import KubernetesClients
 from k8s_incident_agent.kubernetes.errors import (
@@ -73,6 +74,16 @@ EXPECTED_ALLOWED: frozenset[AccessKey] = frozenset(
         ("apps", "v1", "replicasets", None, "list", TARGET.namespace, None),
         ("", "v1", "pods", None, "list", TARGET.namespace, None),
         ("", "v1", "pods", "log", "get", TARGET.namespace, None),
+        ("", "v1", "services", None, "get", TARGET.namespace, None),
+        (
+            "discovery.k8s.io",
+            "v1",
+            "endpointslices",
+            None,
+            "list",
+            TARGET.namespace,
+            None,
+        ),
         (
             "events.k8s.io",
             "v1",
@@ -233,6 +244,7 @@ async def _clients(
         api_client=api_client,
         apps_api=AppsV1Api(api_client),
         core_api=CoreV1Api(api_client),
+        discovery_api=DiscoveryV1Api(api_client),
         events_api=EventsV1Api(api_client),
         version_api=cast(VersionApi, version_api),
         authorization_api=cast(AuthorizationV1Api, authorization_api),
@@ -252,7 +264,7 @@ async def test_gate_checks_exact_version_and_fixed_allow_deny_matrix() -> None:
     authorization_api = _ScriptedAuthorizationApi()
 
     async with _clients(version_api, authorization_api) as clients:
-        await verify_stage_one_access(clients)
+        await verify_diagnostic_access(clients)
 
     assert version_api.timeouts == [10]
     assert {key for key, _ in authorization_api.calls} == (
@@ -277,7 +289,7 @@ async def test_gate_rejects_unsupported_version_contract(
         _ScriptedVersionApi(version_result), authorization_api
     ) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients)
+            await verify_diagnostic_access(clients)
 
     assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
     assert authorization_api.calls == []
@@ -300,7 +312,7 @@ async def test_gate_fails_when_fixed_permission_expectation_is_not_met(
 
     async with _clients(_ScriptedVersionApi(_version()), authorization_api) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients)
+            await verify_diagnostic_access(clients)
 
     assert captured.value.code is KubernetesErrorCode.PERMISSION_DENIED
 
@@ -325,7 +337,7 @@ async def test_gate_rejects_malformed_authorization_status(status: object) -> No
 
     async with _clients(_ScriptedVersionApi(_version()), authorization_api) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients)
+            await verify_diagnostic_access(clients)
 
     assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
     assert "sensitive authorizer detail" not in str(captured.value)
@@ -347,7 +359,7 @@ async def test_gate_preserves_typed_upstream_failure_categories(
 
     async with _clients(_ScriptedVersionApi(_version()), authorization_api) as clients:
         with pytest.raises(KubernetesBoundaryError) as captured:
-            await verify_stage_one_access(clients)
+            await verify_diagnostic_access(clients)
 
     assert captured.value.code is expected_code
 
@@ -368,10 +380,24 @@ def test_target_scope_rejects_catalog_target_outside_configured_scope(
     target = TARGET.model_copy(update={field: value})
 
     with pytest.raises(KubernetesBoundaryError) as captured:
-        require_stage_one_target_scope(
+        require_diagnostic_target_scope(
             target,
             cluster_id=TARGET.cluster,
             diagnostic_namespace=cast(str, TARGET.namespace),
         )
 
     assert captured.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
+def test_target_scope_accepts_exact_supported_service() -> None:
+    target = TARGET.model_copy(
+        update={"api_version": "v1", "kind": "Service", "name": "frontend"}
+    )
+
+    namespace = require_diagnostic_target_scope(
+        target,
+        cluster_id=TARGET.cluster,
+        diagnostic_namespace=cast(str, TARGET.namespace),
+    )
+
+    assert namespace == TARGET.namespace

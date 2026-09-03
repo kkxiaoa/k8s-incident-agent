@@ -3,18 +3,22 @@ from pathlib import Path
 
 import pytest
 
-from k8s_incident_agent.monitoring.catalog import load_alert_catalog
+from k8s_incident_agent.monitoring.catalog import (
+    MetricPanelContract,
+    load_alert_catalog,
+)
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 
 
-def test_production_catalog_has_specific_and_shared_deployment_entries() -> None:
+def test_production_catalog_has_deployment_and_service_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-04.1"
+    assert catalog.version == "2026-09-04.2"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
         "K8sIncidentDeploymentReplicasUnavailable",
+        "K8sIncidentServiceEndpointsUnavailable",
     ]
     assert catalog.entries[0].target.model_dump() == {
         "api_version": "apps/v1",
@@ -40,6 +44,7 @@ def test_production_catalog_has_specific_and_shared_deployment_entries() -> None
         "crash-loop-restarts",
         "crash-loop-waiting-containers",
         "deployment-replica-deficit",
+        "service-ready-endpoints",
     )
     assert catalog.entries[0].panels[0].model_dump() == {
         "panel_id": "image-pull-affected-pods",
@@ -89,6 +94,25 @@ def test_production_catalog_has_specific_and_shared_deployment_entries() -> None
     assert deficit.risk_direction == "higher_is_worse"
     assert deficit.threshold_duration == "5m"
     assert "clamp_min" in deficit.query_template
+    service = catalog.entries[3]
+    assert service.target.kind == "Service"
+    assert service.target.name_label == "service"
+    assert service.allowed_tools == ["get_service_network", "query_prometheus"]
+    assert service.required_evidence == ["service_network"]
+    assert "kube_service_labels" in service.rule.expression
+    assert "kube_endpointslice_endpoints" in service.rule.expression
+    assert 'kube_endpointslice_endpoints{ready="true"} > 0' in (service.rule.expression)
+    assert 'kube_endpointslice_endpoints{ready="true"} == 1' not in (
+        service.rule.expression
+    )
+    ready_endpoints = service.panels[0]
+    assert ready_endpoints.panel_id == "service-ready-endpoints"
+    assert ready_endpoints.threshold == 1.0
+    assert ready_endpoints.risk_direction == "lower_is_worse"
+    assert (
+        'kube_endpointslice_endpoints{namespace="{{namespace}}",ready="true"} > 0'
+        in (ready_endpoints.query_template)
+    )
 
 
 @pytest.mark.parametrize(
@@ -150,15 +174,7 @@ def test_catalog_rejects_empty_ambiguous_or_duplicate_key_contracts(
         load_alert_catalog(catalog_dir)
 
 
-@pytest.mark.parametrize(
-    ("risk_direction", "threshold"),
-    [("higher_is_worse", None), ("lower_is_worse", 1.0)],
-)
-def test_catalog_rejects_thresholds_that_contradict_risk_direction(
-    tmp_path: Path,
-    risk_direction: str,
-    threshold: float | None,
-) -> None:
+def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     document = {
         "schemaVersion": 5,
         "catalogVersion": "v1",
@@ -182,8 +198,8 @@ def test_catalog_rejects_thresholds_that_contradict_risk_direction(
                         "panelId": "panel-a",
                         "title": "Panel A",
                         "unit": "replicas",
-                        "threshold": threshold,
-                        "riskDirection": risk_direction,
+                        "threshold": 1.0,
+                        "riskDirection": "lower_is_worse",
                         "thresholdDuration": None,
                         "recommendedWindow": "15m",
                         "staleAfterSeconds": 60,
@@ -199,8 +215,27 @@ def test_catalog_rejects_thresholds_that_contradict_risk_direction(
     catalog_dir.mkdir()
     (catalog_dir / "catalog.json").write_text(json.dumps(document), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Alert catalog contract is invalid"):
-        load_alert_catalog(catalog_dir)
+    panel = load_alert_catalog(catalog_dir).entries[0].panels[0]
+
+    assert panel.threshold == 1.0
+    assert panel.risk_direction == "lower_is_worse"
+
+
+def test_catalog_rejects_higher_risk_without_a_static_threshold() -> None:
+    with pytest.raises(ValueError, match="Higher-is-worse"):
+        MetricPanelContract.model_validate(
+            {
+                "panelId": "panel-a",
+                "title": "Panel A",
+                "unit": "pods",
+                "threshold": None,
+                "riskDirection": "higher_is_worse",
+                "thresholdDuration": None,
+                "recommendedWindow": "15m",
+                "staleAfterSeconds": 60,
+                "queryTemplate": ('metric{namespace="{{namespace}}",name="{{name}}"}'),
+            }
+        )
 
 
 def test_catalog_rejects_mapping_label_outside_webhook_key_budget(

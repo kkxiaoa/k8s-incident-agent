@@ -58,6 +58,13 @@ const AVAILABLE_REPLICAS_PANEL = {
   thresholdDuration: null,
 } as const;
 
+const SERVICE_ENDPOINT_PANEL = {
+  panelId: "service-ready-endpoints",
+  recommendedWindow: "15m",
+  riskDirection: "lower_is_worse",
+  thresholdDuration: "30s",
+} as const;
+
 const EVIDENCE: EvidenceView[] = [
   {
     id: "33333333-3333-4333-8333-333333333331",
@@ -114,19 +121,26 @@ function panelResponse(
     state === "no_data" ||
     state === "query_error" ||
     state === "monitoring_unavailable";
-  const title =
-    panelId === "image-pull-available-replicas"
-      ? "Deployment 可用副本"
+  const availableReplicas = panelId === "image-pull-available-replicas";
+  const serviceEndpoints = panelId === "service-ready-endpoints";
+  const title = availableReplicas
+    ? "Deployment 可用副本"
+    : serviceEndpoints
+      ? "Service 就绪 Endpoint"
       : "镜像拉取失败 Pod";
   return {
     schemaVersion: 1,
     result: {
       panelId,
       title,
-      unit: panelId === "image-pull-available-replicas" ? "replicas" : "pods",
-      threshold: panelId === "image-pull-available-replicas" ? null : 1,
+      unit: availableReplicas
+        ? "replicas"
+        : serviceEndpoints
+          ? "endpoints"
+          : "pods",
+      threshold: availableReplicas ? null : 1,
       riskDirection:
-        panelId === "image-pull-available-replicas"
+        availableReplicas || serviceEndpoints
           ? "lower_is_worse"
           : "higher_is_worse",
       window,
@@ -366,6 +380,44 @@ describe("IncidentMonitoringOverview", () => {
         }),
       ),
     );
+  });
+
+  it("renders a static lower-bound Service panel through the browser boundary", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(panelResponse("service-ready-endpoints", "15m")),
+        ),
+    );
+
+    render(
+      <MetricPanelCard
+        incidentId={INCIDENT_ID}
+        panel={SERVICE_ENDPOINT_PANEL}
+        refreshKey="service-running"
+        alertStatus="FIRING"
+      />,
+    );
+
+    const heading = await screen.findByRole("heading", {
+      name: "Service 就绪 Endpoint",
+    });
+    const card = heading.closest("article");
+    expect(card).not.toBeNull();
+    expect(
+      within(card as HTMLElement).getByText("Service 就绪 Endpoint 数量"),
+    ).toBeVisible();
+    expect(
+      within(card as HTMLElement).getByText("下限阈值（< 1）"),
+    ).toBeVisible();
+    expect(within(card as HTMLElement).getByText("告警中")).toBeVisible();
+    expect(
+      within(card as HTMLElement).queryByText(
+        "监控响应无法验证，未展示可能失真的数据。",
+      ),
+    ).toBeNull();
   });
 });
 

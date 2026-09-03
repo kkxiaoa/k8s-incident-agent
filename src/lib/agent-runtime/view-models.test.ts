@@ -167,6 +167,22 @@ describe("evidenceSummary", () => {
     ).toBe("指标：Deployment 可用副本 · 当前值 2 · 风险方向 数值下降");
   });
 
+  it("keeps a catalog-provided lower bound in a metric summary", () => {
+    expect(
+      evidenceSummary(
+        evidence("metrics", {
+          result: {
+            title: "Service 就绪 Endpoint",
+            currentValue: 0,
+            threshold: 1,
+            riskDirection: "lower_is_worse",
+            state: "ok",
+          },
+        }),
+      ),
+    ).toBe("指标：Service 就绪 Endpoint · 当前值 0 · 阈值 1");
+  });
+
   it("falls back to existing metadata for an unknown or malformed payload", () => {
     expect(evidenceSummary(evidence("pods", { notPods: [] }))).toBe(
       "pods · get_pods · Deployment · incident-demo/broken-image",

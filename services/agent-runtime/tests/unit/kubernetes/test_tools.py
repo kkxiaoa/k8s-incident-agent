@@ -43,6 +43,11 @@ from k8s_incident_agent.kubernetes.contracts import (
     PodsPayload,
     ReplicaSummary,
     Selector,
+    ServiceCandidatePod,
+    ServiceDetail,
+    ServiceNetworkObservation,
+    ServiceNetworkPayload,
+    ServiceNetworkSummary,
     SourceWorkload,
     TargetRef,
     WorkloadDetail,
@@ -65,13 +70,26 @@ from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 21, 10, 0, tzinfo=UTC)
-TOOL_NAMES = ("get_workload", "get_pods", "get_events", "get_container_logs")
+DEPLOYMENT_TOOL_NAMES = (
+    "get_workload",
+    "get_pods",
+    "get_events",
+    "get_container_logs",
+)
+TOOL_NAMES = (*DEPLOYMENT_TOOL_NAMES, "get_service_network")
 TARGET = ScenarioTarget(
     cluster="k8s-incident-agent",
     namespace="k8s-incident-scenarios",
     api_version="apps/v1",
     kind="Deployment",
     name="image-pull-backoff",
+)
+SERVICE_TARGET = ScenarioTarget(
+    cluster="k8s-incident-agent",
+    namespace="k8s-incident-scenarios",
+    api_version="v1",
+    kind="Service",
+    name="service-selector-mismatch",
 )
 
 
@@ -92,8 +110,8 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
         await database.dispose()
 
 
-def _scenario():
-    return normalized_trigger()
+def _scenario(target: ScenarioTarget = TARGET):
+    return normalized_trigger(target.name).model_copy(update={"target": target})
 
 
 def _credential() -> DiagnosticCredential:
@@ -110,9 +128,12 @@ class _ObservationAdapter:
     def __init__(
         self,
         before_read: Callable[[str], Awaitable[None]] | None = None,
+        *,
+        expected_target: ScenarioTarget = TARGET,
     ) -> None:
         self.calls: list[str] = []
         self._before_read = before_read
+        self._expected_target = expected_target
 
     async def read_workload(self, target: ScenarioTarget) -> WorkloadObservation:
         call_index = await self._record("get_workload", target)
@@ -196,8 +217,61 @@ class _ObservationAdapter:
             redacted=False,
         )
 
+    async def read_service_network(
+        self,
+        target: ScenarioTarget,
+    ) -> ServiceNetworkObservation:
+        call_index = await self._record("get_service_network", target)
+        service_ref = TargetRef(
+            api_version="v1",
+            kind="Service",
+            namespace=cast(str, SERVICE_TARGET.namespace),
+            name=SERVICE_TARGET.name,
+            uid="service-uid",
+        )
+        return ServiceNetworkObservation(
+            evidence_kind="service_network",
+            target_ref=service_ref,
+            observed_at=NOW + timedelta(seconds=call_index),
+            payload=ServiceNetworkPayload(
+                service=ServiceDetail(
+                    resource_version=str(call_index),
+                    service_type="ClusterIP",
+                    cluster_ip="10.96.0.10",
+                    selector=Selector(match_labels={"app": "wrong"}),
+                    monitoring_enabled=True,
+                    publish_not_ready_addresses=False,
+                ),
+                summary=ServiceNetworkSummary(
+                    state="selector_mismatch",
+                    candidate_count=1,
+                    selector_match_count=0,
+                    endpoint_slice_count=0,
+                    ready_endpoint_count=0,
+                ),
+                candidate_pods=[
+                    ServiceCandidatePod(
+                        pod_ref=TargetRef(
+                            api_version="v1",
+                            kind="Pod",
+                            namespace=cast(str, SERVICE_TARGET.namespace),
+                            name="backend-0",
+                            uid="pod-uid",
+                        ),
+                        resource_version="1",
+                        selector_labels={"app": "backend"},
+                        matches_selector=False,
+                        ready=True,
+                    )
+                ],
+                endpoint_slices=[],
+            ),
+            truncated=False,
+            redacted=False,
+        )
+
     async def _record(self, tool_name: str, target: ScenarioTarget) -> int:
-        assert target == TARGET
+        assert target == self._expected_target
         self.calls.append(tool_name)
         if self._before_read is not None:
             await self._before_read(tool_name)
@@ -217,9 +291,11 @@ def _target_ref() -> TargetRef:
 async def _context(
     repository: IncidentRepository,
     adapter: _ObservationAdapter,
+    *,
+    target: ScenarioTarget = TARGET,
 ) -> DiagnosticToolContext:
     created = await repository.create_incident_and_run(
-        _scenario(),
+        _scenario(target),
         ModelSnapshot(
             provider="deepseek",
             model_id="deepseek-v4-flash",
@@ -233,7 +309,7 @@ async def _context(
     assert isinstance(snapshot, AgentRunSnapshot)
     return DiagnosticToolContext(
         run=snapshot,
-        target=TARGET,
+        target=target,
         credential=_credential(),
         adapter=cast("KubernetesEvidenceAdapter", adapter),
         repository=repository,
@@ -294,7 +370,7 @@ def test_registry_is_exact_and_runtime_context_is_hidden_from_model() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("order", tuple(permutations(TOOL_NAMES)))
+@pytest.mark.parametrize("order", tuple(permutations(DEPLOYMENT_TOOL_NAMES)))
 async def test_each_tool_is_order_independent(
     tmp_path: Path,
     order: tuple[str, ...],
@@ -386,6 +462,67 @@ async def test_success_records_started_before_read_and_returns_persisted_evidenc
             "tool.started",
             "evidence.recorded",
         ]
+
+
+@pytest.mark.asyncio
+async def test_service_network_tool_persists_and_replays_its_typed_observation(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        adapter = _ObservationAdapter(expected_target=SERVICE_TARGET)
+        context = await _context(repository, adapter, target=SERVICE_TARGET)
+        tools = build_diagnostic_tools()
+
+        first = await _invoke(
+            tools,
+            context,
+            "get_service_network",
+            "call-service-network",
+        )
+        replay = await _invoke(
+            tools,
+            context,
+            "get_service_network",
+            "call-service-network",
+        )
+
+        assert adapter.calls == ["get_service_network"]
+        assert replay == first
+        assert first["evidenceKind"] == "service_network"
+        assert first["payload"] == {
+            "service": {
+                "resourceVersion": "1",
+                "serviceType": "ClusterIP",
+                "clusterIp": "10.96.0.10",
+                "selector": {"matchLabels": {"app": "wrong"}},
+                "monitoringEnabled": True,
+                "publishNotReadyAddresses": False,
+            },
+            "summary": {
+                "state": "selector_mismatch",
+                "candidateCount": 1,
+                "selectorMatchCount": 0,
+                "endpointSliceCount": 0,
+                "readyEndpointCount": 0,
+            },
+            "candidatePods": [
+                {
+                    "podRef": {
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "namespace": "k8s-incident-scenarios",
+                        "name": "backend-0",
+                        "uid": "pod-uid",
+                    },
+                    "resourceVersion": "1",
+                    "selectorLabels": {"app": "backend"},
+                    "matchesSelector": False,
+                    "ready": True,
+                }
+            ],
+            "endpointSlices": [],
+        }
 
 
 @pytest.mark.asyncio

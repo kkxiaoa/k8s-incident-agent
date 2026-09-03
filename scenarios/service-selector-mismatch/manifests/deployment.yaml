@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-selector-mismatch-backend
+  namespace: k8s-incident-scenarios
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: service-selector-backend
+  template:
+    metadata:
+      labels:
+        app: service-selector-backend
+        k8s-incident-agent.io/service: service-selector-mismatch
+    spec:
+      containers:
+        - name: workload
+          image: registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85
+          imagePullPolicy: IfNotPresent
+          args: ["pause"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault

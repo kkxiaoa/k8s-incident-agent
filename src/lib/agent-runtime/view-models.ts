@@ -268,7 +268,7 @@ function metricsEvidenceSummary(payload: Record<string, unknown>): string | null
   if (
     (riskDirection !== "higher_is_worse" &&
       riskDirection !== "lower_is_worse") ||
-    (riskDirection === "higher_is_worse") !== (threshold !== null)
+    (riskDirection === "higher_is_worse" && threshold === null)
   ) {
     return null;
   }

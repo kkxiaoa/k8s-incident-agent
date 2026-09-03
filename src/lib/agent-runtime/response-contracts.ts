@@ -939,8 +939,7 @@ export function parseIncidentMetricPanelResponse(
     (result.riskDirection !== "higher_is_worse" &&
       result.riskDirection !== "lower_is_worse") ||
     (result.threshold !== null && !isFiniteNumber(result.threshold)) ||
-    ((result.riskDirection === "higher_is_worse") !==
-      (result.threshold !== null)) ||
+    (result.riskDirection === "higher_is_worse" && result.threshold === null) ||
     !isMetricQueryState(result.state) ||
     !isTimestamp(result.queriedAt) ||
     (result.latestSampleAt !== null && !isTimestamp(result.latestSampleAt)) ||

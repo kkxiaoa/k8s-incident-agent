@@ -57,6 +57,7 @@ def _clients(apps_api: _AppsApi) -> KubernetesClients:
         SimpleNamespace(
             apps_api=apps_api,
             core_api=object(),
+            discovery_api=object(),
             events_api=object(),
             timeout_seconds=10.0,
             cluster_id=TARGET.cluster,

@@ -62,14 +62,19 @@ class PublicScenario(_ImmutableContract):
         return self
 
 
-def validate_stage_one_target(target: KubernetesTarget) -> None:
+_SUPPORTED_TARGET_TYPES = {
+    ("apps/v1", "Deployment"),
+    ("v1", "Service"),
+}
+
+
+def validate_supported_target(target: KubernetesTarget) -> None:
     if (
         target.cluster != "k8s-incident-agent"
         or target.namespace != "k8s-incident-scenarios"
-        or target.api_version != "apps/v1"
-        or target.kind != "Deployment"
+        or (target.api_version, target.kind) not in _SUPPORTED_TARGET_TYPES
     ):
-        raise ValueError("Target is outside the Stage 1 diagnostic scope")
+        raise ValueError("Target is outside the supported diagnostic scope")
 
 
 def _normalized_string(value: str) -> str:

@@ -2802,6 +2802,13 @@ async function requireDiagnosticAccess(request, execute) {
       namespaced: true,
     },
     { verb: "list", resource: "events.events.k8s.io", expected: true, namespaced: true },
+    { verb: "get", resource: "services", expected: true, namespaced: true },
+    {
+      verb: "list",
+      resource: "endpointslices.discovery.k8s.io",
+      expected: true,
+      namespaced: true,
+    },
     {
       verb: "create",
       resource: "selfsubjectaccessreviews.authorization.k8s.io",
@@ -2858,6 +2865,27 @@ async function requireMonitoringAccess(request, execute) {
       { verb: "get", resource: "pods", expected: true, namespaced: true },
       { verb: "list", resource: "pods", expected: true, namespaced: true },
       { verb: "watch", resource: "pods", expected: true, namespaced: true },
+      { verb: "get", resource: "services", expected: true, namespaced: true },
+      { verb: "list", resource: "services", expected: true, namespaced: true },
+      { verb: "watch", resource: "services", expected: true, namespaced: true },
+      {
+        verb: "get",
+        resource: "endpointslices.discovery.k8s.io",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "list",
+        resource: "endpointslices.discovery.k8s.io",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "watch",
+        resource: "endpointslices.discovery.k8s.io",
+        expected: true,
+        namespaced: true,
+      },
       {
         verb: "get",
         resource: "deployments.apps",
@@ -3430,8 +3458,9 @@ function requireReadyMonitoringDeployment(
   if (
     !isDeepStrictEqual(container.args, [
       "--namespaces=k8s-incident-scenarios",
-      "--resources=deployments,pods,replicasets",
-      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
+      "--resources=deployments,endpointslices,pods,replicasets,services",
+      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
+      "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
       "--use-apiserver-cache",
     ])
   ) {
@@ -3890,7 +3919,13 @@ function requireAlertmanagerConfiguration(rawConfiguration) {
     global: { resolve_timeout: "1m" },
     route: {
       receiver: "agent-runtime",
-      group_by: ["alertname", "cluster", "namespace", "deployment"],
+      group_by: [
+        "alertname",
+        "cluster",
+        "namespace",
+        "deployment",
+        "service",
+      ],
       group_wait: "1s",
       group_interval: "15s",
       repeat_interval: "5m",

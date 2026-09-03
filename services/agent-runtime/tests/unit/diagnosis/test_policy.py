@@ -83,6 +83,30 @@ def test_resolves_generic_deployment_availability_policy_without_inventing_logs(
     assert policy.prometheus_panel_ids == ("deployment-replica-deficit",)
 
 
+def test_resolves_service_network_policy_without_deployment_tools() -> None:
+    policies, revision = _policies()
+
+    alert_policy = policies.resolve(
+        IncidentSource(
+            type="alertmanager",
+            ref="K8sIncidentServiceEndpointsUnavailable",
+            revision=revision,
+        )
+    )
+    scenario_policy = policies.resolve(
+        IncidentSource(
+            type="scenario",
+            ref="service-selector-mismatch",
+            revision="1",
+        )
+    )
+
+    assert alert_policy == scenario_policy
+    assert alert_policy.tool_names == ("get_service_network", "query_prometheus")
+    assert alert_policy.required_evidence == frozenset({"service_network"})
+    assert alert_policy.prometheus_panel_ids == ("service-ready-endpoints",)
+
+
 @pytest.mark.parametrize(
     "source",
     [

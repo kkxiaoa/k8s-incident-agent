@@ -24,8 +24,8 @@ from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyCatalog
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
 from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget
 from k8s_incident_agent.kubernetes.access import (
-    require_stage_one_target_scope,
-    verify_stage_one_access,
+    require_diagnostic_target_scope,
+    verify_diagnostic_access,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.client import (
@@ -223,12 +223,12 @@ async def build_runtime_container(
             )
         resources.push_async_callback(kubernetes_clients.close)
         for scenario in catalog:
-            require_stage_one_target_scope(
+            require_diagnostic_target_scope(
                 scenario.target,
                 cluster_id=kubernetes_clients.cluster_id,
                 diagnostic_namespace=kubernetes_clients.diagnostic_namespace,
             )
-        await verify_stage_one_access(kubernetes_clients)
+        await verify_diagnostic_access(kubernetes_clients)
 
         sync_http_client = httpx.Client()
         resources.callback(sync_http_client.close)

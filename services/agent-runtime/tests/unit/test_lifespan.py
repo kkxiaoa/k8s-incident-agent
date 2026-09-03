@@ -280,8 +280,8 @@ def _install_runtime_fakes(
         "create_incluster_kubernetes_clients",
         create_incluster_kubernetes,
     )
-    monkeypatch.setattr(api, "require_stage_one_target_scope", target_scope)
-    monkeypatch.setattr(api, "verify_stage_one_access", access)
+    monkeypatch.setattr(api, "require_diagnostic_target_scope", target_scope)
+    monkeypatch.setattr(api, "verify_diagnostic_access", access)
     monkeypatch.setattr(api, "KubernetesEvidenceAdapter", create_adapter)
     monkeypatch.setattr(api.httpx, "Client", FakeSyncClient)
     monkeypatch.setattr(api.httpx, "AsyncClient", FakeAsyncClient)

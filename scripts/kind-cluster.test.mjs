@@ -295,8 +295,10 @@ test("diagnostic RBAC grants only the approved read contract", () => {
     [
       { apiGroups: [""], resources: ["pods"], verbs: ["list"] },
       { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
+      { apiGroups: [""], resources: ["services"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["list"] },
+      { apiGroups: ["discovery.k8s.io"], resources: ["endpointslices"], verbs: ["list"] },
       { apiGroups: ["events.k8s.io"], resources: ["events"], verbs: ["list"] },
     ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
   );

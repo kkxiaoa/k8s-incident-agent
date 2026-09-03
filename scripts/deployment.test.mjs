@@ -395,8 +395,10 @@ test("Console and Runtime exposure and RBAC stay within the fixed read-only boun
     [
       { apiGroups: [""], resources: ["pods"], verbs: ["list"] },
       { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
+      { apiGroups: [""], resources: ["services"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["list"] },
+      { apiGroups: ["discovery.k8s.io"], resources: ["endpointslices"], verbs: ["list"] },
       { apiGroups: ["events.k8s.io"], resources: ["events"], verbs: ["list"] },
     ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
   );
@@ -457,8 +459,9 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   ).spec.template.spec.containers[0];
   assert.deepEqual(kubeStateMetrics.args, [
     "--namespaces=k8s-incident-scenarios",
-    "--resources=deployments,pods,replicasets",
-    "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
+    "--resources=deployments,endpointslices,pods,replicasets,services",
+    "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
+    "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
     "--use-apiserver-cache",
   ]);
 
@@ -471,12 +474,17 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.deepEqual(role.rules, [
     {
       apiGroups: [""],
-      resources: ["pods"],
+      resources: ["pods", "services"],
       verbs: ["get", "list", "watch"],
     },
     {
       apiGroups: ["apps"],
       resources: ["deployments", "replicasets"],
+      verbs: ["get", "list", "watch"],
+    },
+    {
+      apiGroups: ["discovery.k8s.io"],
+      resources: ["endpointslices"],
       verbs: ["get", "list", "watch"],
     },
   ]);
@@ -526,6 +534,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
       "K8sIncidentImagePullBackOff",
       "K8sIncidentCrashLoopBackOff",
       "K8sIncidentDeploymentReplicasUnavailable",
+      "K8sIncidentServiceEndpointsUnavailable",
     ],
   );
   assert.deepEqual(rules[0], {
@@ -545,6 +554,10 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.match(rules[3].expr, /kube_deployment_spec_replicas/);
   assert.match(rules[3].expr, /kube_deployment_status_replicas_available/);
   assert.deepEqual(rules[3].labels, { severity: "warning" });
+  assert.equal(rules[4].for, "30s");
+  assert.match(rules[4].expr, /kube_service_labels/);
+  assert.match(rules[4].expr, /kube_endpointslice_endpoints/);
+  assert.deepEqual(rules[4].labels, { severity: "warning" });
 
   const alertmanager = load(
     getResource(
@@ -2246,6 +2259,8 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       .sort(),
     [
       `auth can-i get deployments.apps ${subject} ${namespace}`,
+      `auth can-i get services ${subject} ${namespace}`,
+      `auth can-i list endpointslices.discovery.k8s.io ${subject} ${namespace}`,
       `auth can-i list replicasets.apps ${subject} ${namespace}`,
       `auth can-i list pods ${subject} ${namespace}`,
       `auth can-i get pods --subresource=log ${subject} ${namespace}`,
@@ -2275,6 +2290,12 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       `auth can-i get pods ${monitoringSubject} ${namespace}`,
       `auth can-i list pods ${monitoringSubject} ${namespace}`,
       `auth can-i watch pods ${monitoringSubject} ${namespace}`,
+      `auth can-i get services ${monitoringSubject} ${namespace}`,
+      `auth can-i list services ${monitoringSubject} ${namespace}`,
+      `auth can-i watch services ${monitoringSubject} ${namespace}`,
+      `auth can-i get endpointslices.discovery.k8s.io ${monitoringSubject} ${namespace}`,
+      `auth can-i list endpointslices.discovery.k8s.io ${monitoringSubject} ${namespace}`,
+      `auth can-i watch endpointslices.discovery.k8s.io ${monitoringSubject} ${namespace}`,
       `auth can-i get deployments.apps ${monitoringSubject} ${namespace}`,
       `auth can-i list deployments.apps ${monitoringSubject} ${namespace}`,
       `auth can-i watch deployments.apps ${monitoringSubject} ${namespace}`,

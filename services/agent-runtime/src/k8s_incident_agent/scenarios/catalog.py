@@ -16,7 +16,7 @@ from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
     ScenarioTarget,
     ScenarioTrigger,
-    validate_stage_one_target,
+    validate_supported_target,
 )
 
 _MAX_FILE_BYTES = 1024 * 1024
@@ -33,7 +33,11 @@ class _StrictContract(BaseModel):
 
 
 class _Verifier(_StrictContract):
-    kind: Literal["image_pull_backoff", "crash_loop_backoff"]
+    kind: Literal[
+        "image_pull_backoff",
+        "crash_loop_backoff",
+        "service_selector_mismatch",
+    ]
     timeout_seconds: Literal[120]
     poll_interval_seconds: Literal[2]
 
@@ -86,7 +90,7 @@ class _ScenarioDefinition(_StrictContract):
         return self
 
     def public_projection(self) -> PublicScenario:
-        validate_stage_one_target(self.target)
+        validate_supported_target(self.target)
         return PublicScenario(
             scenario_id=self.scenario_id,
             scenario_version=self.scenario_version,

@@ -168,7 +168,7 @@ def test_default_v4_firing_projects_only_the_catalog_contract() -> None:
     assert occurrence.starts_at == "2026-09-02T08:00:00.123000000Z"
     assert occurrence.trigger.source.type == "alertmanager"
     assert occurrence.trigger.source.ref == "K8sIncidentImagePullBackOff"
-    assert occurrence.trigger.source.revision == "2026-09-04.1"
+    assert occurrence.trigger.source.revision == "2026-09-04.2"
     assert occurrence.trigger.target.name == "image-pull-backoff"
     serialized = repr(occurrence)
     assert "must-not-be-persisted" not in serialized
@@ -208,6 +208,23 @@ def test_deployment_replica_deficit_is_a_supported_symptom_trigger() -> None:
     assert occurrence.trigger.target.name == "checkout-api"
     assert occurrence.trigger.trigger_summary == (
         "A Deployment has fewer available replicas than desired."
+    )
+
+
+def test_service_endpoint_alert_maps_the_exact_service_target() -> None:
+    alert = _alert(alert_name="K8sIncidentServiceEndpointsUnavailable")
+    labels = cast(dict[str, str], alert["labels"])
+    labels.pop("deployment")
+    labels["service"] = "catalog-api"
+
+    occurrence = _parse(_payload(alert)).occurrences[0]
+
+    assert occurrence.trigger.target.api_version == "v1"
+    assert occurrence.trigger.target.kind == "Service"
+    assert occurrence.trigger.target.name == "catalog-api"
+    assert occurrence.trigger.trigger_summary == (
+        "A monitored selector-based Service has candidate Pods but no ready "
+        "EndpointSlice endpoints."
     )
 
 

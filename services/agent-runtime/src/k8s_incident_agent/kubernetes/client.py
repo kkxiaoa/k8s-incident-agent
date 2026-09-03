@@ -18,6 +18,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     AuthorizationV1Api,
     Configuration,
     CoreV1Api,
+    DiscoveryV1Api,
     EventsV1Api,
     VersionApi,
 )
@@ -63,6 +64,7 @@ class KubernetesClients:
     api_client: ApiClient = field(repr=False)
     apps_api: AppsV1Api = field(repr=False)
     core_api: CoreV1Api = field(repr=False)
+    discovery_api: DiscoveryV1Api = field(repr=False)
     events_api: EventsV1Api = field(repr=False)
     version_api: VersionApi = field(repr=False)
     authorization_api: AuthorizationV1Api = field(repr=False)
@@ -196,6 +198,7 @@ async def _create_scoped_clients(
             api_client=api_client,
             apps_api=AppsV1Api(api_client),
             core_api=CoreV1Api(api_client),
+            discovery_api=DiscoveryV1Api(api_client),
             events_api=EventsV1Api(api_client),
             version_api=VersionApi(api_client),
             authorization_api=AuthorizationV1Api(api_client),

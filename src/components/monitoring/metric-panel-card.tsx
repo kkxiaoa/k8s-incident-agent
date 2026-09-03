@@ -206,8 +206,8 @@ export function MetricPanelCard({
         ? `${result.currentValue} / ${referenceValue}`
         : result.currentValue;
   const thresholdCopy =
-    result.riskDirection === "higher_is_worse" && result.threshold !== null
-      ? `≥ ${result.threshold}`
+    result.threshold !== null
+      ? `${result.riskDirection === "higher_is_worse" ? "≥" : "<"} ${result.threshold}`
       : referenceValue === null
         ? "—"
         : `< ${referenceValue}`;
@@ -227,7 +227,9 @@ export function MetricPanelCard({
       ? `前一个数字是 Prometheus 观测到的当前可用副本，后一个数字是同一次诊断 Run 的 workload Evidence 中记录的期望副本。`
       : "Prometheus 返回的最新有效样本值。";
   const thresholdDescription =
-    result.riskDirection === "lower_is_worse"
+    result.threshold !== null
+      ? metricThresholdDescription(result.riskDirection)
+      : result.riskDirection === "lower_is_worse"
       ? referenceValue === null
         ? "等待同一次诊断 Run 的 workload Evidence 提供期望副本，当前不推测风险边界。"
         : `可用副本少于期望的 ${referenceValue} 个时进入风险区间。`

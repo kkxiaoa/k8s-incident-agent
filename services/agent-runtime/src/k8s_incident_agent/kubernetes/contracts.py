@@ -8,7 +8,18 @@ from pydantic.alias_generators import to_camel
 
 from k8s_incident_agent.domain.contracts import KubernetesTarget
 
-DeploymentTarget = KubernetesTarget
+DiagnosticTarget = KubernetesTarget
+type ServiceNetworkState = Literal[
+    "selector_mismatch",
+    "endpoints_unready",
+    "endpoints_ready",
+    "monitoring_not_enabled",
+    "external_name",
+    "headless",
+    "publish_not_ready",
+    "no_selector",
+    "no_candidates",
+]
 
 
 class _EvidenceContract(BaseModel):
@@ -209,6 +220,50 @@ class ContainerLogsPayload(_EvidenceContract):
     containers: list[ContainerLogSummary]
 
 
+class ServiceDetail(_EvidenceContract):
+    resource_version: str = Field(min_length=1)
+    service_type: Literal["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+    cluster_ip: str | None
+    selector: Selector | None
+    monitoring_enabled: bool
+    publish_not_ready_addresses: bool
+
+
+class ServiceCandidatePod(_EvidenceContract):
+    pod_ref: TargetRef
+    resource_version: str = Field(min_length=1)
+    selector_labels: dict[str, str | None]
+    matches_selector: bool
+    ready: bool | None
+
+
+class EndpointSliceSummary(_EvidenceContract):
+    endpoint_slice_ref: TargetRef
+    resource_version: str = Field(min_length=1)
+    address_type: Literal["IPv4", "IPv6", "FQDN"]
+    endpoint_count: int = Field(ge=0)
+    ready_count: int = Field(ge=0)
+    not_ready_count: int = Field(ge=0)
+    unknown_ready_count: int = Field(ge=0)
+    serving_count: int = Field(ge=0)
+    terminating_count: int = Field(ge=0)
+
+
+class ServiceNetworkSummary(_EvidenceContract):
+    state: ServiceNetworkState
+    candidate_count: int = Field(ge=0)
+    selector_match_count: int = Field(ge=0)
+    endpoint_slice_count: int = Field(ge=0)
+    ready_endpoint_count: int = Field(ge=0)
+
+
+class ServiceNetworkPayload(_EvidenceContract):
+    service: ServiceDetail
+    summary: ServiceNetworkSummary
+    candidate_pods: list[ServiceCandidatePod]
+    endpoint_slices: list[EndpointSliceSummary]
+
+
 class _Observation(_EvidenceContract):
     target_ref: TargetRef
     observed_at: datetime
@@ -241,3 +296,8 @@ class EventsObservation(_Observation):
 class ContainerLogsObservation(_Observation):
     evidence_kind: Literal["container_logs"]
     payload: ContainerLogsPayload
+
+
+class ServiceNetworkObservation(_Observation):
+    evidence_kind: Literal["service_network"]
+    payload: ServiceNetworkPayload

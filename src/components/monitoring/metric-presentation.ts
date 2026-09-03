@@ -2,6 +2,7 @@ import type { MetricPanelResultView } from "@/lib/agent-runtime/response-contrac
 
 const UNIT_LABELS: Record<string, string> = {
   containers: "个",
+  endpoints: "个",
   pods: "个",
   replicas: "个",
   restarts: "次",
