@@ -13,7 +13,12 @@ from k8s_incident_agent.diagnosis.contracts import (
 from k8s_incident_agent.diagnosis.tool_execution import (
     validate_diagnostic_tool_failure_contract,
 )
-from k8s_incident_agent.domain.models import JsonValue, ToolFailureRecord
+from k8s_incident_agent.domain.models import (
+    JsonValue,
+    PersistedEvidence,
+    ToolFailureRecord,
+)
+from k8s_incident_agent.kubernetes.contracts import ContainerLogsPayload
 from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
@@ -41,6 +46,8 @@ async def validate_diagnosis(
     candidate: DiagnosisCandidate,
     run_id: UUID,
     repository: IncidentRepository,
+    *,
+    required_evidence: frozenset[str],
 ) -> ValidatedDiagnosis:
     validated = _sanitize_candidate(candidate)
     serialized = canonical_json(
@@ -63,7 +70,8 @@ async def validate_diagnosis(
         and snapshot.unresolved_tool_failures
     ):
         raise UnresolvedToolFailuresError(snapshot.unresolved_tool_failures)
-    if not snapshot.evidence_ids:
+    evidence_ids = snapshot.evidence_by_id.keys()
+    if not evidence_ids:
         raise DiagnosisValidationError
 
     if validated.outcome == "diagnosed":
@@ -74,10 +82,41 @@ async def validate_diagnosis(
         }
         if any(root_cause.code == "unknown" for root_cause in validated.root_causes):
             raise DiagnosisValidationError
-        if not cited_ids.issubset(snapshot.evidence_ids):
+        if not cited_ids.issubset(evidence_ids):
+            raise DiagnosisValidationError
+        cited_kinds = {
+            evidence_kind
+            for evidence_id in cited_ids
+            if (
+                evidence_kind := _usable_evidence_kind(
+                    snapshot.evidence_by_id[evidence_id]
+                )
+            )
+            is not None
+        }
+        if not required_evidence.issubset(cited_kinds):
             raise DiagnosisValidationError
 
     return validated
+
+
+def _usable_evidence_kind(evidence: PersistedEvidence) -> str | None:
+    if evidence.evidence_kind != "container_logs":
+        return evidence.evidence_kind
+    try:
+        payload = ContainerLogsPayload.model_validate_json(
+            canonical_json(evidence.payload)
+        )
+    except ValidationError:
+        raise RecoveryConsistencyError from None
+    if any(
+        snapshot.status == "available"
+        and any(line.message.strip() for line in snapshot.lines)
+        for container in payload.containers
+        for snapshot in container.snapshots
+    ):
+        return evidence.evidence_kind
+    return None
 
 
 def _sanitize_candidate(candidate: DiagnosisCandidate) -> ValidatedDiagnosis:

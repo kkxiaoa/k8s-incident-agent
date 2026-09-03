@@ -13,6 +13,7 @@ from langgraph.types import StateSnapshot
 from pydantic import ValidationError
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
+from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyResolver
 from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
@@ -62,6 +63,7 @@ class RunSupervisor:
         credential: DiagnosticCredentialLease,
         adapter: KubernetesEvidenceAdapter,
         prometheus: PrometheusQueryService,
+        policies: DiagnosticPolicyResolver,
         now: Callable[[], datetime],
     ) -> None:
         self._dependencies = GraphDependencies(
@@ -75,6 +77,7 @@ class RunSupervisor:
             now=now,
         )
         self._repository = repository
+        self._policies = policies
         self._checkpointer = checkpointer
         self._now = now
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
@@ -138,7 +141,16 @@ class RunSupervisor:
                 await self._persist_failure(run_id, "recovery_consistency_error", False)
                 return
 
-            graph = build_incident_graph(self._dependencies, snapshot)
+            try:
+                policy = self._policies.resolve(snapshot.source)
+            except ValueError:
+                await self._persist_failure(
+                    run_id,
+                    "recovery_consistency_error",
+                    False,
+                )
+                return
+            graph = build_incident_graph(self._dependencies, snapshot, policy)
             context = self._context(snapshot)
             if snapshot.run_status is RunStatus.QUEUED:
                 if checkpoint is None:

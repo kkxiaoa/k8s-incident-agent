@@ -38,6 +38,8 @@ from typing_extensions import TypedDict
 from k8s_incident_agent.diagnosis.agent import build_diagnostic_agent
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
+from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
+from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     ModelSnapshot,
@@ -56,6 +58,11 @@ from k8s_incident_agent.workflow.graph import GraphDependencies, build_incident_
 
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 EVIDENCE_ID = "00000000-0000-0000-0000-000000000001"
+TEST_POLICY = DiagnosticPolicy(
+    tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
+    required_evidence=frozenset({"workload"}),
+    prometheus_panel_ids=("image-pull-affected-pods",),
+)
 
 
 class _BudgetState(TypedDict, total=False):
@@ -163,6 +170,7 @@ def _budget_graph(
         _tools(),
         max_model_calls=max_model_calls,
         max_tool_calls=max_tool_calls,
+        required_evidence=("workload",),
         prometheus_panel_ids=("image-pull-affected-pods",),
     )
     builder = StateGraph(_BudgetState, context_schema=DiagnosticToolContext)
@@ -349,6 +357,11 @@ async def test_absolute_deadline_comes_from_persisted_started_at(
     run = WorkflowRunSnapshot(
         id=uuid4(),
         incident_id=uuid4(),
+        source=IncidentSource(
+            type="scenario",
+            ref="image-pull-backoff",
+            revision="1",
+        ),
         run_status=RunStatus.RUNNING,
         trigger_summary="The target Deployment is unavailable.",
         target=_target(),
@@ -385,6 +398,7 @@ async def test_absolute_deadline_comes_from_persisted_started_at(
                 now=lambda: NOW,
             ),
             run,
+            TEST_POLICY,
         )
         await graph.ainvoke(  # pyright: ignore[reportUnknownMemberType]
             {"run_id": str(run.id)},

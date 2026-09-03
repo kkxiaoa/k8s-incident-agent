@@ -394,6 +394,7 @@ test("Console and Runtime exposure and RBAC stay within the fixed read-only boun
       .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
     [
       { apiGroups: [""], resources: ["pods"], verbs: ["list"] },
+      { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["list"] },
       { apiGroups: ["events.k8s.io"], resources: ["events"], verbs: ["list"] },
@@ -457,7 +458,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.deepEqual(kubeStateMetrics.args, [
     "--namespaces=k8s-incident-scenarios",
     "--resources=pods,replicasets",
-    "--metric-allowlist=kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
+    "--metric-allowlist=kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
     "--use-apiserver-cache",
   ]);
 
@@ -520,7 +521,11 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   ).groups[0].rules;
   assert.deepEqual(
     rules.map((rule) => rule.alert),
-    ["Watchdog", "K8sIncidentImagePullBackOff"],
+    [
+      "Watchdog",
+      "K8sIncidentImagePullBackOff",
+      "K8sIncidentCrashLoopBackOff",
+    ],
   );
   assert.deepEqual(rules[0], {
     alert: "Watchdog",
@@ -529,6 +534,12 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   });
   assert.equal(rules[1].for, "30s");
   assert.deepEqual(rules[1].labels, { severity: "warning" });
+  assert.equal(rules[2].for, "30s");
+  assert.match(
+    rules[2].expr,
+    /kube_pod_container_status_restarts_total/,
+  );
+  assert.deepEqual(rules[2].labels, { severity: "warning" });
 
   const webhook = load(
     getResource(
@@ -2220,10 +2231,12 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       `auth can-i get deployments.apps ${subject} ${namespace}`,
       `auth can-i list replicasets.apps ${subject} ${namespace}`,
       `auth can-i list pods ${subject} ${namespace}`,
+      `auth can-i get pods --subresource=log ${subject} ${namespace}`,
       `auth can-i list events.events.k8s.io ${subject} ${namespace}`,
       `auth can-i create selfsubjectaccessreviews.authorization.k8s.io ${subject}`,
       `auth can-i get secrets ${subject} ${namespace}`,
       `auth can-i create pods --subresource=exec ${subject} ${namespace}`,
+      `auth can-i create pods --subresource=attach ${subject} ${namespace}`,
       `auth can-i create deployments.apps ${subject} ${namespace}`,
       `auth can-i update deployments.apps ${subject} ${namespace}`,
       `auth can-i patch deployments.apps ${subject} ${namespace}`,

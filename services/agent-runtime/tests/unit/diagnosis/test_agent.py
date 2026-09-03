@@ -38,6 +38,7 @@ from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 TOOL_NAMES = ("get_workload", "get_pods", "get_events", "query_prometheus")
 PANEL_IDS = ("image-pull-affected-pods", "image-pull-waiting-containers")
+REQUIRED_EVIDENCE = ("workload",)
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 
 
@@ -287,7 +288,12 @@ async def test_agent_executes_different_read_tool_trajectories_and_returns_schem
         ]
     )
     agent = _runner(
-        build_diagnostic_agent(model, tools, prometheus_panel_ids=PANEL_IDS)
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panel_ids=PANEL_IDS,
+        )
     )
 
     result = await agent.ainvoke(
@@ -316,7 +322,12 @@ async def test_fatal_tool_failure_propagates_without_model_retry() -> None:
     tools = _build_tools(calls, fatal_tool="get_workload")
     model = _ToolCallingFakeModel(responses=[_tool_call("get_workload", "call-fatal")])
     agent = _runner(
-        build_diagnostic_agent(model, tools, prometheus_panel_ids=PANEL_IDS)
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panel_ids=PANEL_IDS,
+        )
     )
 
     with pytest.raises(FatalDiagnosticToolError) as error:
@@ -368,6 +379,7 @@ async def test_absolute_deadline_cancels_inflight_tool_call() -> None:
         build_diagnostic_agent(
             model,
             (get_workload, get_pods, get_events, query_prometheus),
+            required_evidence=REQUIRED_EVIDENCE,
             prometheus_panel_ids=PANEL_IDS,
         )
     )
@@ -399,7 +411,12 @@ async def test_retryable_failure_can_use_a_new_call_before_structured_output() -
         ]
     )
     agent = _runner(
-        build_diagnostic_agent(model, tools, prometheus_panel_ids=PANEL_IDS)
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panel_ids=PANEL_IDS,
+        )
     )
 
     result = await agent.ainvoke(
@@ -430,6 +447,7 @@ async def test_model_call_limit_raises_instead_of_returning_fallback_text() -> N
             model,
             tools,
             max_model_calls=1,
+            required_evidence=REQUIRED_EVIDENCE,
             prometheus_panel_ids=PANEL_IDS,
         )
     )
@@ -458,6 +476,7 @@ async def test_locked_tool_limit_counts_the_structured_response_call() -> None:
             tools,
             max_model_calls=2,
             max_tool_calls=2,
+            required_evidence=REQUIRED_EVIDENCE,
             prometheus_panel_ids=PANEL_IDS,
         )
     )
@@ -472,6 +491,7 @@ async def test_locked_tool_limit_counts_the_structured_response_call() -> None:
             tools,
             max_model_calls=2,
             max_tool_calls=1,
+            required_evidence=REQUIRED_EVIDENCE,
             prometheus_panel_ids=PANEL_IDS,
         )
     )
@@ -481,18 +501,19 @@ async def test_locked_tool_limit_counts_the_structured_response_call() -> None:
         )
 
 
-def test_agent_rejects_any_registry_other_than_the_four_read_tools() -> None:
+def test_agent_rejects_tools_outside_registry_order() -> None:
     calls: list[str] = []
     tools = _build_tools(calls)
     model = _ToolCallingFakeModel(
         responses=[_structured_response(_diagnosed_candidate(str(uuid4())))]
     )
 
-    with pytest.raises(ValueError, match="exactly the four diagnostic read tools"):
+    with pytest.raises(ValueError, match="ordered subset"):
         build_diagnostic_agent(
             model,
-            tools[:3],
-            prometheus_panel_ids=PANEL_IDS,
+            (tools[1], tools[0]),
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panel_ids=(),
         )
 
 
@@ -502,7 +523,12 @@ async def test_plain_model_answer_fails_closed_without_structured_response() -> 
     tools = _build_tools(calls)
     model = _ToolCallingFakeModel(responses=[AIMessage(content="A fluent fallback")])
     agent = _runner(
-        build_diagnostic_agent(model, tools, prometheus_panel_ids=PANEL_IDS)
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panel_ids=PANEL_IDS,
+        )
     )
 
     with pytest.raises(StructuredDiagnosisError) as error:

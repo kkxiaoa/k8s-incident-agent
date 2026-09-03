@@ -222,6 +222,20 @@ async def test_catalog_drives_alertmanager_and_evaluation_panel_references() -> 
 
 
 @pytest.mark.asyncio
+async def test_crash_loop_panels_use_the_same_catalog_projection() -> None:
+    service, _, _ = _panel_service(
+        _monitoring_context(source_ref="K8sIncidentCrashLoopBackOff")
+    )
+
+    result = await service.list_panels(uuid4())
+
+    assert [panel.panel_id for panel in result.panels] == [
+        "crash-loop-restarts",
+        "crash-loop-waiting-containers",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_panel_query_uses_persisted_target_and_projects_independent_markers() -> (
     None
 ):

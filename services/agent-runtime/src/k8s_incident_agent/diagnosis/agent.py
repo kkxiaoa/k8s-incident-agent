@@ -31,8 +31,8 @@ from langgraph.types import Command
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
+from k8s_incident_agent.diagnosis.policy_contracts import DIAGNOSTIC_TOOL_NAMES
 from k8s_incident_agent.diagnosis.prompt import build_diagnostic_system_prompt
-from k8s_incident_agent.diagnosis.tool_execution import DIAGNOSTIC_TOOL_NAMES
 from k8s_incident_agent.domain.models import JsonValue
 
 _DEFAULT_MAX_MODEL_CALLS = 8
@@ -237,18 +237,25 @@ def build_diagnostic_agent(
     *,
     max_model_calls: int = _DEFAULT_MAX_MODEL_CALLS,
     max_tool_calls: int = _DEFAULT_MAX_TOOL_CALLS,
+    required_evidence: Sequence[str],
     prometheus_panel_ids: Sequence[str],
 ) -> _DiagnosticAgentGraph:
     """Build the one-shot read-only diagnosis graph embedded by the orchestrator."""
     tool_names = tuple(tool.name for tool in tools)
-    if tool_names != DIAGNOSTIC_TOOL_NAMES:
-        raise ValueError(
-            "diagnosis requires exactly the four diagnostic read tools in registry order"
-        )
+    if (
+        not tool_names
+        or len(set(tool_names)) != len(tool_names)
+        or any(name not in DIAGNOSTIC_TOOL_NAMES for name in tool_names)
+        or tool_names
+        != tuple(name for name in DIAGNOSTIC_TOOL_NAMES if name in set(tool_names))
+    ):
+        raise ValueError("diagnosis tools must be an ordered subset of the registry")
 
     system_prompt = build_diagnostic_system_prompt(
         max_model_calls=max_model_calls,
         max_tool_calls=max_tool_calls,
+        allowed_tool_names=tool_names,
+        required_evidence=required_evidence,
         prometheus_panel_ids=prometheus_panel_ids,
     )
     agent_factory = cast(Callable[..., object], create_agent)

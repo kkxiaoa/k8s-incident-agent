@@ -2,11 +2,16 @@ import pytest
 
 from k8s_incident_agent.diagnosis.prompt import build_diagnostic_system_prompt
 
+ALLOWED_TOOLS = ("get_workload", "get_pods", "get_events", "query_prometheus")
+REQUIRED_EVIDENCE = ("workload", "pods", "events")
+
 
 def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     prompt = build_diagnostic_system_prompt(
         max_model_calls=8,
         max_tool_calls=6,
+        allowed_tool_names=ALLOWED_TOOLS,
+        required_evidence=REQUIRED_EVIDENCE,
         prometheus_panel_ids=("image-pull-affected-pods",),
     )
     lowered = prompt.lower()
@@ -45,6 +50,8 @@ def test_prompt_does_not_leak_private_expectations_or_write_capabilities(
     prompt = build_diagnostic_system_prompt(
         max_model_calls=8,
         max_tool_calls=6,
+        allowed_tool_names=ALLOWED_TOOLS,
+        required_evidence=REQUIRED_EVIDENCE,
         prometheus_panel_ids=("image-pull-affected-pods",),
     )
 
@@ -63,20 +70,28 @@ def test_prompt_rejects_invalid_runtime_budgets(
         build_diagnostic_system_prompt(
             max_model_calls=max_model_calls,
             max_tool_calls=max_tool_calls,
+            allowed_tool_names=ALLOWED_TOOLS,
+            required_evidence=REQUIRED_EVIDENCE,
             prometheus_panel_ids=("image-pull-affected-pods",),
         )
 
 
 @pytest.mark.parametrize(
-    "panel_ids",
-    [(), ("duplicate", "duplicate")],
+    ("panel_ids", "message"),
+    [
+        ((), "match the allowed tool set"),
+        (("duplicate", "duplicate"), "must be unique"),
+    ],
 )
 def test_prompt_rejects_empty_or_duplicate_panel_identifiers(
     panel_ids: tuple[str, ...],
+    message: str,
 ) -> None:
-    with pytest.raises(ValueError, match="non-empty and unique"):
+    with pytest.raises(ValueError, match=message):
         build_diagnostic_system_prompt(
             max_model_calls=8,
             max_tool_calls=6,
+            allowed_tool_names=ALLOWED_TOOLS,
+            required_evidence=REQUIRED_EVIDENCE,
             prometheus_panel_ids=panel_ids,
         )

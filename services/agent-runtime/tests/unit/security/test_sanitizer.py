@@ -52,6 +52,23 @@ def test_redacts_credential_patterns(value: str, forbidden: str) -> None:
     assert "[REDACTED]" in result.value
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----\nprivate-material",
+    ],
+)
+def test_pem_redaction_preserves_line_boundaries_and_fails_closed(
+    value: str,
+) -> None:
+    result = sanitize_untrusted_text(value)
+
+    assert result.redacted is True
+    assert "private-material" not in result.value
+    assert result.value.count("\n") == value.count("\n")
+
+
 def test_redacts_the_complete_basic_authorization_header() -> None:
     result = sanitize_untrusted_text("Authorization: Basic dXNlcjpwYXNz")
 

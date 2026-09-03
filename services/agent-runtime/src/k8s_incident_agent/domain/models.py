@@ -7,6 +7,7 @@ from typing import Final, Literal, NewType
 from uuid import UUID
 
 from k8s_incident_agent.domain.contracts import (
+    IncidentSource,
     KubernetesTarget,
     NormalizedIncidentTrigger,
 )
@@ -140,6 +141,7 @@ class AgentRunSnapshot:
 class WorkflowRunSnapshot:
     id: UUID
     incident_id: UUID
+    source: IncidentSource
     run_status: RunStatus
     trigger_summary: str
     target: KubernetesTarget
@@ -188,7 +190,7 @@ class ToolFailureRecord:
 
 @dataclass(frozen=True, slots=True)
 class DiagnosisValidationSnapshot:
-    evidence_ids: frozenset[UUID]
+    evidence_by_id: dict[UUID, PersistedEvidence]
     tool_failures: tuple[ToolFailureRecord, ...]
     unresolved_tool_failures: tuple[ToolFailureRecord, ...]
 

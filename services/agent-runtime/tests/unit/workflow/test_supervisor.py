@@ -9,6 +9,8 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from tests.factories import prometheus_query_service_stub
 
+from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
+from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     ModelSnapshot,
     RunBudget,
@@ -23,6 +25,17 @@ from k8s_incident_agent.workflow import supervisor as supervisor_module
 from k8s_incident_agent.workflow.supervisor import RunSupervisor
 
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+TEST_POLICY = DiagnosticPolicy(
+    tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
+    required_evidence=frozenset({"workload"}),
+    prometheus_panel_ids=("image-pull-affected-pods",),
+)
+
+
+class _PolicyResolver:
+    def resolve(self, source: IncidentSource) -> DiagnosticPolicy:
+        assert source.ref == "image-pull-backoff"
+        return TEST_POLICY
 
 
 class _BlockingTerminalRepository:
@@ -55,6 +68,11 @@ def _terminal_snapshot() -> WorkflowRunSnapshot:
     return WorkflowRunSnapshot(
         id=uuid4(),
         incident_id=uuid4(),
+        source=IncidentSource(
+            type="scenario",
+            ref="image-pull-backoff",
+            revision="1",
+        ),
         run_status=RunStatus.FAILED,
         trigger_summary="The target Deployment is unavailable.",
         target=ScenarioTarget(
@@ -101,6 +119,7 @@ def _supervisor(
         ),
         adapter=cast(KubernetesEvidenceAdapter, object()),
         prometheus=prometheus_query_service_stub(),
+        policies=_PolicyResolver(),
         now=lambda: NOW,
     )
 

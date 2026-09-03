@@ -163,7 +163,7 @@ async def _context(
             provider="deepseek",
             model_id="deepseek-v4-flash",
             thinking_mode=False,
-            prompt_version="stage2-metrics-v1",
+            prompt_version="stage2-crashloop-v1",
         ),
         RunBudget(max_model_calls=8, max_tool_calls=6, timeout_seconds=180),
     )

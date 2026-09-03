@@ -25,7 +25,18 @@ const MAX_FILE_BYTES = 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const COMMAND_TIMEOUT_MILLISECONDS = 30_000;
 const EXPECTED_IMAGE = "registry.invalid/k8s-incident-agent/missing:v1";
+const CRASH_LOOP_IMAGE =
+  "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85";
 const WAITING_REASONS = new Set(["ErrImagePull", "ImagePullBackOff"]);
+const VALID_VERIFIERS = new Set(["image_pull_backoff", "crash_loop_backoff"]);
+const DIAGNOSTIC_EVIDENCE_TOOLS = new Map([
+  ["workload", "get_workload"],
+  ["pods", "get_pods"],
+  ["events", "get_events"],
+  ["container_logs", "get_container_logs"],
+  ["metrics", "query_prometheus"],
+]);
+const VALID_DIAGNOSTIC_TOOLS = new Set(DIAGNOSTIC_EVIDENCE_TOOLS.values());
 const VALID_ACTIONS = new Set(["list", "apply", "verify", "cleanup"]);
 const VALID_EXECUTION_PROFILES = new Set([
   "kind-evaluation",
@@ -259,7 +270,7 @@ function loadScenarioEntry(catalogDirectory, scenarioDirectoryName) {
       scenarioDirectory,
       manifestPath,
     );
-    validateDeploymentManifest(manifestPath, definition);
+    validateDeploymentManifest(manifestPath, relativePath, definition);
     return manifestPath;
   });
 
@@ -328,7 +339,17 @@ function validateScenarioDefinition(definition, directoryName) {
     assertNonEmptyUniqueStringArray(definition[field]);
   }
   const forbidden = new Set(definition.forbidden_tools);
-  if (definition.allowed_tools.some((tool) => forbidden.has(tool))) {
+  const allowed = new Set(definition.allowed_tools);
+  if (
+    definition.allowed_tools.some(
+      (tool) => forbidden.has(tool) || !VALID_DIAGNOSTIC_TOOLS.has(tool),
+    ) ||
+    definition.required_evidence.some(
+      (evidenceKind) =>
+        !DIAGNOSTIC_EVIDENCE_TOOLS.has(evidenceKind) ||
+        !allowed.has(DIAGNOSTIC_EVIDENCE_TOOLS.get(evidenceKind)),
+    )
+  ) {
     throw new Error();
   }
 
@@ -339,7 +360,7 @@ function validateScenarioDefinition(definition, directoryName) {
     "poll_interval_seconds",
   ]);
   if (
-    definition.deterministic_verifier.kind !== "image_pull_backoff" ||
+    !VALID_VERIFIERS.has(definition.deterministic_verifier.kind) ||
     definition.deterministic_verifier.timeout_seconds !== 120 ||
     definition.deterministic_verifier.poll_interval_seconds !== 2
   ) {
@@ -360,7 +381,7 @@ function validateManifestRelativePath(relativePath) {
   }
 }
 
-function validateDeploymentManifest(manifestPath, definition) {
+function validateDeploymentManifest(manifestPath, relativePath, definition) {
   const source = readBoundedFile(manifestPath);
   const documents = [];
   loadAll(source, (document) => documents.push(document));
@@ -374,8 +395,15 @@ function validateDeploymentManifest(manifestPath, definition) {
     throw new Error();
   }
   assertPlainObject(manifest.metadata);
+  const verifier = definition.deterministic_verifier.kind;
+  const isHealthyControl =
+    verifier === "crash_loop_backoff" &&
+    relativePath === "manifests/healthy-control.yaml";
+  const expectedName = isHealthyControl
+    ? `${definition.target.name}-healthy-control`
+    : definition.target.name;
   if (
-    manifest.metadata.name !== definition.target.name ||
+    manifest.metadata.name !== expectedName ||
     manifest.metadata.namespace !== definition.target.namespace
   ) {
     throw new Error();
@@ -401,10 +429,28 @@ function validateDeploymentManifest(manifestPath, definition) {
   const workload = containers.find(
     (container) => isPlainObject(container) && container.name === "workload",
   );
+  if (workload === undefined) throw new Error();
+  if (verifier === "image_pull_backoff") {
+    if (
+      definition.fixture_manifests.length !== 1 ||
+      relativePath !== "manifests/deployment.yaml" ||
+      workload.image !== EXPECTED_IMAGE ||
+      workload.imagePullPolicy !== "Always"
+    ) {
+      throw new Error();
+    }
+    return;
+  }
   if (
-    workload === undefined ||
-    workload.image !== EXPECTED_IMAGE ||
-    workload.imagePullPolicy !== "Always"
+    definition.fixture_manifests.length !== 2 ||
+    !definition.fixture_manifests.includes("manifests/deployment.yaml") ||
+    !definition.fixture_manifests.includes("manifests/healthy-control.yaml") ||
+    workload.image !== CRASH_LOOP_IMAGE ||
+    workload.imagePullPolicy !== "IfNotPresent" ||
+    !Array.isArray(workload.args) ||
+    workload.args.length !== 1 ||
+    workload.args[0] !==
+      (isHealthyControl ? "pause" : "unsupported-k8s-incident-agent-command")
   ) {
     throw new Error();
   }
@@ -500,6 +546,192 @@ async function verifyScenario(entry, context, execute, clock) {
 }
 
 async function verifyOnce(definition, context, executeKubectlQuery) {
+  if (definition.deterministic_verifier.kind === "crash_loop_backoff") {
+    return verifyCrashLoopOnce(definition, context, executeKubectlQuery);
+  }
+  return verifyImagePullOnce(definition, context, executeKubectlQuery);
+}
+
+async function verifyImagePullOnce(definition, context, executeKubectlQuery) {
+  const { ownedPods } = await readOwnedDeploymentPods(
+    definition.target,
+    context,
+    executeKubectlQuery,
+  );
+
+  const waitingPods = [];
+  for (const pod of ownedPods) {
+    const statuses = pod.status?.containerStatuses;
+    if (statuses === undefined) continue;
+    if (!Array.isArray(statuses)) throw upstreamContractError();
+    for (const status of statuses) {
+      assertPlainUpstreamObject(status);
+      const reason = status.state?.waiting?.reason;
+      if (WAITING_REASONS.has(reason)) {
+        waitingPods.push({ pod, reason });
+        break;
+      }
+    }
+  }
+  if (waitingPods.length === 0) {
+    throw new VerificationPending("image_pull_waiting_state_not_observed");
+  }
+
+  const events = await readScenarioEvents(context, executeKubectlQuery);
+  for (const candidate of waitingPods) {
+    const podMetadata = requireMetadata(candidate.pod, { namespace: NAMESPACE });
+    const event = findWarningEvent(events, podMetadata);
+    if (event !== undefined) {
+      const eventMetadata = requireMetadata(
+        event,
+        { namespace: NAMESPACE },
+        false,
+      );
+      assertNormalizedUpstreamString(event.reason);
+      return {
+        status: "verified",
+        scenario_id: definition.scenario_id,
+        pod: {
+          name: podMetadata.name,
+          waiting_reason: candidate.reason,
+        },
+        event: {
+          name: eventMetadata.name,
+          reason: event.reason,
+        },
+      };
+    }
+  }
+  throw new VerificationPending("warning_event_not_observed");
+}
+
+async function verifyCrashLoopOnce(definition, context, executeKubectlQuery) {
+  const { ownedPods } = await readOwnedDeploymentPods(
+    definition.target,
+    context,
+    executeKubectlQuery,
+  );
+  const candidates = [];
+  for (const pod of ownedPods) {
+    const statuses = pod.status?.containerStatuses;
+    if (statuses === undefined) continue;
+    if (!Array.isArray(statuses)) throw upstreamContractError();
+    for (const status of statuses) {
+      assertPlainUpstreamObject(status);
+      if (
+        status.name === "workload" &&
+        status.state?.waiting?.reason === "CrashLoopBackOff" &&
+        Number.isInteger(status.restartCount) &&
+        status.restartCount > 0 &&
+        Number.isInteger(status.lastState?.terminated?.exitCode) &&
+        status.lastState.terminated.exitCode !== 0
+      ) {
+        candidates.push({ pod, restartCount: status.restartCount });
+      }
+    }
+  }
+  if (candidates.length === 0) {
+    throw new VerificationPending("crash_loop_waiting_state_not_observed");
+  }
+
+  const events = await readScenarioEvents(context, executeKubectlQuery);
+  for (const candidate of candidates) {
+    const podMetadata = requireMetadata(candidate.pod, { namespace: NAMESPACE });
+    const event = findWarningEvent(events, podMetadata);
+    if (event?.reason !== "BackOff") continue;
+    const logs = await executeKubectlQuery(
+      [
+        "--context",
+        context,
+        "--namespace",
+        NAMESPACE,
+        "logs",
+        podMetadata.name,
+        "--container=workload",
+        "--previous=true",
+        "--timestamps=true",
+        "--tail=80",
+        "--limit-bytes=4096",
+        "--request-timeout=30s",
+      ],
+      "previous_container_log_not_observed",
+    );
+    const logLines = logs.split(/\r?\n/u).filter((line) => line !== "");
+    if (
+      Buffer.byteLength(logs, "utf8") > 4096 ||
+      logLines.length === 0 ||
+      logLines.some(
+        (line) =>
+          !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}) /u.test(
+            line,
+          ),
+      ) ||
+      !logs.includes("unsupported-k8s-incident-agent-command")
+    ) {
+      throw new VerificationPending("invalid_startup_argument_log_not_observed");
+    }
+
+    await verifyCrashLoopHealthyControl(
+      definition,
+      context,
+      executeKubectlQuery,
+    );
+    return {
+      status: "verified",
+      scenario_id: definition.scenario_id,
+      pod: {
+        name: podMetadata.name,
+        waiting_reason: "CrashLoopBackOff",
+        restart_count: candidate.restartCount,
+      },
+      event: {
+        name: requireMetadata(event, { namespace: NAMESPACE }, false).name,
+        reason: event.reason,
+      },
+      previous_log: "bounded",
+      healthy_control: "ready",
+    };
+  }
+  throw new VerificationPending("crash_loop_backoff_event_not_observed");
+}
+
+async function verifyCrashLoopHealthyControl(
+  definition,
+  context,
+  executeKubectlQuery,
+) {
+  const target = {
+    ...definition.target,
+    name: `${definition.target.name}-healthy-control`,
+  };
+  const { deployment, ownedPods } = await readOwnedDeploymentPods(
+    target,
+    context,
+    executeKubectlQuery,
+  );
+  if (deployment.status?.availableReplicas !== 1) {
+    throw new VerificationPending("healthy_control_not_available");
+  }
+  const healthy = ownedPods.some((pod) => {
+    const ready = pod.status?.conditions?.some(
+      (condition) => condition?.type === "Ready" && condition?.status === "True",
+    );
+    const statuses = pod.status?.containerStatuses;
+    if (!Array.isArray(statuses)) return false;
+    return ready && statuses.some((status) => {
+      assertPlainUpstreamObject(status);
+      return (
+        status.name === "workload" &&
+        status.ready === true &&
+        status.restartCount === 0 &&
+        status.state?.running !== undefined
+      );
+    });
+  });
+  if (!healthy) throw new VerificationPending("healthy_control_not_ready");
+}
+
+async function readOwnedDeploymentPods(target, context, executeKubectlQuery) {
   const deploymentRaw = await executeKubectlQuery(
     [
       "--context",
@@ -508,7 +740,7 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
       NAMESPACE,
       "get",
       "deployment.apps",
-      definition.target.name,
+      target.name,
       "--ignore-not-found=true",
       "--output=json",
       "--request-timeout=30s",
@@ -519,7 +751,7 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
     throw new VerificationPending("deployment_not_found");
   }
   const deployment = parseKubectlObject(deploymentRaw, "apps/v1", "Deployment");
-  const deploymentMetadata = requireMetadata(deployment, definition.target);
+  const deploymentMetadata = requireMetadata(deployment, target);
   const selector = deployment.spec?.selector;
   assertPlainUpstreamObject(selector);
   if (selector.matchExpressions !== undefined) throw upstreamContractError();
@@ -553,7 +785,7 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
     return hasControllerOwner(metadata, {
       apiVersion: "apps/v1",
       kind: "Deployment",
-      name: definition.target.name,
+      name: target.name,
       uid: deploymentMetadata.uid,
     });
   });
@@ -590,26 +822,11 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
   if (ownedPods.length === 0) {
     throw new VerificationPending("owner_linked_pod_not_found");
   }
+  return { deployment, ownedPods };
+}
 
-  const waitingPods = [];
-  for (const pod of ownedPods) {
-    const statuses = pod.status?.containerStatuses;
-    if (statuses === undefined) continue;
-    if (!Array.isArray(statuses)) throw upstreamContractError();
-    for (const status of statuses) {
-      assertPlainUpstreamObject(status);
-      const reason = status.state?.waiting?.reason;
-      if (WAITING_REASONS.has(reason)) {
-        waitingPods.push({ pod, reason });
-        break;
-      }
-    }
-  }
-  if (waitingPods.length === 0) {
-    throw new VerificationPending("image_pull_waiting_state_not_observed");
-  }
-
-  const events = parseKubectlList(
+async function readScenarioEvents(context, executeKubectlQuery) {
+  return parseKubectlList(
     await executeKubectlQuery(
       [
         "--context",
@@ -626,43 +843,22 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
     "events.k8s.io/v1",
     "Event",
   );
-  for (const candidate of waitingPods) {
-    const podMetadata = requireMetadata(candidate.pod, { namespace: NAMESPACE });
-    const event = events.items.find((item) => {
-      assertPlainUpstreamObject(item);
-      if (item.type !== "Warning") return false;
-      const regarding = item.regarding;
-      return (
-        isPlainObject(regarding) &&
-        regarding.apiVersion === "v1" &&
-        regarding.kind === "Pod" &&
-        regarding.name === podMetadata.name &&
-        regarding.namespace === NAMESPACE &&
-        regarding.uid === podMetadata.uid
-      );
-    });
-    if (event !== undefined) {
-      const eventMetadata = requireMetadata(
-        event,
-        { namespace: NAMESPACE },
-        false,
-      );
-      assertNormalizedUpstreamString(event.reason);
-      return {
-        status: "verified",
-        scenario_id: definition.scenario_id,
-        pod: {
-          name: podMetadata.name,
-          waiting_reason: candidate.reason,
-        },
-        event: {
-          name: eventMetadata.name,
-          reason: event.reason,
-        },
-      };
-    }
-  }
-  throw new VerificationPending("warning_event_not_observed");
+}
+
+function findWarningEvent(events, podMetadata) {
+  return events.items.find((item) => {
+    assertPlainUpstreamObject(item);
+    if (item.type !== "Warning") return false;
+    const regarding = item.regarding;
+    return (
+      isPlainObject(regarding) &&
+      regarding.apiVersion === "v1" &&
+      regarding.kind === "Pod" &&
+      regarding.name === podMetadata.name &&
+      regarding.namespace === NAMESPACE &&
+      regarding.uid === podMetadata.uid
+    );
+  });
 }
 
 function parseKubectlObject(rawJson, apiVersion, kind) {

@@ -7,6 +7,10 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from k8s_incident_agent.diagnosis.policy_contracts import (
+    DiagnosticEvidenceKind,
+    DiagnosticToolName,
+)
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
@@ -29,7 +33,7 @@ class _StrictContract(BaseModel):
 
 
 class _Verifier(_StrictContract):
-    kind: Literal["image_pull_backoff"]
+    kind: Literal["image_pull_backoff", "crash_loop_backoff"]
     timeout_seconds: Literal[120]
     poll_interval_seconds: Literal[2]
 
@@ -45,8 +49,8 @@ class _ScenarioDefinition(_StrictContract):
     target: ScenarioTarget
     fixture_manifests: tuple[str, ...] = Field(min_length=1)
     expected_root_causes: tuple[str, ...] = Field(min_length=1)
-    required_evidence: tuple[str, ...] = Field(min_length=1)
-    allowed_tools: tuple[str, ...] = Field(min_length=1)
+    required_evidence: tuple[DiagnosticEvidenceKind, ...] = Field(min_length=1)
+    allowed_tools: tuple[DiagnosticToolName, ...] = Field(min_length=1)
     forbidden_tools: tuple[str, ...] = Field(min_length=1)
     deterministic_verifier: _Verifier
 
@@ -91,6 +95,8 @@ class _ScenarioDefinition(_StrictContract):
             description=self.description,
             trigger=self.trigger,
             target=self.target,
+            allowed_tools=self.allowed_tools,
+            required_evidence=self.required_evidence,
         )
 
 

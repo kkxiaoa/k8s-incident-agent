@@ -2085,6 +2085,11 @@ def _workflow_run_projection(
     snapshot = WorkflowRunSnapshot(
         id=run_id,
         incident_id=incident_id,
+        source=IncidentSource(
+            type=cast(Literal["scenario", "alertmanager"], incident.trigger_source),
+            ref=incident.trigger_ref,
+            revision=incident.trigger_revision,
+        ),
         run_status=run.status,
         trigger_summary=incident.trigger_summary,
         target=target,
@@ -2789,6 +2794,7 @@ def _diagnosis_validation_snapshot(
     matched_started_event_ids: set[int] = set()
     successes: list[tuple[int, str, str, dict[str, JsonValue] | None]] = []
     persisted_ids: set[UUID] = set()
+    persisted_by_id: dict[UUID, PersistedEvidence] = {}
     success_call_ids: set[str] = set()
     for evidence_row in evidence_rows:
         event_row = evidence_events_by_key.get(
@@ -2816,6 +2822,7 @@ def _diagnosis_validation_snapshot(
         if persisted.id in persisted_ids or persisted.tool_call_id in success_call_ids:
             raise RecoveryConsistencyError
         persisted_ids.add(persisted.id)
+        persisted_by_id[persisted.id] = persisted
         success_call_ids.add(persisted.tool_call_id)
         matched_evidence_event_ids.add(event_row.id)
         successes.append(
@@ -2881,7 +2888,7 @@ def _diagnosis_validation_snapshot(
         )
     )
     return DiagnosisValidationSnapshot(
-        evidence_ids=frozenset(persisted_ids),
+        evidence_by_id=persisted_by_id,
         tool_failures=tuple(failure for _, failure, _ in failures),
         unresolved_tool_failures=unresolved,
     )

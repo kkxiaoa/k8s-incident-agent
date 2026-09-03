@@ -13,6 +13,10 @@ _PEM_PATTERN = re.compile(
     r"-----BEGIN [^-\r\n]+-----.*?-----END [^-\r\n]+-----",
     re.IGNORECASE | re.DOTALL,
 )
+_UNTERMINATED_PEM_PATTERN = re.compile(
+    r"-----BEGIN [^-\r\n]+-----.*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
 _BEARER_PATTERN = re.compile(
     r"\bBearer[ \t]+[A-Za-z0-9._~+/=-]+",
     re.IGNORECASE,
@@ -64,7 +68,11 @@ def sanitize_untrusted_text(
 
     sanitized, control_replacements = _remove_disallowed_controls(raw_value)
     sanitized, uri_replaced = _strip_sensitive_uri_components(sanitized)
-    sanitized, pem_replacements = _PEM_PATTERN.subn(_REDACTED, sanitized)
+    sanitized, pem_replacements = _PEM_PATTERN.subn(_redact_pem, sanitized)
+    sanitized, unterminated_pem_replacements = _UNTERMINATED_PEM_PATTERN.subn(
+        _redact_pem,
+        sanitized,
+    )
     sanitized, bearer_replacements = _BEARER_PATTERN.subn(
         f"Bearer {_REDACTED}", sanitized
     )
@@ -89,6 +97,7 @@ def sanitize_untrusted_text(
             control_replacements
             or uri_replaced
             or pem_replacements
+            or unterminated_pem_replacements
             or bearer_replacements
             or jwt_replacements
             or assignment_replacements
@@ -153,3 +162,10 @@ def _redact_assignment(match: re.Match[str]) -> str:
     else:
         replacement = _REDACTED
     return f"{match.group('prefix')}{replacement}"
+
+
+def _redact_pem(match: re.Match[str]) -> str:
+    line_breaks = "".join(
+        character for character in match.group(0) if character in {"\r", "\n"}
+    )
+    return f"{_REDACTED}{line_breaks}"

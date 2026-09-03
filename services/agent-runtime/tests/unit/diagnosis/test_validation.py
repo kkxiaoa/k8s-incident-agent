@@ -21,6 +21,7 @@ from k8s_incident_agent.diagnosis.validation import (
 )
 from k8s_incident_agent.domain.models import (
     EvidenceRecord,
+    JsonValue,
     ModelSnapshot,
     RunBudget,
     ToolFailureRecord,
@@ -81,10 +82,16 @@ async def _record_evidence(
     *,
     tool_call_id: str,
     tool_name: str,
+    payload: dict[str, JsonValue] | None = None,
 ) -> UUID:
     await repository.record_tool_started(run_id, tool_call_id, tool_name)
     persisted = await repository.record_evidence(
-        _evidence_record(run_id, tool_call_id=tool_call_id, tool_name=tool_name)
+        _evidence_record(
+            run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            payload=payload,
+        )
     )
     return persisted.id
 
@@ -94,6 +101,7 @@ def _evidence_record(
     *,
     tool_call_id: str,
     tool_name: str,
+    payload: dict[str, JsonValue] | None = None,
 ) -> EvidenceRecord:
     return EvidenceRecord(
         run_id=run_id,
@@ -102,10 +110,67 @@ def _evidence_record(
         evidence_kind=tool_name.removeprefix("get_"),
         target_ref={"name": "deployment-a"},
         observed_at=NOW,
-        payload={"observed": True},
+        payload={"observed": True} if payload is None else payload,
         truncated=False,
         redacted=False,
     )
+
+
+def _container_logs_payload(
+    *,
+    message: str | None,
+    include_container: bool = True,
+) -> dict[str, JsonValue]:
+    containers: list[JsonValue] = []
+    if include_container:
+        previous: dict[str, JsonValue]
+        if message is None:
+            previous = {
+                "source": "previous",
+                "status": "previous_unavailable",
+                "lines": [],
+            }
+        else:
+            previous = {
+                "source": "previous",
+                "status": "available",
+                "lines": [{"timestamp": NOW.isoformat(), "message": message}],
+            }
+        containers.append(
+            {
+                "podRef": {
+                    "apiVersion": "v1",
+                    "kind": "Pod",
+                    "namespace": "default",
+                    "name": "pod-a",
+                    "uid": "pod-uid",
+                },
+                "owner": {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "deployment-a",
+                    "uid": "deployment-uid",
+                    "controller": True,
+                },
+                "container": "app",
+                "restartCount": 3,
+                "snapshots": [
+                    {
+                        "source": "current",
+                        "status": "no_logs_in_window",
+                        "lines": [],
+                    },
+                    previous,
+                ],
+            }
+        )
+    return {
+        "sourceWorkload": {
+            "resourceVersion": "17",
+            "selector": {"matchLabels": {"app": "crash-loop"}},
+        },
+        "containers": containers,
+    }
 
 
 async def _record_failure(
@@ -195,7 +260,9 @@ async def test_validator_sanitizes_model_text_and_preserves_model_code(
             statement="Authorization: Bearer opaque-secret",
         )
 
-        validated = await validate_diagnosis(candidate, run_id, repository)
+        validated = await validate_diagnosis(
+            candidate, run_id, repository, required_evidence=frozenset()
+        )
 
         serialized = validated.model_dump_json()
         assert validated.redacted is True
@@ -214,7 +281,9 @@ async def test_insufficient_evidence_requires_a_successful_observation(
         run_id = await _running_run(repository, "insufficient-without-evidence")
 
         with pytest.raises(DiagnosisValidationError) as error:
-            await validate_diagnosis(_insufficient(), run_id, repository)
+            await validate_diagnosis(
+                _insufficient(), run_id, repository, required_evidence=frozenset()
+            )
 
         assert error.value.code == "structured_output_invalid"
 
@@ -247,7 +316,9 @@ async def test_validator_rejects_text_truncated_after_redaction(
             candidate = _insufficient(missing=value)
 
         with pytest.raises(DiagnosisValidationError) as error:
-            await validate_diagnosis(candidate, run_id, repository)
+            await validate_diagnosis(
+                candidate, run_id, repository, required_evidence=frozenset()
+            )
 
         assert error.value.code == "structured_output_invalid"
 
@@ -279,7 +350,12 @@ async def test_diagnosed_rejects_evidence_outside_the_current_run(
             referenced = uuid4()
 
         with pytest.raises(DiagnosisValidationError) as error:
-            await validate_diagnosis(_diagnosed(referenced), current_run, repository)
+            await validate_diagnosis(
+                _diagnosed(referenced),
+                current_run,
+                repository,
+                required_evidence=frozenset(),
+            )
 
         assert error.value.code == "structured_output_invalid"
 
@@ -293,7 +369,12 @@ async def test_diagnosed_requires_evidence_and_rejects_unknown_code(
         empty_run = await _running_run(repository, "empty-run")
 
         with pytest.raises(DiagnosisValidationError):
-            await validate_diagnosis(_diagnosed(uuid4()), empty_run, repository)
+            await validate_diagnosis(
+                _diagnosed(uuid4()),
+                empty_run,
+                repository,
+                required_evidence=frozenset(),
+            )
 
         evidence_id = await _record_evidence(
             repository,
@@ -303,8 +384,98 @@ async def test_diagnosed_requires_evidence_and_rejects_unknown_code(
         )
         with pytest.raises(DiagnosisValidationError):
             await validate_diagnosis(
-                _diagnosed(evidence_id, code="unknown"), empty_run, repository
+                _diagnosed(evidence_id, code="unknown"),
+                empty_run,
+                repository,
+                required_evidence=frozenset(),
             )
+
+
+@pytest.mark.asyncio
+async def test_diagnosed_must_cite_each_required_evidence_kind(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        run_id = await _running_run(repository, "required-evidence")
+        workload_id = await _record_evidence(
+            repository,
+            run_id,
+            tool_call_id="call-workload",
+            tool_name="get_workload",
+        )
+        await _record_evidence(
+            repository,
+            run_id,
+            tool_call_id="call-pods",
+            tool_name="get_pods",
+        )
+
+        with pytest.raises(DiagnosisValidationError):
+            await validate_diagnosis(
+                _diagnosed(workload_id),
+                run_id,
+                repository,
+                required_evidence=frozenset({"workload", "pods"}),
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "include_container"),
+    [(None, False), (None, True), ("", True)],
+)
+async def test_diagnosed_rejects_container_logs_without_usable_messages(
+    tmp_path: Path,
+    message: str | None,
+    include_container: bool,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        run_id = await _running_run(repository, "empty-container-logs")
+        evidence_id = await _record_evidence(
+            repository,
+            run_id,
+            tool_call_id="call-container-logs",
+            tool_name="get_container_logs",
+            payload=_container_logs_payload(
+                message=message,
+                include_container=include_container,
+            ),
+        )
+
+        with pytest.raises(DiagnosisValidationError):
+            await validate_diagnosis(
+                _diagnosed(evidence_id, code="invalid_startup_arguments"),
+                run_id,
+                repository,
+                required_evidence=frozenset({"container_logs"}),
+            )
+
+
+@pytest.mark.asyncio
+async def test_diagnosed_accepts_cited_container_logs_with_a_usable_message(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        run_id = await _running_run(repository, "usable-container-logs")
+        evidence_id = await _record_evidence(
+            repository,
+            run_id,
+            tool_call_id="call-container-logs",
+            tool_name="get_container_logs",
+            payload=_container_logs_payload(message="unknown command: invalid"),
+        )
+
+        validated = await validate_diagnosis(
+            _diagnosed(evidence_id, code="invalid_startup_arguments"),
+            run_id,
+            repository,
+            required_evidence=frozenset({"container_logs"}),
+        )
+
+        assert validated.outcome == "diagnosed"
 
 
 @pytest.mark.asyncio
@@ -330,7 +501,12 @@ async def test_retryable_failure_is_resolved_only_by_later_same_tool_success(
             tool_name="get_pods",
         )
         with pytest.raises(UnresolvedToolFailuresError) as unresolved:
-            await validate_diagnosis(_insufficient(), unresolved_run, repository)
+            await validate_diagnosis(
+                _insufficient(),
+                unresolved_run,
+                repository,
+                required_evidence=frozenset(),
+            )
         assert [failure.tool_call_id for failure in unresolved.value.failures] == [
             "call-timeout"
         ]
@@ -338,6 +514,7 @@ async def test_retryable_failure_is_resolved_only_by_later_same_tool_success(
             _diagnosed(alternate_evidence_id),
             unresolved_run,
             repository,
+            required_evidence=frozenset(),
         )
         assert diagnosed.outcome == "diagnosed"
 
@@ -358,7 +535,12 @@ async def test_retryable_failure_is_resolved_only_by_later_same_tool_success(
             tool_name="get_events",
         )
 
-        validated = await validate_diagnosis(_insufficient(), resolved_run, repository)
+        validated = await validate_diagnosis(
+            _insufficient(),
+            resolved_run,
+            repository,
+            required_evidence=frozenset(),
+        )
         assert validated.outcome == "insufficient_evidence"
 
 
@@ -385,7 +567,9 @@ async def test_fatal_failure_remains_unresolved_after_later_success(
         )
 
         with pytest.raises(UnresolvedToolFailuresError) as error:
-            await validate_diagnosis(_insufficient(), run_id, repository)
+            await validate_diagnosis(
+                _insufficient(), run_id, repository, required_evidence=frozenset()
+            )
 
         assert error.value.failures[0].error_code == "permission_denied"
         assert error.value.failures[0].retryable is False
@@ -420,7 +604,9 @@ async def test_resolved_invalid_tool_failure_contract_fails_consistency(
         )
 
         with pytest.raises(RecoveryConsistencyError):
-            await validate_diagnosis(_insufficient(), run_id, repository)
+            await validate_diagnosis(
+                _insufficient(), run_id, repository, required_evidence=frozenset()
+            )
 
 
 @pytest.mark.asyncio
@@ -439,7 +625,10 @@ async def test_sanitized_required_text_and_total_utf8_budget_fail_closed(
 
         with pytest.raises(DiagnosisValidationError) as empty_error:
             await validate_diagnosis(
-                _diagnosed(evidence_id, summary="\u202e"), run_id, repository
+                _diagnosed(evidence_id, summary="\u202e"),
+                run_id,
+                repository,
+                required_evidence=frozenset(),
             )
         assert empty_error.value.code == "structured_output_invalid"
 
@@ -460,7 +649,9 @@ async def test_sanitized_required_text_and_total_utf8_budget_fail_closed(
             }
         )
         with pytest.raises(DiagnosisValidationError) as size_error:
-            await validate_diagnosis(large_payload, run_id, repository)
+            await validate_diagnosis(
+                large_payload, run_id, repository, required_evidence=frozenset()
+            )
         assert size_error.value.code == "structured_output_invalid"
 
 
@@ -486,7 +677,12 @@ async def test_snapshot_rejects_corrupt_evidence_event(tmp_path: Path) -> None:
             event_row.payload_json = "{}"
 
         with pytest.raises(RecoveryConsistencyError):
-            await validate_diagnosis(_diagnosed(evidence_id), run_id, repository)
+            await validate_diagnosis(
+                _diagnosed(evidence_id),
+                run_id,
+                repository,
+                required_evidence=frozenset(),
+            )
 
 
 @pytest.mark.asyncio
@@ -511,7 +707,12 @@ async def test_snapshot_requires_matching_earlier_tool_started(
             await repository.record_tool_started(run_id, "call-started", "get_pods")
 
         with pytest.raises(RecoveryConsistencyError):
-            await validate_diagnosis(_diagnosed(persisted.id), run_id, repository)
+            await validate_diagnosis(
+                _diagnosed(persisted.id),
+                run_id,
+                repository,
+                required_evidence=frozenset(),
+            )
 
 
 @pytest.mark.asyncio
@@ -534,7 +735,12 @@ async def test_snapshot_rejects_tool_started_without_an_outcome(
         )
 
         with pytest.raises(RecoveryConsistencyError):
-            await validate_diagnosis(_diagnosed(evidence_id), run_id, repository)
+            await validate_diagnosis(
+                _diagnosed(evidence_id),
+                run_id,
+                repository,
+                required_evidence=frozenset(),
+            )
 
 
 @pytest.mark.asyncio
@@ -560,7 +766,12 @@ async def test_snapshot_database_failure_has_static_error(tmp_path: Path) -> Non
         event.listen(database.engine.sync_engine, "before_cursor_execute", fail_read)
         try:
             with pytest.raises(PersistenceOperationError) as error:
-                await validate_diagnosis(_insufficient(), run_id, repository)
+                await validate_diagnosis(
+                    _insufficient(),
+                    run_id,
+                    repository,
+                    required_evidence=frozenset(),
+                )
         finally:
             event.remove(
                 database.engine.sync_engine, "before_cursor_execute", fail_read

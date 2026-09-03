@@ -61,6 +61,39 @@ test("versioned fixture satisfies restricted Pod Security admission", () => {
   );
 });
 
+test("CrashLoop fixtures pin one bounded failing workload and a healthy control", () => {
+  const scenarioRoot = path.join(
+    REPOSITORY_ROOT,
+    "scenarios",
+    "crash-loop-backoff",
+  );
+  const expected = new Map([
+    ["deployment.yaml", "unsupported-k8s-incident-agent-command"],
+    ["healthy-control.yaml", "pause"],
+  ]);
+  for (const [name, argument] of expected) {
+    const documents = [];
+    loadAll(
+      readFileSync(path.join(scenarioRoot, "manifests", name), "utf8"),
+      (document) => {
+        if (document !== undefined) documents.push(document);
+      },
+    );
+    assert.equal(documents.length, 1);
+    const podSpec = documents[0]?.spec?.template?.spec;
+    const workload = podSpec?.containers?.[0];
+    assert.equal(podSpec?.securityContext?.runAsNonRoot, true);
+    assert.equal(podSpec?.securityContext?.seccompProfile?.type, "RuntimeDefault");
+    assert.equal(
+      workload?.image,
+      "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85",
+    );
+    assert.equal(workload?.imagePullPolicy, "IfNotPresent");
+    assert.deepEqual(workload?.args, [argument]);
+    assert.equal(workload?.securityContext?.readOnlyRootFilesystem, true);
+  }
+});
+
 function validScenario() {
   return {
     schema_version: 2,
@@ -82,13 +115,14 @@ function validScenario() {
     },
     fixture_manifests: ["manifests/deployment.yaml"],
     expected_root_causes: ["image_pull_failure"],
-    required_evidence: [
-      "workload_image",
-      "pod_waiting_state",
-      "warning_event",
+    required_evidence: ["workload", "pods", "events"],
+    allowed_tools: [
+      "get_workload",
+      "get_pods",
+      "get_events",
+      "query_prometheus",
     ],
-    allowed_tools: ["get_workload", "get_pods", "get_events"],
-    forbidden_tools: ["get_logs", "apply_patch", "execute_shell"],
+    forbidden_tools: ["get_container_logs", "apply_patch", "execute_shell"],
     deterministic_verifier: {
       kind: "image_pull_backoff",
       timeout_seconds: 120,
@@ -252,6 +286,129 @@ function eventList(type = "Warning", regardingUid = "pod-uid") {
       },
     ],
   });
+}
+
+function crashLoopOutput(args, resource) {
+  const selectorIndex = args.indexOf("--selector");
+  const selector = selectorIndex === -1 ? undefined : args[selectorIndex + 1];
+  const selectedName = selector?.startsWith("app=")
+    ? selector.slice("app=".length)
+    : undefined;
+  if (resource === "deployment.apps") {
+    const name = args[args.indexOf("deployment.apps") + 1];
+    const healthy = name.endsWith("-healthy-control");
+    return JSON.stringify({
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name,
+        namespace: NAMESPACE,
+        uid: `${name}-deployment-uid`,
+      },
+      spec: { selector: { matchLabels: { app: name } } },
+      status: { availableReplicas: healthy ? 1 : 0 },
+    });
+  }
+  if (resource === "replicasets.apps" && selectedName !== undefined) {
+    return JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "apps/v1",
+          kind: "ReplicaSet",
+          metadata: {
+            name: `${selectedName}-rs`,
+            namespace: NAMESPACE,
+            uid: `${selectedName}-rs-uid`,
+            ownerReferences: [
+              {
+                apiVersion: "apps/v1",
+                kind: "Deployment",
+                name: selectedName,
+                uid: `${selectedName}-deployment-uid`,
+                controller: true,
+              },
+            ],
+          },
+        },
+      ],
+    });
+  }
+  if (resource === "pods" && selectedName !== undefined) {
+    const healthy = selectedName.endsWith("-healthy-control");
+    return JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "v1",
+          kind: "Pod",
+          metadata: {
+            name: `${selectedName}-pod`,
+            namespace: NAMESPACE,
+            uid: `${selectedName}-pod-uid`,
+            ownerReferences: [
+              {
+                apiVersion: "apps/v1",
+                kind: "ReplicaSet",
+                name: `${selectedName}-rs`,
+                uid: `${selectedName}-rs-uid`,
+                controller: true,
+              },
+            ],
+          },
+          status: {
+            conditions: [
+              { type: "Ready", status: healthy ? "True" : "False" },
+            ],
+            containerStatuses: [
+              healthy
+                ? {
+                    name: "workload",
+                    ready: true,
+                    restartCount: 0,
+                    state: { running: {} },
+                  }
+                : {
+                    name: "workload",
+                    ready: false,
+                    restartCount: 4,
+                    state: { waiting: { reason: "CrashLoopBackOff" } },
+                    lastState: { terminated: { exitCode: 2 } },
+                  },
+            ],
+          },
+        },
+      ],
+    });
+  }
+  if (resource === "events.events.k8s.io") {
+    return JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "events.k8s.io/v1",
+          kind: "Event",
+          metadata: { name: "crash-loop-event", namespace: NAMESPACE },
+          type: "Warning",
+          reason: "BackOff",
+          regarding: {
+            apiVersion: "v1",
+            kind: "Pod",
+            name: "crash-loop-backoff-pod",
+            namespace: NAMESPACE,
+            uid: "crash-loop-backoff-pod-uid",
+          },
+        },
+      ],
+    });
+  }
+  if (args.includes("logs")) {
+    return "2026-09-03T00:00:00Z unknown command unsupported-k8s-incident-agent-command\n";
+  }
+  return undefined;
 }
 
 let cachedK3sStatusFixtures;
@@ -692,6 +849,8 @@ function createExecutor(options = {}) {
     ) {
       return JSON.stringify({ serverVersion: { gitVersion: "v1.36.1" } });
     }
+    const resolved = options.resolveOutput?.({ command, args, resource });
+    if (resolved !== undefined) return resolved;
     if (command === "kubectl" && args.includes("apply")) {
       return "deployment.apps/image-pull-backoff configured\n";
     }
@@ -739,23 +898,43 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     repositoryRoot: REPOSITORY_ROOT,
     environment: {},
   });
-  assert.deepEqual(publicItems, [{
-    scenario_id: SCENARIO_ID,
-    scenario_version: 1,
-    display_name: "Image pull failure",
-    description: "A Deployment cannot pull its configured image.",
-    trigger: {
-      type: "manual",
-      summary: "The target Deployment is unavailable.",
+  assert.deepEqual(publicItems, [
+    {
+      scenario_id: "crash-loop-backoff",
+      scenario_version: 1,
+      display_name: "Container restart loop",
+      description:
+        "A Deployment container repeatedly exits because its startup arguments are invalid.",
+      trigger: {
+        type: "manual",
+        summary: "The target Deployment container is restarting repeatedly.",
+      },
+      target: {
+        cluster: CLUSTER_NAME,
+        namespace: NAMESPACE,
+        api_version: "apps/v1",
+        kind: "Deployment",
+        name: "crash-loop-backoff",
+      },
     },
-    target: {
-      cluster: CLUSTER_NAME,
-      namespace: NAMESPACE,
-      api_version: "apps/v1",
-      kind: "Deployment",
-      name: SCENARIO_ID,
+    {
+      scenario_id: SCENARIO_ID,
+      scenario_version: 1,
+      display_name: "Image pull failure",
+      description: "A Deployment cannot pull its configured image.",
+      trigger: {
+        type: "manual",
+        summary: "The target Deployment is unavailable.",
+      },
+      target: {
+        cluster: CLUSTER_NAME,
+        namespace: NAMESPACE,
+        api_version: "apps/v1",
+        kind: "Deployment",
+        name: SCENARIO_ID,
+      },
     },
-  }]);
+  ]);
   const serialized = JSON.stringify(publicItems);
   for (const privateField of [
     "expected_root_causes",
@@ -770,11 +949,61 @@ test("the versioned fixture exposes only the public scenario contract", async ()
   }
 });
 
+test("CrashLoop verifier proves restart, BackOff, previous log, and healthy control", async () => {
+  const executor = createExecutor({
+    resolveOutput: ({ args, resource }) => crashLoopOutput(args, resource),
+  });
+
+  const result = await runScenarioCommand("verify", "crash-loop-backoff", {
+    repositoryRoot: REPOSITORY_ROOT,
+    environment: {},
+    execute: executor.execute,
+  });
+
+  assert.deepEqual(result, {
+    status: "verified",
+    scenario_id: "crash-loop-backoff",
+    pod: {
+      name: "crash-loop-backoff-pod",
+      waiting_reason: "CrashLoopBackOff",
+      restart_count: 4,
+    },
+    event: { name: "crash-loop-event", reason: "BackOff" },
+    previous_log: "bounded",
+    healthy_control: "ready",
+  });
+  const logCall = executor.calls.find(
+    ({ command, args }) => command === "kubectl" && args.includes("logs"),
+  );
+  assert.deepEqual(logCall?.args, [
+    "--context",
+    CONTEXT_NAME,
+    "--namespace",
+    NAMESPACE,
+    "logs",
+    "crash-loop-backoff-pod",
+    "--container=workload",
+    "--previous=true",
+    "--timestamps=true",
+    "--tail=80",
+    "--limit-bytes=4096",
+    "--request-timeout=30s",
+  ]);
+});
+
 test("catalog rejects incompatible versions, extra fields, and target drift", async (t) => {
   const cases = [
     ["schema version", (scenario) => { scenario.schema_version = 1; }],
     ["scenario version", (scenario) => { scenario.scenario_version = 0; }],
     ["extra field", (scenario) => { scenario.unconsumed = "value"; }],
+    ["unknown diagnostic tool", (scenario) => {
+      scenario.allowed_tools = ["get_workload", "unknown_tool"];
+    }],
+    ["required Evidence without its tool", (scenario) => {
+      scenario.allowed_tools = scenario.allowed_tools.filter(
+        (tool) => tool !== "get_events",
+      );
+    }],
     ["cluster", (scenario) => { scenario.target.cluster = "production"; }],
     ["namespace", (scenario) => { scenario.target.namespace = "default"; }],
     ["apiVersion", (scenario) => { scenario.target.api_version = "v1"; }],

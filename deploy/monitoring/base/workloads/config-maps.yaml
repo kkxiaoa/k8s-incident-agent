@@ -101,6 +101,28 @@ data:
             for: 30s
             labels:
               severity: warning
+          - alert: K8sIncidentCrashLoopBackOff
+            expr: >-
+              max by (namespace, deployment) (
+                max by (namespace, pod) (
+                  (kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1)
+                  * on (namespace, pod, container)
+                    (kube_pod_container_status_restarts_total > 0)
+                )
+                * on (namespace, pod) group_left(replicaset)
+                  label_replace(
+                    kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"},
+                    "replicaset", "$1", "owner_name", "(.+)"
+                  )
+                * on (namespace, replicaset) group_left(deployment)
+                  label_replace(
+                    kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"},
+                    "deployment", "$1", "owner_name", "(.+)"
+                  )
+              ) > 0
+            for: 30s
+            labels:
+              severity: warning
 ---
 apiVersion: v1
 kind: ConfigMap

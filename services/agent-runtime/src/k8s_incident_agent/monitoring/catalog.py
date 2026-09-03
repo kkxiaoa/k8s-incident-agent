@@ -1,10 +1,22 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 
+from k8s_incident_agent.diagnosis.policy_contracts import (
+    DiagnosticEvidenceKind,
+    DiagnosticToolName,
+    validate_diagnostic_policy_contract,
+)
 from k8s_incident_agent.monitoring.json import load_unique_json
 
 _MAX_CATALOG_BYTES = 64 * 1024
@@ -57,7 +69,7 @@ class MetricPanelContract(_CatalogContract):
         max_length=128,
     )
     title: str = Field(min_length=1, max_length=160)
-    unit: Literal["pods", "containers"]
+    unit: Literal["pods", "containers", "restarts"]
     threshold: float = Field(allow_inf_nan=False)
     recommended_window: Literal["15m", "1h", "6h"]
     stale_after_seconds: int = Field(ge=15, le=300)
@@ -88,6 +100,8 @@ class AlertCatalogEntry(_CatalogContract):
     trigger_summary: str = Field(min_length=1, max_length=512)
     rule: AlertRuleContract
     target: AlertTargetMapping
+    allowed_tools: list[DiagnosticToolName] = Field(min_length=1, max_length=5)
+    required_evidence: list[DiagnosticEvidenceKind] = Field(min_length=1, max_length=5)
     panels: list[MetricPanelContract] = Field(min_length=1, max_length=8)
 
     @field_validator("display_name", "trigger_summary")
@@ -95,9 +109,17 @@ class AlertCatalogEntry(_CatalogContract):
     def require_normalized_text(cls, value: str) -> str:
         return _require_normalized(value)
 
+    @model_validator(mode="after")
+    def require_diagnostic_policy_consistency(self) -> Self:
+        validate_diagnostic_policy_contract(
+            self.allowed_tools,
+            self.required_evidence,
+        )
+        return self
+
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,

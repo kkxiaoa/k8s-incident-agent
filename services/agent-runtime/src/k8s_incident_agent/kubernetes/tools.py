@@ -16,6 +16,7 @@ from k8s_incident_agent.domain.models import (
     ToolFailureRecord,
 )
 from k8s_incident_agent.kubernetes.contracts import (
+    ContainerLogsObservation,
     DeploymentTarget,
     EventsObservation,
     PodsObservation,
@@ -29,9 +30,11 @@ from k8s_incident_agent.kubernetes.errors import (
 )
 from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
 
-type DiagnosticObservation = WorkloadObservation | PodsObservation | EventsObservation
+type DiagnosticObservation = (
+    WorkloadObservation | PodsObservation | EventsObservation | ContainerLogsObservation
+)
 type ObservationReader = Callable[[DeploymentTarget], Awaitable[DiagnosticObservation]]
-type EvidenceKind = Literal["workload", "pods", "events"]
+type EvidenceKind = Literal["workload", "pods", "events", "container_logs"]
 
 
 class ToolFailureEnvelope(BaseModel):
@@ -90,8 +93,21 @@ async def _get_events(
     )
 
 
-def build_diagnostic_tools() -> tuple[BaseTool, BaseTool, BaseTool]:
-    return _get_workload, _get_pods, _get_events
+@tool("get_container_logs")
+async def _get_container_logs(
+    runtime: ToolRuntime[DiagnosticToolContext, object],
+) -> dict[str, JsonValue]:
+    """Observe bounded current and previous logs for target CrashLoop containers."""
+    return await _execute_tool(
+        runtime,
+        tool_name="get_container_logs",
+        evidence_kind="container_logs",
+        reader=runtime.context.adapter.read_container_logs,
+    )
+
+
+def build_diagnostic_tools() -> tuple[BaseTool, BaseTool, BaseTool, BaseTool]:
+    return _get_workload, _get_pods, _get_events, _get_container_logs
 
 
 async def _execute_tool(
@@ -278,8 +294,10 @@ def _success_output(
             observation = WorkloadObservation.model_validate(document)
         elif evidence_kind == "pods":
             observation = PodsObservation.model_validate(document)
-        else:
+        elif evidence_kind == "events":
             observation = EventsObservation.model_validate(document)
+        else:
+            observation = ContainerLogsObservation.model_validate(document)
     except ValidationError:
         raise FatalDiagnosticToolError(
             KubernetesErrorCode.RECOVERY_CONSISTENCY_ERROR

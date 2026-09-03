@@ -168,12 +168,30 @@ def test_default_v4_firing_projects_only_the_catalog_contract() -> None:
     assert occurrence.starts_at == "2026-09-02T08:00:00.123000000Z"
     assert occurrence.trigger.source.type == "alertmanager"
     assert occurrence.trigger.source.ref == "K8sIncidentImagePullBackOff"
-    assert occurrence.trigger.source.revision == "2026-09-02.3"
+    assert occurrence.trigger.source.revision == "2026-09-03.4"
     assert occurrence.trigger.target.name == "image-pull-backoff"
     serialized = repr(occurrence)
     assert "must-not-be-persisted" not in serialized
     assert "ignore this untrusted text" not in serialized
     assert "prometheus.example" not in serialized
+
+
+def test_crash_loop_firing_uses_its_catalog_target_and_summary() -> None:
+    parsed = _parse(
+        _payload(
+            _alert(
+                alert_name="K8sIncidentCrashLoopBackOff",
+                deployment="crash-loop-backoff",
+            )
+        )
+    )
+
+    occurrence = parsed.occurrences[0]
+    assert occurrence.trigger.source.ref == "K8sIncidentCrashLoopBackOff"
+    assert occurrence.trigger.target.name == "crash-loop-backoff"
+    assert occurrence.trigger.trigger_summary == (
+        "A Deployment container repeatedly exits and is waiting in CrashLoopBackOff."
+    )
 
 
 def test_unknown_alert_is_acknowledgeable_without_an_occurrence() -> None:

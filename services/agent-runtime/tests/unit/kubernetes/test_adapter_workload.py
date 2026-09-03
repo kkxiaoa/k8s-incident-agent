@@ -68,6 +68,8 @@ def _clients(apps_api: _AppsApi) -> KubernetesClients:
 def _deployment(
     *,
     image: str = "registry.invalid/k8s-incident-agent/missing:v1",
+    command: list[str] | None = None,
+    args: list[str] | None = None,
     reason: str | None = "ProgressDeadlineExceeded",
     match_expressions: list[object] | None = None,
     status: V1DeploymentStatus | None = None,
@@ -100,6 +102,8 @@ def _deployment(
                             name="app",
                             image=image,
                             image_pull_policy="Always",
+                            command=command or ["/agnhost"],
+                            args=args or ["invalid-command"],
                         ),
                     ]
                 )
@@ -177,11 +181,15 @@ async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> No
                         "name": "app",
                         "image": "registry.invalid/k8s-incident-agent/missing:v1",
                         "imagePullPolicy": "Always",
+                        "command": ["/agnhost"],
+                        "args": ["invalid-command"],
                     },
                     {
                         "name": "z-sidecar",
                         "image": "sidecar:v1",
                         "imagePullPolicy": "IfNotPresent",
+                        "command": [],
+                        "args": [],
                     },
                 ],
                 "conditions": [
@@ -257,6 +265,37 @@ async def test_read_workload_sanitizes_untrusted_values_and_aggregates_flags() -
     assert condition.reason == "Bearer [REDACTED]"
     assert observation.redacted is True
     assert observation.truncated is False
+
+
+@pytest.mark.asyncio
+async def test_read_workload_redacts_a_value_after_a_sensitive_flag() -> None:
+    adapter, _ = _adapter(_deployment(args=["--password", "literal-secret", "serve"]))
+
+    observation = await adapter.read_workload(TARGET)
+
+    assert observation.payload.workload.containers[0].args == [
+        "--password",
+        "[REDACTED]",
+        "serve",
+    ]
+    assert observation.redacted is True
+
+
+@pytest.mark.asyncio
+async def test_read_workload_redacts_a_sensitive_value_split_across_argv() -> None:
+    adapter, _ = _adapter(
+        _deployment(
+            command=["/agnhost", "--api-key"],
+            args=["literal-secret", "serve"],
+        )
+    )
+
+    observation = await adapter.read_workload(TARGET)
+
+    container = observation.payload.workload.containers[0]
+    assert container.command == ["/agnhost", "--api-key"]
+    assert container.args == ["[REDACTED]", "serve"]
+    assert observation.redacted is True
 
 
 @pytest.mark.asyncio

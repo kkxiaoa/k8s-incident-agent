@@ -39,8 +39,13 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
 ) -> None:
     scenarios = load_scenario_catalog(_catalog(tmp_path))
 
-    assert len(scenarios) == 1
-    scenario = scenarios[0]
+    assert [scenario.scenario_id for scenario in scenarios] == [
+        "crash-loop-backoff",
+        "image-pull-backoff",
+    ]
+    scenario = next(
+        item for item in scenarios if item.scenario_id == "image-pull-backoff"
+    )
     assert scenario.model_dump(mode="json") == {
         "scenario_id": "image-pull-backoff",
         "scenario_version": 1,
@@ -58,9 +63,28 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
             "kind": "Deployment",
             "name": "image-pull-backoff",
         },
+        "allowed_tools": [
+            "get_workload",
+            "get_pods",
+            "get_events",
+            "query_prometheus",
+        ],
+        "required_evidence": ["workload", "pods", "events"],
     }
     assert "expected_root_causes" not in scenario.model_dump()
     assert "deterministic_verifier" not in scenario.model_dump()
+    crash_loop = next(
+        item for item in scenarios if item.scenario_id == "crash-loop-backoff"
+    )
+    assert crash_loop.monitoring_alert_id == "K8sIncidentCrashLoopBackOff"
+    assert crash_loop.allowed_tools == (
+        "get_workload",
+        "get_pods",
+        "get_events",
+        "get_container_logs",
+        "query_prometheus",
+    )
+    assert crash_loop.required_evidence[-1] == "container_logs"
 
 
 @pytest.mark.parametrize(

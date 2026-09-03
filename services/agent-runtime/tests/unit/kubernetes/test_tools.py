@@ -35,6 +35,8 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.contracts import (
+    ContainerLogsObservation,
+    ContainerLogsPayload,
     EventsObservation,
     EventsPayload,
     PodsObservation,
@@ -63,7 +65,7 @@ from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 21, 10, 0, tzinfo=UTC)
-TOOL_NAMES = ("get_workload", "get_pods", "get_events")
+TOOL_NAMES = ("get_workload", "get_pods", "get_events", "get_container_logs")
 TARGET = ScenarioTarget(
     cluster="k8s-incident-agent",
     namespace="k8s-incident-scenarios",
@@ -174,6 +176,26 @@ class _ObservationAdapter:
             redacted=False,
         )
 
+    async def read_container_logs(
+        self,
+        target: ScenarioTarget,
+    ) -> ContainerLogsObservation:
+        call_index = await self._record("get_container_logs", target)
+        return ContainerLogsObservation(
+            evidence_kind="container_logs",
+            target_ref=_target_ref(),
+            observed_at=NOW + timedelta(seconds=call_index),
+            payload=ContainerLogsPayload(
+                source_workload=SourceWorkload(
+                    resource_version=str(call_index),
+                    selector=Selector(match_labels={"app": "broken-image"}),
+                ),
+                containers=[],
+            ),
+            truncated=False,
+            redacted=False,
+        )
+
     async def _record(self, tool_name: str, target: ScenarioTarget) -> int:
         assert target == TARGET
         self.calls.append(tool_name)
@@ -275,7 +297,7 @@ def test_registry_is_exact_and_runtime_context_is_hidden_from_model() -> None:
 @pytest.mark.parametrize("order", tuple(permutations(TOOL_NAMES)))
 async def test_each_tool_is_order_independent(
     tmp_path: Path,
-    order: tuple[str, str, str],
+    order: tuple[str, ...],
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)

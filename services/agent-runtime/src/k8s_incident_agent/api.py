@@ -20,6 +20,7 @@ from k8s_incident_agent.application.events import (
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.application.monitoring import MonitoringApplicationService
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
+from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyCatalog
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
 from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget
 from k8s_incident_agent.kubernetes.access import (
@@ -265,6 +266,10 @@ async def build_runtime_container(
             credential=credential,
             adapter=adapter,
             prometheus=prometheus,
+            policies=DiagnosticPolicyCatalog(
+                scenarios=catalog,
+                alerts=alert_catalog,
+            ),
             now=now,
         )
         resources.push_async_callback(supervisor.close)

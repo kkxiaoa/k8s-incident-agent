@@ -38,6 +38,7 @@ from k8s_incident_agent.diagnosis.contracts import (
     DiagnosisCandidate,
     ValidatedDiagnosis,
 )
+from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
 from k8s_incident_agent.diagnosis.tool_execution import DiagnosticToolFatalError
 from k8s_incident_agent.diagnosis.validation import (
     DiagnosisValidationError,
@@ -100,13 +101,18 @@ class GraphDependencies:
 def build_incident_graph(
     dependencies: GraphDependencies,
     run: WorkflowRunSnapshot,
+    policy: DiagnosticPolicy,
 ) -> IncidentGraph:
+    registry = {
+        tool.name: tool for tool in (*build_diagnostic_tools(), build_prometheus_tool())
+    }
     diagnostic_agent = build_diagnostic_agent(
         dependencies.model,
-        (*build_diagnostic_tools(), build_prometheus_tool()),
+        tuple(registry[name] for name in policy.tool_names),
         max_model_calls=run.budget.max_model_calls,
         max_tool_calls=run.budget.max_tool_calls,
-        prometheus_panel_ids=dependencies.prometheus.panel_ids,
+        required_evidence=tuple(sorted(policy.required_evidence)),
+        prometheus_panel_ids=policy.prometheus_panel_ids,
     )
     builder = StateGraph(
         IncidentGraphState,
@@ -127,7 +133,7 @@ def build_incident_graph(
     )
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
         "validate_diagnosis",
-        _validate_diagnosis_node(dependencies, run),
+        _validate_diagnosis_node(dependencies, run, policy),
     )
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
         "persist_terminal_state",
@@ -269,6 +275,7 @@ def _triage_target_node(
 def _validate_diagnosis_node(
     dependencies: GraphDependencies,
     scheduled: WorkflowRunSnapshot,
+    policy: DiagnosticPolicy,
 ) -> Callable[..., object]:
     async def validate(
         state: IncidentGraphState,
@@ -285,6 +292,7 @@ def _validate_diagnosis_node(
                 candidate,
                 scheduled.id,
                 dependencies.repository,
+                required_evidence=policy.required_evidence,
             )
         except (DiagnosisValidationError, StructuredDiagnosisError, ValidationError):
             return _terminal_error("structured_output_invalid", retryable=False)
@@ -428,6 +436,7 @@ def _require_same_run_identity(
     if (
         current.id != scheduled.id
         or current.incident_id != scheduled.incident_id
+        or current.source != scheduled.source
         or current.trigger_summary != scheduled.trigger_summary
         or current.target != scheduled.target
         or current.model != scheduled.model

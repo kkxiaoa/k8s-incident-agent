@@ -22,6 +22,8 @@ from pydantic import PrivateAttr
 from tests.factories import prometheus_query_service_stub
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
+from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
+from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     DiagnosisValidationSnapshot,
@@ -46,11 +48,19 @@ from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
 from k8s_incident_agent.workflow.graph import (
     GraphDependencies,
-    build_incident_graph,
+    IncidentGraph,
     classify_diagnosis_failure,
+)
+from k8s_incident_agent.workflow.graph import (
+    build_incident_graph as _build_incident_graph,
 )
 
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+TEST_POLICY = DiagnosticPolicy(
+    tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
+    required_evidence=frozenset({"workload"}),
+    prometheus_panel_ids=("image-pull-affected-pods",),
+)
 
 
 class _SubgraphView(Protocol):
@@ -87,7 +97,7 @@ class _WorkflowRepository:
         self.started_at: datetime | None = None
         self.terminals: list[TerminalRecord] = []
         self.validation_snapshot = DiagnosisValidationSnapshot(
-            evidence_ids=frozenset(),
+            evidence_by_id={},
             tool_failures=(),
             unresolved_tool_failures=(),
         )
@@ -135,6 +145,11 @@ def _snapshot(*, model_id: str = "deepseek-v4-flash") -> WorkflowRunSnapshot:
     return WorkflowRunSnapshot(
         id=uuid4(),
         incident_id=uuid4(),
+        source=IncidentSource(
+            type="scenario",
+            ref="image-pull-backoff",
+            revision="1",
+        ),
         run_status=RunStatus.QUEUED,
         trigger_summary="The target Deployment is unavailable.",
         target=ScenarioTarget(
@@ -157,6 +172,13 @@ def _snapshot(*, model_id: str = "deepseek-v4-flash") -> WorkflowRunSnapshot:
         ),
         started_at=None,
     )
+
+
+def build_incident_graph(
+    dependencies: GraphDependencies,
+    run: WorkflowRunSnapshot,
+) -> IncidentGraph:
+    return _build_incident_graph(dependencies, run, TEST_POLICY)
 
 
 def _credential() -> DiagnosticCredential:
@@ -468,7 +490,7 @@ async def test_unresolved_kubernetes_failure_becomes_matching_terminal_error(
         occurred_at=NOW,
     )
     repository.validation_snapshot = DiagnosisValidationSnapshot(
-        evidence_ids=frozenset(),
+        evidence_by_id={},
         tool_failures=(failure,),
         unresolved_tool_failures=(failure,),
     )

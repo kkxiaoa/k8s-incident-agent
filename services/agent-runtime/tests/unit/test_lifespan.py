@@ -71,6 +71,13 @@ def _scenario() -> PublicScenario:
             kind="Deployment",
             name="image-pull-backoff",
         ),
+        allowed_tools=(
+            "get_workload",
+            "get_pods",
+            "get_events",
+            "query_prometheus",
+        ),
+        required_evidence=("workload", "pods", "events"),
     )
 
 

@@ -250,7 +250,7 @@ test("Kind config keeps the fixed single-control-plane loopback topology", () =>
   });
 });
 
-test("diagnostic RBAC grants only the Stage 1 read contract", () => {
+test("diagnostic RBAC grants only the approved read contract", () => {
   const documents = [];
   loadAll(
     readFileSync(
@@ -294,6 +294,7 @@ test("diagnostic RBAC grants only the Stage 1 read contract", () => {
       .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
     [
       { apiGroups: [""], resources: ["pods"], verbs: ["list"] },
+      { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["list"] },
       { apiGroups: ["events.k8s.io"], resources: ["events"], verbs: ["list"] },

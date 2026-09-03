@@ -20,7 +20,7 @@ spec:
         app.kubernetes.io/name: prometheus
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:5130673eaeb4238216797373ff3fe4649636dfbce7b510d853d8e63038bf2246"
+        k8s-incident-agent.io/config-digest: "sha256:4e459fd37b1c4e15e5820f7e2037c80700f04e212a35bc82241a8c3997f619f0"
     spec:
       serviceAccountName: prometheus
       automountServiceAccountToken: false
@@ -232,7 +232,7 @@ spec:
           args:
             - --namespaces=k8s-incident-scenarios
             - --resources=pods,replicasets
-            - --metric-allowlist=kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner
+            - --metric-allowlist=kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner
             - --use-apiserver-cache
           ports:
             - name: http

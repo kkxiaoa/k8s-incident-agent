@@ -5,7 +5,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     EventsV1Event,
@@ -35,12 +35,20 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1ReplicaSet,
     V1ReplicaSetList,
 )
+from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingTypeStubs]
+    ApiException,
+)
 
 from k8s_incident_agent.domain.models import JsonValue
 from k8s_incident_agent.kubernetes.access import require_stage_one_target_scope
 from k8s_incident_agent.kubernetes.client import KubernetesClients
 from k8s_incident_agent.kubernetes.contracts import (
     ConditionSummary,
+    ContainerLogLine,
+    ContainerLogSnapshot,
+    ContainerLogsObservation,
+    ContainerLogsPayload,
+    ContainerLogSummary,
     ContainerStateSummary,
     DeploymentTarget,
     EventsObservation,
@@ -75,9 +83,21 @@ LIST_MAX_PAGES = 5
 REPLICA_SET_LIMIT = 100
 POD_LIMIT = 100
 EVENT_LIMIT = 200
+LOG_CONTAINER_LIMIT = 4
+LOG_LINE_LIMIT = 80
+LOG_RESPONSE_LIMIT_BYTES = 4 * 1024
+LOG_SINCE_SECONDS = 10 * 60
+LOG_LINE_MAX_CODE_POINTS = 512
+WORKLOAD_ARGUMENT_LIMIT = 16
+WORKLOAD_ARGUMENT_MAX_CODE_POINTS = 512
 
 _LABEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
 _DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")
+_SENSITIVE_ARGUMENT_PATTERN = re.compile(
+    r"^--?[A-Za-z0-9_.-]*(?:token|password|api[_-]?key|authorization|cookie)"
+    r"[A-Za-z0-9_.-]*$",
+    re.IGNORECASE,
+)
 
 
 class _AppsApi(Protocol):
@@ -98,6 +118,13 @@ class _AppsApi(Protocol):
 class _CoreApi(Protocol):
     def list_namespaced_pod(
         self,
+        namespace: str,
+        **kwargs: object,
+    ) -> Awaitable[object]: ...
+
+    def read_namespaced_pod_log(
+        self,
+        name: str,
         namespace: str,
         **kwargs: object,
     ) -> Awaitable[object]: ...
@@ -170,6 +197,8 @@ class _WorkloadContainerView(Protocol):
     name: object
     image: object
     image_pull_policy: object
+    command: object
+    args: object
 
 
 class _ReplicaSetView(Protocol):
@@ -190,6 +219,7 @@ class _PodView(Protocol):
     api_version: object
     kind: object
     metadata: object
+    spec: object
     status: object
 
 
@@ -216,6 +246,17 @@ class _ContainerStateView(Protocol):
 class _ContainerStateDetailView(Protocol):
     reason: object
     message: object
+
+
+class _LogResponseView(Protocol):
+    status: object
+    content: _LogContentView
+
+    def release(self) -> None: ...
+
+
+class _LogContentView(Protocol):
+    def read(self, size: int) -> Awaitable[bytes]: ...
 
 
 class _EventView(Protocol):
@@ -259,6 +300,15 @@ class _DeploymentContext:
 class _AssociatedPod:
     pod: V1Pod
     owner: _OwnerReferenceView
+
+
+@dataclass(frozen=True, slots=True)
+class _ContainerLogTarget:
+    pod_name: str
+    pod_uid: str
+    owner: OwnerSummary
+    container_name: str
+    restart_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,6 +468,129 @@ class KubernetesEvidenceAdapter:
             raise
         except Exception as error:
             raise map_kubernetes_exception(error) from None
+
+    async def read_container_logs(
+        self,
+        target: DeploymentTarget,
+    ) -> ContainerLogsObservation:
+        try:
+            state = _SanitizationState()
+            associations = await self._read_associations(target, state)
+            log_targets = _crash_loop_log_targets(associations)
+            if len(log_targets) > LOG_CONTAINER_LIMIT:
+                raise _budget_error()
+            containers: list[ContainerLogSummary] = []
+            for log_target in log_targets:
+                snapshots = [
+                    await self._read_container_log_snapshot(
+                        cast(str, target.namespace),
+                        log_target,
+                        source,
+                        state,
+                    )
+                    for source in ("current", "previous")
+                ]
+                containers.append(
+                    ContainerLogSummary(
+                        pod_ref=TargetRef(
+                            api_version="v1",
+                            kind="Pod",
+                            namespace=cast(str, target.namespace),
+                            name=log_target.pod_name,
+                            uid=log_target.pod_uid,
+                        ),
+                        owner=log_target.owner,
+                        container=log_target.container_name,
+                        restart_count=log_target.restart_count,
+                        snapshots=snapshots,
+                    )
+                )
+
+            if log_targets:
+                rebound = await self._read_associations(target, state)
+                rebound_identities = _associated_container_identities(rebound)
+                if any(
+                    _log_target_identity(item) not in rebound_identities
+                    for item in log_targets
+                ):
+                    raise _contract_error()
+
+            payload = ContainerLogsPayload(
+                source_workload=_source_workload(associations.workload),
+                containers=containers,
+            )
+            _enforce_payload_budget(payload)
+            return ContainerLogsObservation(
+                evidence_kind="container_logs",
+                target_ref=associations.workload.target_ref,
+                observed_at=_observation_time(self._clock),
+                payload=payload,
+                truncated=state.truncated,
+                redacted=state.redacted,
+            )
+        except KubernetesBoundaryError:
+            raise
+        except Exception as error:
+            raise map_kubernetes_exception(error) from None
+
+    async def _read_container_log_snapshot(
+        self,
+        namespace: str,
+        target: _ContainerLogTarget,
+        source: str,
+        state: _SanitizationState,
+    ) -> ContainerLogSnapshot:
+        previous = source == "previous"
+        try:
+            response = await self._core_api.read_namespaced_pod_log(
+                name=target.pod_name,
+                namespace=namespace,
+                container=target.container_name,
+                follow=False,
+                insecure_skip_tls_verify_backend=False,
+                limit_bytes=LOG_RESPONSE_LIMIT_BYTES,
+                previous=previous,
+                since_seconds=LOG_SINCE_SECONDS,
+                tail_lines=LOG_LINE_LIMIT,
+                timestamps=True,
+                _preload_content=False,
+                _request_timeout=self._timeout_seconds,
+            )
+        except Exception as error:
+            raise map_kubernetes_exception(error, resource_not_found=True) from None
+
+        response_view = cast(_LogResponseView, response)
+        status = response_view.status
+        release = getattr(response_view, "release", None)
+        if (
+            not isinstance(status, int)
+            or isinstance(status, bool)
+            or not callable(release)
+        ):
+            raise _contract_error()
+        try:
+            if status == 400:
+                return ContainerLogSnapshot(
+                    source=cast(Literal["current", "previous"], source),
+                    status=(
+                        "previous_unavailable" if previous else "container_not_started"
+                    ),
+                    lines=[],
+                )
+            if status != 200:
+                raise map_kubernetes_exception(
+                    _api_status_exception(status),
+                    resource_not_found=True,
+                )
+            raw = await _read_bounded_log_body(response_view)
+        finally:
+            release()
+        lines = _normalize_log_lines(raw, state)
+        return ContainerLogSnapshot(
+            source=cast(Literal["current", "previous"], source),
+            status="available" if lines else "no_logs_in_window",
+            lines=lines,
+        )
 
     async def _read_associations(
         self,
@@ -810,11 +983,55 @@ def _project_workload_container(
     state: _SanitizationState,
 ) -> WorkloadContainer:
     container_view = cast(_WorkloadContainerView, container)
+    command, redact_next = _project_workload_arguments(
+        container_view.command,
+        state,
+    )
+    arguments, _ = _project_workload_arguments(
+        container_view.args,
+        state,
+        redact_value=redact_next,
+    )
     return WorkloadContainer(
         name=_required_string(container_view.name),
         image=state.required(container_view.image),
         image_pull_policy=_required_string(container_view.image_pull_policy),
+        command=command,
+        args=arguments,
     )
+
+
+def _project_workload_arguments(
+    value: object,
+    state: _SanitizationState,
+    *,
+    redact_value: bool = False,
+) -> tuple[list[str], bool]:
+    if value is None:
+        return [], redact_value
+    if not isinstance(value, list):
+        raise _contract_error()
+    raw_values = cast(list[object], value)
+    if len(raw_values) > WORKLOAD_ARGUMENT_LIMIT:
+        raise _budget_error()
+    arguments: list[str] = []
+    for item in raw_values:
+        if not isinstance(item, str):
+            raise _contract_error()
+        if redact_value:
+            arguments.append("[REDACTED]")
+            state.redacted = True
+            redact_value = _SENSITIVE_ARGUMENT_PATTERN.fullmatch(item) is not None
+            continue
+        sanitized = sanitize_untrusted_text(
+            item,
+            max_code_points=WORKLOAD_ARGUMENT_MAX_CODE_POINTS,
+        )
+        state.truncated = state.truncated or sanitized.truncated
+        state.redacted = state.redacted or sanitized.redacted
+        arguments.append(sanitized.value)
+        redact_value = _SENSITIVE_ARGUMENT_PATTERN.fullmatch(item) is not None
+    return arguments, redact_value
 
 
 def _source_workload(context: _DeploymentContext) -> SourceWorkload:
@@ -952,6 +1169,113 @@ def _project_pod(
         phase=state.optional(None if status_view is None else status_view.phase),
         conditions=projected_conditions,
         containers=containers,
+    )
+
+
+def _crash_loop_log_targets(
+    associations: _Associations,
+) -> list[_ContainerLogTarget]:
+    targets: list[_ContainerLogTarget] = []
+    for associated in associations.pods:
+        pod_view = cast(_PodView, associated.pod)
+        metadata = _metadata(pod_view.metadata)
+        status = pod_view.status
+        if status is None:
+            continue
+        if not isinstance(status, V1PodStatus):
+            raise _contract_error()
+        raw_statuses = cast(_PodStatusView, status).container_statuses
+        if raw_statuses is None:
+            continue
+        if not isinstance(raw_statuses, list) or not all(
+            isinstance(item, V1ContainerStatus)
+            for item in cast(list[object], raw_statuses)
+        ):
+            raise _contract_error()
+        spec_names = _pod_container_names(associated.pod)
+        owner = associated.owner
+        owner_summary = OwnerSummary(
+            api_version=_required_string(owner.api_version),
+            kind=_required_string(owner.kind),
+            name=_required_string(owner.name),
+            uid=_required_string(owner.uid),
+            controller=owner.controller is True,
+        )
+        for container_status in cast(list[V1ContainerStatus], raw_statuses):
+            container_view = cast(_ContainerStatusView, container_status)
+            name = _required_string(container_view.name)
+            if name not in spec_names:
+                raise _contract_error()
+            state = container_view.state
+            if not isinstance(state, V1ContainerState):
+                continue
+            waiting = cast(_ContainerStateView, state).waiting
+            if not isinstance(waiting, V1ContainerStateWaiting):
+                continue
+            reason = cast(_ContainerStateDetailView, waiting).reason
+            restart_count = _nonnegative_int(container_view.restart_count)
+            if reason == "CrashLoopBackOff" and restart_count > 0:
+                targets.append(
+                    _ContainerLogTarget(
+                        pod_name=_required_string(metadata.name),
+                        pod_uid=_required_string(metadata.uid),
+                        owner=owner_summary,
+                        container_name=name,
+                        restart_count=restart_count,
+                    )
+                )
+    targets.sort(
+        key=lambda target: (
+            target.pod_name,
+            target.pod_uid,
+            target.container_name,
+        )
+    )
+    return targets
+
+
+def _pod_container_names(pod: V1Pod) -> frozenset[str]:
+    pod_view = cast(_PodView, pod)
+    spec = pod_view.spec
+    if not isinstance(spec, V1PodSpec):
+        raise _contract_error()
+    raw_containers = cast(_PodSpecView, spec).containers
+    if not isinstance(raw_containers, list) or not all(
+        isinstance(item, V1Container) for item in cast(list[object], raw_containers)
+    ):
+        raise _contract_error()
+    names = [
+        _required_string(cast(_WorkloadContainerView, container).name)
+        for container in cast(list[V1Container], raw_containers)
+    ]
+    if len(set(names)) != len(names):
+        raise _contract_error()
+    return frozenset(names)
+
+
+def _associated_container_identities(
+    associations: _Associations,
+) -> frozenset[tuple[str, str, str, str]]:
+    identities: set[tuple[str, str, str, str]] = set()
+    for associated in associations.pods:
+        metadata = _metadata(cast(_PodView, associated.pod).metadata)
+        pod_name = _required_string(metadata.name)
+        pod_uid = _required_string(metadata.uid)
+        owner_uid = _required_string(associated.owner.uid)
+        for container_name in _pod_container_names(associated.pod):
+            identity = (pod_name, pod_uid, owner_uid, container_name)
+            if identity in identities:
+                raise _contract_error()
+            identities.add(identity)
+    return frozenset(identities)
+
+
+def _log_target_identity(target: _ContainerLogTarget) -> tuple[str, str, str, str]:
+    return (
+        target.pod_name,
+        target.pod_uid,
+        target.owner.uid,
+        target.container_name,
     )
 
 
@@ -1185,6 +1509,83 @@ def _optional_rfc3339(value: object) -> str | None:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+async def _read_bounded_log_body(response: _LogResponseView) -> bytes:
+    content = response.content
+    remaining = LOG_RESPONSE_LIMIT_BYTES + 1
+    chunks: list[bytes] = []
+    while remaining > 0:
+        chunk = await content.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    raw = b"".join(chunks)
+    if len(raw) > LOG_RESPONSE_LIMIT_BYTES:
+        raise _budget_error()
+    return raw
+
+
+def _normalize_log_lines(
+    raw: bytes,
+    state: _SanitizationState,
+) -> list[ContainerLogLine]:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _contract_error() from None
+    raw_lines = text.splitlines()
+    if len(raw_lines) > LOG_LINE_LIMIT:
+        raise _budget_error()
+    parsed_lines: list[tuple[datetime, str]] = []
+    for index, raw_line in enumerate(raw_lines):
+        timestamp, separator, message = raw_line.partition(" ")
+        try:
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError
+        except ValueError:
+            if index == 0 and len(raw) == LOG_RESPONSE_LIMIT_BYTES:
+                state.truncated = True
+                continue
+            raise _contract_error() from None
+        if not separator:
+            message = ""
+        parsed_lines.append((parsed, message))
+
+    if parsed_lines:
+        sanitized_block = sanitize_untrusted_text(
+            "\n".join(message for _, message in parsed_lines),
+            max_code_points=CANONICAL_PAYLOAD_LIMIT_BYTES,
+        )
+        if sanitized_block.truncated:
+            raise _budget_error()
+        state.redacted = state.redacted or sanitized_block.redacted
+        sanitized_messages = sanitized_block.value.split("\n")
+        if len(sanitized_messages) != len(parsed_lines):
+            raise _contract_error()
+    else:
+        sanitized_messages = []
+
+    normalized: list[ContainerLogLine] = []
+    for (parsed, _), message in zip(parsed_lines, sanitized_messages, strict=True):
+        if len(message) > LOG_LINE_MAX_CODE_POINTS:
+            message = message[:LOG_LINE_MAX_CODE_POINTS]
+            state.truncated = True
+        normalized.append(
+            ContainerLogLine(
+                timestamp=parsed,
+                message=message,
+            )
+        )
+    if len(raw) == LOG_RESPONSE_LIMIT_BYTES:
+        state.truncated = True
+    return normalized
+
+
+def _api_status_exception(status: int) -> ApiException:
+    return ApiException(status=status)
+
+
 def _observation_time(clock: Callable[[], datetime]) -> datetime:
     value = clock()
     if value.tzinfo is None or value.utcoffset() is None:
@@ -1197,7 +1598,7 @@ def _utc_now() -> datetime:
 
 
 def _enforce_payload_budget(
-    payload: WorkloadPayload | PodsPayload | EventsPayload,
+    payload: WorkloadPayload | PodsPayload | EventsPayload | ContainerLogsPayload,
 ) -> None:
     value = cast(JsonValue, payload.model_dump(mode="json", by_alias=True))
     if len(canonical_json(value).encode("utf-8")) > CANONICAL_PAYLOAD_LIMIT_BYTES:

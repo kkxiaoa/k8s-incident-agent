@@ -72,6 +72,7 @@ EXPECTED_ALLOWED: frozenset[AccessKey] = frozenset(
         REQUIRED_DEPLOYMENT_GET,
         ("apps", "v1", "replicasets", None, "list", TARGET.namespace, None),
         ("", "v1", "pods", None, "list", TARGET.namespace, None),
+        ("", "v1", "pods", "log", "get", TARGET.namespace, None),
         (
             "events.k8s.io",
             "v1",
@@ -97,6 +98,7 @@ EXPECTED_DENIED: frozenset[AccessKey] = frozenset(
     {
         FORBIDDEN_SECRET_GET,
         ("", "v1", "pods", "exec", "create", TARGET.namespace, None),
+        ("", "v1", "pods", "attach", "create", TARGET.namespace, None),
         *{
             (
                 "apps",

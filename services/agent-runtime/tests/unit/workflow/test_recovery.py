@@ -27,6 +27,8 @@ from sqlalchemy import func, select
 from tests.factories import normalized_trigger, prometheus_query_service_stub
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
+from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
+from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     EvidenceRecord,
@@ -52,12 +54,25 @@ from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
 from k8s_incident_agent.workflow.graph import (
     GraphDependencies,
     IncidentGraph,
-    build_incident_graph,
+)
+from k8s_incident_agent.workflow.graph import (
+    build_incident_graph as _build_incident_graph,
 )
 from k8s_incident_agent.workflow.supervisor import RunSupervisor
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+TEST_POLICY = DiagnosticPolicy(
+    tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
+    required_evidence=frozenset({"workload"}),
+    prometheus_panel_ids=("image-pull-affected-pods",),
+)
+
+
+class _PolicyResolver:
+    def resolve(self, source: IncidentSource) -> DiagnosticPolicy:
+        assert source.ref == "image-pull-backoff"
+        return TEST_POLICY
 
 
 class _ToolCallingModel(FakeMessagesListChatModel):
@@ -269,6 +284,13 @@ def _dependencies(
     )
 
 
+def build_incident_graph(
+    dependencies: GraphDependencies,
+    run: WorkflowRunSnapshot,
+) -> IncidentGraph:
+    return _build_incident_graph(dependencies, run, TEST_POLICY)
+
+
 def _context(
     run: WorkflowRunSnapshot,
     repository: IncidentRepository,
@@ -315,6 +337,7 @@ def _supervisor(
         credential=credential or _credential(),
         adapter=cast(KubernetesEvidenceAdapter, adapter or object()),
         prometheus=prometheus_query_service_stub(),
+        policies=_PolicyResolver(),
         now=lambda: now,
     )
 

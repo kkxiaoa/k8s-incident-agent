@@ -3,21 +3,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.alias_generators import to_camel
 
 from k8s_incident_agent.domain.contracts import KubernetesTarget
 
 DeploymentTarget = KubernetesTarget
 
 
-def _camel_case(value: str) -> str:
-    head, *tail = value.split("_")
-    return head + "".join(part.capitalize() for part in tail)
-
-
 class _EvidenceContract(BaseModel):
     model_config = ConfigDict(
-        alias_generator=_camel_case,
+        alias_generator=to_camel,
         extra="forbid",
         frozen=True,
         hide_input_in_errors=True,
@@ -55,6 +51,8 @@ class WorkloadContainer(_EvidenceContract):
     name: str = Field(min_length=1)
     image: str
     image_pull_policy: str = Field(min_length=1)
+    command: list[str]
+    args: list[str]
 
 
 class WorkloadDetail(_EvidenceContract):
@@ -148,6 +146,69 @@ class EventsPayload(_EvidenceContract):
     events: list[EventSummary]
 
 
+class ContainerLogLine(_EvidenceContract):
+    timestamp: datetime
+    message: str
+
+    @field_validator("timestamp")
+    @classmethod
+    def normalize_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Log timestamp must include a timezone")
+        return value.astimezone(UTC)
+
+
+class ContainerLogSnapshot(_EvidenceContract):
+    source: Literal["current", "previous"]
+    status: Literal[
+        "available",
+        "no_logs_in_window",
+        "container_not_started",
+        "previous_unavailable",
+    ]
+    lines: list[ContainerLogLine]
+
+    @model_validator(mode="after")
+    def require_source_status_consistency(self) -> ContainerLogSnapshot:
+        unavailable_status = (
+            "container_not_started"
+            if self.source == "current"
+            else "previous_unavailable"
+        )
+        if self.status not in {
+            "available",
+            "no_logs_in_window",
+            unavailable_status,
+        }:
+            raise ValueError("Log status does not match its source")
+        if (self.status == "available") is not bool(self.lines):
+            raise ValueError("Log status does not match line availability")
+        return self
+
+
+class ContainerLogSummary(_EvidenceContract):
+    pod_ref: TargetRef
+    owner: OwnerSummary
+    container: str = Field(min_length=1)
+    restart_count: int = Field(ge=1)
+    snapshots: list[ContainerLogSnapshot] = Field(min_length=2, max_length=2)
+
+    @field_validator("snapshots")
+    @classmethod
+    def require_current_and_previous(
+        cls,
+        value: list[ContainerLogSnapshot],
+    ) -> list[ContainerLogSnapshot]:
+        if {snapshot.source for snapshot in value} != {"current", "previous"}:
+            raise ValueError("Logs require one current and one previous snapshot")
+        return value
+
+
+class ContainerLogsPayload(_EvidenceContract):
+    source_workload: SourceWorkload
+    containers: list[ContainerLogSummary]
+
+
 class _Observation(_EvidenceContract):
     target_ref: TargetRef
     observed_at: datetime
@@ -175,3 +236,8 @@ class PodsObservation(_Observation):
 class EventsObservation(_Observation):
     evidence_kind: Literal["events"]
     payload: EventsPayload
+
+
+class ContainerLogsObservation(_Observation):
+    evidence_kind: Literal["container_logs"]
+    payload: ContainerLogsPayload

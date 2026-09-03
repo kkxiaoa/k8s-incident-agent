@@ -1,17 +1,14 @@
 from enum import StrEnum
 from typing import cast
 
+from k8s_incident_agent.diagnosis.policy_contracts import (
+    KUBERNETES_DIAGNOSTIC_TOOL_NAMES,
+    PROMETHEUS_TOOL_NAME,
+)
 from k8s_incident_agent.domain.models import JsonValue
 from k8s_incident_agent.kubernetes.errors import validate_kubernetes_failure_contract
 from k8s_incident_agent.monitoring.contracts import MetricWindow
 from k8s_incident_agent.monitoring.errors import validate_monitoring_failure_contract
-
-KUBERNETES_DIAGNOSTIC_TOOL_NAMES = ("get_workload", "get_pods", "get_events")
-PROMETHEUS_TOOL_NAME = "query_prometheus"
-DIAGNOSTIC_TOOL_NAMES = (
-    *KUBERNETES_DIAGNOSTIC_TOOL_NAMES,
-    PROMETHEUS_TOOL_NAME,
-)
 
 
 def normalize_diagnostic_tool_call_identity(

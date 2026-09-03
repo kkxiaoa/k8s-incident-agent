@@ -52,7 +52,7 @@ def _alembic_config(paths: RuntimePaths) -> Config:
 
 
 async def _invoke(
-    tools: tuple[BaseTool, BaseTool, BaseTool],
+    tools: tuple[BaseTool, ...],
     context: DiagnosticToolContext,
     tool_name: str,
     tool_call_id: str,
