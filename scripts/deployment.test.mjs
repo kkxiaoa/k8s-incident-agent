@@ -458,7 +458,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.deepEqual(kubeStateMetrics.args, [
     "--namespaces=k8s-incident-scenarios",
     "--resources=deployments,pods,replicasets",
-    "--metric-allowlist=kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
+    "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
     "--use-apiserver-cache",
   ]);
 
@@ -525,6 +525,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
       "Watchdog",
       "K8sIncidentImagePullBackOff",
       "K8sIncidentCrashLoopBackOff",
+      "K8sIncidentDeploymentReplicasUnavailable",
     ],
   );
   assert.deepEqual(rules[0], {
@@ -540,15 +541,31 @@ test("managed monitoring render pins topology, collection, rule, and credential 
     /kube_pod_container_status_restarts_total/,
   );
   assert.deepEqual(rules[2].labels, { severity: "warning" });
+  assert.equal(rules[3].for, "5m");
+  assert.match(rules[3].expr, /kube_deployment_spec_replicas/);
+  assert.match(rules[3].expr, /kube_deployment_status_replicas_available/);
+  assert.deepEqual(rules[3].labels, { severity: "warning" });
 
-  const webhook = load(
+  const alertmanager = load(
     getResource(
       resources,
       "ConfigMap",
       "alertmanager-config",
       "k8s-incident-monitoring",
     ).data["alertmanager.yaml"],
-  ).receivers[0].webhook_configs[0];
+  );
+  assert.deepEqual(alertmanager.inhibit_rules, [
+    {
+      source_matchers: [
+        'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff"',
+      ],
+      target_matchers: [
+        'alertname="K8sIncidentDeploymentReplicasUnavailable"',
+      ],
+      equal: ["cluster", "namespace", "deployment"],
+    },
+  ]);
+  const webhook = alertmanager.receivers[0].webhook_configs[0];
   assert.equal(webhook.send_resolved, true);
   assert.equal(webhook.max_alerts, 0);
   assert.equal(webhook.timeout, "10s");

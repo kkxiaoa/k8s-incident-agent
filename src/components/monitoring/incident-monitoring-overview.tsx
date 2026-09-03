@@ -154,7 +154,9 @@ export function IncidentMonitoringOverview({
               incidentId={incidentId}
               panel={panel}
               refreshKey={refreshKey}
-              alertStatus={alertStatus}
+              alertStatus={
+                panel.thresholdDuration === null ? null : alertStatus
+              }
               desiredReplicas={facts.desiredReplicas}
               onLoadSnapshot={updatePanelLoad}
             />

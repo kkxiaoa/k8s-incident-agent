@@ -292,7 +292,7 @@ describe("IncidentMonitoringOverview", () => {
     expect(screen.getByText("可用副本数")).toBeVisible();
     expect(screen.getByText("期望副本数（3）")).toBeVisible();
     expect(screen.getByText("持续 30 秒")).toBeVisible();
-    expect(screen.getAllByText("条件已解除")).toHaveLength(2);
+    expect(screen.getAllByText("条件已解除")).toHaveLength(1);
     expect(screen.getAllByText("告警条件解除")).toHaveLength(2);
     expect(
       screen.getAllByRole("listitem", {

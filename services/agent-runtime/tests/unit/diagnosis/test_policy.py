@@ -60,6 +60,29 @@ def test_resolves_exact_alert_and_scenario_diagnostic_policies() -> None:
     assert "container_logs" not in image_pull_policy.required_evidence
 
 
+def test_resolves_generic_deployment_availability_policy_without_inventing_logs() -> (
+    None
+):
+    policies, revision = _policies()
+
+    policy = policies.resolve(
+        IncidentSource(
+            type="alertmanager",
+            ref="K8sIncidentDeploymentReplicasUnavailable",
+            revision=revision,
+        )
+    )
+
+    assert policy.tool_names == (
+        "get_workload",
+        "get_pods",
+        "get_events",
+        "query_prometheus",
+    )
+    assert policy.required_evidence == frozenset({"workload", "pods", "events"})
+    assert policy.prometheus_panel_ids == ("deployment-replica-deficit",)
+
+
 @pytest.mark.parametrize(
     "source",
     [

@@ -3431,7 +3431,7 @@ function requireReadyMonitoringDeployment(
     !isDeepStrictEqual(container.args, [
       "--namespaces=k8s-incident-scenarios",
       "--resources=deployments,pods,replicasets",
-      "--metric-allowlist=kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
+      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner",
       "--use-apiserver-cache",
     ])
   ) {
@@ -3914,6 +3914,17 @@ function requireAlertmanagerConfiguration(rawConfiguration) {
             },
           },
         ],
+      },
+    ],
+    inhibit_rules: [
+      {
+        source_matchers: [
+          'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff"',
+        ],
+        target_matchers: [
+          'alertname="K8sIncidentDeploymentReplicasUnavailable"',
+        ],
+        equal: ["cluster", "namespace", "deployment"],
       },
     ],
   };

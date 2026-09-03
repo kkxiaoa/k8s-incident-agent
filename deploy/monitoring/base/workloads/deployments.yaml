@@ -20,7 +20,7 @@ spec:
         app.kubernetes.io/name: prometheus
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:4e459fd37b1c4e15e5820f7e2037c80700f04e212a35bc82241a8c3997f619f0"
+        k8s-incident-agent.io/config-digest: "sha256:b25cd921db250e1a378b1bc1e68734106c754f8fc7fd48e542d48c1bf5c62d51"
     spec:
       serviceAccountName: prometheus
       automountServiceAccountToken: false
@@ -117,7 +117,7 @@ spec:
         app.kubernetes.io/name: alertmanager
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:6f42505471fe334dc366db518f814c8f62af3ff016fc87bec64371362766de53"
+        k8s-incident-agent.io/config-digest: "sha256:553defe7951155a04de1164e3b19defe2b07139296e5ede2f92eaaa093ed45c7"
     spec:
       serviceAccountName: alertmanager
       automountServiceAccountToken: false
@@ -232,7 +232,7 @@ spec:
           args:
             - --namespaces=k8s-incident-scenarios
             - --resources=deployments,pods,replicasets
-            - --metric-allowlist=kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner
+            - --metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_owner,kube_replicaset_owner
             - --use-apiserver-cache
           ports:
             - name: http

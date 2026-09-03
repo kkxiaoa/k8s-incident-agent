@@ -7,13 +7,14 @@ from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 
 
-def test_production_catalog_has_two_stable_stage_two_entries() -> None:
+def test_production_catalog_has_specific_and_shared_deployment_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-03.6"
+    assert catalog.version == "2026-09-04.1"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
+        "K8sIncidentDeploymentReplicasUnavailable",
     ]
     assert catalog.entries[0].target.model_dump() == {
         "api_version": "apps/v1",
@@ -38,6 +39,7 @@ def test_production_catalog_has_two_stable_stage_two_entries() -> None:
         "image-pull-available-replicas",
         "crash-loop-restarts",
         "crash-loop-waiting-containers",
+        "deployment-replica-deficit",
     )
     assert catalog.entries[0].panels[0].model_dump() == {
         "panel_id": "image-pull-affected-pods",
@@ -70,6 +72,23 @@ def test_production_catalog_has_two_stable_stage_two_entries() -> None:
     for panel in [catalog.entries[0].panels[0], *crash_loop.panels]:
         assert " or (max(kube_replicaset_owner{" in panel.query_template
         assert panel.query_template.endswith("}) * 0)")
+    availability = catalog.entries[2]
+    assert availability.rule.for_duration == "5m"
+    assert "kube_deployment_spec_replicas" in availability.rule.expression
+    assert "kube_deployment_status_replicas_available" in (availability.rule.expression)
+    assert availability.allowed_tools == [
+        "get_workload",
+        "get_pods",
+        "get_events",
+        "query_prometheus",
+    ]
+    assert availability.required_evidence == ["workload", "pods", "events"]
+    deficit = availability.panels[0]
+    assert deficit.panel_id == "deployment-replica-deficit"
+    assert deficit.threshold == 1.0
+    assert deficit.risk_direction == "higher_is_worse"
+    assert deficit.threshold_duration == "5m"
+    assert "clamp_min" in deficit.query_template
 
 
 @pytest.mark.parametrize(
@@ -178,9 +197,7 @@ def test_catalog_rejects_thresholds_that_contradict_risk_direction(
     }
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
-    (catalog_dir / "catalog.json").write_text(
-        json.dumps(document), encoding="utf-8"
-    )
+    (catalog_dir / "catalog.json").write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ValueError, match="Alert catalog contract is invalid"):
         load_alert_catalog(catalog_dir)

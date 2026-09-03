@@ -168,7 +168,7 @@ def test_default_v4_firing_projects_only_the_catalog_contract() -> None:
     assert occurrence.starts_at == "2026-09-02T08:00:00.123000000Z"
     assert occurrence.trigger.source.type == "alertmanager"
     assert occurrence.trigger.source.ref == "K8sIncidentImagePullBackOff"
-    assert occurrence.trigger.source.revision == "2026-09-03.6"
+    assert occurrence.trigger.source.revision == "2026-09-04.1"
     assert occurrence.trigger.target.name == "image-pull-backoff"
     serialized = repr(occurrence)
     assert "must-not-be-persisted" not in serialized
@@ -191,6 +191,23 @@ def test_crash_loop_firing_uses_its_catalog_target_and_summary() -> None:
     assert occurrence.trigger.target.name == "crash-loop-backoff"
     assert occurrence.trigger.trigger_summary == (
         "A Deployment container repeatedly exits and is waiting in CrashLoopBackOff."
+    )
+
+
+def test_deployment_replica_deficit_is_a_supported_symptom_trigger() -> None:
+    occurrence = _parse(
+        _payload(
+            _alert(
+                alert_name="K8sIncidentDeploymentReplicasUnavailable",
+                deployment="checkout-api",
+            )
+        )
+    ).occurrences[0]
+
+    assert occurrence.trigger.source.ref == ("K8sIncidentDeploymentReplicasUnavailable")
+    assert occurrence.trigger.target.name == "checkout-api"
+    assert occurrence.trigger.trigger_summary == (
+        "A Deployment has fewer available replicas than desired."
     )
 
 

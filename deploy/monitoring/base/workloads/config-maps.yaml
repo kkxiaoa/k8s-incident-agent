@@ -123,6 +123,16 @@ data:
             for: 30s
             labels:
               severity: warning
+          - alert: K8sIncidentDeploymentReplicasUnavailable
+            expr: >-
+              (
+                max by (namespace, deployment) (kube_deployment_spec_replicas)
+                -
+                max by (namespace, deployment) (kube_deployment_status_replicas_available)
+              ) > 0
+            for: 5m
+            labels:
+              severity: warning
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -142,6 +152,12 @@ data:
       group_wait: 1s
       group_interval: 15s
       repeat_interval: 5m
+    inhibit_rules:
+      - source_matchers:
+          - alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff"
+        target_matchers:
+          - alertname="K8sIncidentDeploymentReplicasUnavailable"
+        equal: ["cluster", "namespace", "deployment"]
     receivers:
       - name: agent-runtime
         webhook_configs:
