@@ -15,7 +15,6 @@ import {
 import type {
   RunHistoryView,
   RunSummaryView,
-  MonitoringHealthView,
   MonitoringPanelListView,
 } from "@/lib/agent-runtime/response-contracts";
 import {
@@ -93,14 +92,12 @@ export function IncidentStream({
   latestMode,
   manualActions,
   monitoringPanels = null,
-  initialMonitoringHealth = null,
 }: {
   initialDetail: IncidentDetailResponse;
   initialRuns: RunHistoryView;
   latestMode: boolean;
   manualActions: boolean;
   monitoringPanels?: MonitoringPanelListView | null;
-  initialMonitoringHealth?: MonitoringHealthView | null;
 }) {
   const router = useRouter();
   const [state, dispatch] = useReducer(
@@ -360,10 +357,8 @@ export function IncidentStream({
 
       <IncidentMonitoringOverview
         incidentId={detail.incident.id}
-        targetLabel={targetLabel(detail.incident.target)}
         panels={monitoringPanels}
         evidence={detail.evidence}
-        initialHealth={initialMonitoringHealth}
         refreshKey={monitoringRefreshKey}
         alertStatus={detail.alertSignal?.status ?? null}
       />

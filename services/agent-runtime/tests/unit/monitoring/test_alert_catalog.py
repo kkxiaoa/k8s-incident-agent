@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from k8s_incident_agent.monitoring.catalog import (
+    AlertCatalogEntry,
     MetricPanelContract,
     load_alert_catalog,
 )
@@ -13,7 +14,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_supported_alert_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-05.2"
+    assert catalog.version == "2026-09-05.3"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
@@ -59,6 +60,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
         "unit": "pods",
         "threshold": 1.0,
         "risk_direction": "higher_is_worse",
+        "signal_role": "trigger",
         "threshold_duration": "30s",
         "recommended_window": "15m",
         "stale_after_seconds": 60,
@@ -68,6 +70,8 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     assert available_replicas.unit == "replicas"
     assert available_replicas.threshold is None
     assert available_replicas.risk_direction == "lower_is_worse"
+    assert available_replicas.signal_role == "context"
+    assert available_replicas.threshold_duration == "5m"
     assert available_replicas.query_template == (
         'max(kube_deployment_status_replicas_available{namespace="{{namespace}}",'
         'deployment="{{name}}"})'
@@ -183,9 +187,9 @@ def test_production_catalog_has_supported_alert_entries() -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        '{"schemaVersion":5,"catalogVersion":"v1","alerts":[]}',
+        '{"schemaVersion":6,"catalogVersion":"v1","alerts":[]}',
         (
-            '{"schemaVersion":5,"catalogVersion":"v1","alerts":['
+            '{"schemaVersion":6,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -193,13 +197,14 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             '"nameLabel":"name"},"allowedTools":["get_workload"],'
             '"requiredEvidence":["workload"],"panels":[{"panelId":"panel-a",'
             '"title":"Panel A","unit":"pods","threshold":1.0,'
-            '"riskDirection":"higher_is_worse","thresholdDuration":null,'
+            '"riskDirection":"higher_is_worse","signalRole":"trigger",'
+            '"thresholdDuration":"1s",'
             '"recommendedWindow":"15m","staleAfterSeconds":60,'
             '"queryTemplate":"metric{namespace="{{namespace}}",'
             'name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schemaVersion":5,"schemaVersion":5,"catalogVersion":"v1",'
+            '{"schemaVersion":6,"schemaVersion":6,"catalogVersion":"v1",'
             '"alerts":[{"alertId":"A","displayName":"A",'
             '"triggerSummary":"A","rule":{"expression":"vector(1)",'
             '"for":"1s"},"target":{"apiVersion":"v1",'
@@ -207,20 +212,22 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             '"namespaceLabel":"namespace","nameLabel":"name"},'
             '"panels":[{"panelId":"panel-a","title":"Panel A",'
             '"unit":"pods","threshold":1.0,'
-            '"riskDirection":"higher_is_worse","thresholdDuration":null,'
+            '"riskDirection":"higher_is_worse","signalRole":"trigger",'
+            '"thresholdDuration":"1s",'
             '"recommendedWindow":"15m",'
             '"staleAfterSeconds":60,"queryTemplate":'
             '"metric{namespace="{{namespace}}",name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schema_version":5,"catalogVersion":"v1","alerts":['
+            '{"schema_version":6,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
             '"clusterLabel":"cluster","namespaceLabel":"namespace",'
             '"nameLabel":"name"},"panels":[{"panelId":"panel-a",'
             '"title":"Panel A","unit":"pods","threshold":1.0,'
-            '"riskDirection":"higher_is_worse","thresholdDuration":null,'
+            '"riskDirection":"higher_is_worse","signalRole":"trigger",'
+            '"thresholdDuration":"1s",'
             '"recommendedWindow":"15m","staleAfterSeconds":60,'
             '"queryTemplate":"metric{namespace="{{namespace}}",'
             'name="{{name}}"}"}]}]}'
@@ -241,7 +248,7 @@ def test_catalog_rejects_empty_ambiguous_or_duplicate_key_contracts(
 
 def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     document = {
-        "schemaVersion": 5,
+        "schemaVersion": 6,
         "catalogVersion": "v1",
         "alerts": [
             {
@@ -265,7 +272,8 @@ def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
                         "unit": "replicas",
                         "threshold": 1.0,
                         "riskDirection": "lower_is_worse",
-                        "thresholdDuration": None,
+                        "signalRole": "trigger",
+                        "thresholdDuration": "1s",
                         "recommendedWindow": "15m",
                         "staleAfterSeconds": 60,
                         "queryTemplate": (
@@ -286,6 +294,28 @@ def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     assert panel.risk_direction == "lower_is_worse"
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (("signalRole", "context"), "exactly one trigger panel"),
+        (("thresholdDuration", "2s"), "duration must match"),
+    ],
+)
+def test_alert_entry_rejects_an_ambiguous_trigger_panel(
+    mutation: tuple[str, str],
+    message: str,
+) -> None:
+    document = json.loads(
+        (REPOSITORY_ROOT / "monitoring" / "catalog" / "catalog.json").read_text()
+    )
+    entry = document["alerts"][0]
+    field, value = mutation
+    entry["panels"][0][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        AlertCatalogEntry.model_validate(entry)
+
+
 def test_catalog_rejects_higher_risk_without_a_static_threshold() -> None:
     with pytest.raises(ValueError, match="Higher-is-worse"):
         MetricPanelContract.model_validate(
@@ -295,6 +325,7 @@ def test_catalog_rejects_higher_risk_without_a_static_threshold() -> None:
                 "unit": "pods",
                 "threshold": None,
                 "riskDirection": "higher_is_worse",
+                "signalRole": "trigger",
                 "thresholdDuration": None,
                 "recommendedWindow": "15m",
                 "staleAfterSeconds": 60,
@@ -309,7 +340,7 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     document = {
-        "schemaVersion": 5,
+        "schemaVersion": 6,
         "catalogVersion": "v1",
         "alerts": [
             {
@@ -333,7 +364,8 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
                         "unit": "pods",
                         "threshold": 1.0,
                         "riskDirection": "higher_is_worse",
-                        "thresholdDuration": None,
+                        "signalRole": "trigger",
+                        "thresholdDuration": "1s",
                         "recommendedWindow": "15m",
                         "staleAfterSeconds": 60,
                         "queryTemplate": (

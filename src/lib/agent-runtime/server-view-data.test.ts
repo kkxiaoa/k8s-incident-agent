@@ -135,23 +135,22 @@ describe("server view data", () => {
   });
 
   it("projects a valid detail to the fields consumed by the console", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: URL) =>
-        Promise.resolve(
-          url.pathname.endsWith("/monitoring/panels")
-            ? jsonResponse({
-                schemaVersion: 2,
-                panels: [
-                  {
-                    panelId: "image-pull-affected-pods",
-                    recommendedWindow: "15m",
-                    riskDirection: "higher_is_worse",
-                    thresholdDuration: "30s",
-                  },
-                ],
-              })
-            : url.pathname.endsWith("/runs")
+    const fetchMock = vi.fn((url: URL) =>
+      Promise.resolve(
+        url.pathname.endsWith("/monitoring/panels")
+          ? jsonResponse({
+              schemaVersion: 3,
+              panels: [
+                {
+                  panelId: "image-pull-affected-pods",
+                  recommendedWindow: "15m",
+                  riskDirection: "higher_is_worse",
+                  signalRole: "trigger",
+                  thresholdDuration: "30s",
+                },
+              ],
+            })
+          : url.pathname.endsWith("/runs")
             ? jsonResponse({
                 schemaVersion: 3,
                 items: [
@@ -167,8 +166,11 @@ describe("server view data", () => {
                 nextCursor: null,
               })
             : jsonResponse(makeIncidentDetail()),
-        ),
       ),
+    );
+    vi.stubGlobal(
+      "fetch",
+      fetchMock,
     );
 
     const pageData = await loadIncidentPage(INCIDENT_ID);
@@ -186,10 +188,15 @@ describe("server view data", () => {
           panelId: "image-pull-affected-pods",
           recommendedWindow: "15m",
           riskDirection: "higher_is_worse",
+          signalRole: "trigger",
           thresholdDuration: "30s",
         },
       ]);
       expect(pageData.detail.incident).not.toHaveProperty("updatedAt");
     }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(
+      fetchMock.mock.calls.map((call) => (call[0] as URL).pathname),
+    ).not.toContain("/api/v1/monitoring/health");
   });
 });

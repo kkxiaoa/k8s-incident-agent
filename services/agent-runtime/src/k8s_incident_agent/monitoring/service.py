@@ -32,6 +32,8 @@ _WINDOW_STEPS: Final[dict[MetricWindow, int]] = {
     MetricWindow.FIFTEEN_MINUTES: 15,
     MetricWindow.ONE_HOUR: 60,
     MetricWindow.SIX_HOURS: 300,
+    MetricWindow.SEVEN_DAYS: 1_800,
+    MetricWindow.FIFTEEN_DAYS: 3_600,
 }
 _UP_QUERY: Final = 'up{job=~"kube-state-metrics|alertmanager"}'
 _WATCHDOG_QUERY: Final = 'ALERTS{alertname="Watchdog",alertstate="firing"}'

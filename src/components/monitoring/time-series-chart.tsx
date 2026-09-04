@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import type {
   ChartData,
   ChartOptions,
@@ -23,7 +22,6 @@ import type {
   MetricPanelResultView,
 } from "@/lib/agent-runtime/response-contracts";
 
-import { METRIC_WINDOW_LABELS } from "./metric-window";
 import { metricUnitLabel } from "./metric-presentation";
 
 const MARKER_LABELS = {
@@ -37,6 +35,11 @@ const AXIS_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
   hour: "2-digit",
   hourCycle: "h23",
   minute: "2-digit",
+});
+
+const AXIS_DATE_FORMAT = new Intl.DateTimeFormat("zh-CN", {
+  day: "2-digit",
+  month: "2-digit",
 });
 
 const TOOLTIP_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
@@ -53,7 +56,20 @@ function windowMilliseconds(window: MetricPanelResultView["window"]): number {
     ? 15 * 60_000
     : window === "1h"
       ? 60 * 60_000
-      : 6 * 60 * 60_000;
+      : window === "6h"
+        ? 6 * 60 * 60_000
+        : window === "7d"
+          ? 7 * 24 * 60 * 60_000
+          : 15 * 24 * 60 * 60_000;
+}
+
+function axisTimeLabel(
+  window: MetricPanelResultView["window"],
+  value: number,
+): string {
+  return window === "7d" || window === "15d"
+    ? AXIS_DATE_FORMAT.format(new Date(value))
+    : AXIS_TIME_FORMAT.format(new Date(value));
 }
 
 function markerLabel(marker: MetricMarkerView): string {
@@ -82,117 +98,6 @@ function riskSeriesFill(
   gradient.addColorStop(0, "rgba(229, 72, 77, 0.2)");
   gradient.addColorStop(1, "rgba(229, 72, 77, 0.025)");
   return gradient;
-}
-
-export function MetricSparkline({
-  result,
-  riskDirection,
-}: {
-  result: MetricPanelResultView;
-  riskDirection: "higher_is_worse" | "lower_is_worse";
-}) {
-  ensureChartJsRegistered();
-  const reducedMotion = useReducedChartMotion();
-  const [hoveredSample, setHoveredSample] = useState<{
-    left: number;
-    timestamp: string;
-    value: number;
-  } | null>(null);
-  const windowLabel = METRIC_WINDOW_LABELS[result.window];
-  const seriesColor =
-    riskDirection === "higher_is_worse" ? "#e5484d" : "#0f8f86";
-  if (result.samples.length === 0) {
-    return null;
-  }
-
-  const data: ChartData<"line", Point[]> = {
-    datasets: [
-      {
-        data: result.samples.map((sample) => ({
-          x: Date.parse(sample.timestamp),
-          y: sample.value,
-        })),
-        borderCapStyle: "round",
-        borderColor: seriesColor,
-        borderJoinStyle: "round",
-        borderWidth: 2,
-        fill: false,
-        pointHitRadius: 8,
-        pointHoverRadius: 3,
-        pointRadius: 0,
-        stepped: true,
-        tension: 0,
-      },
-    ],
-  };
-  const options: ChartOptions<"line"> = {
-    animation: reducedMotion ? false : { duration: 360 },
-    interaction: { intersect: true, mode: "nearest" },
-    maintainAspectRatio: false,
-    onHover(_event, elements, chart) {
-      if (_event.type === "mouseout") {
-        setHoveredSample(null);
-        return;
-      }
-      const activePoint = elements[0];
-      const sample =
-        activePoint === undefined ? undefined : result.samples[activePoint.index];
-      if (activePoint === undefined || sample === undefined) {
-        setHoveredSample(null);
-        return;
-      }
-      const renderedPoint = chart.getDatasetMeta(activePoint.datasetIndex).data[
-        activePoint.index
-      ];
-      const rawLeft = renderedPoint?.x ?? chart.width / 2;
-      const left = Math.max(72, Math.min(chart.width - 72, rawLeft));
-      setHoveredSample((current) =>
-        current?.timestamp === sample.timestamp && current.left === left
-          ? current
-          : { left, timestamp: sample.timestamp, value: sample.value },
-      );
-    },
-    parsing: false,
-    plugins: {
-      legend: { display: false },
-      tooltip: { enabled: false },
-    },
-    scales: {
-      x: { display: false, type: "linear" },
-      y: { display: false },
-    },
-  };
-
-  return (
-    <div
-      className="metric-sparkline"
-      onMouseLeave={() => setHoveredSample(null)}
-      onPointerCancel={() => setHoveredSample(null)}
-      onPointerLeave={() => setHoveredSample(null)}
-    >
-      <div className="metric-sparkline__plot">
-        <Chart
-          type="line"
-          data={data}
-          options={options}
-          role="img"
-          aria-label={`${result.title} ${windowLabel}概览趋势，共 ${result.samples.length} 个样本。`}
-        />
-      </div>
-      {hoveredSample === null ? null : (
-        <span
-          className="metric-sparkline__tooltip"
-          role="tooltip"
-          style={{ left: hoveredSample.left }}
-        >
-          <span>{TOOLTIP_TIME_FORMAT.format(new Date(hoveredSample.timestamp))}</span>
-          <strong>
-            {hoveredSample.value} {metricUnitLabel(result.unit)}
-          </strong>
-        </span>
-      )}
-    </div>
-  );
 }
 
 export function MetricMarkerEvents({
@@ -432,7 +337,7 @@ export function TimeSeriesChart({
         grid: { display: false },
         ticks: {
           callback(value) {
-            return AXIS_TIME_FORMAT.format(new Date(Number(value)));
+            return axisTimeLabel(result.window, Number(value));
           },
           color: "#8294a4",
           maxTicksLimit: 6,

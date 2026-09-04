@@ -53,7 +53,6 @@ export default async function IncidentPage({ params, searchParams }: IncidentPag
           initialDetail={pageData.detail}
           initialRuns={pageData.runs}
           monitoringPanels={pageData.monitoringPanels}
-          initialMonitoringHealth={pageData.monitoringHealth}
           latestMode={runId === undefined}
           manualActions={getIncidentIntakeMode() === "manual"}
         />

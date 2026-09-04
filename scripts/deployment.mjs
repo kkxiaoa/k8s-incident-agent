@@ -580,7 +580,7 @@ function normalizeMonitoringContract(rawVersions, rawImages, rawAlertCatalog) {
 function normalizeAlertRuleCatalog(rawAlertCatalog) {
   const document = parseJsonObject(rawAlertCatalog, "alert catalog");
   if (
-    document.schemaVersion !== 5 ||
+    document.schemaVersion !== 6 ||
     typeof document.catalogVersion !== "string" ||
     document.catalogVersion === "" ||
     !Array.isArray(document.alerts) ||
@@ -3905,7 +3905,7 @@ function requirePrometheusConfiguration(rawConfiguration) {
       external_labels: { cluster: "k8s-incident-agent" },
     },
     storage: {
-      tsdb: { retention: { time: "24h", size: "1GB" } },
+      tsdb: { retention: { time: "15d", size: "1600MB" } },
     },
     rule_files: ["/etc/prometheus/rules/*.yaml"],
     alerting: {

@@ -24,24 +24,20 @@ import {
 } from "./metric-presentation";
 import { MetricMarkerEvents, TimeSeriesChart } from "./time-series-chart";
 
-const STATE_LABELS: Record<MetricQueryStateView, string> = {
-  ok: "数据有效",
+const STATE_LABELS: Partial<Record<MetricQueryStateView, string>> = {
   no_data: "暂无数据",
   stale: "数据陈旧",
   partial: "部分数据",
-  query_error: "查询失败",
-  monitoring_unavailable: "监控不可用",
 };
 
-const STATE_COPY: Record<
-  Exclude<MetricQueryStateView, "ok" | "stale">,
-  string
-> = {
+const STATE_COPY = {
   no_data: "Prometheus 没有返回可验证样本；这不等于指标值为 0。",
   partial: "Prometheus 报告了部分结果，图表只展示当前可验证样本。",
-  query_error: "固定 catalog 查询未能完成，请稍后重试。",
-  monitoring_unavailable: "当前无法连接监控数据源，请先检查监控链路。",
-};
+} as const;
+
+function isUnavailableState(state: MetricQueryStateView): boolean {
+  return state === "query_error" || state === "monitoring_unavailable";
+}
 
 export type MetricPanelLoadSnapshot =
   | { state: "loading"; result: null }
@@ -55,25 +51,10 @@ function emptyStateCopy(state: MetricQueryStateView): string {
   if (state === "partial") {
     return STATE_COPY.partial;
   }
-  if (state === "query_error") {
-    return STATE_COPY.query_error;
-  }
-  if (state === "monitoring_unavailable") {
-    return STATE_COPY.monitoring_unavailable;
+  if (isUnavailableState(state)) {
+    return "指标数据暂不可用";
   }
   return "当前查询没有可展示的样本。";
-}
-
-function failureCopy(
-  failure: "invalid_response" | "not_found" | "unavailable",
-) {
-  if (failure === "not_found") {
-    return "当前 Incident 不再支持这个指标 panel。";
-  }
-  if (failure === "invalid_response") {
-    return "监控响应无法验证，未展示可能失真的数据。";
-  }
-  return "暂时无法读取指标，请稍后重试。";
 }
 
 export function MetricPanelCard({
@@ -92,13 +73,11 @@ export function MetricPanelCard({
   onLoadSnapshot?: (panelId: string, snapshot: MetricPanelLoadSnapshot) => void;
 }) {
   const [window, setWindow] = useState(panel.recommendedWindow);
-  const [reload, setReload] = useState(0);
   const requestKey = [
     incidentId,
     panel.panelId,
     window,
     refreshKey,
-    reload,
   ].join(":");
   const [load, setLoad] = useState<
     | {
@@ -172,27 +151,28 @@ export function MetricPanelCard({
 
   if (data === null) {
     return (
-      <article className="metric-panel metric-panel--error">
-        <div>
-          <span className="eyebrow">Metric panel</span>
-          <h3>指标暂不可用</h3>
+      <article
+        className="metric-panel metric-panel--error"
+        aria-label={
+          failure === "invalid_response"
+            ? "监控响应无法验证"
+            : failure === "not_found"
+              ? "指标 panel 不存在"
+              : "指标读取失败"
+        }
+      >
+        <div className="metric-panel__empty is-monitoring_unavailable" role="status">
+          <UiIcon name="activity" />
+          <p>指标数据暂不可用</p>
         </div>
-        <p role="alert">
-          {failure === null ? "暂时无法读取指标。" : failureCopy(failure)}
-        </p>
-        <button
-          className="secondary-button"
-          type="button"
-          onClick={() => setReload((value) => value + 1)}
-        >
-          重新读取
-        </button>
       </article>
     );
   }
 
   const { result } = data;
   const hasSamples = result.samples.length > 0;
+  const unavailable = isUnavailableState(result.state);
+  const stateLabel = STATE_LABELS[result.state];
   const timestamp = result.latestSampleAt ?? result.queriedAt;
   const unitLabel = metricUnitLabel(result.unit);
   const referenceValue =
@@ -205,14 +185,15 @@ export function MetricPanelCard({
       : result.riskDirection === "lower_is_worse" && referenceValue !== null
         ? `${result.currentValue} / ${referenceValue}`
         : result.currentValue;
-  const thresholdCopy =
-    result.threshold !== null
+  const thresholdCopy = unavailable
+    ? "—"
+    : result.threshold !== null
       ? `${result.riskDirection === "higher_is_worse" ? "≥" : "<"} ${result.threshold}`
       : referenceValue === null
         ? "—"
         : `< ${referenceValue}`;
   const thresholdDuration =
-    panel.thresholdDuration === null
+    panel.thresholdDuration === null || unavailable
       ? null
       : `持续 ${formatMetricDuration(panel.thresholdDuration)}`;
   const metricDescription = metricRiskDescription(
@@ -247,7 +228,7 @@ export function MetricPanelCard({
         </div>
         <div className="metric-panel__header-actions">
           <div className="metric-panel__states">
-            {alertStatus === null ? null : (
+            {alertStatus === null || unavailable ? null : (
               <span
                 className={`metric-signal-state is-${alertStatus.toLowerCase()}`}
                 title={
@@ -259,9 +240,9 @@ export function MetricPanelCard({
                 {alertStatus === "FIRING" ? "告警中" : "条件已解除"}
               </span>
             )}
-            {result.state === "ok" ? null : (
+            {stateLabel === undefined ? null : (
               <span className={`metric-state is-${result.state}`}>
-                {STATE_LABELS[result.state]}
+                {stateLabel}
               </span>
             )}
           </div>
@@ -315,7 +296,7 @@ export function MetricPanelCard({
         <div>
           <dt>最后更新</dt>
           <dd>
-            <LocalTimestamp timestamp={timestamp} />
+            {unavailable ? "—" : <LocalTimestamp timestamp={timestamp} />}
           </dd>
         </div>
       </dl>

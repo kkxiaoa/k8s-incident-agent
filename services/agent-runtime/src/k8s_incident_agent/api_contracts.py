@@ -235,7 +235,7 @@ class RunStartedEventPayload(RunEventPayload):
 
 class PrometheusToolCallIdentity(_ApiContract):
     panel_id: str = Field(min_length=1, max_length=128)
-    window: Literal["15m", "1h", "6h"]
+    window: Literal["15m", "1h", "6h", "7d", "15d"]
 
 
 class ToolStartedEventPayload(RunEventPayload):

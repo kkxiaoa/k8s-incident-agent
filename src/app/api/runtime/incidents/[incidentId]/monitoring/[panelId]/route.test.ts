@@ -19,7 +19,7 @@ describe("GET /api/runtime/incidents/:incidentId/monitoring/:panelId", () => {
 
     const response = await GET(
       new Request(
-        `http://console.test/api/runtime/incidents/${INCIDENT_ID}/monitoring/image-pull-affected-pods?window=1h&query=up`,
+        `http://console.test/api/runtime/incidents/${INCIDENT_ID}/monitoring/image-pull-affected-pods?window=15d&query=up`,
         { headers: { authorization: "Bearer browser-secret" } },
       ),
       {
@@ -32,7 +32,7 @@ describe("GET /api/runtime/incidents/:incidentId/monitoring/:panelId", () => {
 
     const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
     expect(url.href).toBe(
-      `http://127.0.0.1:8000/runtime/api/v1/incidents/${INCIDENT_ID}/monitoring/panels/image-pull-affected-pods?window=1h`,
+      `http://127.0.0.1:8000/runtime/api/v1/incidents/${INCIDENT_ID}/monitoring/panels/image-pull-affected-pods?window=15d`,
     );
     expect(new Headers(init.headers)).toEqual(new Headers());
     expect(response.status).toBe(200);

@@ -105,6 +105,41 @@ async def test_range_query_keeps_zero_and_escapes_target_labels() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("window", "duration", "step"),
+    [
+        (MetricWindow.SEVEN_DAYS, timedelta(days=7), "1800s"),
+        (MetricWindow.FIFTEEN_DAYS, timedelta(days=15), "3600s"),
+    ],
+)
+async def test_long_windows_keep_range_queries_within_the_sample_budget(
+    window: MetricWindow,
+    duration: timedelta,
+    step: str,
+) -> None:
+    service, requests = _service(
+        _response(
+            '{"status":"success","data":{"resultType":"matrix","result":['
+            '{"metric":{},"values":[[1788339600,"1"]]}]}}'
+        )
+    )
+
+    result = await service.query_panel(
+        target=TARGET,
+        panel_id="image-pull-affected-pods",
+        window=window,
+    )
+    await service.close()
+
+    form = dict(httpx.QueryParams(requests[0].content.decode()))
+    assert result.window is window
+    assert float(form["start"]) == (NOW - duration).timestamp()
+    assert form["end"] == f"{NOW.timestamp():.3f}"
+    assert form["step"] == step
+    assert int(duration.total_seconds()) // int(step.removesuffix("s")) + 1 <= 512
+
+
+@pytest.mark.asyncio
 async def test_service_endpoint_panel_preserves_multiple_ready_endpoints() -> None:
     service, requests = _service(
         _response(

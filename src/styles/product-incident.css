@@ -99,106 +99,11 @@
 
 .incident-monitoring {
   margin-top: 16px;
-  padding: 22px 24px 24px;
-  border-radius: 15px;
-  box-shadow: 0 13px 34px rgb(17 53 75 / 7%);
-}
-
-.incident-monitoring__header {
-  align-items: baseline;
-  justify-content: flex-start;
-}
-
-.incident-monitoring__header .eyebrow {
-  display: none;
-}
-
-.incident-monitoring__header h2 {
-  margin: 0;
-  font-size: 1.05rem;
-}
-
-.incident-monitoring__header p {
-  max-width: none;
-  color: var(--muted);
-  font-size: 0.72rem;
-  text-align: left;
-}
-
-.incident-monitoring .monitoring-health--compact {
-  align-self: center;
-  margin-top: 0;
-  padding: 0 16px;
-}
-
-.incident-monitoring__summary-grid {
-  display: grid;
-  grid-template-columns: minmax(440px, 0.85fr) minmax(0, 1.15fr);
-  gap: 16px;
-  align-items: start;
-  margin-top: 16px;
-}
-
-.incident-metric-facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.incident-metric-facts article {
-  display: grid;
-  min-width: 0;
-  grid-template-rows: auto auto minmax(0, 30px);
-  align-content: stretch;
-  gap: 7px;
-  padding: 14px;
-  border: 1px solid #dbe9e7;
-  border-radius: 13px;
-  background: #fbfdfd;
-  overflow: visible;
-}
-
-.incident-metric-facts article > span {
-  color: var(--muted);
-  font-size: 0.65rem;
-}
-
-.incident-metric-facts__label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.incident-metric-facts article > strong {
-  color: var(--navy-deep);
-  font-family: var(--font-mono);
-  font-size: clamp(1rem, 1.7vw, 1.45rem);
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.incident-metric-facts article:last-of-type > strong {
-  color: var(--teal);
-  font-family: var(--font-body);
-  font-size: 0.78rem;
-}
-
-.incident-metric-facts article:last-of-type {
-  grid-template-rows: auto 1fr;
-}
-
-.skeleton--mini-label {
-  width: 68%;
-  height: 10px;
-}
-
-.skeleton--mini-value {
-  width: 42%;
-  height: 24px;
-}
-
-.incident-monitoring .monitoring-health__path {
-  align-items: start;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .monitoring-panels {
@@ -212,8 +117,7 @@
   box-shadow: 0 8px 24px rgb(17 53 75 / 5%);
 }
 
-.metric-panel__header h3,
-.metric-panel--error h3 {
+.metric-panel__header h3 {
   margin: 0;
   font-size: 0.98rem;
 }
@@ -322,45 +226,36 @@
   width: min(280px, 72%);
 }
 
-.detail-loading__section-header {
-  display: flex;
-  align-items: baseline;
-  gap: 18px;
-}
-
 .detail-loading__section-title {
   width: 104px;
   height: 18px;
 }
 
-.detail-loading__section-copy {
-  width: min(410px, 42%);
-  height: 10px;
+.detail-loading__metric-title {
+  width: 42%;
+  height: 18px;
 }
 
-.incident-monitoring .detail-loading__health {
-  padding-block: 18px;
+.detail-loading__metric-window {
+  width: 118px;
+  height: 35px;
+  border-radius: 9px;
 }
 
-.detail-loading__health-dot {
-  width: var(--monitoring-node-size);
-  height: var(--monitoring-node-size);
+.detail-loading__metric-summary > div {
+  display: grid;
+  align-content: start;
+  gap: 9px;
 }
 
-.detail-loading__health-label {
-  width: min(58px, 82%);
-  height: 9px;
+.detail-loading__metric-label {
+  width: 58px;
+  height: 8px;
 }
 
-.detail-loading__sparkline {
-  align-self: end;
-  width: 100%;
-  height: 24px;
-  border-radius: 8px;
-}
-
-.detail-loading__metric-panel .skeleton--short {
-  width: 28%;
+.detail-loading__metric-value {
+  width: min(118px, 78%);
+  height: 22px;
 }
 
 .detail-loading__run-heading,
@@ -432,12 +327,6 @@
   gap: 18px;
 }
 
-@media (max-width: 1100px) {
-  .incident-monitoring__summary-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 900px) {
   .incident-facts {
     grid-template-columns: 1fr;
@@ -483,14 +372,6 @@
     gap: 8px;
   }
 
-  .incident-metric-facts {
-    grid-template-columns: 1fr;
-  }
-
-  .incident-monitoring__header {
-    gap: 6px;
-  }
-
   .metric-chart__plot {
     height: 205px;
   }
@@ -499,8 +380,7 @@
     width: 78%;
   }
 
-  .detail-loading__summary,
-  .detail-loading__section-copy {
+  .detail-loading__summary {
     width: 100%;
   }
 

@@ -9,6 +9,7 @@ from k8s_incident_agent.monitoring.contracts import (
     IncidentMonitoringPanels,
     MetricMarker,
     MetricMarkerKind,
+    MetricPanelSignalRole,
     MetricRiskDirection,
     MetricWindow,
     MonitoringComponentState,
@@ -195,6 +196,7 @@ class MonitoringApplicationService:
                         panel_id=panel.panel_id,
                         recommended_window=MetricWindow(panel.recommended_window),
                         risk_direction=MetricRiskDirection(panel.risk_direction),
+                        signal_role=MetricPanelSignalRole(panel.signal_role),
                         threshold_duration=panel.threshold_duration,
                     )
                     for panel in entry.panels

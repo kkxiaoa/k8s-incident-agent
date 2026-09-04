@@ -1,12 +1,12 @@
 type UiIconName =
   | "activity"
-  | "alert"
   | "arrow-down"
   | "arrow-up"
   | "check"
   | "chevron-down"
   | "chevron-right"
   | "clock"
+  | "close"
   | "copy"
   | "expand"
   | "external-link"
@@ -17,13 +17,6 @@ function glyph(name: UiIconName) {
   switch (name) {
     case "activity":
       return <path d="M3 12h4l2.5-7 5 14 2.5-7h4" />;
-    case "alert":
-      return (
-        <>
-          <path d="M12 6.75v6.5" />
-          <path d="M12 17.25h.01" />
-        </>
-      );
     case "arrow-down":
       return (
         <>
@@ -49,6 +42,13 @@ function glyph(name: UiIconName) {
         <>
           <circle cx="12" cy="12" r="8.5" />
           <path d="M12 7.5V12l3 2" />
+        </>
+      );
+    case "close":
+      return (
+        <>
+          <path d="m6 6 12 12" />
+          <path d="M18 6 6 18" />
         </>
       );
     case "copy":

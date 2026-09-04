@@ -4,4 +4,6 @@ export const METRIC_WINDOW_LABELS: Record<MetricWindowView, string> = {
   "15m": "最近 15 分钟",
   "1h": "最近 1 小时",
   "6h": "最近 6 小时",
+  "7d": "最近 7 天",
+  "15d": "最近 15 天",
 };

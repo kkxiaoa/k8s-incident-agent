@@ -14,6 +14,7 @@ import {
 
 import { DiagnosisPanel } from "./diagnosis-panel";
 import { EvidenceList } from "./evidence-card";
+import { EvidenceJsonViewer } from "./evidence-json-viewer";
 import { IncidentList } from "./incident-list";
 import { IncidentStatusBadge, RunStatusBadge } from "./incident-status";
 import { IncidentStream } from "./incident-stream";
@@ -662,9 +663,60 @@ describe("read-only incident presentation", () => {
     expect(dialog).toHaveAttribute("open");
     expect(document.documentElement).toHaveClass("dialog-scroll-locked");
     expect(within(dialog).getByText(/<img src=x/)).toBeVisible();
-    await user.click(within(dialog).getByRole("button", { name: "关闭" }));
+    const closeButton = within(dialog).getByRole("button", { name: "关闭" });
+    expect(closeButton.querySelector(".ui-icon")).not.toBeNull();
+    expect(closeButton).not.toHaveTextContent("关闭");
+    await user.click(closeButton);
     expect(dialog).not.toHaveAttribute("open");
     expect(document.documentElement).not.toHaveClass("dialog-scroll-locked");
+  });
+
+  it("makes a rejected clipboard write visibly discoverable", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+
+    render(
+      <EvidenceJsonViewer
+        evidenceKind="kubernetes.pod"
+        payload={{ phase: "Pending" }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "复制 JSON" }));
+
+    const failedButton = screen.getByRole("button", { name: "JSON 复制失败" });
+    expect(failedButton).toHaveClass("is-copy-failed");
+    expect(failedButton).toHaveAttribute("data-feedback", "复制失败");
+    expect(screen.getByRole("status")).toHaveTextContent("JSON 复制失败");
+  });
+
+  it("reports a rejected clipboard write inside the open dialog", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+
+    render(
+      <EvidenceJsonViewer
+        evidenceKind="kubernetes.pod"
+        payload={{ phase: "Pending" }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "展开 JSON" }));
+    const dialog = screen.getByRole("dialog", { name: "kubernetes.pod JSON" });
+    await user.click(within(dialog).getByRole("button", { name: "复制 JSON" }));
+
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "JSON 复制失败",
+    );
+    expect(
+      within(dialog).getByRole("button", { name: "JSON 复制失败" }),
+    ).toHaveAttribute("data-feedback", "复制失败");
   });
 
   it("marks only unresolved tool calls as running", () => {

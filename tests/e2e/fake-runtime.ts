@@ -21,6 +21,7 @@ interface FakeIncident {
   detail: IncidentDetailResponse;
   events: RunEventStreamItem[];
   finished: boolean;
+  metricState: "ok" | "monitoring_unavailable";
   mode: OutcomeMode;
 }
 
@@ -65,6 +66,7 @@ const SHOWCASE_INCIDENTS: Array<{
   outcome: OutcomeMode;
   sourceRef: string;
   targetName: string;
+  metricState?: "ok" | "monitoring_unavailable";
 }> = [
   {
     alertStatus: "FIRING",
@@ -105,14 +107,14 @@ const SHOWCASE_INCIDENTS: Array<{
     alertStatus: "FIRING",
     displayName: "Service 路由异常",
     outcome: "running",
-    sourceRef: "K8sIncidentServiceRoutingMismatch",
+    sourceRef: "K8sIncidentServiceEndpointsUnavailable",
     targetName: "orders-api",
   },
   {
     alertStatus: "FIRING",
     displayName: "Service 路由异常",
     outcome: "insufficient",
-    sourceRef: "K8sIncidentServiceRoutingMismatch",
+    sourceRef: "K8sIncidentServiceEndpointsUnavailable",
     targetName: "inventory-api",
   },
   {
@@ -140,12 +142,13 @@ const SHOWCASE_INCIDENTS: Array<{
     alertStatus: "RESOLVED",
     displayName: "Service 路由异常",
     outcome: "diagnosed",
-    sourceRef: "K8sIncidentServiceRoutingMismatch",
+    sourceRef: "K8sIncidentServiceEndpointsUnavailable",
     targetName: "pricing-api",
   },
   {
     alertStatus: "RESOLVED",
     displayName: "镜像拉取失败",
+    metricState: "monitoring_unavailable",
     outcome: "diagnosed",
     sourceRef: "K8sIncidentImagePullBackOff",
     targetName: "image-resizer",
@@ -383,6 +386,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
 
   return {
     mode: outcome,
+    metricState: "ok",
     finished: false,
     events,
     detail: {
@@ -574,6 +578,7 @@ function seedShowcase(): void {
 
   for (const definition of SHOWCASE_INCIDENTS) {
     const record = createIncident(definition.outcome);
+    record.metricState = definition.metricState ?? "ok";
     record.detail.incident.source = {
       type: "alertmanager",
       ref: definition.sourceRef,
@@ -581,10 +586,18 @@ function seedShowcase(): void {
     };
     record.detail.incident.displayName = definition.displayName;
     record.detail.incident.triggerSummary = `${definition.displayName}测试告警。`;
-    record.detail.incident.target = {
-      ...record.detail.incident.target,
-      name: definition.targetName,
-    };
+    record.detail.incident.target =
+      definition.sourceRef === "K8sIncidentServiceEndpointsUnavailable"
+        ? {
+            ...record.detail.incident.target,
+            apiVersion: "v1",
+            kind: "Service",
+            name: definition.targetName,
+          }
+        : {
+            ...record.detail.incident.target,
+            name: definition.targetName,
+          };
     record.detail.alertSignal = {
       status: definition.alertStatus,
       startsAt: ALERT_STARTS_AT,
@@ -765,23 +778,73 @@ function metricMarkers(record: FakeIncident) {
   return markers;
 }
 
+function metricPanelReferences(record: FakeIncident) {
+  return record.detail.incident.source.ref ===
+    "K8sIncidentServiceEndpointsUnavailable"
+    ? [
+        {
+          panelId: "service-ready-endpoints",
+          recommendedWindow: "15m",
+          riskDirection: "lower_is_worse",
+          signalRole: "trigger",
+          thresholdDuration: "30s",
+        },
+      ]
+    : [
+        {
+          panelId: "image-pull-affected-pods",
+          recommendedWindow: "15m",
+          riskDirection: "higher_is_worse",
+          signalRole: "trigger",
+          thresholdDuration: "30s",
+        },
+        {
+          panelId: "image-pull-available-replicas",
+          recommendedWindow: "15m",
+          riskDirection: "lower_is_worse",
+          signalRole: "context",
+          thresholdDuration: "5m",
+        },
+      ];
+}
+
+function metricWindowMilliseconds(window: string): number {
+  if (window === "15m") {
+    return 15 * 60_000;
+  }
+  if (window === "1h") {
+    return 60 * 60_000;
+  }
+  if (window === "6h") {
+    return 6 * 60 * 60_000;
+  }
+  if (window === "7d") {
+    return 7 * 24 * 60 * 60_000;
+  }
+  return 15 * 24 * 60 * 60_000;
+}
+
 function metricPanel(
   record: FakeIncident,
   panelId: string,
   window: string,
 ) {
+  const serviceEndpoints = panelId === "service-ready-endpoints";
+  const affectedPods = panelId === "image-pull-affected-pods";
   const alertResolved = record.detail.alertSignal?.status === "RESOLVED";
-  const affectedPods = alertResolved ? 0 : 3;
+  const affectedPodCount = alertResolved ? 0 : 3;
   const availableReplicas = alertResolved ? 3 : 0;
-  const windowMilliseconds =
-    window === "15m" ? 15 * 60_000 : window === "1h" ? 60 * 60_000 : 6 * 60 * 60_000;
+  const readyEndpoints = alertResolved ? 2 : 0;
+  const windowDuration = metricWindowMilliseconds(window);
   const queriedAt = Date.parse(alertResolved ? RESOLVED_QUERY_AT : TERMINAL_AT);
   const queriedAtTimestamp = new Date(queriedAt).toISOString();
-  const windowStartsAt = queriedAt - windowMilliseconds;
-  const healthyValue =
-    panelId === "image-pull-affected-pods" ? 0 : 3;
-  const failingValue =
-    panelId === "image-pull-affected-pods" ? affectedPods : availableReplicas;
+  const windowStartsAt = queriedAt - windowDuration;
+  const healthyValue = affectedPods ? 0 : serviceEndpoints ? 2 : 3;
+  const failingValue = affectedPods
+    ? affectedPodCount
+    : serviceEndpoints
+      ? readyEndpoints
+      : availableReplicas;
   const alertSignal = record.detail.alertSignal;
   const samplesByTimestamp = new Map<number, number>();
   const addSample = (timestamp: number, value: number) => {
@@ -802,14 +865,14 @@ function metricPanel(
     addSample(pendingAt - 15_000, healthyValue);
     addSample(
       pendingAt,
-      panelId === "image-pull-affected-pods" ? 1 : 2,
+      affectedPods ? 1 : 2,
     );
     addSample(
       pendingAt + 15_000,
-      panelId === "image-pull-affected-pods" ? 2 : 1,
+      affectedPods ? 2 : 1,
     );
-    addSample(firingAt, panelId === "image-pull-affected-pods" ? 3 : 0);
-    addSample(Date.parse(TERMINAL_AT), panelId === "image-pull-affected-pods" ? 3 : 0);
+    addSample(firingAt, affectedPods ? 3 : 0);
+    addSample(Date.parse(TERMINAL_AT), affectedPods ? 3 : 0);
     if (alertResolved) {
       addSample(Date.parse(ALERT_ENDS_AT), healthyValue);
     }
@@ -827,24 +890,24 @@ function metricPanel(
     result: {
       panelId,
       title:
-        panelId === "image-pull-affected-pods"
+        affectedPods
           ? "镜像拉取失败 Pod"
-          : "Deployment 可用副本",
-      unit: panelId === "image-pull-affected-pods" ? "pods" : "replicas",
-      threshold: panelId === "image-pull-affected-pods" ? 1 : null,
-      riskDirection:
-        panelId === "image-pull-affected-pods"
-          ? "higher_is_worse"
-          : "lower_is_worse",
+          : serviceEndpoints
+            ? "Service 就绪 Endpoint"
+            : "Deployment 可用副本",
+      unit: affectedPods ? "pods" : serviceEndpoints ? "endpoints" : "replicas",
+      threshold: affectedPods || serviceEndpoints ? 1 : null,
+      riskDirection: affectedPods ? "higher_is_worse" : "lower_is_worse",
       window,
-      state: "ok",
+      state: record.metricState,
       queriedAt: queriedAtTimestamp,
-      latestSampleAt: queriedAtTimestamp,
+      latestSampleAt:
+        record.metricState === "monitoring_unavailable"
+          ? null
+          : queriedAtTimestamp,
       currentValue:
-        panelId === "image-pull-affected-pods"
-          ? affectedPods
-          : availableReplicas,
-      samples,
+        record.metricState === "monitoring_unavailable" ? null : failingValue,
+      samples: record.metricState === "monitoring_unavailable" ? [] : samples,
     },
     markers: metricMarkers(record),
     markersTruncated: false,
@@ -981,26 +1044,14 @@ async function handleRequest(
     /^\/api\/v1\/incidents\/([0-9a-f-]+)\/monitoring\/panels$/i,
   );
   if (request.method === "GET" && panelListMatch !== null) {
-    if (!incidents.has(panelListMatch[1])) {
+    const record = incidents.get(panelListMatch[1]);
+    if (record === undefined) {
       runtimeError(response, 404, "incident_not_found", "Incident was not found.", false);
       return;
     }
     json(response, 200, {
-      schemaVersion: 2,
-      panels: [
-        {
-          panelId: "image-pull-affected-pods",
-          recommendedWindow: "15m",
-          riskDirection: "higher_is_worse",
-          thresholdDuration: "30s",
-        },
-        {
-          panelId: "image-pull-available-replicas",
-          recommendedWindow: "15m",
-          riskDirection: "lower_is_worse",
-          thresholdDuration: null,
-        },
-      ],
+      schemaVersion: 3,
+      panels: metricPanelReferences(record),
     });
     return;
   }
@@ -1016,8 +1067,9 @@ async function handleRequest(
       return;
     }
     if (
-      panelMatch[2] !== "image-pull-affected-pods" &&
-      panelMatch[2] !== "image-pull-available-replicas"
+      !metricPanelReferences(record).some(
+        (panel) => panel.panelId === panelMatch[2],
+      )
     ) {
       runtimeError(
         response,
@@ -1028,7 +1080,13 @@ async function handleRequest(
       );
       return;
     }
-    if (window !== "15m" && window !== "1h" && window !== "6h") {
+    if (
+      window !== "15m" &&
+      window !== "1h" &&
+      window !== "6h" &&
+      window !== "7d" &&
+      window !== "15d"
+    ) {
       runtimeError(response, 422, "invalid_request", "Request is invalid.", false);
       return;
     }

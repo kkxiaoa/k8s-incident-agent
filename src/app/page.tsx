@@ -80,20 +80,56 @@ function RuntimeOverviewLoading({
 
   return (
     <>
-      <section className="home-monitoring home-monitoring--loading" aria-label="运行概览加载中">
+      <section
+        className="home-monitoring home-monitoring--loading"
+        aria-busy="true"
+        aria-label="运行概览加载中"
+      >
+        <div className="home-monitoring__toolbar" aria-hidden="true">
+          <span className="skeleton skeleton--overview-updated" />
+          <span className="skeleton skeleton--overview-refresh" />
+        </div>
         <div className="home-monitoring__status-grid">
-          <article className="monitoring-health monitoring-health--loading">
-            <span className="skeleton skeleton--health-path" />
+          <article
+            className="monitoring-health monitoring-health--loading"
+            aria-hidden="true"
+          >
+            <ol className="monitoring-health__path">
+              {Array.from({ length: 5 }, (_, index) => (
+                <li className="monitoring-health__node" key={index}>
+                  <span className="skeleton skeleton--health-node" />
+                  <span className="skeleton skeleton--health-label" />
+                </li>
+              ))}
+            </ol>
           </article>
-          <div className="overview-counts">
+          <div className="overview-counts" aria-hidden="true">
             {Array.from({ length: 4 }, (_, index) => (
-              <span className="skeleton skeleton--count" key={index} />
+              <article
+                className="overview-count overview-count--loading"
+                key={index}
+              >
+                <span className="skeleton skeleton--count-label" />
+                <span className="skeleton skeleton--count-value" />
+              </article>
             ))}
           </div>
         </div>
-        <div className="home-monitoring__charts">
-          <span className="skeleton skeleton--overview-chart" />
-          <span className="skeleton skeleton--overview-chart" />
+        <div className="home-monitoring__charts" aria-hidden="true">
+          {Array.from({ length: 2 }, (_, index) => (
+            <article className="chart-card chart-card--loading" key={index}>
+              <header className="chart-card__header">
+                <div>
+                  <span className="skeleton skeleton--chart-title" />
+                  <span className="skeleton skeleton--chart-subtitle" />
+                </div>
+                {index === 1 ? (
+                  <span className="skeleton skeleton--chart-window" />
+                ) : null}
+              </header>
+              <span className="skeleton skeleton--overview-chart" />
+            </article>
+          ))}
         </div>
       </section>
       <section

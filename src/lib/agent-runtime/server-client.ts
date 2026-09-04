@@ -482,7 +482,11 @@ export function fetchMonitoringPanel(
   if (
     path === null ||
     windows.length !== 1 ||
-    (windows[0] !== "15m" && windows[0] !== "1h" && windows[0] !== "6h")
+    (windows[0] !== "15m" &&
+      windows[0] !== "1h" &&
+      windows[0] !== "6h" &&
+      windows[0] !== "7d" &&
+      windows[0] !== "15d")
   ) {
     return Promise.resolve({
       response: errorResponse(422, INVALID_REQUEST),

@@ -48,6 +48,7 @@ const AFFECTED_PODS_PANEL = {
   panelId: "image-pull-affected-pods",
   recommendedWindow: "15m",
   riskDirection: "higher_is_worse",
+  signalRole: "trigger",
   thresholdDuration: "30s",
 } as const;
 
@@ -55,13 +56,15 @@ const AVAILABLE_REPLICAS_PANEL = {
   panelId: "image-pull-available-replicas",
   recommendedWindow: "1h",
   riskDirection: "lower_is_worse",
-  thresholdDuration: null,
+  signalRole: "context",
+  thresholdDuration: "5m",
 } as const;
 
 const SERVICE_ENDPOINT_PANEL = {
   panelId: "service-ready-endpoints",
   recommendedWindow: "15m",
   riskDirection: "lower_is_worse",
+  signalRole: "trigger",
   thresholdDuration: "30s",
 } as const;
 
@@ -204,7 +207,25 @@ describe("MonitoringHealthOverview", () => {
 });
 
 describe("IncidentMonitoringOverview", () => {
-  it("renders two catalog panels through the same component with independent markers", async () => {
+  it("renders a compact unavailable state when the panel catalog cannot be read", () => {
+    render(
+      <IncidentMonitoringOverview
+        incidentId={INCIDENT_ID}
+        panels={null}
+        evidence={[]}
+        refreshKey="catalog-unavailable"
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "监控数据暂不可用当前 Incident 的指标图表未展示。",
+    );
+    expect(
+      document.querySelector(".monitoring-panels-state .ui-icon"),
+    ).not.toBeNull();
+  });
+
+  it("renders two catalog panels without duplicating their data in summary cards", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: string | URL | Request) => {
@@ -231,12 +252,10 @@ describe("IncidentMonitoringOverview", () => {
     render(
       <IncidentMonitoringOverview
         incidentId={INCIDENT_ID}
-        targetLabel="Deployment · default/image-pull-backoff"
         panels={{
           panels: [AFFECTED_PODS_PANEL, AVAILABLE_REPLICAS_PANEL],
         }}
         evidence={EVIDENCE}
-        initialHealth={HEALTHY}
         refreshKey="completed"
         alertStatus="RESOLVED"
       />,
@@ -250,12 +269,12 @@ describe("IncidentMonitoringOverview", () => {
     ).toBeVisible();
     expect(
       screen.getAllByLabelText("镜像拉取失败 Pod，数值越高表示影响范围越大。"),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       screen.getAllByLabelText(
         "Deployment 可用副本，按“当前可用副本 / 期望副本”展示；低于期望值表示容量未达标。",
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       screen.getAllByLabelText("Prometheus 返回的最新有效样本值。"),
     ).toHaveLength(1);
@@ -271,33 +290,10 @@ describe("IncidentMonitoringOverview", () => {
       screen.getByLabelText("可用副本少于期望的 3 个时进入风险区间。"),
     ).toBeVisible();
     expect(screen.getByText("< 3")).toBeVisible();
-    expect(
-      screen.getByLabelText(
-        "来自诊断 Evidence 中 Pod 容器的 waiting.reason，不是 Prometheus 指标或模型推断。",
-      ),
-    ).toBeVisible();
-    const summary = document.querySelector(".incident-metric-facts");
-    expect(summary).not.toBeNull();
-    expect(
-      await within(summary as HTMLElement).findByText("镜像拉取失败 Pod"),
-    ).toBeVisible();
-    expect(
-      within(summary as HTMLElement).getByText("Deployment 可用副本"),
-    ).toBeVisible();
-    expect(within(summary as HTMLElement).getByText("0/3")).toBeVisible();
-    expect(screen.getByText("等待原因").closest("article")).toHaveTextContent(
-      "ErrImagePull、ImagePullBackOff",
-    );
-    expect(
-      within(summary as HTMLElement).getAllByRole("img", {
-        name: /概览趋势/,
-      }),
-    ).toHaveLength(2);
-    expect(
-      within(summary as HTMLElement).getByRole("img", {
-        name: /^镜像拉取失败 Pod 最近 15 分钟概览趋势/,
-      }),
-    ).toHaveAttribute("data-intersect", "true");
+    expect(document.querySelector(".monitoring-panels--single")).toBeNull();
+    expect(screen.queryByRole("region", { name: "监控链路" })).toBeNull();
+    expect(screen.queryByText("等待原因")).toBeNull();
+    expect(screen.queryByRole("img", { name: /概览趋势/ })).toBeNull();
     expect(
       screen.getByRole("img", { name: /^镜像拉取失败 Pod 时间序列/ }),
     ).toBeVisible();
@@ -306,6 +302,7 @@ describe("IncidentMonitoringOverview", () => {
     expect(screen.getByText("可用副本数")).toBeVisible();
     expect(screen.getByText("期望副本数（3）")).toBeVisible();
     expect(screen.getByText("持续 30 秒")).toBeVisible();
+    expect(screen.getByText("持续 5 分钟")).toBeVisible();
     expect(screen.getAllByText("条件已解除")).toHaveLength(1);
     expect(screen.getAllByText("告警条件解除")).toHaveLength(2);
     expect(
@@ -318,6 +315,77 @@ describe("IncidentMonitoringOverview", () => {
     })) {
       expect(within(eventList).getByText("第 2 次诊断 Run 完成")).toBeVisible();
     }
+  });
+
+  it("lets one catalog panel fill the available row", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(panelResponse("service-ready-endpoints", "15m")),
+        ),
+    );
+
+    render(
+      <IncidentMonitoringOverview
+        incidentId={INCIDENT_ID}
+        panels={{ panels: [SERVICE_ENDPOINT_PANEL] }}
+        evidence={[]}
+        refreshKey="service"
+        alertStatus="FIRING"
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Service 就绪 Endpoint" }),
+    ).toBeVisible();
+    expect(document.querySelector(".monitoring-panels--single")).not.toBeNull();
+    expect(document.querySelectorAll(".metric-panel")).toHaveLength(1);
+  });
+
+  it("shows one compact warning when every catalog panel is unavailable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = new URL(
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url,
+          "http://console.test",
+        );
+        return Promise.resolve(
+          jsonResponse(
+            panelResponse(
+              url.pathname.split("/").at(-1) ?? "",
+              "15m",
+              "monitoring_unavailable",
+            ),
+          ),
+        );
+      }),
+    );
+
+    render(
+      <IncidentMonitoringOverview
+        incidentId={INCIDENT_ID}
+        panels={{
+          panels: [AFFECTED_PODS_PANEL, AVAILABLE_REPLICAS_PANEL],
+        }}
+        evidence={EVIDENCE}
+        refreshKey="unavailable"
+      />,
+    );
+
+    expect(
+      await screen.findByText("当前值与趋势未展示。"),
+    ).toBeVisible();
+    expect(screen.getAllByText("指标数据暂不可用")).toHaveLength(3);
+    expect(document.querySelectorAll(".metric-panel__empty")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "重新读取" })).toBeNull();
+    expect(document.querySelector(".metric-state")).toBeNull();
   });
 
   it("switches only to an allowlisted window and preserves a valid zero", async () => {
@@ -367,16 +435,16 @@ describe("IncidentMonitoringOverview", () => {
       within(card as HTMLElement).getByRole("combobox", {
         name: "镜像拉取失败 Pod 时间窗口",
       }),
-      "1h",
+      "15d",
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("window=1h");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("window=15d");
     await waitFor(() =>
       expect(onLoadSnapshot).toHaveBeenLastCalledWith(
         "image-pull-affected-pods",
         expect.objectContaining({
           state: "ready",
-          result: expect.objectContaining({ window: "1h" }),
+          result: expect.objectContaining({ window: "15d" }),
         }),
       ),
     );
@@ -424,8 +492,8 @@ describe("IncidentMonitoringOverview", () => {
 describe("MetricPanelCard states", () => {
   it.each([
     ["no_data", "Prometheus 没有返回可验证样本；这不等于指标值为 0。"],
-    ["query_error", "固定 catalog 查询未能完成，请稍后重试。"],
-    ["monitoring_unavailable", "当前无法连接监控数据源，请先检查监控链路。"],
+    ["query_error", "指标数据暂不可用"],
+    ["monitoring_unavailable", "指标数据暂不可用"],
   ] as const)("renders %s without inventing a value", async (state, copy) => {
     vi.stubGlobal(
       "fetch",
@@ -513,7 +581,7 @@ describe("MetricPanelCard states", () => {
     ).toBeVisible();
   });
 
-  it("shows a safe retry state for an invalid upstream response", async () => {
+  it("shows a plain unavailable placeholder for an invalid upstream response", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(jsonResponse({ schemaVersion: 1 })),
@@ -527,9 +595,7 @@ describe("MetricPanelCard states", () => {
       />,
     );
 
-    expect(
-      await screen.findByText("监控响应无法验证，未展示可能失真的数据。"),
-    ).toBeVisible();
-    expect(screen.getByRole("button", { name: "重新读取" })).toBeVisible();
+    expect(await screen.findByText("指标数据暂不可用")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "重新读取" })).toBeNull();
   });
 });

@@ -14,12 +14,13 @@ describe("IncidentLoading", () => {
     expect(container.querySelector(".detail-toolbar")).not.toBeNull();
     expect(container.querySelector(".incident-overview")).not.toBeNull();
     expect(container.querySelector(".incident-monitoring")).not.toBeNull();
-    expect(container.querySelectorAll(".monitoring-health__node")).toHaveLength(
-      5,
-    );
+    expect(container.querySelectorAll(".monitoring-health__node")).toHaveLength(0);
     expect(
       container.querySelectorAll(".detail-loading__metric-panel"),
     ).toHaveLength(2);
+    expect(
+      container.querySelectorAll(".detail-loading__metric-summary > div"),
+    ).toHaveLength(6);
     expect(container.querySelector(".run-controls")).not.toBeNull();
     expect(
       container.querySelectorAll(".detail-loading__console-panel"),

@@ -44,16 +44,14 @@ function healthNodes(health: MonitoringHealthView | null) {
 
 export function MonitoringHealthOverview({
   initialHealth,
-  compact = false,
 }: {
   initialHealth: MonitoringHealthView | null;
-  compact?: boolean;
 }) {
   const nodes = healthNodes(initialHealth);
 
   return (
     <section
-      className={`monitoring-health${compact ? " monitoring-health--compact" : ""}`}
+      className="monitoring-health"
       aria-label="监控链路"
     >
       <ol className="monitoring-health__path">
@@ -69,7 +67,7 @@ export function MonitoringHealthOverview({
               tabIndex={abnormal ? 0 : undefined}
             >
               <span className="monitoring-health__dot" aria-hidden="true">
-                <UiIcon name={abnormal ? "alert" : "check"} />
+              <UiIcon name={abnormal ? "activity" : "check"} />
               </span>
               <strong>{node.label}</strong>
             </li>

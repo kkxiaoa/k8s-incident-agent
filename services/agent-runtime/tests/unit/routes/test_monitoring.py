@@ -19,6 +19,7 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricMarker,
     MetricMarkerKind,
     MetricPanelResult,
+    MetricPanelSignalRole,
     MetricQueryState,
     MetricRiskDirection,
     MetricSample,
@@ -108,13 +109,15 @@ class _MonitoringService:
                     panel_id="image-pull-affected-pods",
                     recommended_window=MetricWindow.FIFTEEN_MINUTES,
                     risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
+                    signal_role=MetricPanelSignalRole.TRIGGER,
                     threshold_duration="30s",
                 ),
                 MonitoringPanelReference(
                     panel_id="image-pull-available-replicas",
                     recommended_window=MetricWindow.FIFTEEN_MINUTES,
                     risk_direction=MetricRiskDirection.LOWER_IS_WORSE,
-                    threshold_duration=None,
+                    signal_role=MetricPanelSignalRole.CONTEXT,
+                    threshold_duration="5m",
                 ),
             )
         )
@@ -286,7 +289,7 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
             )
             panel = await client.get(
                 f"/api/v1/incidents/{incident_id}/monitoring/panels/"
-                "image-pull-affected-pods?window=1h"
+                "image-pull-affected-pods?window=15d"
             )
             invalid = await client.get(
                 f"/api/v1/incidents/{incident_id}/monitoring/panels/"
@@ -298,19 +301,21 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
 
     assert refs.status_code == 200
     assert refs.json() == {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "panels": [
             {
                 "panelId": "image-pull-affected-pods",
                 "recommendedWindow": "15m",
                 "riskDirection": "higher_is_worse",
+                "signalRole": "trigger",
                 "thresholdDuration": "30s",
             },
             {
                 "panelId": "image-pull-available-replicas",
                 "recommendedWindow": "15m",
                 "riskDirection": "lower_is_worse",
-                "thresholdDuration": None,
+                "signalRole": "context",
+                "thresholdDuration": "5m",
             },
         ],
     }
@@ -323,7 +328,7 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
             "unit": "pods",
             "threshold": 1.0,
             "riskDirection": "higher_is_worse",
-            "window": "1h",
+            "window": "15d",
             "state": "ok",
             "queriedAt": "2026-09-02T09:00:00Z",
             "latestSampleAt": "2026-09-02T09:00:00Z",

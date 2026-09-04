@@ -1028,8 +1028,8 @@
             "type": "array"
           },
           "schemaVersion": {
-            "const": 2,
-            "default": 2,
+            "const": 3,
+            "default": 3,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1298,6 +1298,14 @@
         "title": "MetricPanelResult",
         "type": "object"
       },
+      "MetricPanelSignalRole": {
+        "enum": [
+          "trigger",
+          "context"
+        ],
+        "title": "MetricPanelSignalRole",
+        "type": "string"
+      },
       "MetricQueryState": {
         "enum": [
           "ok",
@@ -1342,7 +1350,9 @@
         "enum": [
           "15m",
           "1h",
-          "6h"
+          "6h",
+          "7d",
+          "15d"
         ],
         "title": "MetricWindow",
         "type": "string"
@@ -1573,6 +1583,9 @@
           "riskDirection": {
             "$ref": "#/components/schemas/MetricRiskDirection"
           },
+          "signalRole": {
+            "$ref": "#/components/schemas/MetricPanelSignalRole"
+          },
           "thresholdDuration": {
             "anyOf": [
               {
@@ -1590,6 +1603,7 @@
           "panelId",
           "recommendedWindow",
           "riskDirection",
+          "signalRole",
           "thresholdDuration"
         ],
         "title": "MonitoringPanelReference",
@@ -1608,7 +1622,9 @@
             "enum": [
               "15m",
               "1h",
-              "6h"
+              "6h",
+              "7d",
+              "15d"
             ],
             "title": "Window",
             "type": "string"

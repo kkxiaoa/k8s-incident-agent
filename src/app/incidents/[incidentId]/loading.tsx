@@ -1,18 +1,7 @@
 const FACT_ROWS = ["target", "source", "created"] as const;
 const SECONDARY_FACT_ROWS = ["signal", "incident-id"] as const;
-const HEALTH_NODES = [
-  "collector",
-  "prometheus",
-  "rules",
-  "alertmanager",
-  "runtime",
-] as const;
-const SUMMARY_METRICS = [
-  "affected-pods",
-  "available-replicas",
-  "waiting-reason",
-] as const;
 const METRIC_PANELS = ["affected-pods", "available-replicas"] as const;
+const METRIC_SUMMARY_ITEMS = ["current", "threshold", "updated"] as const;
 const CONSOLE_PANELS = ["timeline", "diagnosis"] as const;
 const EVIDENCE_CARDS = ["evidence-1", "evidence-2"] as const;
 
@@ -70,51 +59,34 @@ export default function IncidentLoading() {
         className="incident-monitoring detail-loading__monitoring"
         aria-hidden="true"
       >
-        <header className="incident-monitoring__header detail-loading__section-header">
-          <span className="skeleton detail-loading__section-title" />
-          <span className="skeleton detail-loading__section-copy" />
-        </header>
-
-        <div className="incident-monitoring__summary-grid">
-          <div className="monitoring-health monitoring-health--compact detail-loading__health">
-            <ol className="monitoring-health__path">
-              {HEALTH_NODES.map((node) => (
-                <li className="monitoring-health__node" key={node}>
-                  <span className="skeleton detail-loading__health-dot" />
-                  <span className="skeleton detail-loading__health-label" />
-                </li>
-              ))}
-            </ol>
-          </div>
-
-          <div className="incident-metric-facts">
-            {SUMMARY_METRICS.map((metric, index) => (
-              <article key={metric}>
-                <span className="skeleton skeleton--mini-label" />
-                <strong className="skeleton skeleton--mini-value" />
-                {index < 2 ? (
-                  <span className="skeleton detail-loading__sparkline" />
-                ) : null}
-              </article>
-            ))}
-          </div>
-        </div>
-
         <div className="monitoring-panels">
           {METRIC_PANELS.map((panel) => (
             <article
               className="metric-panel metric-panel--loading detail-loading__metric-panel"
               key={panel}
             >
-              <span className="skeleton skeleton--short" />
-              <span className="skeleton skeleton--metric" />
+              <header className="metric-panel__header">
+                <span className="skeleton detail-loading__metric-title" />
+                <span className="skeleton detail-loading__metric-window" />
+              </header>
+              <div className="metric-panel__summary detail-loading__metric-summary">
+                {METRIC_SUMMARY_ITEMS.map((item) => (
+                  <div key={item}>
+                    <span className="skeleton detail-loading__metric-label" />
+                    <span className="skeleton detail-loading__metric-value" />
+                  </div>
+                ))}
+              </div>
               <span className="skeleton skeleton--chart" />
             </article>
           ))}
         </div>
       </section>
 
-      <section className="run-controls detail-loading__run-controls" aria-hidden="true">
+      <section
+        className="run-controls detail-loading__run-controls"
+        aria-hidden="true"
+      >
         <div className="detail-loading__run-heading">
           <span className="skeleton detail-loading__eyebrow" />
           <span className="skeleton detail-loading__section-title" />
@@ -149,7 +121,10 @@ export default function IncidentLoading() {
         ))}
       </div>
 
-      <section className="console-section detail-loading__evidence" aria-hidden="true">
+      <section
+        className="console-section detail-loading__evidence"
+        aria-hidden="true"
+      >
         <div className="section-heading">
           <div className="detail-loading__console-heading">
             <span className="skeleton detail-loading__eyebrow" />

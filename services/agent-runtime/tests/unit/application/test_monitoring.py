@@ -284,13 +284,15 @@ async def test_catalog_drives_alertmanager_and_evaluation_panel_references() -> 
             "panelId": "image-pull-affected-pods",
             "recommendedWindow": "15m",
             "riskDirection": "higher_is_worse",
+            "signalRole": "trigger",
             "thresholdDuration": "30s",
         },
         {
             "panelId": "image-pull-available-replicas",
             "recommendedWindow": "15m",
             "riskDirection": "lower_is_worse",
-            "thresholdDuration": None,
+            "signalRole": "context",
+            "thresholdDuration": "5m",
         },
     ]
     assert repository.run_limits == [1, 1]

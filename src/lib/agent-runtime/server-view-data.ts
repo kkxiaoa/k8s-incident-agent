@@ -33,7 +33,6 @@ type IncidentPageData =
       detail: IncidentDetailView;
       runs: RunHistoryView;
       monitoringPanels: MonitoringPanelListView | null;
-      monitoringHealth: MonitoringHealthView | null;
     }
   | { state: "missing" }
   | { state: "unavailable" };
@@ -96,12 +95,11 @@ export async function loadIncidentPage(
   incidentId: string,
   runId?: string,
 ): Promise<IncidentPageData> {
-  const [detailResult, runsResult, monitoringPanelsResult, healthResult] =
+  const [detailResult, runsResult, monitoringPanelsResult] =
     await Promise.all([
       fetchIncident(incidentId, runId),
       fetchRuns(incidentId, new URLSearchParams({ limit: "20" })),
       fetchMonitoringPanels(incidentId),
-      fetchMonitoringHealth(),
     ]);
   if (
     detailResult.response.status === 404 ||
@@ -124,9 +122,6 @@ export async function loadIncidentPage(
         runs,
         monitoringPanels: monitoringPanelsResult.response.ok
           ? parseMonitoringPanelListResponse(monitoringPanelsResult.value)
-          : null,
-        monitoringHealth: healthResult.response.ok
-          ? parseMonitoringHealthResponse(healthResult.value)
           : null,
       };
 }

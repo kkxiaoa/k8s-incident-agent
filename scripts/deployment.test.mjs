@@ -542,8 +542,8 @@ test("managed monitoring render pins topology, collection, rule, and credential 
     ).data["prometheus.yaml"],
   );
   assert.deepEqual(prometheusConfig.storage.tsdb.retention, {
-    time: "24h",
-    size: "1GB",
+    time: "15d",
+    size: "1600MB",
   });
   assert.equal(prometheusConfig.global.scrape_interval, "15s");
   assert.equal(prometheusConfig.global.evaluation_interval, "15s");

@@ -108,17 +108,50 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   await page.goto(
     "/incidents/10000000-0000-4000-8000-000000000005",
   );
-  await expect(page.getByRole("heading", { name: "监控概览" })).toBeVisible();
   await expect(page.locator(".metric-panel")).toHaveCount(2);
-  await expect(page.locator(".metric-signal-state.is-firing")).toHaveCount(2);
-  await expect(page.getByText("告警中", { exact: true })).toHaveCount(3);
+  const dualContainer = await page.locator(".monitoring-panels").boundingBox();
+  const firstPanel = await page.locator(".metric-panel").nth(0).boundingBox();
+  const secondPanel = await page.locator(".metric-panel").nth(1).boundingBox();
+  expect(dualContainer).not.toBeNull();
+  expect(firstPanel).not.toBeNull();
+  expect(secondPanel).not.toBeNull();
+  expect(Math.abs((firstPanel?.width ?? 0) - (secondPanel?.width ?? 0))).toBeLessThanOrEqual(1);
+  expect(firstPanel?.width ?? 0).toBeLessThan((dualContainer?.width ?? 0) * 0.6);
+  await expect(page.locator(".metric-signal-state.is-firing")).toHaveCount(1);
+  await expect(page.getByText("告警中", { exact: true })).toHaveCount(2);
   await expect(page.getByText("< 3", { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("img", { name: /概览趋势/ }),
-  ).toHaveCount(2);
+  await expect(page.getByRole("img", { name: /概览趋势/ })).toHaveCount(0);
   await expect(
     page.getByRole("img", { name: /时间序列。当前值/ }),
   ).toHaveCount(2);
+
+  await page.goto(
+    "/incidents/10000000-0000-4000-8000-000000000006",
+  );
+  await expect(page.locator(".monitoring-panels--single .metric-panel")).toHaveCount(1);
+  const singleContainer = await page.locator(".monitoring-panels").boundingBox();
+  const singlePanel = await page.locator(".metric-panel").boundingBox();
+  expect(singleContainer).not.toBeNull();
+  expect(singlePanel).not.toBeNull();
+  expect(Math.abs((singleContainer?.width ?? 0) - (singlePanel?.width ?? 0))).toBeLessThanOrEqual(1);
+  await expect(
+    page.getByRole("heading", { name: "Service 就绪 Endpoint" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Service · k8s-incident-scenarios/orders-api", {
+      exact: true,
+    }),
+  ).toBeVisible();
+
+  await page.goto(
+    "/incidents/10000000-0000-4000-8000-000000000012",
+  );
+  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await expect(page.locator(".monitoring-data-alert")).toContainText(
+    "指标数据暂不可用当前值与趋势未展示。",
+  );
+  await expect(page.locator(".metric-panel__empty")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "重新读取" })).toHaveCount(0);
 });
 
 test("shows which incident list edges contain clipped records", async ({ page }) => {
@@ -160,7 +193,6 @@ test("create reaches terminal diagnosis, reconnects natively, and refreshes from
   await createFromHome(page);
 
   await expect(page.getByText("诊断已完成", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "监控概览" })).toBeVisible();
   await expect(page.locator(".metric-panel")).toHaveCount(2);
   await expect(
     page.getByRole("img", { name: /^镜像拉取失败 Pod 时间序列/ }),

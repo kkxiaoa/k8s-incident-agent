@@ -14,6 +14,8 @@ class MetricWindow(StrEnum):
     FIFTEEN_MINUTES = "15m"
     ONE_HOUR = "1h"
     SIX_HOURS = "6h"
+    SEVEN_DAYS = "7d"
+    FIFTEEN_DAYS = "15d"
 
     @property
     def duration(self) -> timedelta:
@@ -21,6 +23,8 @@ class MetricWindow(StrEnum):
             MetricWindow.FIFTEEN_MINUTES: timedelta(minutes=15),
             MetricWindow.ONE_HOUR: timedelta(hours=1),
             MetricWindow.SIX_HOURS: timedelta(hours=6),
+            MetricWindow.SEVEN_DAYS: timedelta(days=7),
+            MetricWindow.FIFTEEN_DAYS: timedelta(days=15),
         }[self]
 
 
@@ -36,6 +40,11 @@ class MetricQueryState(StrEnum):
 class MetricRiskDirection(StrEnum):
     HIGHER_IS_WORSE = "higher_is_worse"
     LOWER_IS_WORSE = "lower_is_worse"
+
+
+class MetricPanelSignalRole(StrEnum):
+    TRIGGER = "trigger"
+    CONTEXT = "context"
 
 
 class MonitoringComponentState(StrEnum):
@@ -156,13 +165,14 @@ class MonitoringPanelReference(_MonitoringContract):
     panel_id: str = Field(min_length=1, max_length=128)
     recommended_window: MetricWindow
     risk_direction: MetricRiskDirection
+    signal_role: MetricPanelSignalRole
     threshold_duration: str | None = Field(
         pattern=r"^[1-9][0-9]*(?:ms|s|m|h)$",
     )
 
 
 class IncidentMonitoringPanels(_MonitoringContract):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     panels: tuple[MonitoringPanelReference, ...] = Field(max_length=8)
 
 

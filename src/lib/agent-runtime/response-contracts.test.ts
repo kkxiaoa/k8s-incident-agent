@@ -3,12 +3,18 @@ import { describe, expect, it } from "vitest";
 import { makeIncidentDetail } from "@/test/agent-runtime-fixtures";
 
 import {
+  isMetricWindow,
   parseIncidentDetailResponse,
   parseIncidentMetricPanelResponse,
   parseMonitoringHealthResponse,
   parseMonitoringOverviewResponse,
   parseMonitoringPanelListResponse,
 } from "./response-contracts";
+
+it("accepts every bounded metric window", () => {
+  expect(["15m", "1h", "6h", "7d", "15d"].every(isMetricWindow)).toBe(true);
+  expect(isMetricWindow("24h")).toBe(false);
+});
 
 function metricPanel() {
   return {
@@ -197,19 +203,21 @@ describe("monitoring response contracts", () => {
 
   it("accepts unique catalog panel references and rejects duplicates", () => {
     const panels = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       panels: [
         {
           panelId: "image-pull-affected-pods",
           recommendedWindow: "15m",
           riskDirection: "higher_is_worse",
+          signalRole: "trigger",
           thresholdDuration: "30s",
         },
         {
           panelId: "image-pull-available-replicas",
           recommendedWindow: "1h",
           riskDirection: "lower_is_worse",
-          thresholdDuration: null,
+          signalRole: "context",
+          thresholdDuration: "5m",
         },
       ],
     };

@@ -729,10 +729,10 @@ export interface components {
             panels: components["schemas"]["MonitoringPanelReference"][];
             /**
              * Schemaversion
-             * @default 2
+             * @default 3
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
         };
         /** IncidentResponse */
         IncidentResponse: {
@@ -826,6 +826,11 @@ export interface components {
             window: components["schemas"]["MetricWindow"];
         };
         /**
+         * MetricPanelSignalRole
+         * @enum {string}
+         */
+        MetricPanelSignalRole: "trigger" | "context";
+        /**
          * MetricQueryState
          * @enum {string}
          */
@@ -849,7 +854,7 @@ export interface components {
          * MetricWindow
          * @enum {string}
          */
-        MetricWindow: "15m" | "1h" | "6h";
+        MetricWindow: "15m" | "1h" | "6h" | "7d" | "15d";
         /**
          * MonitoringComponentState
          * @enum {string}
@@ -939,6 +944,7 @@ export interface components {
             panelId: string;
             recommendedWindow: components["schemas"]["MetricWindow"];
             riskDirection: components["schemas"]["MetricRiskDirection"];
+            signalRole: components["schemas"]["MetricPanelSignalRole"];
             /** Thresholdduration */
             thresholdDuration: string | null;
         };
@@ -950,7 +956,7 @@ export interface components {
              * Window
              * @enum {string}
              */
-            window: "15m" | "1h" | "6h";
+            window: "15m" | "1h" | "6h" | "7d" | "15d";
         };
         /** RootCauseResponse */
         RootCauseResponse: {

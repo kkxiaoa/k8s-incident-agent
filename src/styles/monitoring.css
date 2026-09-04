@@ -5,7 +5,6 @@
   padding: 0;
 }
 
-.incident-monitoring__header,
 .metric-panel__header,
 .metric-panel__toolbar {
   display: flex;
@@ -14,7 +13,6 @@
   gap: 18px;
 }
 
-.incident-monitoring__header h2,
 .metric-panel__header h3 {
   margin: 6px 0 0;
   color: var(--navy-deep);
@@ -121,20 +119,9 @@
   outline-offset: 4px;
 }
 
-.monitoring-health--compact {
-  margin-top: 24px;
-  padding: 0;
-}
-
 .monitoring-health--loading {
   display: grid;
   gap: 14px;
-}
-
-.skeleton--health-path {
-  width: 100%;
-  height: 54px;
-  border-radius: 14px;
 }
 
 .incident-monitoring {
@@ -146,23 +133,6 @@
   box-shadow: var(--shadow);
 }
 
-.incident-monitoring__header {
-  align-items: flex-end;
-}
-
-.incident-monitoring__header h2 {
-  font-size: clamp(1.45rem, 2.5vw, 2rem);
-}
-
-.incident-monitoring__header p {
-  max-width: 560px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.78rem;
-  line-height: 1.6;
-  text-align: right;
-}
-
 .monitoring-panels {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -170,14 +140,71 @@
   margin-top: 18px;
 }
 
-.monitoring-panels-state {
-  margin-top: 18px;
-  padding: 22px;
-  border-radius: 14px;
+.monitoring-panels--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.monitoring-data-alert {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 16px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  color: #805d19;
+  background: var(--amber-soft);
+}
+
+.monitoring-data-alert > .ui-icon {
+  flex: 0 0 auto;
+  width: 19px;
+  height: 19px;
+}
+
+.monitoring-data-alert div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 10px;
+}
+
+.monitoring-data-alert strong {
+  font-size: 0.76rem;
+}
+
+.monitoring-data-alert span {
   color: var(--muted);
-  background: var(--surface-soft);
-  font-size: 0.82rem;
-  text-align: center;
+  font-size: 0.69rem;
+}
+
+.monitoring-panels-state {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  padding: 12px 16px;
+  color: var(--muted);
+}
+
+.monitoring-panels-state > .ui-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--faint);
+}
+
+.monitoring-panels-state div {
+  display: grid;
+  gap: 3px;
+}
+
+.monitoring-panels-state strong {
+  color: var(--ink);
+  font-size: 0.76rem;
+}
+
+.monitoring-panels-state span {
+  font-size: 0.69rem;
 }
 
 .metric-panel {
@@ -210,8 +237,7 @@
   gap: 7px;
 }
 
-.metric-panel__header h3,
-.metric-panel--error h3 {
+.metric-panel__header h3 {
   font-size: 1.1rem;
 }
 
@@ -439,7 +465,9 @@
 
 .metric-panel__empty.is-query_error,
 .metric-panel__empty.is-monitoring_unavailable {
-  color: var(--red);
+  color: var(--faint);
+  background: none;
+  animation: none;
 }
 
 .metric-panel__empty > .ui-icon {
@@ -488,60 +516,8 @@
   text-align: center;
 }
 
-.metric-panel--error .secondary-button {
-  width: auto;
-  min-height: 40px;
-  padding-inline: 14px;
-}
-
 .metric-chart {
   margin-top: 16px;
-}
-
-.metric-sparkline {
-  position: relative;
-  min-width: 0;
-  width: 100%;
-  height: 30px;
-  margin-top: 2px;
-  overflow: visible;
-}
-
-.metric-sparkline__plot {
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-}
-
-.metric-sparkline__plot canvas {
-  display: block;
-  width: 100% !important;
-  max-width: 100%;
-  height: 100% !important;
-}
-
-.metric-sparkline__tooltip {
-  position: absolute;
-  z-index: 8;
-  bottom: calc(100% + 7px);
-  display: grid;
-  width: max-content;
-  min-width: 118px;
-  gap: 2px;
-  padding: 7px 9px;
-  border-radius: 8px;
-  color: #ffffff;
-  background: #153b54;
-  box-shadow: 0 8px 22px rgb(8 43 69 / 20%);
-  font-size: 0.6rem;
-  line-height: 1.35;
-  pointer-events: none;
-  transform: translateX(-50%);
-}
-
-.metric-sparkline__tooltip strong {
-  color: #ffffff;
-  font-size: 0.66rem;
 }
 
 .metric-chart__legend,

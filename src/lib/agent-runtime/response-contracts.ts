@@ -134,6 +134,8 @@ export interface IncidentDetailView {
 }
 
 export type MetricWindowView = components["schemas"]["MetricWindow"];
+export type MetricPanelSignalRoleView =
+  components["schemas"]["MetricPanelSignalRole"];
 export type MetricQueryStateView = components["schemas"]["MetricQueryState"];
 export type MonitoringComponentStateView =
   components["schemas"]["MonitoringComponentState"];
@@ -164,6 +166,7 @@ export interface MonitoringPanelReferenceView {
   panelId: string;
   recommendedWindow: MetricWindowView;
   riskDirection: "higher_is_worse" | "lower_is_worse";
+  signalRole: MetricPanelSignalRoleView;
   thresholdDuration: string | null;
 }
 
@@ -225,7 +228,13 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 export function isMetricWindow(value: unknown): value is MetricWindowView {
-  return value === "15m" || value === "1h" || value === "6h";
+  return (
+    value === "15m" ||
+    value === "1h" ||
+    value === "6h" ||
+    value === "7d" ||
+    value === "15d"
+  );
 }
 
 function isMetricQueryState(value: unknown): value is MetricQueryStateView {
@@ -815,6 +824,7 @@ function parseMonitoringPanelReference(
     isMetricWindow(value.recommendedWindow) &&
     (value.riskDirection === "higher_is_worse" ||
       value.riskDirection === "lower_is_worse") &&
+    (value.signalRole === "trigger" || value.signalRole === "context") &&
     (thresholdDuration === null ||
       (typeof thresholdDuration === "string" &&
         /^[1-9][0-9]*(?:ms|s|m|h)$/.test(thresholdDuration)))
@@ -822,6 +832,7 @@ function parseMonitoringPanelReference(
         panelId: value.panelId,
         recommendedWindow: value.recommendedWindow,
         riskDirection: value.riskDirection,
+        signalRole: value.signalRole,
         thresholdDuration,
       }
     : null;
@@ -832,7 +843,7 @@ export function parseMonitoringPanelListResponse(
 ): MonitoringPanelListView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 2 ||
+    value.schemaVersion !== 3 ||
     !Array.isArray(value.panels) ||
     value.panels.length > 8
   ) {
@@ -908,7 +919,11 @@ function metricWindowMilliseconds(window: MetricWindowView): number {
     ? 15 * 60_000
     : window === "1h"
       ? 60 * 60_000
-      : 6 * 60 * 60_000;
+      : window === "6h"
+        ? 6 * 60 * 60_000
+        : window === "7d"
+          ? 7 * 24 * 60 * 60_000
+          : 15 * 24 * 60 * 60_000;
 }
 
 export function parseIncidentMetricPanelResponse(

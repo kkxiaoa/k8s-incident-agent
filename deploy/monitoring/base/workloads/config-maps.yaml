@@ -17,8 +17,8 @@ data:
     storage:
       tsdb:
         retention:
-          time: 24h
-          size: 1GB
+          time: 15d
+          size: 1600MB
     rule_files:
       - /etc/prometheus/rules/*.yaml
     alerting:

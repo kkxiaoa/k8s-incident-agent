@@ -53,10 +53,13 @@ export function EvidenceJsonViewer({
       : copyState === "failed"
         ? "JSON 复制失败"
         : "复制 JSON";
+  const copyFailed = copyState === "failed";
+  const copyStatus = copyState === "idle" ? "" : copyLabel;
 
   function openDialog() {
     const dialog = dialogRef.current;
     if (dialog !== null && !dialog.open) {
+      setCopyState("idle");
       dialog.showModal();
       setDialogOpen(true);
     }
@@ -78,14 +81,14 @@ export function EvidenceJsonViewer({
               onClick={copyPayload}
               aria-label={copyLabel}
               title={copyLabel}
+              className={copyFailed ? "is-copy-failed" : undefined}
+              data-feedback={copyFailed ? "复制失败" : undefined}
             >
               <UiIcon
                 name={
                   copyState === "copied"
                     ? "check"
-                    : copyState === "failed"
-                      ? "alert"
-                      : "copy"
+                    : "copy"
                 }
               />
             </button>
@@ -103,6 +106,9 @@ export function EvidenceJsonViewer({
           <code className="language-json">{payloadText}</code>
         </pre>
       </div>
+      <span className="sr-only" role="status" aria-live="polite">
+        {dialogOpen ? "" : copyStatus}
+      </span>
 
       <dialog
         ref={dialogRef}
@@ -122,13 +128,13 @@ export function EvidenceJsonViewer({
                 onClick={copyPayload}
                 aria-label={copyLabel}
                 title={copyLabel}
+                className={copyFailed ? "is-copy-failed" : undefined}
+                data-feedback={copyFailed ? "复制失败" : undefined}
               >
                 <UiIcon
                   name={
                     copyState === "copied"
                       ? "check"
-                      : copyState === "failed"
-                        ? "alert"
                       : "copy"
                   }
                 />
@@ -136,14 +142,19 @@ export function EvidenceJsonViewer({
               <button
                 type="button"
                 onClick={closeDialog}
+                aria-label="关闭"
+                title="关闭"
               >
-                关闭
+                <UiIcon name="close" />
               </button>
             </div>
           </header>
           <pre className="evidence-dialog__payload">
             <code className="language-json">{payloadText}</code>
           </pre>
+          <span className="sr-only" role="status" aria-live="polite">
+            {dialogOpen ? copyStatus : ""}
+          </span>
         </div>
       </dialog>
     </>

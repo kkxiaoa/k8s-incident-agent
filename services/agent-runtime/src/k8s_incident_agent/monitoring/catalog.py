@@ -83,7 +83,8 @@ class MetricPanelContract(_CatalogContract):
     threshold_duration: str | None = Field(
         pattern=r"^[1-9][0-9]*(?:ms|s|m|h)$",
     )
-    recommended_window: Literal["15m", "1h", "6h"]
+    signal_role: Literal["trigger", "context"]
+    recommended_window: Literal["15m", "1h", "6h", "7d", "15d"]
     stale_after_seconds: int = Field(ge=15, le=300)
     query_template: str = Field(min_length=1, max_length=16 * 1024)
 
@@ -133,11 +134,18 @@ class AlertCatalogEntry(_CatalogContract):
             self.allowed_tools,
             self.required_evidence,
         )
+        trigger_panels = [
+            panel for panel in self.panels if panel.signal_role == "trigger"
+        ]
+        if len(trigger_panels) != 1:
+            raise ValueError("Alert entries require exactly one trigger panel")
+        if trigger_panels[0].threshold_duration != self.rule.for_duration:
+            raise ValueError("Trigger panel duration must match the alert rule")
         return self
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[5]
+    schema_version: Literal[6]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,

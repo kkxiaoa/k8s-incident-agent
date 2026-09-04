@@ -15,11 +15,6 @@ export type EvidenceResponse = EvidenceView;
 export type DiagnosisResponse = DiagnosisView;
 export type RunErrorResponse = RunErrorView;
 
-export interface IncidentMonitoringFacts {
-  desiredReplicas: number | null;
-  waitingReasons: string[] | null;
-}
-
 const INCIDENT_STATUS_LABELS: Record<IncidentStatus, string> = {
   RECEIVED: "已接收",
   TRIAGING: "诊断中",
@@ -320,7 +315,7 @@ export function evidenceSummary(evidence: EvidenceResponse): string {
 
 function newestEvidence(
   evidence: EvidenceResponse[],
-  kind: "pods" | "workload",
+  kind: EvidenceResponse["evidenceKind"],
 ): EvidenceResponse | null {
   let newest: EvidenceResponse | null = null;
   for (const item of evidence) {
@@ -335,40 +330,9 @@ function newestEvidence(
   return newest;
 }
 
-export function incidentMonitoringFacts(
-  evidence: EvidenceResponse[],
-): IncidentMonitoringFacts {
+export function incidentDesiredReplicas(evidence: EvidenceResponse[]): number | null {
   const workloadEvidence = newestEvidence(evidence, "workload");
-  const podsEvidence = newestEvidence(evidence, "pods");
   const workload = record(workloadEvidence?.payload.workload);
   const replicas = record(workload?.replicas);
-  const desiredReplicas = nonNegativeInteger(replicas?.desired);
-
-  const pods = podsEvidence?.payload.pods;
-  let waitingReasons: string[] | null = null;
-  if (Array.isArray(pods)) {
-    const reasons = new Set<string>();
-    for (const podValue of pods) {
-      const pod = record(podValue);
-      if (!Array.isArray(pod?.containers)) {
-        continue;
-      }
-      for (const containerValue of pod.containers) {
-        const container = record(containerValue);
-        const state = record(container?.state);
-        if (state?.status !== "waiting") {
-          continue;
-        }
-        if (typeof state.reason === "string" && state.reason.length > 0) {
-          reasons.add(state.reason);
-        }
-      }
-    }
-    waitingReasons = [...reasons].sort();
-  }
-
-  return {
-    desiredReplicas,
-    waitingReasons,
-  };
+  return nonNegativeInteger(replicas?.desired);
 }

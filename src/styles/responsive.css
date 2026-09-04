@@ -21,15 +21,6 @@
     justify-content: flex-start;
   }
 
-  .incident-monitoring__header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .incident-monitoring__header p {
-    text-align: left;
-  }
-
   .evidence-grid {
     grid-template-columns: 1fr;
   }
