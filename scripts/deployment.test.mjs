@@ -460,8 +460,8 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.deepEqual(kubeStateMetrics.args, [
     "--namespaces=k8s-incident-scenarios",
     "--resources=deployments,endpointslices,pods,replicasets,services",
-    "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
-    "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
+    "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_ready,kube_pod_container_status_restarts_total,kube_pod_container_status_running,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
+    "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/liveness-container,k8s-incident-agent.io/readiness-container,k8s-incident-agent.io/readiness-slo,k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
     "--use-apiserver-cache",
   ]);
 
@@ -535,6 +535,8 @@ test("managed monitoring render pins topology, collection, rule, and credential 
       "K8sIncidentCrashLoopBackOff",
       "K8sIncidentDeploymentReplicasUnavailable",
       "K8sIncidentServiceEndpointsUnavailable",
+      "K8sIncidentReadinessProbeFailure",
+      "K8sIncidentLivenessProbeRestart",
     ],
   );
   assert.deepEqual(rules[0], {
@@ -558,6 +560,25 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.match(rules[4].expr, /kube_service_labels/);
   assert.match(rules[4].expr, /kube_endpointslice_endpoints/);
   assert.deepEqual(rules[4].labels, { severity: "warning" });
+  assert.equal(rules[5].for, "2m");
+  assert.match(rules[5].expr, /kube_pod_container_status_ready == bool 0/);
+  assert.match(rules[5].expr, /kube_pod_container_status_running == 1/);
+  assert.match(
+    rules[5].expr,
+    /label_k8s_incident_agent_io_readiness_container/,
+    /label_k8s_incident_agent_io_readiness_slo="2m"/,
+  );
+  assert.deepEqual(rules[5].labels, { severity: "warning" });
+  assert.equal(rules[6].for, "30s");
+  assert.match(
+    rules[6].expr,
+    /increase\(kube_pod_container_status_restarts_total\[5m\]\) > 0/,
+  );
+  assert.match(
+    rules[6].expr,
+    /label_k8s_incident_agent_io_liveness_container/,
+  );
+  assert.deepEqual(rules[6].labels, { severity: "warning" });
 
   const alertmanager = load(
     getResource(
@@ -570,7 +591,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.deepEqual(alertmanager.inhibit_rules, [
     {
       source_matchers: [
-        'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff"',
+        'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart"',
       ],
       target_matchers: [
         'alertname="K8sIncidentDeploymentReplicasUnavailable"',

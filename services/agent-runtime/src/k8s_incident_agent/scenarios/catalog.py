@@ -37,6 +37,8 @@ class _Verifier(_StrictContract):
         "image_pull_backoff",
         "crash_loop_backoff",
         "service_selector_mismatch",
+        "readiness_probe_failure",
+        "liveness_probe_failure",
     ]
     timeout_seconds: Literal[120]
     poll_interval_seconds: Literal[2]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -58,12 +58,50 @@ class ConditionSummary(_EvidenceContract):
     reason: str | None
 
 
+class ExecProbeHandler(_EvidenceContract):
+    type: Literal["exec"]
+
+
+class GrpcProbeHandler(_EvidenceContract):
+    type: Literal["grpc"]
+    port: int = Field(ge=1, le=65535)
+
+
+class HttpGetProbeHandler(_EvidenceContract):
+    type: Literal["http_get"]
+    path: str = Field(min_length=1)
+    port: int | str
+    scheme: Literal["HTTP", "HTTPS"]
+
+
+class TcpSocketProbeHandler(_EvidenceContract):
+    type: Literal["tcp_socket"]
+    port: int | str
+
+
+type ProbeHandler = Annotated[
+    ExecProbeHandler | GrpcProbeHandler | HttpGetProbeHandler | TcpSocketProbeHandler,
+    Field(discriminator="type"),
+]
+
+
+class ContainerProbe(_EvidenceContract):
+    probe_kind: Literal["startup", "readiness", "liveness"]
+    handler: ProbeHandler
+    initial_delay_seconds: int = Field(ge=0)
+    period_seconds: int = Field(ge=1)
+    timeout_seconds: int = Field(ge=1)
+    success_threshold: int = Field(ge=1)
+    failure_threshold: int = Field(ge=1)
+
+
 class WorkloadContainer(_EvidenceContract):
     name: str = Field(min_length=1)
     image: str
     image_pull_policy: str = Field(min_length=1)
     command: list[str]
     args: list[str]
+    probes: list[ContainerProbe] = Field(default_factory=list[ContainerProbe])
 
 
 class WorkloadDetail(_EvidenceContract):

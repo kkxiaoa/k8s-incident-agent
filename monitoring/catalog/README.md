@@ -6,8 +6,8 @@
 | --- | --- | --- | --- | --- | --- |
 | `ImagePullBackOff` | Task 1 offline | Task 3 offline | Task 3 offline | Task 4 offline | Pending Task 9 |
 | `CrashLoopBackOff` | Task 5 offline | Task 5 offline | Task 5 offline | Task 5 offline via Task 4 components | Fixture / verifier offline; full evaluation pending Task 9 |
-| Service selector / Pod label mismatch | Pending | Pending | Pending | Pending | Pending |
-| readiness / liveness probe misconfiguration | Pending | Pending | Pending | Pending | Pending |
+| Service selector / Pod label mismatch | Task 6 offline | Task 6 offline | Task 6 offline | Task 6 offline via Task 4 components | Fixture / verifier offline; full evaluation pending Task 9 |
+| readiness / liveness probe misconfiguration | Task 7 offline | Task 7 offline | Task 7 offline | Task 7 offline via Task 4 components | Fixtures / verifiers offline; full evaluation pending Task 9 |
 | PVC Pending | Pending | Pending | Pending | Pending | Pending |
 
-`Watchdog` is monitoring-path health evidence. It does not create an Incident and is not a sixth fault family. “Offline” means the production contract and Runtime consumer are implemented and tested against locked producer fixtures; it is not a real managed-monitoring or diagnosis result. Task 5 does not claim a firing alert, healthy-control non-trigger, or model diagnosis until the authorized Task 9 live evaluation runs.
+`Watchdog` is monitoring-path health evidence. It does not create an Incident and is not a sixth fault family. “Offline” means the production contract and Runtime consumer are implemented and tested against locked producer fixtures; it is not a real managed-monitoring or diagnosis result. Tasks 5–7 do not claim a firing alert, healthy-control non-trigger, or model diagnosis until the authorized Task 9 live evaluation runs.

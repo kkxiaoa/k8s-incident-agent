@@ -3459,8 +3459,8 @@ function requireReadyMonitoringDeployment(
     !isDeepStrictEqual(container.args, [
       "--namespaces=k8s-incident-scenarios",
       "--resources=deployments,endpointslices,pods,replicasets,services",
-      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_restarts_total,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
-      "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
+      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_ready,kube_pod_container_status_restarts_total,kube_pod_container_status_running,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
+      "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/liveness-container,k8s-incident-agent.io/readiness-container,k8s-incident-agent.io/readiness-slo,k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
       "--use-apiserver-cache",
     ])
   ) {
@@ -3954,7 +3954,7 @@ function requireAlertmanagerConfiguration(rawConfiguration) {
     inhibit_rules: [
       {
         source_matchers: [
-          'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff"',
+          'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart"',
         ],
         target_matchers: [
           'alertname="K8sIncidentDeploymentReplicasUnavailable"',

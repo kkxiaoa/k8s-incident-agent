@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: liveness-probe-misconfigured-healthy-control
+  namespace: k8s-incident-scenarios
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: liveness-probe-misconfigured-healthy-control
+  template:
+    metadata:
+      labels:
+        app: liveness-probe-misconfigured-healthy-control
+        k8s-incident-agent.io/liveness-container: workload
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: workload
+          image: registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85
+          imagePullPolicy: IfNotPresent
+          args: ["netexec", "--http-port=8080"]
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: health
+            initialDelaySeconds: 20
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: health
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

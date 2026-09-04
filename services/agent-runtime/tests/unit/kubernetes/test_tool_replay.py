@@ -239,6 +239,76 @@ async def test_success_replay_returns_persisted_evidence_without_kubernetes(
 
 
 @pytest.mark.asyncio
+async def test_workload_replay_accepts_the_pre_probe_container_shape(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        adapter = _SequencedAdapter()
+        context = await _context(repository, adapter)
+        await repository.record_tool_started(
+            context.run.id,
+            "call-workload-before-probes",
+            "get_workload",
+        )
+        await repository.record_evidence(
+            EvidenceRecord(
+                run_id=context.run.id,
+                tool_call_id="call-workload-before-probes",
+                tool_name="get_workload",
+                evidence_kind="workload",
+                target_ref={
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "namespace": TARGET.namespace,
+                    "name": TARGET.name,
+                    "uid": "deployment-uid",
+                },
+                observed_at=NOW,
+                payload={
+                    "workload": {
+                        "resourceVersion": "1",
+                        "generation": 1,
+                        "observedGeneration": 1,
+                        "replicas": {
+                            "desired": 1,
+                            "updated": 1,
+                            "ready": 0,
+                            "available": 0,
+                        },
+                        "selector": {"matchLabels": {"app": "broken-image"}},
+                        "containers": [
+                            {
+                                "name": "workload",
+                                "image": "registry.invalid/workload:v1",
+                                "imagePullPolicy": "Always",
+                                "command": [],
+                                "args": [],
+                            }
+                        ],
+                        "conditions": [],
+                    }
+                },
+                truncated=False,
+                redacted=False,
+            )
+        )
+
+        replayed = await _invoke(
+            build_diagnostic_tools(),
+            context,
+            "get_workload",
+            "call-workload-before-probes",
+        )
+
+        payload = cast(dict[str, object], replayed["payload"])
+        workload = cast(dict[str, object], payload["workload"])
+        containers = cast(list[dict[str, object]], workload["containers"])
+        assert containers[0]["probes"] == []
+        assert adapter.calls == []
+
+
+@pytest.mark.asyncio
 async def test_replay_rejects_evidence_outside_the_normalized_tool_contract(
     tmp_path: Path,
 ) -> None:

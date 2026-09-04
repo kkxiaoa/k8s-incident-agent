@@ -139,6 +139,60 @@ data:
             for: 30s
             labels:
               severity: warning
+          - alert: K8sIncidentReadinessProbeFailure
+            expr: >-
+              max by (namespace, deployment) (
+                max by (namespace, pod) (
+                  (
+                    (kube_pod_container_status_ready == bool 0)
+                    * on (namespace, pod, container)
+                      (kube_pod_container_status_running == 1)
+                  )
+                  * on (namespace, pod, container)
+                    label_replace(
+                      kube_pod_labels{label_k8s_incident_agent_io_readiness_container!="",label_k8s_incident_agent_io_readiness_slo="2m"} == 1,
+                      "container", "$1", "label_k8s_incident_agent_io_readiness_container", "(.+)"
+                    )
+                )
+                * on (namespace, pod) group_left(replicaset)
+                  label_replace(
+                    kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"},
+                    "replicaset", "$1", "owner_name", "(.+)"
+                  )
+                * on (namespace, replicaset) group_left(deployment)
+                  label_replace(
+                    kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"},
+                    "deployment", "$1", "owner_name", "(.+)"
+                  )
+              ) > 0
+            for: 2m
+            labels:
+              severity: warning
+          - alert: K8sIncidentLivenessProbeRestart
+            expr: >-
+              max by (namespace, deployment) (
+                max by (namespace, pod) (
+                  (increase(kube_pod_container_status_restarts_total[5m]) > 0)
+                  * on (namespace, pod, container)
+                    label_replace(
+                      kube_pod_labels{label_k8s_incident_agent_io_liveness_container!=""} == 1,
+                      "container", "$1", "label_k8s_incident_agent_io_liveness_container", "(.+)"
+                    )
+                )
+                * on (namespace, pod) group_left(replicaset)
+                  label_replace(
+                    kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"},
+                    "replicaset", "$1", "owner_name", "(.+)"
+                  )
+                * on (namespace, replicaset) group_left(deployment)
+                  label_replace(
+                    kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"},
+                    "deployment", "$1", "owner_name", "(.+)"
+                  )
+              ) > 0
+            for: 30s
+            labels:
+              severity: warning
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -160,7 +214,7 @@ data:
       repeat_interval: 5m
     inhibit_rules:
       - source_matchers:
-          - alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff"
+          - alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart"
         target_matchers:
           - alertname="K8sIncidentDeploymentReplicasUnavailable"
         equal: ["cluster", "namespace", "deployment"]

@@ -94,6 +94,70 @@ test("CrashLoop fixtures pin one bounded failing workload and a healthy control"
   }
 });
 
+test("probe fixtures pin monitored containers, timings, and healthy controls", () => {
+  for (const probeKind of ["readiness", "liveness"]) {
+    const scenarioRoot = path.join(
+      REPOSITORY_ROOT,
+      "scenarios",
+      `${probeKind}-probe-misconfigured`,
+    );
+    const names =
+      probeKind === "readiness"
+        ? [
+            "deployment.yaml",
+            "healthy-control.yaml",
+            "slow-start-control.yaml",
+          ]
+        : ["deployment.yaml", "healthy-control.yaml"];
+    for (const name of names) {
+      const manifest = load(
+        readFileSync(path.join(scenarioRoot, "manifests", name), "utf8"),
+      );
+      const healthy = name === "healthy-control.yaml";
+      const slow = name === "slow-start-control.yaml";
+      const workload = manifest?.spec?.template?.spec?.containers?.[0];
+      assert.equal(
+        manifest?.spec?.template?.metadata?.labels?.[
+          `k8s-incident-agent.io/${probeKind}-container`
+        ],
+        "workload",
+      );
+      if (probeKind === "readiness") {
+        assert.equal(
+          manifest?.spec?.template?.metadata?.labels?.[
+            "k8s-incident-agent.io/readiness-slo"
+          ],
+          slow ? "5m" : "2m",
+        );
+      }
+      assert.equal(workload?.image?.includes("@sha256:"), true);
+      assert.deepEqual(workload?.args, ["netexec", "--http-port=8080"]);
+      assert.deepEqual(workload?.startupProbe, {
+        tcpSocket: { port: "health" },
+        initialDelaySeconds: slow ? 180 : healthy ? 20 : 1,
+        periodSeconds: 2,
+        timeoutSeconds: 1,
+        failureThreshold: 30,
+      });
+      assert.equal(
+        workload?.readinessProbe?.tcpSocket?.port,
+        probeKind === "readiness" && !healthy && !slow
+          ? "missing-health"
+          : "health",
+      );
+      if (probeKind === "liveness") {
+        assert.equal(
+          workload?.livenessProbe?.tcpSocket?.port,
+          healthy ? 8080 : 8081,
+        );
+      } else {
+        assert.equal(workload?.livenessProbe, undefined);
+      }
+      assert.equal(workload?.securityContext?.readOnlyRootFilesystem, true);
+    }
+  }
+});
+
 function validScenario() {
   return {
     schema_version: 2,
@@ -407,6 +471,177 @@ function crashLoopOutput(args, resource) {
   }
   if (args.includes("logs")) {
     return "2026-09-03T00:00:00Z unknown command unsupported-k8s-incident-agent-command\n";
+  }
+  return undefined;
+}
+
+function probeFailureOutput(args, resource, probeKind, options = {}) {
+  const scenarioName = `${probeKind}-probe-misconfigured`;
+  const selectorIndex = args.indexOf("--selector");
+  const selector = selectorIndex === -1 ? undefined : args[selectorIndex + 1];
+  const selectedName = selector?.startsWith("app=")
+    ? selector.slice("app=".length)
+    : undefined;
+  if (resource === "deployment.apps") {
+    const name = args[args.indexOf("deployment.apps") + 1];
+    const healthy = name.endsWith("-healthy-control");
+    const slow = name.endsWith("-slow-start-control");
+    const workload = {
+      name: "workload",
+      ports: [{ name: "health", containerPort: 8080, protocol: "TCP" }],
+      startupProbe: {
+        tcpSocket: { port: "health" },
+        initialDelaySeconds: slow ? 180 : healthy ? 20 : 1,
+        periodSeconds: 2,
+        timeoutSeconds: 1,
+        failureThreshold: 30,
+      },
+      readinessProbe: {
+        tcpSocket: {
+          port:
+            probeKind === "readiness" && !healthy && !slow
+              ? "missing-health"
+              : "health",
+        },
+        initialDelaySeconds: 1,
+        periodSeconds: 2,
+        timeoutSeconds: 1,
+        failureThreshold: 3,
+      },
+    };
+    if (probeKind === "liveness") {
+      workload.livenessProbe = {
+        tcpSocket: { port: healthy ? 8080 : 8081 },
+        initialDelaySeconds: 1,
+        periodSeconds: 2,
+        timeoutSeconds: 1,
+        failureThreshold: 3,
+      };
+    }
+    return JSON.stringify({
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name,
+        namespace: NAMESPACE,
+        uid: `${name}-deployment-uid`,
+      },
+      spec: {
+        selector: { matchLabels: { app: name } },
+        template: {
+          metadata: {
+            labels: {
+              app: name,
+              [`k8s-incident-agent.io/${probeKind}-container`]: "workload",
+              ...(probeKind === "readiness"
+                ? {
+                    "k8s-incident-agent.io/readiness-slo": slow ? "5m" : "2m",
+                  }
+                : {}),
+            },
+          },
+          spec: { containers: [workload] },
+        },
+      },
+      status: { availableReplicas: healthy ? 1 : 0 },
+    });
+  }
+  if (resource === "replicasets.apps" && selectedName !== undefined) {
+    return JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "apps/v1",
+          kind: "ReplicaSet",
+          metadata: {
+            name: `${selectedName}-rs`,
+            namespace: NAMESPACE,
+            uid: `${selectedName}-rs-uid`,
+            ownerReferences: [
+              {
+                apiVersion: "apps/v1",
+                kind: "Deployment",
+                name: selectedName,
+                uid: `${selectedName}-deployment-uid`,
+                controller: true,
+              },
+            ],
+          },
+        },
+      ],
+    });
+  }
+  if (resource === "pods" && selectedName !== undefined) {
+    const healthy = selectedName.endsWith("-healthy-control");
+    const slow = selectedName.endsWith("-slow-start-control");
+    const ready = healthy || probeKind === "liveness";
+    return JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "v1",
+          kind: "Pod",
+          metadata: {
+            name: `${selectedName}-pod`,
+            namespace: NAMESPACE,
+            uid: `${selectedName}-pod-uid`,
+            ownerReferences: [
+              {
+                apiVersion: "apps/v1",
+                kind: "ReplicaSet",
+                name: `${selectedName}-rs`,
+                uid: `${selectedName}-rs-uid`,
+                controller: true,
+              },
+            ],
+          },
+          status: {
+            conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+            containerStatuses: [
+              {
+                name: "workload",
+                ready,
+                restartCount:
+                  !healthy && !slow && probeKind === "liveness" ? 4 : 0,
+                state: { running: {} },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  }
+  if (resource === "events.events.k8s.io") {
+    return JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "events.k8s.io/v1",
+          kind: "Event",
+          metadata: {
+            name: `${probeKind}-probe-event`,
+            namespace: NAMESPACE,
+          },
+          type: "Warning",
+          reason: "Unhealthy",
+          reportingController: options.reportingController ?? "kubelet",
+          note:
+            probeKind === "readiness"
+              ? "Readiness probe errored and resulted in UNKNOWN state: named port not found"
+              : "Liveness probe failed: connection refused",
+          regarding: {
+            apiVersion: "v1",
+            kind: "Pod",
+            name: `${scenarioName}-pod`,
+            namespace: NAMESPACE,
+            uid: `${scenarioName}-pod-uid`,
+          },
+        },
+      ],
+    });
   }
   return undefined;
 }
@@ -935,6 +1170,44 @@ test("the versioned fixture exposes only the public scenario contract", async ()
       },
     },
     {
+      scenario_id: "liveness-probe-misconfigured",
+      scenario_version: 1,
+      display_name: "Liveness probe misconfiguration",
+      description:
+        "A healthy Deployment process is repeatedly restarted because its liveness probe targets the wrong numeric port.",
+      trigger: {
+        type: "manual",
+        summary:
+          "The monitored Deployment container restarts while its liveness probe is failing.",
+      },
+      target: {
+        cluster: CLUSTER_NAME,
+        namespace: NAMESPACE,
+        api_version: "apps/v1",
+        kind: "Deployment",
+        name: "liveness-probe-misconfigured",
+      },
+    },
+    {
+      scenario_id: "readiness-probe-misconfigured",
+      scenario_version: 1,
+      display_name: "Readiness probe misconfiguration",
+      description:
+        "A running Deployment container remains unready because its readiness probe references an undeclared named port.",
+      trigger: {
+        type: "manual",
+        summary:
+          "The monitored Deployment container remains running but does not become ready.",
+      },
+      target: {
+        cluster: CLUSTER_NAME,
+        namespace: NAMESPACE,
+        api_version: "apps/v1",
+        kind: "Deployment",
+        name: "readiness-probe-misconfigured",
+      },
+    },
+    {
       scenario_id: "service-selector-mismatch",
       scenario_version: 1,
       display_name: "Service selector mismatch",
@@ -1106,6 +1379,77 @@ test("Service verifier proves mismatch and a ready selector-matched control", as
       ready_endpoints: 1,
     },
   });
+});
+
+test("probe verifiers keep readiness and liveness failure semantics distinct", async (t) => {
+  for (const probeKind of ["readiness", "liveness"]) {
+    await t.test(probeKind, async () => {
+      const scenarioName = `${probeKind}-probe-misconfigured`;
+      const executor = createExecutor({
+        resolveOutput: ({ args, resource }) =>
+          probeFailureOutput(args, resource, probeKind),
+      });
+
+      const result = await runScenarioCommand("verify", scenarioName, {
+        repositoryRoot: REPOSITORY_ROOT,
+        environment: {},
+        execute: executor.execute,
+      });
+
+      assert.deepEqual(result, {
+        status: "verified",
+        scenario_id: scenarioName,
+        probe_kind: probeKind,
+        pod: {
+          name: `${scenarioName}-pod`,
+          ready: probeKind === "liveness",
+          restart_count: probeKind === "liveness" ? 4 : 0,
+        },
+        event: {
+          name: `${probeKind}-probe-event`,
+          reason: "Unhealthy",
+        },
+        healthy_control: "ready",
+        ...(probeKind === "readiness"
+          ? { slow_start_control: "excluded_by_5m_slo" }
+          : {}),
+      });
+      assert.equal(
+        executor.calls.some(({ args }) => args.includes("logs")),
+        false,
+      );
+    });
+  }
+});
+
+test("probe verifier rejects a matching event from a non-kubelet producer", async () => {
+  let nowMilliseconds = 0;
+  const executor = createExecutor({
+    resolveOutput: ({ args, resource }) =>
+      probeFailureOutput(args, resource, "readiness", {
+        reportingController: "example.invalid/test-recorder",
+      }),
+  });
+
+  await assert.rejects(
+    runScenarioCommand("verify", "readiness-probe-misconfigured", {
+      repositoryRoot: REPOSITORY_ROOT,
+      environment: {},
+      execute: executor.execute,
+      now: () => nowMilliseconds,
+      sleep: async (milliseconds) => {
+        nowMilliseconds += milliseconds;
+      },
+    }),
+    (error) => {
+      assert.equal(error?.code, "verification_failed");
+      assert.equal(
+        error?.message,
+        "Scenario did not reach its deterministic evidence condition: readiness_probe_failure_not_observed",
+      );
+      return true;
+    },
+  );
 });
 
 test("catalog rejects incompatible versions, extra fields, and target drift", async (t) => {

@@ -168,7 +168,7 @@ def test_default_v4_firing_projects_only_the_catalog_contract() -> None:
     assert occurrence.starts_at == "2026-09-02T08:00:00.123000000Z"
     assert occurrence.trigger.source.type == "alertmanager"
     assert occurrence.trigger.source.ref == "K8sIncidentImagePullBackOff"
-    assert occurrence.trigger.source.revision == "2026-09-04.2"
+    assert occurrence.trigger.source.revision == "2026-09-05.1"
     assert occurrence.trigger.target.name == "image-pull-backoff"
     serialized = repr(occurrence)
     assert "must-not-be-persisted" not in serialized
@@ -226,6 +226,35 @@ def test_service_endpoint_alert_maps_the_exact_service_target() -> None:
         "A monitored selector-based Service has candidate Pods but no ready "
         "EndpointSlice endpoints."
     )
+
+
+@pytest.mark.parametrize(
+    ("alert_name", "deployment", "summary"),
+    [
+        (
+            "K8sIncidentReadinessProbeFailure",
+            "readiness-probe-misconfigured",
+            "A monitored Deployment container remains running but is not ready.",
+        ),
+        (
+            "K8sIncidentLivenessProbeRestart",
+            "liveness-probe-misconfigured",
+            "A Deployment container selected for liveness monitoring restarted.",
+        ),
+    ],
+)
+def test_probe_alerts_map_the_exact_deployment_without_claiming_root_cause(
+    alert_name: str,
+    deployment: str,
+    summary: str,
+) -> None:
+    occurrence = _parse(
+        _payload(_alert(alert_name=alert_name, deployment=deployment))
+    ).occurrences[0]
+
+    assert occurrence.trigger.target.kind == "Deployment"
+    assert occurrence.trigger.target.name == deployment
+    assert occurrence.trigger.trigger_summary == summary
 
 
 def test_unknown_alert_is_acknowledgeable_without_an_occurrence() -> None:

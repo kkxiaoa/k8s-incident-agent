@@ -42,6 +42,8 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     assert [scenario.scenario_id for scenario in scenarios] == [
         "crash-loop-backoff",
         "image-pull-backoff",
+        "liveness-probe-misconfigured",
+        "readiness-probe-misconfigured",
         "service-selector-mismatch",
     ]
     scenario = next(
@@ -86,6 +88,19 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
         "query_prometheus",
     )
     assert crash_loop.required_evidence[-1] == "container_logs"
+    for scenario_id, alert_id in (
+        ("readiness-probe-misconfigured", "K8sIncidentReadinessProbeFailure"),
+        ("liveness-probe-misconfigured", "K8sIncidentLivenessProbeRestart"),
+    ):
+        probe = next(item for item in scenarios if item.scenario_id == scenario_id)
+        assert probe.monitoring_alert_id == alert_id
+        assert probe.allowed_tools == (
+            "get_workload",
+            "get_pods",
+            "get_events",
+            "query_prometheus",
+        )
+        assert probe.required_evidence == ("workload", "pods", "events")
 
 
 @pytest.mark.parametrize(

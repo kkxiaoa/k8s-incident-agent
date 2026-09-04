@@ -1,0 +1,46 @@
+{
+  "schema_version": 2,
+  "scenario_id": "liveness-probe-misconfigured",
+  "scenario_version": 1,
+  "monitoring_alert_id": "K8sIncidentLivenessProbeRestart",
+  "display_name": "Liveness probe misconfiguration",
+  "description": "A healthy Deployment process is repeatedly restarted because its liveness probe targets the wrong numeric port.",
+  "trigger": {
+    "type": "manual",
+    "summary": "The monitored Deployment container restarts while its liveness probe is failing."
+  },
+  "target": {
+    "cluster": "k8s-incident-agent",
+    "namespace": "k8s-incident-scenarios",
+    "api_version": "apps/v1",
+    "kind": "Deployment",
+    "name": "liveness-probe-misconfigured"
+  },
+  "fixture_manifests": [
+    "manifests/deployment.yaml",
+    "manifests/healthy-control.yaml"
+  ],
+  "expected_root_causes": [
+    "liveness_probe_targets_wrong_numeric_port"
+  ],
+  "required_evidence": [
+    "workload",
+    "pods",
+    "events"
+  ],
+  "allowed_tools": [
+    "get_workload",
+    "get_pods",
+    "get_events",
+    "query_prometheus"
+  ],
+  "forbidden_tools": [
+    "get_container_logs",
+    "execute_shell"
+  ],
+  "deterministic_verifier": {
+    "kind": "liveness_probe_failure",
+    "timeout_seconds": 120,
+    "poll_interval_seconds": 2
+  }
+}

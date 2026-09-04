@@ -12,10 +12,15 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1DeploymentCondition,
     V1DeploymentSpec,
     V1DeploymentStatus,
+    V1ExecAction,
+    V1GRPCAction,
+    V1HTTPGetAction,
     V1LabelSelector,
     V1ObjectMeta,
     V1PodSpec,
     V1PodTemplateSpec,
+    V1Probe,
+    V1TCPSocketAction,
 )
 
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
@@ -133,6 +138,20 @@ def _deployment(
     )
 
 
+def _deployment_containers(deployment: V1Deployment) -> list[V1Container]:
+    spec = cast(object, getattr(deployment, "spec", None))
+    assert isinstance(spec, V1DeploymentSpec)
+    template = cast(object, getattr(spec, "template", None))
+    assert isinstance(template, V1PodTemplateSpec)
+    pod_spec = cast(object, getattr(template, "spec", None))
+    assert isinstance(pod_spec, V1PodSpec)
+    containers = cast(object, getattr(pod_spec, "containers", None))
+    assert isinstance(containers, list)
+    container_values = cast(list[object], containers)
+    assert all(isinstance(container, V1Container) for container in container_values)
+    return cast(list[V1Container], container_values)
+
+
 def _adapter(
     deployment: object,
     *,
@@ -184,6 +203,7 @@ async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> No
                         "imagePullPolicy": "Always",
                         "command": ["/agnhost"],
                         "args": ["invalid-command"],
+                        "probes": [],
                     },
                     {
                         "name": "z-sidecar",
@@ -191,6 +211,7 @@ async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> No
                         "imagePullPolicy": "IfNotPresent",
                         "command": [],
                         "args": [],
+                        "probes": [],
                     },
                 ],
                 "conditions": [
@@ -266,6 +287,127 @@ async def test_read_workload_sanitizes_untrusted_values_and_aggregates_flags() -
     assert condition.reason == "Bearer [REDACTED]"
     assert observation.redacted is True
     assert observation.truncated is False
+
+
+@pytest.mark.asyncio
+async def test_read_workload_projects_probe_handlers_and_effective_timings() -> None:
+    deployment = _deployment()
+    containers = _deployment_containers(deployment)
+    app = containers[1]
+    sidecar = containers[0]
+    app.startup_probe = V1Probe(
+        _exec=V1ExecAction(command=["sh", "-c", "password=not-projected"]),
+    )
+    app.readiness_probe = V1Probe(
+        http_get=V1HTTPGetAction(
+            host="internal.example",
+            http_headers=[],
+            path="/ready?token=secret",
+            port="health",
+            scheme="HTTPS",
+        ),
+        initial_delay_seconds=5,
+        period_seconds=7,
+        timeout_seconds=2,
+        success_threshold=2,
+        failure_threshold=4,
+    )
+    app.liveness_probe = V1Probe(tcp_socket=V1TCPSocketAction(port=8080))
+    sidecar.liveness_probe = V1Probe(grpc=V1GRPCAction(port=9090, service="private"))
+    adapter, _ = _adapter(deployment)
+
+    observation = await adapter.read_workload(TARGET)
+
+    app_probes = observation.payload.workload.containers[0].model_dump(
+        mode="json",
+        by_alias=True,
+    )["probes"]
+    assert app_probes == [
+        {
+            "probeKind": "startup",
+            "handler": {"type": "exec"},
+            "initialDelaySeconds": 0,
+            "periodSeconds": 10,
+            "timeoutSeconds": 1,
+            "successThreshold": 1,
+            "failureThreshold": 3,
+        },
+        {
+            "probeKind": "readiness",
+            "handler": {
+                "type": "http_get",
+                "path": "/ready?token=[REDACTED]",
+                "port": "health",
+                "scheme": "HTTPS",
+            },
+            "initialDelaySeconds": 5,
+            "periodSeconds": 7,
+            "timeoutSeconds": 2,
+            "successThreshold": 2,
+            "failureThreshold": 4,
+        },
+        {
+            "probeKind": "liveness",
+            "handler": {"type": "tcp_socket", "port": 8080},
+            "initialDelaySeconds": 0,
+            "periodSeconds": 10,
+            "timeoutSeconds": 1,
+            "successThreshold": 1,
+            "failureThreshold": 3,
+        },
+    ]
+    sidecar_probe = observation.payload.workload.containers[1].probes[0]
+    assert sidecar_probe.model_dump(mode="json", by_alias=True)["handler"] == {
+        "type": "grpc",
+        "port": 9090,
+    }
+    serialized = observation.model_dump_json(by_alias=True)
+    assert "internal.example" not in serialized
+    assert "httpHeaders" not in serialized
+    assert "not-projected" not in serialized
+    assert "private" not in serialized
+    assert observation.redacted is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "probe",
+    [
+        V1Probe(
+            _exec=V1ExecAction(command=["true"]),
+            tcp_socket=V1TCPSocketAction(port=8080),
+        ),
+        V1Probe(tcp_socket=V1TCPSocketAction(port=0)),
+        V1Probe(tcp_socket=V1TCPSocketAction(port="INVALID_PORT_NAME")),
+        V1Probe(grpc=V1GRPCAction(port=cast(Any, "grpc-name"))),
+        V1Probe(http_get=V1HTTPGetAction(path="relative", port=8080)),
+        V1Probe(_exec=V1ExecAction(command=["true"]), period_seconds=0),
+    ],
+)
+async def test_read_workload_rejects_invalid_probe_contract(probe: V1Probe) -> None:
+    deployment = _deployment()
+    _deployment_containers(deployment)[1].readiness_probe = probe
+    adapter, _ = _adapter(deployment)
+
+    with pytest.raises(KubernetesBoundaryError) as error:
+        await adapter.read_workload(TARGET)
+
+    assert error.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
+@pytest.mark.asyncio
+async def test_read_workload_rejects_liveness_success_threshold_above_one() -> None:
+    deployment = _deployment()
+    _deployment_containers(deployment)[1].liveness_probe = V1Probe(
+        _exec=V1ExecAction(command=["true"]),
+        success_threshold=2,
+    )
+    adapter, _ = _adapter(deployment)
+
+    with pytest.raises(KubernetesBoundaryError) as error:
+        await adapter.read_workload(TARGET)
+
+    assert error.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
 
 
 @pytest.mark.asyncio

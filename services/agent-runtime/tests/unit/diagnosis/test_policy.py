@@ -108,6 +108,46 @@ def test_resolves_service_network_policy_without_deployment_tools() -> None:
 
 
 @pytest.mark.parametrize(
+    ("alert_id", "scenario_id", "panel_id"),
+    [
+        (
+            "K8sIncidentReadinessProbeFailure",
+            "readiness-probe-misconfigured",
+            "readiness-probe-unready-containers",
+        ),
+        (
+            "K8sIncidentLivenessProbeRestart",
+            "liveness-probe-misconfigured",
+            "liveness-probe-restarts",
+        ),
+    ],
+)
+def test_probe_alerts_and_scenarios_share_the_minimal_existing_tools(
+    alert_id: str,
+    scenario_id: str,
+    panel_id: str,
+) -> None:
+    policies, revision = _policies()
+
+    alert_policy = policies.resolve(
+        IncidentSource(type="alertmanager", ref=alert_id, revision=revision)
+    )
+    scenario_policy = policies.resolve(
+        IncidentSource(type="scenario", ref=scenario_id, revision="1")
+    )
+
+    assert alert_policy == scenario_policy
+    assert alert_policy.tool_names == (
+        "get_workload",
+        "get_pods",
+        "get_events",
+        "query_prometheus",
+    )
+    assert alert_policy.required_evidence == frozenset({"workload", "pods", "events"})
+    assert alert_policy.prometheus_panel_ids == (panel_id,)
+
+
+@pytest.mark.parametrize(
     "source",
     [
         IncidentSource(

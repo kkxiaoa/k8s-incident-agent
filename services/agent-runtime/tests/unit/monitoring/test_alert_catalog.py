@@ -13,12 +13,14 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_deployment_and_service_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-04.2"
+    assert catalog.version == "2026-09-05.1"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
         "K8sIncidentDeploymentReplicasUnavailable",
         "K8sIncidentServiceEndpointsUnavailable",
+        "K8sIncidentReadinessProbeFailure",
+        "K8sIncidentLivenessProbeRestart",
     ]
     assert catalog.entries[0].target.model_dump() == {
         "api_version": "apps/v1",
@@ -45,6 +47,8 @@ def test_production_catalog_has_deployment_and_service_entries() -> None:
         "crash-loop-waiting-containers",
         "deployment-replica-deficit",
         "service-ready-endpoints",
+        "readiness-probe-unready-containers",
+        "liveness-probe-restarts",
     )
     assert catalog.entries[0].panels[0].model_dump() == {
         "panel_id": "image-pull-affected-pods",
@@ -113,6 +117,39 @@ def test_production_catalog_has_deployment_and_service_entries() -> None:
         'kube_endpointslice_endpoints{namespace="{{namespace}}",ready="true"} > 0'
         in (ready_endpoints.query_template)
     )
+    readiness = catalog.entries[4]
+    assert readiness.rule.for_duration == "2m"
+    assert "kube_pod_container_status_ready == bool 0" in (readiness.rule.expression)
+    assert "kube_pod_container_status_running == 1" in readiness.rule.expression
+    assert "label_k8s_incident_agent_io_readiness_container" in (
+        readiness.rule.expression
+    )
+    assert 'label_k8s_incident_agent_io_readiness_slo="2m"' in (
+        readiness.rule.expression
+    )
+    assert readiness.required_evidence == ["workload", "pods", "events"]
+    readiness_panel = readiness.panels[0]
+    assert readiness_panel.panel_id == "readiness-probe-unready-containers"
+    assert readiness_panel.unit == "containers"
+    assert readiness_panel.threshold == 1.0
+    assert readiness_panel.threshold_duration == "2m"
+    assert 'label_k8s_incident_agent_io_readiness_slo="2m"' in (
+        readiness_panel.query_template
+    )
+    liveness = catalog.entries[5]
+    assert liveness.rule.for_duration == "30s"
+    assert "increase(kube_pod_container_status_restarts_total[5m]) > 0" in (
+        liveness.rule.expression
+    )
+    assert "label_k8s_incident_agent_io_liveness_container" in (
+        liveness.rule.expression
+    )
+    assert liveness.required_evidence == ["workload", "pods", "events"]
+    liveness_panel = liveness.panels[0]
+    assert liveness_panel.panel_id == "liveness-probe-restarts"
+    assert liveness_panel.unit == "restarts"
+    assert liveness_panel.threshold == 1.0
+    assert liveness_panel.threshold_duration == "30s"
 
 
 @pytest.mark.parametrize(

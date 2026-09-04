@@ -30,11 +30,18 @@ const AGNHOST_IMAGE =
 const WAITING_REASONS = new Set(["ErrImagePull", "ImagePullBackOff"]);
 const SERVICE_ASSOCIATION_LABEL = "k8s-incident-agent.io/service";
 const SERVICE_MONITORING_LABEL = "k8s-incident-agent.io/monitor-selector";
+const READINESS_CONTAINER_LABEL =
+  "k8s-incident-agent.io/readiness-container";
+const READINESS_SLO_LABEL = "k8s-incident-agent.io/readiness-slo";
+const LIVENESS_CONTAINER_LABEL =
+  "k8s-incident-agent.io/liveness-container";
 const ENDPOINT_SLICE_SERVICE_LABEL = "kubernetes.io/service-name";
 const VALID_VERIFIERS = new Set([
   "image_pull_backoff",
   "crash_loop_backoff",
   "service_selector_mismatch",
+  "readiness_probe_failure",
+  "liveness_probe_failure",
 ]);
 const DIAGNOSTIC_EVIDENCE_TOOLS = new Map([
   ["workload", "get_workload"],
@@ -414,11 +421,16 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
   assertPlainObject(manifest.metadata);
   const verifier = definition.deterministic_verifier.kind;
   const isHealthyControl =
-    verifier === "crash_loop_backoff" &&
+    verifier !== "image_pull_backoff" &&
     relativePath === "manifests/healthy-control.yaml";
+  const isSlowStartControl =
+    verifier === "readiness_probe_failure" &&
+    relativePath === "manifests/slow-start-control.yaml";
   const expectedName = isHealthyControl
     ? `${definition.target.name}-healthy-control`
-    : definition.target.name;
+    : isSlowStartControl
+      ? `${definition.target.name}-slow-start-control`
+      : definition.target.name;
   if (
     manifest.metadata.name !== expectedName ||
     manifest.metadata.namespace !== definition.target.namespace
@@ -459,6 +471,21 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
     return;
   }
   if (
+    verifier === "readiness_probe_failure" ||
+    verifier === "liveness_probe_failure"
+  ) {
+    validateProbeDeploymentManifest(
+      definition,
+      relativePath,
+      workload,
+      templateLabels,
+      verifier,
+      isHealthyControl,
+      isSlowStartControl,
+    );
+    return;
+  }
+  if (
     definition.fixture_manifests.length !== 2 ||
     !definition.fixture_manifests.includes("manifests/deployment.yaml") ||
     !definition.fixture_manifests.includes("manifests/healthy-control.yaml") ||
@@ -468,6 +495,104 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
     workload.args.length !== 1 ||
     workload.args[0] !==
       (isHealthyControl ? "pause" : "unsupported-k8s-incident-agent-command")
+  ) {
+    throw new Error();
+  }
+}
+
+function validateProbeDeploymentManifest(
+  definition,
+  relativePath,
+  workload,
+  templateLabels,
+  verifier,
+  isHealthyControl,
+  isSlowStartControl,
+) {
+  const expectedManifests =
+    verifier === "readiness_probe_failure"
+      ? [
+          "manifests/deployment.yaml",
+          "manifests/healthy-control.yaml",
+          "manifests/slow-start-control.yaml",
+        ]
+      : ["manifests/deployment.yaml", "manifests/healthy-control.yaml"];
+  if (
+    definition.fixture_manifests.length !== expectedManifests.length ||
+    expectedManifests.some(
+      (manifest) => !definition.fixture_manifests.includes(manifest),
+    ) ||
+    !expectedManifests.includes(relativePath) ||
+    workload.image !== AGNHOST_IMAGE ||
+    workload.imagePullPolicy !== "IfNotPresent" ||
+    !Array.isArray(workload.args) ||
+    workload.args.length !== 2 ||
+    workload.args[0] !== "netexec" ||
+    workload.args[1] !== "--http-port=8080" ||
+    !Array.isArray(workload.ports) ||
+    workload.ports.length !== 1 ||
+    workload.ports[0]?.name !== "health" ||
+    workload.ports[0]?.containerPort !== 8080 ||
+    workload.ports[0]?.protocol !== "TCP"
+  ) {
+    throw new Error();
+  }
+  const monitoringLabel =
+    verifier === "readiness_probe_failure"
+      ? READINESS_CONTAINER_LABEL
+      : LIVENESS_CONTAINER_LABEL;
+  if (templateLabels[monitoringLabel] !== "workload") throw new Error();
+  if (
+    verifier === "readiness_probe_failure" &&
+    templateLabels[READINESS_SLO_LABEL] !== (isSlowStartControl ? "5m" : "2m")
+  ) {
+    throw new Error();
+  }
+  validateTcpProbe(workload.startupProbe, {
+    port: "health",
+    initialDelaySeconds: isSlowStartControl
+      ? 180
+      : isHealthyControl
+        ? 20
+        : 1,
+    periodSeconds: 2,
+    timeoutSeconds: 1,
+    failureThreshold: 30,
+  });
+  validateTcpProbe(workload.readinessProbe, {
+    port:
+      verifier === "readiness_probe_failure" &&
+      !isHealthyControl &&
+      !isSlowStartControl
+        ? "missing-health"
+        : "health",
+    initialDelaySeconds: 1,
+    periodSeconds: 2,
+    timeoutSeconds: 1,
+    failureThreshold: 3,
+  });
+  if (verifier === "readiness_probe_failure") {
+    if (workload.livenessProbe !== undefined) throw new Error();
+    return;
+  }
+  validateTcpProbe(workload.livenessProbe, {
+    port: isHealthyControl ? 8080 : 8081,
+    initialDelaySeconds: 1,
+    periodSeconds: 2,
+    timeoutSeconds: 1,
+    failureThreshold: 3,
+  });
+}
+
+function validateTcpProbe(probe, expected) {
+  assertPlainObject(probe);
+  assertPlainObject(probe.tcpSocket);
+  if (
+    probe.tcpSocket.port !== expected.port ||
+    probe.initialDelaySeconds !== expected.initialDelaySeconds ||
+    probe.periodSeconds !== expected.periodSeconds ||
+    probe.timeoutSeconds !== expected.timeoutSeconds ||
+    probe.failureThreshold !== expected.failureThreshold
   ) {
     throw new Error();
   }
@@ -666,7 +791,218 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
       executeKubectlQuery,
     );
   }
+  if (
+    definition.deterministic_verifier.kind === "readiness_probe_failure" ||
+    definition.deterministic_verifier.kind === "liveness_probe_failure"
+  ) {
+    return verifyProbeFailureOnce(definition, context, executeKubectlQuery);
+  }
   return verifyImagePullOnce(definition, context, executeKubectlQuery);
+}
+
+async function verifyProbeFailureOnce(
+  definition,
+  context,
+  executeKubectlQuery,
+) {
+  const verifier = definition.deterministic_verifier.kind;
+  const failing = await readOwnedDeploymentPods(
+    definition.target,
+    context,
+    executeKubectlQuery,
+  );
+  requireProbeDeployment(failing.deployment, verifier, "failing");
+  const events = await readScenarioEvents(context, executeKubectlQuery);
+  const expectedEventPrefix =
+    verifier === "readiness_probe_failure"
+      ? "Readiness probe errored"
+      : "Liveness probe failed";
+  let observed;
+  for (const pod of failing.ownedPods) {
+    const metadata = requireMetadata(pod, { namespace: NAMESPACE });
+    const statuses = pod.status?.containerStatuses;
+    if (!Array.isArray(statuses)) continue;
+    const status = statuses.find((item) => item?.name === "workload");
+    if (!isPlainObject(status) || !Number.isInteger(status.restartCount)) continue;
+    const readinessFailure =
+      status.ready === false &&
+      status.restartCount === 0 &&
+      isPlainObject(status.state?.running) &&
+      pod.status?.conditions?.some(
+        (condition) =>
+          condition?.type === "Ready" && condition?.status === "False",
+      );
+    const livenessFailure = status.restartCount > 0;
+    if (
+      (verifier === "readiness_probe_failure" && !readinessFailure) ||
+      (verifier === "liveness_probe_failure" && !livenessFailure)
+    ) {
+      continue;
+    }
+    const event = findProbeFailureEvent(events, metadata, expectedEventPrefix);
+    if (event !== undefined) {
+      observed = { metadata, status, event };
+      break;
+    }
+  }
+  if (observed === undefined) {
+    throw new VerificationPending(
+      verifier === "readiness_probe_failure"
+        ? "readiness_probe_failure_not_observed"
+        : "liveness_probe_failure_not_observed",
+    );
+  }
+
+  const healthyTarget = {
+    ...definition.target,
+    name: `${definition.target.name}-healthy-control`,
+  };
+  const healthy = await readOwnedDeploymentPods(
+    healthyTarget,
+    context,
+    executeKubectlQuery,
+  );
+  requireProbeDeployment(healthy.deployment, verifier, "healthy");
+  if (
+    healthy.deployment.status?.availableReplicas !== 1 ||
+    !healthy.ownedPods.some(hasHealthyWorkloadContainer)
+  ) {
+    throw new VerificationPending("probe_healthy_control_not_ready");
+  }
+
+  let slowStartControl;
+  if (verifier === "readiness_probe_failure") {
+    const slowTarget = {
+      ...definition.target,
+      name: `${definition.target.name}-slow-start-control`,
+    };
+    const slow = await readOwnedDeploymentPods(
+      slowTarget,
+      context,
+      executeKubectlQuery,
+    );
+    requireProbeDeployment(slow.deployment, verifier, "slow");
+    if (!slow.ownedPods.some(hasRunningUnfailedWorkloadContainer)) {
+      throw new VerificationPending("probe_slow_start_control_not_running");
+    }
+    slowStartControl = "excluded_by_5m_slo";
+  }
+
+  return {
+    status: "verified",
+    scenario_id: definition.scenario_id,
+    probe_kind:
+      verifier === "readiness_probe_failure" ? "readiness" : "liveness",
+    pod: {
+      name: observed.metadata.name,
+      ready: observed.status.ready,
+      restart_count: observed.status.restartCount,
+    },
+    event: {
+      name: requireMetadata(observed.event, { namespace: NAMESPACE }, false).name,
+      reason: "Unhealthy",
+    },
+    healthy_control: "ready",
+    ...(slowStartControl === undefined
+      ? {}
+      : { slow_start_control: slowStartControl }),
+  };
+}
+
+function requireProbeDeployment(deployment, verifier, control) {
+  const template = deployment.spec?.template;
+  assertPlainUpstreamObject(template);
+  const labels = validateUpstreamLabelMap(template.metadata?.labels);
+  const containers = template.spec?.containers;
+  if (!Array.isArray(containers)) throw upstreamContractError();
+  const workload = containers.find((container) => container?.name === "workload");
+  assertPlainUpstreamObject(workload);
+  const monitoringLabel =
+    verifier === "readiness_probe_failure"
+      ? READINESS_CONTAINER_LABEL
+      : LIVENESS_CONTAINER_LABEL;
+  if (labels[monitoringLabel] !== "workload") throw upstreamContractError();
+  if (
+    verifier === "readiness_probe_failure" &&
+    labels[READINESS_SLO_LABEL] !== (control === "slow" ? "5m" : "2m")
+  ) {
+    throw upstreamContractError();
+  }
+  if (
+    !Array.isArray(workload.ports) ||
+    workload.ports.length !== 1 ||
+    workload.ports[0]?.name !== "health" ||
+    workload.ports[0]?.containerPort !== 8080
+  ) {
+    throw upstreamContractError();
+  }
+  requireUpstreamTcpProbe(workload.startupProbe, {
+    port: "health",
+    initialDelaySeconds:
+      control === "slow" ? 180 : control === "healthy" ? 20 : 1,
+    failureThreshold: 30,
+  });
+  requireUpstreamTcpProbe(workload.readinessProbe, {
+    port:
+      verifier === "readiness_probe_failure" && control === "failing"
+        ? "missing-health"
+        : "health",
+    initialDelaySeconds: 1,
+    failureThreshold: 3,
+  });
+  if (verifier === "liveness_probe_failure") {
+    requireUpstreamTcpProbe(workload.livenessProbe, {
+      port: control === "healthy" ? 8080 : 8081,
+      initialDelaySeconds: 1,
+      failureThreshold: 3,
+    });
+  } else if (workload.livenessProbe !== undefined) {
+    throw upstreamContractError();
+  }
+}
+
+function requireUpstreamTcpProbe(probe, expected) {
+  if (
+    !isPlainObject(probe) ||
+    !isPlainObject(probe.tcpSocket) ||
+    probe.tcpSocket.port !== expected.port ||
+    probe.initialDelaySeconds !== expected.initialDelaySeconds ||
+    probe.periodSeconds !== 2 ||
+    probe.timeoutSeconds !== 1 ||
+    probe.failureThreshold !== expected.failureThreshold
+  ) {
+    throw upstreamContractError();
+  }
+}
+
+function hasHealthyWorkloadContainer(pod) {
+  const ready = pod.status?.conditions?.some(
+    (condition) => condition?.type === "Ready" && condition?.status === "True",
+  );
+  const statuses = pod.status?.containerStatuses;
+  if (!Array.isArray(statuses)) return false;
+  return ready && statuses.some((status) => {
+    assertPlainUpstreamObject(status);
+    return (
+      status.name === "workload" &&
+      status.ready === true &&
+      status.restartCount === 0 &&
+      status.state?.running !== undefined
+    );
+  });
+}
+
+function hasRunningUnfailedWorkloadContainer(pod) {
+  const statuses = pod.status?.containerStatuses;
+  if (!Array.isArray(statuses)) return false;
+  return statuses.some((status) => {
+    assertPlainUpstreamObject(status);
+    return (
+      status.name === "workload" &&
+      status.restartCount === 0 &&
+      isPlainObject(status.state?.running)
+    );
+  });
 }
 
 async function verifyServiceSelectorMismatchOnce(
@@ -1123,6 +1459,30 @@ function findWarningEvent(events, podMetadata) {
   return events.items.find((item) => {
     assertPlainUpstreamObject(item);
     if (item.type !== "Warning") return false;
+    const regarding = item.regarding;
+    return (
+      isPlainObject(regarding) &&
+      regarding.apiVersion === "v1" &&
+      regarding.kind === "Pod" &&
+      regarding.name === podMetadata.name &&
+      regarding.namespace === NAMESPACE &&
+      regarding.uid === podMetadata.uid
+    );
+  });
+}
+
+function findProbeFailureEvent(events, podMetadata, expectedPrefix) {
+  return events.items.find((item) => {
+    assertPlainUpstreamObject(item);
+    if (
+      item.type !== "Warning" ||
+      item.reason !== "Unhealthy" ||
+      item.reportingController !== "kubelet" ||
+      typeof item.note !== "string" ||
+      !item.note.includes(expectedPrefix)
+    ) {
+      return false;
+    }
     const regarding = item.regarding;
     return (
       isPlainObject(regarding) &&

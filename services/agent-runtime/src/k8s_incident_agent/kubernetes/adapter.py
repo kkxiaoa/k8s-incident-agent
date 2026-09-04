@@ -25,6 +25,9 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1EndpointConditions,
     V1EndpointSlice,
     V1EndpointSliceList,
+    V1ExecAction,
+    V1GRPCAction,
+    V1HTTPGetAction,
     V1LabelSelector,
     V1ListMeta,
     V1ObjectMeta,
@@ -36,10 +39,12 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1PodSpec,
     V1PodStatus,
     V1PodTemplateSpec,
+    V1Probe,
     V1ReplicaSet,
     V1ReplicaSetList,
     V1Service,
     V1ServiceSpec,
+    V1TCPSocketAction,
 )
 from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingTypeStubs]
     ApiException,
@@ -55,12 +60,16 @@ from k8s_incident_agent.kubernetes.contracts import (
     ContainerLogsObservation,
     ContainerLogsPayload,
     ContainerLogSummary,
+    ContainerProbe,
     ContainerStateSummary,
     DiagnosticTarget,
     EndpointSliceSummary,
     EventsObservation,
     EventsPayload,
     EventSummary,
+    ExecProbeHandler,
+    GrpcProbeHandler,
+    HttpGetProbeHandler,
     OwnerSummary,
     PodContainer,
     PodsObservation,
@@ -77,6 +86,7 @@ from k8s_incident_agent.kubernetes.contracts import (
     ServiceNetworkSummary,
     SourceWorkload,
     TargetRef,
+    TcpSocketProbeHandler,
     WorkloadContainer,
     WorkloadDetail,
     WorkloadObservation,
@@ -107,6 +117,7 @@ LOG_SINCE_SECONDS = 10 * 60
 LOG_LINE_MAX_CODE_POINTS = 512
 WORKLOAD_ARGUMENT_LIMIT = 16
 WORKLOAD_ARGUMENT_MAX_CODE_POINTS = 512
+PROBE_PATH_MAX_CODE_POINTS = 256
 
 SERVICE_ASSOCIATION_LABEL = "k8s-incident-agent.io/service"
 SERVICE_MONITORING_LABEL = "k8s-incident-agent.io/monitor-selector"
@@ -114,6 +125,7 @@ ENDPOINT_SLICE_SERVICE_LABEL = "kubernetes.io/service-name"
 
 _LABEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
 _DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")
+_IANA_SERVICE_NAME_PATTERN = re.compile(r"^[a-z](?:[-a-z0-9]{0,13}[a-z0-9])?$")
 _SENSITIVE_ARGUMENT_PATTERN = re.compile(
     r"^--?[A-Za-z0-9_.-]*(?:token|password|api[_-]?key|authorization|cookie)"
     r"[A-Za-z0-9_.-]*$",
@@ -236,6 +248,34 @@ class _WorkloadContainerView(Protocol):
     image_pull_policy: object
     command: object
     args: object
+    liveness_probe: object
+    readiness_probe: object
+    startup_probe: object
+
+
+class _ProbeView(Protocol):
+    failure_threshold: object
+    grpc: object
+    http_get: object
+    initial_delay_seconds: object
+    period_seconds: object
+    success_threshold: object
+    tcp_socket: object
+    timeout_seconds: object
+
+
+class _HttpGetActionView(Protocol):
+    path: object
+    port: object
+    scheme: object
+
+
+class _TcpSocketActionView(Protocol):
+    port: object
+
+
+class _GrpcActionView(Protocol):
+    port: object
 
 
 class _ReplicaSetView(Protocol):
@@ -1477,13 +1517,135 @@ def _project_workload_container(
         state,
         redact_value=redact_next,
     )
+    probes: list[ContainerProbe] = []
+    if container_view.startup_probe is not None:
+        probes.append(_project_probe("startup", container_view.startup_probe, state))
+    if container_view.readiness_probe is not None:
+        probes.append(
+            _project_probe("readiness", container_view.readiness_probe, state)
+        )
+    if container_view.liveness_probe is not None:
+        probes.append(_project_probe("liveness", container_view.liveness_probe, state))
     return WorkloadContainer(
         name=_required_string(container_view.name),
         image=state.required(container_view.image),
         image_pull_policy=_required_string(container_view.image_pull_policy),
         command=command,
         args=arguments,
+        probes=probes,
     )
+
+
+def _project_probe(
+    probe_kind: Literal["startup", "readiness", "liveness"],
+    value: object,
+    state: _SanitizationState,
+) -> ContainerProbe:
+    if not isinstance(value, V1Probe):
+        raise _contract_error()
+    probe = cast(_ProbeView, value)
+    handlers = [
+        ("exec", cast(object, getattr(value, "_exec", None))),
+        ("grpc", probe.grpc),
+        ("http_get", probe.http_get),
+        ("tcp_socket", probe.tcp_socket),
+    ]
+    configured = [(kind, action) for kind, action in handlers if action is not None]
+    if len(configured) != 1:
+        raise _contract_error()
+    handler_kind, action = configured[0]
+    if handler_kind == "exec":
+        if not isinstance(action, V1ExecAction):
+            raise _contract_error()
+        handler = ExecProbeHandler(type="exec")
+    elif handler_kind == "grpc":
+        if not isinstance(action, V1GRPCAction):
+            raise _contract_error()
+        port = _probe_port(cast(_GrpcActionView, action).port, names_allowed=False)
+        if not isinstance(port, int):
+            raise _contract_error()
+        handler = GrpcProbeHandler(
+            type="grpc",
+            port=port,
+        )
+    elif handler_kind == "http_get":
+        if not isinstance(action, V1HTTPGetAction):
+            raise _contract_error()
+        http_get = cast(_HttpGetActionView, action)
+        raw_path = "/" if http_get.path is None else http_get.path
+        if not isinstance(raw_path, str) or not raw_path.startswith("/"):
+            raise _contract_error()
+        path = sanitize_untrusted_text(
+            raw_path,
+            max_code_points=PROBE_PATH_MAX_CODE_POINTS,
+        )
+        state.truncated = state.truncated or path.truncated
+        state.redacted = state.redacted or path.redacted
+        scheme = "HTTP" if http_get.scheme is None else http_get.scheme
+        if scheme not in {"HTTP", "HTTPS"}:
+            raise _contract_error()
+        handler = HttpGetProbeHandler(
+            type="http_get",
+            path=path.value,
+            port=_probe_port(http_get.port, names_allowed=True),
+            scheme=cast(Literal["HTTP", "HTTPS"], scheme),
+        )
+    else:
+        if not isinstance(action, V1TCPSocketAction):
+            raise _contract_error()
+        handler = TcpSocketProbeHandler(
+            type="tcp_socket",
+            port=_probe_port(
+                cast(_TcpSocketActionView, action).port,
+                names_allowed=True,
+            ),
+        )
+    success_threshold = _probe_timing(
+        probe.success_threshold,
+        default=1,
+        minimum=1,
+    )
+    if probe_kind in {"startup", "liveness"} and success_threshold != 1:
+        raise _contract_error()
+    return ContainerProbe(
+        probe_kind=probe_kind,
+        handler=handler,
+        initial_delay_seconds=_probe_timing(
+            probe.initial_delay_seconds,
+            default=0,
+            minimum=0,
+        ),
+        period_seconds=_probe_timing(probe.period_seconds, default=10, minimum=1),
+        timeout_seconds=_probe_timing(probe.timeout_seconds, default=1, minimum=1),
+        success_threshold=success_threshold,
+        failure_threshold=_probe_timing(
+            probe.failure_threshold,
+            default=3,
+            minimum=1,
+        ),
+    )
+
+
+def _probe_port(value: object, *, names_allowed: bool) -> int | str:
+    if isinstance(value, int) and not isinstance(value, bool):
+        if 1 <= value <= 65535:
+            return value
+        raise _contract_error()
+    if (
+        names_allowed
+        and isinstance(value, str)
+        and _IANA_SERVICE_NAME_PATTERN.fullmatch(value) is not None
+    ):
+        return value
+    raise _contract_error()
+
+
+def _probe_timing(value: object, *, default: int, minimum: int) -> int:
+    if value is None:
+        return default
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise _contract_error()
+    return value
 
 
 def _project_workload_arguments(

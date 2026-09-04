@@ -1,6 +1,6 @@
 {
   "schemaVersion": 5,
-  "catalogVersion": "2026-09-04.2",
+  "catalogVersion": "2026-09-05.1",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -179,6 +179,86 @@
           "recommendedWindow": "15m",
           "staleAfterSeconds": 60,
           "queryTemplate": "sum((kube_endpointslice_endpoints{namespace=\"{{namespace}}\",ready=\"true\"} > 0) * on (namespace, endpointslice) group_left(service) label_replace(kube_endpointslice_labels{namespace=\"{{namespace}}\",label_kubernetes_io_service_name=\"{{name}}\"}, \"service\", \"$1\", \"label_kubernetes_io_service_name\", \"(.+)\")) or (max(kube_service_info{namespace=\"{{namespace}}\",service=\"{{name}}\"}) * 0)"
+        }
+      ]
+    },
+    {
+      "alertId": "K8sIncidentReadinessProbeFailure",
+      "displayName": "Readiness probe unavailable",
+      "triggerSummary": "A monitored Deployment container remains running but is not ready.",
+      "rule": {
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) (((kube_pod_container_status_ready == bool 0) * on (namespace, pod, container) (kube_pod_container_status_running == 1)) * on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_readiness_container!=\"\",label_k8s_incident_agent_io_readiness_slo=\"2m\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_readiness_container\", \"(.+)\")) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "for": "2m"
+      },
+      "target": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "clusterLabel": "cluster",
+        "namespaceLabel": "namespace",
+        "nameLabel": "deployment"
+      },
+      "allowedTools": [
+        "get_workload",
+        "get_pods",
+        "get_events",
+        "query_prometheus"
+      ],
+      "requiredEvidence": [
+        "workload",
+        "pods",
+        "events"
+      ],
+      "panels": [
+        {
+          "panelId": "readiness-probe-unready-containers",
+          "title": "Readiness 未就绪容器",
+          "unit": "containers",
+          "threshold": 1,
+          "riskDirection": "higher_is_worse",
+          "thresholdDuration": "2m",
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "sum((((kube_pod_container_status_ready{namespace=\"{{namespace}}\"} == bool 0) * on (namespace, pod, container) (kube_pod_container_status_running{namespace=\"{{namespace}}\"} == 1)) * on (namespace, pod, container) label_replace(kube_pod_labels{namespace=\"{{namespace}}\",label_k8s_incident_agent_io_readiness_container!=\"\",label_k8s_incident_agent_io_readiness_slo=\"2m\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_readiness_container\", \"(.+)\")) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"
+        }
+      ]
+    },
+    {
+      "alertId": "K8sIncidentLivenessProbeRestart",
+      "displayName": "Liveness probe restart",
+      "triggerSummary": "A Deployment container selected for liveness monitoring restarted.",
+      "rule": {
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((increase(kube_pod_container_status_restarts_total[5m]) > 0) * on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_liveness_container!=\"\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\")) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "for": "30s"
+      },
+      "target": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "clusterLabel": "cluster",
+        "namespaceLabel": "namespace",
+        "nameLabel": "deployment"
+      },
+      "allowedTools": [
+        "get_workload",
+        "get_pods",
+        "get_events",
+        "query_prometheus"
+      ],
+      "requiredEvidence": [
+        "workload",
+        "pods",
+        "events"
+      ],
+      "panels": [
+        {
+          "panelId": "liveness-probe-restarts",
+          "title": "Liveness 关联重启",
+          "unit": "restarts",
+          "threshold": 1,
+          "riskDirection": "higher_is_worse",
+          "thresholdDuration": "30s",
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"{{namespace}}\"}[5m]) * on (namespace, pod, container) label_replace(kube_pod_labels{namespace=\"{{namespace}}\",label_k8s_incident_agent_io_liveness_container!=\"\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\") * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"
         }
       ]
     }
