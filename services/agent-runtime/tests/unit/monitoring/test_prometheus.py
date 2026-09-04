@@ -33,6 +33,13 @@ SERVICE_TARGET = KubernetesTarget(
     kind="Service",
     name="frontend",
 )
+PVC_TARGET = KubernetesTarget(
+    cluster="k8s-incident-agent",
+    namespace="k8s-incident-scenarios",
+    api_version="v1",
+    kind="PersistentVolumeClaim",
+    name="pvc-storage-class-missing",
+)
 
 
 def _response(document: str, *, status: int = 200) -> httpx.Response:
@@ -123,6 +130,30 @@ async def test_service_endpoint_panel_preserves_multiple_ready_endpoints() -> No
         in form["query"]
     )
     assert 'label_kubernetes_io_service_name="frontend"' in form["query"]
+
+
+@pytest.mark.asyncio
+async def test_pvc_panel_queries_only_the_exact_claim() -> None:
+    service, requests = _service(
+        _response(
+            '{"status":"success","data":{"resultType":"matrix","result":['
+            '{"metric":{},"values":[[1788339600,"1"]]}]}}'
+        )
+    )
+
+    result = await service.query_panel(
+        target=PVC_TARGET,
+        panel_id="pvc-pending-state",
+        window=MetricWindow.FIFTEEN_MINUTES,
+    )
+    await service.close()
+
+    assert result.state is MetricQueryState.OK
+    assert result.current_value == 1
+    form = dict(httpx.QueryParams(requests[0].content.decode()))
+    assert 'namespace="k8s-incident-scenarios"' in form["query"]
+    assert 'persistentvolumeclaim="pvc-storage-class-missing"' in form["query"]
+    assert "kube_persistentvolumeclaim_info" not in form["query"]
 
 
 @pytest.mark.asyncio

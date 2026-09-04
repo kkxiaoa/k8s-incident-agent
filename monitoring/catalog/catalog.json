@@ -1,6 +1,6 @@
 {
   "schemaVersion": 5,
-  "catalogVersion": "2026-09-05.1",
+  "catalogVersion": "2026-09-05.2",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -259,6 +259,53 @@
           "recommendedWindow": "15m",
           "staleAfterSeconds": 60,
           "queryTemplate": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"{{namespace}}\"}[5m]) * on (namespace, pod, container) label_replace(kube_pod_labels{namespace=\"{{namespace}}\",label_k8s_incident_agent_io_liveness_container!=\"\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\") * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"
+        }
+      ]
+    },
+    {
+      "alertId": "K8sIncidentPersistentVolumeClaimPending",
+      "displayName": "PersistentVolumeClaim pending",
+      "triggerSummary": "An explicitly monitored PersistentVolumeClaim has remained Pending beyond its immediate-binding policy.",
+      "rule": {
+        "expression": "max by (namespace, persistentvolumeclaim) ((kube_persistentvolumeclaim_status_phase{phase=\"Pending\"} == 1) * on (namespace, persistentvolumeclaim) kube_persistentvolumeclaim_labels{label_k8s_incident_agent_io_pending_policy=\"immediate\"}) > 0",
+        "for": "5m"
+      },
+      "target": {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "clusterLabel": "cluster",
+        "namespaceLabel": "namespace",
+        "nameLabel": "persistentvolumeclaim"
+      },
+      "allowedTools": [
+        "get_pvc_storage",
+        "query_prometheus"
+      ],
+      "requiredEvidence": [
+        "pvc_storage"
+      ],
+      "panels": [
+        {
+          "panelId": "pvc-pending-state",
+          "title": "PVC Pending 状态",
+          "unit": "claims",
+          "threshold": 1,
+          "riskDirection": "higher_is_worse",
+          "thresholdDuration": "5m",
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "max(kube_persistentvolumeclaim_status_phase{namespace=\"{{namespace}}\",persistentvolumeclaim=\"{{name}}\",phase=\"Pending\"})"
+        },
+        {
+          "panelId": "pvc-pending-age-seconds",
+          "title": "PVC Pending 时长",
+          "unit": "seconds",
+          "threshold": 300,
+          "riskDirection": "higher_is_worse",
+          "thresholdDuration": null,
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "max((time() - kube_persistentvolumeclaim_created{namespace=\"{{namespace}}\",persistentvolumeclaim=\"{{name}}\"}) * on (namespace, persistentvolumeclaim) (kube_persistentvolumeclaim_status_phase{namespace=\"{{namespace}}\",persistentvolumeclaim=\"{{name}}\",phase=\"Pending\"} == bool 1))"
         }
       ]
     }

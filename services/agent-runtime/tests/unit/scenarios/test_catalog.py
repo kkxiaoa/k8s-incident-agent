@@ -43,6 +43,8 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
         "crash-loop-backoff",
         "image-pull-backoff",
         "liveness-probe-misconfigured",
+        "pvc-binding-pending",
+        "pvc-storage-class-missing",
         "readiness-probe-misconfigured",
         "service-selector-mismatch",
     ]
@@ -101,6 +103,14 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
             "query_prometheus",
         )
         assert probe.required_evidence == ("workload", "pods", "events")
+
+    for scenario_id in ("pvc-binding-pending", "pvc-storage-class-missing"):
+        pvc = next(item for item in scenarios if item.scenario_id == scenario_id)
+        assert pvc.monitoring_alert_id == ("K8sIncidentPersistentVolumeClaimPending")
+        assert pvc.target.api_version == "v1"
+        assert pvc.target.kind == "PersistentVolumeClaim"
+        assert pvc.allowed_tools == ("get_pvc_storage", "query_prometheus")
+        assert pvc.required_evidence == ("pvc_storage",)
 
 
 @pytest.mark.parametrize(

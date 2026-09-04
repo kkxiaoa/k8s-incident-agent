@@ -7,6 +7,7 @@ type DiagnosticToolName = Literal[
     "get_events",
     "get_container_logs",
     "get_service_network",
+    "get_pvc_storage",
     "query_prometheus",
 ]
 type DiagnosticEvidenceKind = Literal[
@@ -15,6 +16,7 @@ type DiagnosticEvidenceKind = Literal[
     "events",
     "container_logs",
     "service_network",
+    "pvc_storage",
     "metrics",
 ]
 
@@ -24,6 +26,7 @@ KUBERNETES_DIAGNOSTIC_TOOL_NAMES: Final[tuple[DiagnosticToolName, ...]] = (
     "get_events",
     "get_container_logs",
     "get_service_network",
+    "get_pvc_storage",
 )
 PROMETHEUS_TOOL_NAME: Final[DiagnosticToolName] = "query_prometheus"
 DIAGNOSTIC_TOOL_NAMES: Final[tuple[DiagnosticToolName, ...]] = (
@@ -38,6 +41,7 @@ DIAGNOSTIC_EVIDENCE_TOOL_NAMES: Final[
     ("events", "get_events"),
     ("container_logs", "get_container_logs"),
     ("service_network", "get_service_network"),
+    ("pvc_storage", "get_pvc_storage"),
     ("metrics", "query_prometheus"),
 )
 DIAGNOSTIC_EVIDENCE_KINDS: Final[frozenset[DiagnosticEvidenceKind]] = frozenset(

@@ -168,7 +168,7 @@ def test_default_v4_firing_projects_only_the_catalog_contract() -> None:
     assert occurrence.starts_at == "2026-09-02T08:00:00.123000000Z"
     assert occurrence.trigger.source.type == "alertmanager"
     assert occurrence.trigger.source.ref == "K8sIncidentImagePullBackOff"
-    assert occurrence.trigger.source.revision == "2026-09-05.1"
+    assert occurrence.trigger.source.revision == "2026-09-05.2"
     assert occurrence.trigger.target.name == "image-pull-backoff"
     serialized = repr(occurrence)
     assert "must-not-be-persisted" not in serialized
@@ -255,6 +255,23 @@ def test_probe_alerts_map_the_exact_deployment_without_claiming_root_cause(
     assert occurrence.trigger.target.kind == "Deployment"
     assert occurrence.trigger.target.name == deployment
     assert occurrence.trigger.trigger_summary == summary
+
+
+def test_pvc_pending_alert_maps_the_exact_claim_target() -> None:
+    alert = _alert(alert_name="K8sIncidentPersistentVolumeClaimPending")
+    labels = cast(dict[str, str], alert["labels"])
+    labels.pop("deployment")
+    labels["persistentvolumeclaim"] = "pvc-storage-class-missing"
+
+    occurrence = _parse(_payload(alert)).occurrences[0]
+
+    assert occurrence.trigger.target.api_version == "v1"
+    assert occurrence.trigger.target.kind == "PersistentVolumeClaim"
+    assert occurrence.trigger.target.name == "pvc-storage-class-missing"
+    assert occurrence.trigger.trigger_summary == (
+        "An explicitly monitored PersistentVolumeClaim has remained Pending beyond "
+        "its immediate-binding policy."
+    )
 
 
 def test_unknown_alert_is_acknowledgeable_without_an_occurrence() -> None:

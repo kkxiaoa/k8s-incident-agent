@@ -69,7 +69,15 @@ class MetricPanelContract(_CatalogContract):
         max_length=128,
     )
     title: str = Field(min_length=1, max_length=160)
-    unit: Literal["pods", "containers", "replicas", "restarts", "endpoints"]
+    unit: Literal[
+        "pods",
+        "containers",
+        "replicas",
+        "restarts",
+        "endpoints",
+        "claims",
+        "seconds",
+    ]
     threshold: float | None = Field(allow_inf_nan=False)
     risk_direction: Literal["higher_is_worse", "lower_is_worse"]
     threshold_duration: str | None = Field(

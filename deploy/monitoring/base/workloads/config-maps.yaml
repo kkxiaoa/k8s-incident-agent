@@ -193,6 +193,16 @@ data:
             for: 30s
             labels:
               severity: warning
+          - alert: K8sIncidentPersistentVolumeClaimPending
+            expr: >-
+              max by (namespace, persistentvolumeclaim) (
+                (kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1)
+                * on (namespace, persistentvolumeclaim)
+                  kube_persistentvolumeclaim_labels{label_k8s_incident_agent_io_pending_policy="immediate"}
+              ) > 0
+            for: 5m
+            labels:
+              severity: warning
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -208,7 +218,7 @@ data:
       resolve_timeout: 1m
     route:
       receiver: agent-runtime
-      group_by: ["alertname", "cluster", "namespace", "deployment", "service"]
+      group_by: ["alertname", "cluster", "namespace", "deployment", "service", "persistentvolumeclaim"]
       group_wait: 1s
       group_interval: 15s
       repeat_interval: 5m

@@ -233,6 +233,7 @@ def _adapter(
             core_api=core_api,
             discovery_api=object(),
             events_api=events_api,
+            storage_api=object(),
             timeout_seconds=10.0,
             cluster_id=TARGET.cluster,
             diagnostic_namespace=TARGET.namespace,

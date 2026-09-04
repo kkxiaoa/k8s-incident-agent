@@ -23,6 +23,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     EventsV1Api,
     EventsV1Event,
     EventsV1EventList,
+    StorageV1Api,
     VersionApi,
 )
 from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingTypeStubs]
@@ -230,6 +231,7 @@ async def test_factory_creates_scoped_direct_clients_without_mutating_proxy_env(
             assert isinstance(clients.core_api, CoreV1Api)
             assert isinstance(clients.discovery_api, DiscoveryV1Api)
             assert isinstance(clients.events_api, EventsV1Api)
+            assert isinstance(clients.storage_api, StorageV1Api)
             assert isinstance(clients.version_api, VersionApi)
             assert isinstance(clients.authorization_api, AuthorizationV1Api)
             assert list(paths.root.glob(".k8s-ca-*")) == []

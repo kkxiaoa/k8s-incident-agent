@@ -22,6 +22,9 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get"]
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
     verbs: ["list"]
@@ -45,3 +48,31 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: diagnostic-agent-read
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-incident-agent-storage-class-read
+  labels:
+    app.kubernetes.io/name: agent-runtime
+    app.kubernetes.io/part-of: k8s-incident-agent
+rules:
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-incident-agent-storage-class-read
+  labels:
+    app.kubernetes.io/name: agent-runtime
+    app.kubernetes.io/part-of: k8s-incident-agent
+subjects:
+  - kind: ServiceAccount
+    name: agent-runtime
+    namespace: k8s-incident-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-incident-agent-storage-class-read

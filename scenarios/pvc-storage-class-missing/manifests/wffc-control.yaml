@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-storage-class-missing-wffc-control
+  namespace: k8s-incident-scenarios
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: pvc-storage-class-missing-wffc
+  resources:
+    requests:
+      storage: 1Mi

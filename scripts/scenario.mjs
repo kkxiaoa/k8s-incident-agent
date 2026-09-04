@@ -36,12 +36,16 @@ const READINESS_SLO_LABEL = "k8s-incident-agent.io/readiness-slo";
 const LIVENESS_CONTAINER_LABEL =
   "k8s-incident-agent.io/liveness-container";
 const ENDPOINT_SLICE_SERVICE_LABEL = "kubernetes.io/service-name";
+const PVC_PENDING_POLICY_LABEL =
+  "k8s-incident-agent.io/pending-policy";
+const PVC_STORAGE_SIZE = "1Mi";
 const VALID_VERIFIERS = new Set([
   "image_pull_backoff",
   "crash_loop_backoff",
   "service_selector_mismatch",
   "readiness_probe_failure",
   "liveness_probe_failure",
+  "pvc_pending",
 ]);
 const DIAGNOSTIC_EVIDENCE_TOOLS = new Map([
   ["workload", "get_workload"],
@@ -49,6 +53,7 @@ const DIAGNOSTIC_EVIDENCE_TOOLS = new Map([
   ["events", "get_events"],
   ["container_logs", "get_container_logs"],
   ["service_network", "get_service_network"],
+  ["pvc_storage", "get_pvc_storage"],
   ["metrics", "query_prometheus"],
 ]);
 const VALID_DIAGNOSTIC_TOOLS = new Set(DIAGNOSTIC_EVIDENCE_TOOLS.values());
@@ -335,9 +340,10 @@ function validateScenarioDefinition(definition, directoryName) {
     "name",
   ]);
   const verifierKind = definition.deterministic_verifier?.kind;
-  const targetType =
-    verifierKind === "service_selector_mismatch"
-      ? ["v1", "Service"]
+  const targetType = verifierKind === "service_selector_mismatch"
+    ? ["v1", "Service"]
+    : verifierKind === "pvc_pending"
+      ? ["v1", "PersistentVolumeClaim"]
       : ["apps/v1", "Deployment"];
   if (
     definition.target.cluster !== CLUSTER_NAME ||
@@ -406,7 +412,84 @@ function validateScenarioManifest(manifestPath, relativePath, definition) {
     validateServiceSelectorManifest(manifestPath, relativePath, definition);
     return;
   }
+  if (definition.deterministic_verifier.kind === "pvc_pending") {
+    validatePvcPendingManifest(manifestPath, relativePath, definition);
+    return;
+  }
   validateDeploymentManifest(manifestPath, relativePath, definition);
+}
+
+function validatePvcPendingManifest(manifestPath, relativePath, definition) {
+  const missingClass = definition.scenario_id === "pvc-storage-class-missing";
+  if (!missingClass && definition.scenario_id !== "pvc-binding-pending") {
+    throw new Error();
+  }
+  const expectedPaths = [
+    "manifests/persistent-volume-claim.yaml",
+    ...(missingClass ? [] : ["manifests/storage-class.yaml"]),
+    "manifests/wffc-storage-class.yaml",
+    "manifests/wffc-control.yaml",
+  ];
+  if (
+    definition.fixture_manifests.length !== expectedPaths.length ||
+    expectedPaths.some((item) => !definition.fixture_manifests.includes(item)) ||
+    !expectedPaths.includes(relativePath)
+  ) {
+    throw new Error();
+  }
+
+  const manifest = loadSingleManifest(manifestPath);
+  assertPlainObject(manifest);
+  assertPlainObject(manifest.metadata);
+  if (relativePath.includes("storage-class")) {
+    const expectedName = relativePath === "manifests/storage-class.yaml"
+      ? `${definition.scenario_id}-immediate`
+      : `${definition.scenario_id}-wffc`;
+    const expectedMode = relativePath === "manifests/storage-class.yaml"
+      ? "Immediate"
+      : "WaitForFirstConsumer";
+    if (
+      manifest.apiVersion !== "storage.k8s.io/v1" ||
+      manifest.kind !== "StorageClass" ||
+      manifest.metadata.name !== expectedName ||
+      manifest.metadata.namespace !== undefined ||
+      manifest.provisioner !== "kubernetes.io/no-provisioner" ||
+      manifest.volumeBindingMode !== expectedMode
+    ) {
+      throw new Error();
+    }
+    return;
+  }
+
+  const isControl = relativePath === "manifests/wffc-control.yaml";
+  const expectedName = isControl
+    ? `${definition.scenario_id}-wffc-control`
+    : definition.scenario_id;
+  const expectedClass = isControl
+    ? `${definition.scenario_id}-wffc`
+    : missingClass
+      ? `${definition.scenario_id}-absent`
+      : `${definition.scenario_id}-immediate`;
+  if (
+    manifest.apiVersion !== "v1" ||
+    manifest.kind !== "PersistentVolumeClaim" ||
+    manifest.metadata.name !== expectedName ||
+    manifest.metadata.namespace !== NAMESPACE ||
+    manifest.metadata.labels?.[PVC_PENDING_POLICY_LABEL] !==
+      (isControl ? undefined : "immediate")
+  ) {
+    throw new Error();
+  }
+  assertPlainObject(manifest.spec);
+  if (
+    manifest.spec.storageClassName !== expectedClass ||
+    !Array.isArray(manifest.spec.accessModes) ||
+    manifest.spec.accessModes.length !== 1 ||
+    manifest.spec.accessModes[0] !== "ReadWriteOnce" ||
+    manifest.spec.resources?.requests?.storage !== PVC_STORAGE_SIZE
+  ) {
+    throw new Error();
+  }
 }
 
 function validateDeploymentManifest(manifestPath, relativePath, definition) {
@@ -797,7 +880,204 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
   ) {
     return verifyProbeFailureOnce(definition, context, executeKubectlQuery);
   }
+  if (definition.deterministic_verifier.kind === "pvc_pending") {
+    return verifyPvcPendingOnce(definition, context, executeKubectlQuery);
+  }
   return verifyImagePullOnce(definition, context, executeKubectlQuery);
+}
+
+async function verifyPvcPendingOnce(
+  definition,
+  context,
+  executeKubectlQuery,
+) {
+  const missingClass = definition.scenario_id === "pvc-storage-class-missing";
+  const requestedClass = missingClass
+    ? `${definition.scenario_id}-absent`
+    : `${definition.scenario_id}-immediate`;
+  const claim = await readPvc(
+    definition.target.name,
+    context,
+    executeKubectlQuery,
+    "pvc_not_found",
+  );
+  const claimMetadata = requireMetadata(claim, {
+    namespace: NAMESPACE,
+    name: definition.target.name,
+  });
+  requirePendingPvc(claim, requestedClass, true);
+
+  let storageClassState;
+  if (missingClass) {
+    const rawStorageClass = await executeKubectlQuery(
+      [
+        "--context",
+        context,
+        "get",
+        "storageclass",
+        requestedClass,
+        "--ignore-not-found=true",
+        "--output=json",
+        "--request-timeout=30s",
+      ],
+      "missing_storage_class_still_exists",
+    );
+    if (rawStorageClass.trim() !== "") {
+      throw upstreamContractError();
+    }
+    storageClassState = "not_found";
+  } else {
+    const storageClass = await readStorageClass(
+      requestedClass,
+      context,
+      executeKubectlQuery,
+      "immediate_storage_class_not_found",
+    );
+    requireStorageClass(storageClass, requestedClass, "Immediate");
+    storageClassState = "immediate_without_volume";
+  }
+
+  const events = await readScenarioEvents(context, executeKubectlQuery);
+  const expectedReason = missingClass ? "ProvisioningFailed" : "FailedBinding";
+  const event = events.items.find((candidate) => {
+    assertPlainUpstreamObject(candidate);
+    const regarding = candidate.regarding;
+    return (
+      candidate.type === (missingClass ? "Warning" : "Normal") &&
+      candidate.reason === expectedReason &&
+      candidate.reportingController === "persistentvolume-controller" &&
+      typeof candidate.note === "string" &&
+      (missingClass
+        ? candidate.note.includes(requestedClass) &&
+          /not found/i.test(candidate.note)
+        : /no persistent volumes available/i.test(candidate.note)) &&
+      isPlainObject(regarding) &&
+      regarding.apiVersion === "v1" &&
+      regarding.kind === "PersistentVolumeClaim" &&
+      regarding.namespace === NAMESPACE &&
+      regarding.name === claimMetadata.name &&
+      regarding.uid === claimMetadata.uid
+    );
+  });
+  if (event === undefined) {
+    throw new VerificationPending(
+      missingClass
+        ? "missing_storage_class_event_not_observed"
+        : "failed_binding_event_not_observed",
+    );
+  }
+
+  const controlName = `${definition.scenario_id}-wffc-control`;
+  const controlClassName = `${definition.scenario_id}-wffc`;
+  const controlClass = await readStorageClass(
+    controlClassName,
+    context,
+    executeKubectlQuery,
+    "wffc_storage_class_not_found",
+  );
+  requireStorageClass(
+    controlClass,
+    controlClassName,
+    "WaitForFirstConsumer",
+  );
+  const control = await readPvc(
+    controlName,
+    context,
+    executeKubectlQuery,
+    "wffc_control_not_found",
+  );
+  requirePendingPvc(control, controlClassName, false);
+
+  return {
+    status: "verified",
+    scenario_id: definition.scenario_id,
+    persistent_volume_claim: {
+      name: claimMetadata.name,
+      phase: "Pending",
+      requested_storage_class: requestedClass,
+    },
+    storage_class: storageClassState,
+    event: {
+      name: requireMetadata(event, { namespace: NAMESPACE }, false).name,
+      reason: expectedReason,
+    },
+    wffc_control: "pending_but_not_selected",
+  };
+}
+
+async function readPvc(
+  name,
+  context,
+  executeKubectlQuery,
+  pendingReason,
+) {
+  const raw = await executeKubectlQuery(
+    [
+      "--context",
+      context,
+      "--namespace",
+      NAMESPACE,
+      "get",
+      "persistentvolumeclaim",
+      name,
+      "--ignore-not-found=true",
+      "--output=json",
+      "--request-timeout=30s",
+    ],
+    pendingReason,
+  );
+  if (raw.trim() === "") throw new VerificationPending(pendingReason);
+  return parseKubectlObject(raw, "v1", "PersistentVolumeClaim");
+}
+
+async function readStorageClass(
+  name,
+  context,
+  executeKubectlQuery,
+  pendingReason,
+) {
+  const raw = await executeKubectlQuery(
+    [
+      "--context",
+      context,
+      "get",
+      "storageclass",
+      name,
+      "--ignore-not-found=true",
+      "--output=json",
+      "--request-timeout=30s",
+    ],
+    pendingReason,
+  );
+  if (raw.trim() === "") throw new VerificationPending(pendingReason);
+  return parseKubectlObject(raw, "storage.k8s.io/v1", "StorageClass");
+}
+
+function requirePendingPvc(claim, expectedClass, monitored) {
+  const metadata = requireMetadata(claim, { namespace: NAMESPACE });
+  if (
+    claim.spec?.storageClassName !== expectedClass ||
+    claim.status?.phase !== "Pending" ||
+    metadata.labels?.[PVC_PENDING_POLICY_LABEL] !==
+      (monitored ? "immediate" : undefined)
+  ) {
+    throw upstreamContractError();
+  }
+}
+
+function requireStorageClass(storageClass, expectedName, expectedMode) {
+  assertPlainUpstreamObject(storageClass);
+  const metadata = storageClass.metadata;
+  assertPlainUpstreamObject(metadata);
+  assertNormalizedUpstreamString(metadata.name);
+  if (
+    metadata.name !== expectedName ||
+    metadata.namespace !== undefined ||
+    storageClass.provisioner !== "kubernetes.io/no-provisioner" ||
+    storageClass.volumeBindingMode !== expectedMode
+  ) {
+    throw upstreamContractError();
+  }
 }
 
 async function verifyProbeFailureOnce(

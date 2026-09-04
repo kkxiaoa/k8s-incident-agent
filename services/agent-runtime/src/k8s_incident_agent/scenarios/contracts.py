@@ -65,6 +65,7 @@ class PublicScenario(_ImmutableContract):
 _SUPPORTED_TARGET_TYPES = {
     ("apps/v1", "Deployment"),
     ("v1", "Service"),
+    ("v1", "PersistentVolumeClaim"),
 }
 
 

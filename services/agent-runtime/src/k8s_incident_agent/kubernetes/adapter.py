@@ -33,6 +33,10 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1ObjectMeta,
     V1ObjectReference,
     V1OwnerReference,
+    V1PersistentVolumeClaim,
+    V1PersistentVolumeClaimCondition,
+    V1PersistentVolumeClaimSpec,
+    V1PersistentVolumeClaimStatus,
     V1Pod,
     V1PodCondition,
     V1PodList,
@@ -44,6 +48,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1ReplicaSetList,
     V1Service,
     V1ServiceSpec,
+    V1StorageClass,
     V1TCPSocketAction,
 )
 from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingTypeStubs]
@@ -71,12 +76,16 @@ from k8s_incident_agent.kubernetes.contracts import (
     GrpcProbeHandler,
     HttpGetProbeHandler,
     OwnerSummary,
+    PersistentVolumeClaimDetail,
     PodContainer,
     PodsObservation,
     PodsPayload,
     PodSummary,
+    PvcStorageObservation,
+    PvcStoragePayload,
     RegardingSummary,
     ReplicaSummary,
+    RequestedStorageClass,
     Selector,
     ServiceCandidatePod,
     ServiceDetail,
@@ -85,6 +94,8 @@ from k8s_incident_agent.kubernetes.contracts import (
     ServiceNetworkState,
     ServiceNetworkSummary,
     SourceWorkload,
+    StorageClassDetail,
+    StorageClassLookup,
     TargetRef,
     TcpSocketProbeHandler,
     WorkloadContainer,
@@ -122,6 +133,7 @@ PROBE_PATH_MAX_CODE_POINTS = 256
 SERVICE_ASSOCIATION_LABEL = "k8s-incident-agent.io/service"
 SERVICE_MONITORING_LABEL = "k8s-incident-agent.io/monitor-selector"
 ENDPOINT_SLICE_SERVICE_LABEL = "kubernetes.io/service-name"
+_DEFAULT_STORAGE_CLASS_ANNOTATION = "storageclass.kubernetes.io/is-default-class"
 
 _LABEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
 _DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")
@@ -149,6 +161,13 @@ class _AppsApi(Protocol):
 
 
 class _CoreApi(Protocol):
+    def read_namespaced_persistent_volume_claim(
+        self,
+        name: str,
+        namespace: str,
+        **kwargs: object,
+    ) -> Awaitable[object]: ...
+
     def read_namespaced_service(
         self,
         name: str,
@@ -186,6 +205,18 @@ class _EventsApi(Protocol):
     ) -> Awaitable[object]: ...
 
 
+class _StorageApi(Protocol):
+    def read_storage_class(
+        self,
+        name: str,
+        **kwargs: object,
+    ) -> Awaitable[object]: ...
+
+
+class _ApiExceptionView(Protocol):
+    status: object
+
+
 class _ListView(Protocol):
     metadata: object
     items: object
@@ -207,6 +238,7 @@ class _MetadataView(Protocol):
     generation: object
     owner_references: object
     labels: object
+    annotations: object
 
 
 class _DeploymentSpecView(Protocol):
@@ -312,6 +344,31 @@ class _ServiceSpecView(Protocol):
     cluster_ip: object
     selector: object
     publish_not_ready_addresses: object
+
+
+class _PersistentVolumeClaimView(Protocol):
+    api_version: object
+    kind: object
+    metadata: object
+    spec: object
+    status: object
+
+
+class _PersistentVolumeClaimSpecView(Protocol):
+    storage_class_name: object
+
+
+class _PersistentVolumeClaimStatusView(Protocol):
+    phase: object
+    conditions: object
+
+
+class _StorageClassView(Protocol):
+    api_version: object
+    kind: object
+    metadata: object
+    provisioner: object
+    volume_binding_mode: object
 
 
 class _EndpointSliceView(Protocol):
@@ -465,6 +522,7 @@ class KubernetesEvidenceAdapter:
         self._core_api = cast(_CoreApi, clients.core_api)
         self._events_api = cast(_EventsApi, clients.events_api)
         self._discovery_api = cast(_DiscoveryApi, clients.discovery_api)
+        self._storage_api = cast(_StorageApi, clients.storage_api)
         self._timeout_seconds = clients.timeout_seconds
         self._cluster_id = clients.cluster_id
         self._diagnostic_namespace = clients.diagnostic_namespace
@@ -738,6 +796,133 @@ class KubernetesEvidenceAdapter:
             raise
         except Exception as error:
             raise map_kubernetes_exception(error) from None
+
+    async def read_pvc_storage(
+        self,
+        target: DiagnosticTarget,
+    ) -> PvcStorageObservation:
+        try:
+            state = _SanitizationState()
+            namespace = require_diagnostic_target_scope(
+                target,
+                cluster_id=self._cluster_id,
+                diagnostic_namespace=self._diagnostic_namespace,
+            )
+            if target.api_version != "v1" or target.kind != "PersistentVolumeClaim":
+                raise _contract_error()
+            claim = await self._read_persistent_volume_claim(
+                target.name,
+                namespace,
+            )
+            claim_detail, target_ref = _project_persistent_volume_claim(
+                claim,
+                target,
+                state,
+            )
+            requested_class = claim_detail.requested_storage_class
+            if requested_class.name is None:
+                storage_class_lookup = StorageClassLookup(
+                    state="not_requested",
+                    storage_class=None,
+                )
+            else:
+                storage_class = await self._read_storage_class(requested_class.name)
+                storage_class_lookup = StorageClassLookup(
+                    state="not_found" if storage_class is None else "found",
+                    storage_class=(
+                        None
+                        if storage_class is None
+                        else _project_storage_class(
+                            storage_class,
+                            requested_class.name,
+                            state,
+                        )
+                    ),
+                )
+
+            expected_regarding = RegardingSummary(
+                api_version=target_ref.api_version,
+                kind=target_ref.kind,
+                namespace=target_ref.namespace,
+                name=target_ref.name,
+                uid=target_ref.uid,
+            )
+            projected_events: list[EventSummary] = []
+            for event in await self._list_events(namespace):
+                regarding = _event_regarding(event)
+                if regarding.uid != target_ref.uid:
+                    continue
+                if regarding != expected_regarding:
+                    raise _contract_error()
+                projected_events.append(
+                    _project_event(
+                        event,
+                        regarding,
+                        expected_namespace=namespace,
+                        state=state,
+                    )
+                )
+                if len(projected_events) > EVENT_LIMIT:
+                    raise _budget_error()
+            projected_events.sort(
+                key=lambda event: (
+                    event.event_time or "",
+                    event.namespace,
+                    event.name,
+                    event.uid,
+                )
+            )
+            payload = PvcStoragePayload(
+                persistent_volume_claim=claim_detail,
+                storage_class_lookup=storage_class_lookup,
+                events=projected_events,
+            )
+            _enforce_payload_budget(payload)
+            return PvcStorageObservation(
+                evidence_kind="pvc_storage",
+                target_ref=target_ref,
+                observed_at=_observation_time(self._clock),
+                payload=payload,
+                truncated=state.truncated,
+                redacted=state.redacted,
+            )
+        except KubernetesBoundaryError:
+            raise
+        except Exception as error:
+            raise map_kubernetes_exception(error) from None
+
+    async def _read_persistent_volume_claim(
+        self,
+        name: str,
+        namespace: str,
+    ) -> V1PersistentVolumeClaim:
+        try:
+            response = await self._core_api.read_namespaced_persistent_volume_claim(
+                name=name,
+                namespace=namespace,
+                _request_timeout=self._timeout_seconds,
+            )
+        except Exception as error:
+            raise map_kubernetes_exception(error, resource_not_found=True) from None
+        if not isinstance(response, V1PersistentVolumeClaim):
+            raise _contract_error()
+        return response
+
+    async def _read_storage_class(self, name: str) -> V1StorageClass | None:
+        try:
+            response = await self._storage_api.read_storage_class(
+                name=name,
+                _request_timeout=self._timeout_seconds,
+            )
+        except ApiException as error:
+            if cast(_ApiExceptionView, error).status == 404:
+                return None
+            raise map_kubernetes_exception(error) from None
+        except Exception as error:
+            raise map_kubernetes_exception(error) from None
+        if not isinstance(response, V1StorageClass):
+            raise _contract_error()
+        return response
 
     async def _read_service(self, name: str, namespace: str) -> V1Service:
         try:
@@ -1068,6 +1253,136 @@ async def _collect_pages[Item](
             raise _budget_error()
         continue_token = raw_continue
     raise _budget_error()
+
+
+def _project_persistent_volume_claim(
+    claim: V1PersistentVolumeClaim,
+    target: DiagnosticTarget,
+    state: _SanitizationState,
+) -> tuple[PersistentVolumeClaimDetail, TargetRef]:
+    claim_view = cast(_PersistentVolumeClaimView, claim)
+    if claim_view.api_version != "v1" or claim_view.kind != "PersistentVolumeClaim":
+        raise _contract_error()
+    metadata = _metadata(claim_view.metadata)
+    namespace = _required_string(metadata.namespace)
+    name = _required_string(metadata.name)
+    if namespace != target.namespace or name != target.name:
+        raise _contract_error()
+    spec = claim_view.spec
+    status = claim_view.status
+    if not isinstance(spec, V1PersistentVolumeClaimSpec) or not isinstance(
+        status,
+        V1PersistentVolumeClaimStatus,
+    ):
+        raise _contract_error()
+    spec_view = cast(_PersistentVolumeClaimSpecView, spec)
+    status_view = cast(_PersistentVolumeClaimStatusView, status)
+    raw_class_name = spec_view.storage_class_name
+    if raw_class_name is None:
+        requested_class = RequestedStorageClass(mode="default", name=None)
+    elif raw_class_name == "":
+        requested_class = RequestedStorageClass(mode="none", name=None)
+    else:
+        requested_class = RequestedStorageClass(
+            mode="explicit",
+            name=_required_string(raw_class_name),
+        )
+    phase = status_view.phase
+    if phase not in {"Pending", "Bound", "Lost"}:
+        raise _contract_error()
+    raw_conditions: object = (
+        [] if status_view.conditions is None else status_view.conditions
+    )
+    if not isinstance(raw_conditions, list) or not all(
+        isinstance(condition, V1PersistentVolumeClaimCondition)
+        for condition in cast(list[object], raw_conditions)
+    ):
+        raise _contract_error()
+    conditions = sorted(
+        (
+            _project_condition(
+                cast(_ConditionView, condition).type,
+                cast(_ConditionView, condition).status,
+                cast(_ConditionView, condition).reason,
+                state,
+            )
+            for condition in cast(
+                list[V1PersistentVolumeClaimCondition],
+                raw_conditions,
+            )
+        ),
+        key=lambda condition: (
+            condition.type,
+            condition.status,
+            condition.reason or "",
+        ),
+    )
+    target_ref = TargetRef(
+        api_version="v1",
+        kind="PersistentVolumeClaim",
+        namespace=namespace,
+        name=name,
+        uid=_required_string(metadata.uid),
+    )
+    return (
+        PersistentVolumeClaimDetail(
+            resource_version=_required_string(metadata.resource_version),
+            phase=cast(Literal["Pending", "Bound", "Lost"], phase),
+            requested_storage_class=requested_class,
+            conditions=conditions,
+        ),
+        target_ref,
+    )
+
+
+def _project_storage_class(
+    storage_class: V1StorageClass,
+    expected_name: str,
+    state: _SanitizationState,
+) -> StorageClassDetail:
+    storage_class_view = cast(_StorageClassView, storage_class)
+    if (
+        storage_class_view.api_version != "storage.k8s.io/v1"
+        or storage_class_view.kind != "StorageClass"
+    ):
+        raise _contract_error()
+    metadata = _metadata(storage_class_view.metadata)
+    if metadata.namespace not in (None, ""):
+        raise _contract_error()
+    name = _required_string(metadata.name)
+    if name != expected_name:
+        raise _contract_error()
+    binding_mode = storage_class_view.volume_binding_mode
+    if binding_mode is None:
+        binding_mode = "Immediate"
+    if binding_mode not in {"Immediate", "WaitForFirstConsumer"}:
+        raise _contract_error()
+    raw_annotations = metadata.annotations
+    if raw_annotations is None:
+        is_default = False
+    elif isinstance(raw_annotations, dict):
+        default_annotation = cast(dict[object, object], raw_annotations).get(
+            _DEFAULT_STORAGE_CLASS_ANNOTATION
+        )
+        if default_annotation is not None and not isinstance(default_annotation, str):
+            raise _contract_error()
+        is_default = (
+            isinstance(default_annotation, str)
+            and default_annotation.casefold() == "true"
+        )
+    else:
+        raise _contract_error()
+    return StorageClassDetail(
+        name=name,
+        uid=_required_string(metadata.uid),
+        resource_version=_required_string(metadata.resource_version),
+        provisioner=state.required(storage_class_view.provisioner),
+        volume_binding_mode=cast(
+            Literal["Immediate", "WaitForFirstConsumer"],
+            binding_mode,
+        ),
+        is_default=is_default,
+    )
 
 
 def _project_service(
@@ -2276,6 +2591,7 @@ def _enforce_payload_budget(
         | EventsPayload
         | ContainerLogsPayload
         | ServiceNetworkPayload
+        | PvcStoragePayload
     ),
 ) -> None:
     value = cast(JsonValue, payload.model_dump(mode="json", by_alias=True))

@@ -395,6 +395,7 @@ test("Console and Runtime exposure and RBAC stay within the fixed read-only boun
     [
       { apiGroups: [""], resources: ["pods"], verbs: ["list"] },
       { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
+      { apiGroups: [""], resources: ["persistentvolumeclaims"], verbs: ["get"] },
       { apiGroups: [""], resources: ["services"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["list"] },
@@ -408,6 +409,34 @@ test("Console and Runtime exposure and RBAC stay within the fixed read-only boun
       "RoleBinding",
       "diagnostic-agent-read",
       "k8s-incident-scenarios",
+    ).subjects,
+    [
+      {
+        kind: "ServiceAccount",
+        name: "agent-runtime",
+        namespace: "k8s-incident-agent",
+      },
+    ],
+  );
+  assert.deepEqual(
+    getResource(
+      resources,
+      "ClusterRole",
+      "k8s-incident-agent-storage-class-read",
+    ).rules,
+    [
+      {
+        apiGroups: ["storage.k8s.io"],
+        resources: ["storageclasses"],
+        verbs: ["get"],
+      },
+    ],
+  );
+  assert.deepEqual(
+    getResource(
+      resources,
+      "ClusterRoleBinding",
+      "k8s-incident-agent-storage-class-read",
     ).subjects,
     [
       {
@@ -459,9 +488,9 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   ).spec.template.spec.containers[0];
   assert.deepEqual(kubeStateMetrics.args, [
     "--namespaces=k8s-incident-scenarios",
-    "--resources=deployments,endpointslices,pods,replicasets,services",
-    "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_ready,kube_pod_container_status_restarts_total,kube_pod_container_status_running,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
-    "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/liveness-container,k8s-incident-agent.io/readiness-container,k8s-incident-agent.io/readiness-slo,k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
+    "--resources=deployments,endpointslices,persistentvolumeclaims,pods,replicasets,services",
+    "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_persistentvolumeclaim_created,kube_persistentvolumeclaim_labels,kube_persistentvolumeclaim_status_phase,kube_pod_container_status_ready,kube_pod_container_status_restarts_total,kube_pod_container_status_running,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
+    "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],persistentvolumeclaims=[k8s-incident-agent.io/pending-policy],pods=[k8s-incident-agent.io/liveness-container,k8s-incident-agent.io/readiness-container,k8s-incident-agent.io/readiness-slo,k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
     "--use-apiserver-cache",
   ]);
 
@@ -474,7 +503,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.deepEqual(role.rules, [
     {
       apiGroups: [""],
-      resources: ["pods", "services"],
+      resources: ["persistentvolumeclaims", "pods", "services"],
       verbs: ["get", "list", "watch"],
     },
     {
@@ -537,6 +566,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
       "K8sIncidentServiceEndpointsUnavailable",
       "K8sIncidentReadinessProbeFailure",
       "K8sIncidentLivenessProbeRestart",
+      "K8sIncidentPersistentVolumeClaimPending",
     ],
   );
   assert.deepEqual(rules[0], {
@@ -579,6 +609,13 @@ test("managed monitoring render pins topology, collection, rule, and credential 
     /label_k8s_incident_agent_io_liveness_container/,
   );
   assert.deepEqual(rules[6].labels, { severity: "warning" });
+  assert.equal(rules[7].for, "5m");
+  assert.match(rules[7].expr, /kube_persistentvolumeclaim_status_phase/);
+  assert.match(
+    rules[7].expr,
+    /label_k8s_incident_agent_io_pending_policy="immediate"/,
+  );
+  assert.deepEqual(rules[7].labels, { severity: "warning" });
 
   const alertmanager = load(
     getResource(
@@ -600,6 +637,14 @@ test("managed monitoring render pins topology, collection, rule, and credential 
     },
   ]);
   const webhook = alertmanager.receivers[0].webhook_configs[0];
+  assert.deepEqual(alertmanager.route.group_by, [
+    "alertname",
+    "cluster",
+    "namespace",
+    "deployment",
+    "service",
+    "persistentvolumeclaim",
+  ]);
   assert.equal(webhook.send_resolved, true);
   assert.equal(webhook.max_alerts, 0);
   assert.equal(webhook.timeout, "10s");
@@ -1579,6 +1624,8 @@ function response(key, args) {
     const denied = [
       " get secrets ",
       " list configmaps ",
+      " list storageclasses.storage.k8s.io ",
+      " get persistentvolumes ",
       " list persistentvolumes ",
       " create pods ",
       " create deployments.apps ",
@@ -2281,6 +2328,11 @@ test("confirmed online install preflights, applies, waits, and reports the real 
     [
       `auth can-i get deployments.apps ${subject} ${namespace}`,
       `auth can-i get services ${subject} ${namespace}`,
+      `auth can-i get persistentvolumeclaims ${subject} ${namespace}`,
+      `auth can-i get storageclasses.storage.k8s.io ${subject}`,
+      `auth can-i list storageclasses.storage.k8s.io ${subject}`,
+      `auth can-i get persistentvolumes ${subject}`,
+      `auth can-i list persistentvolumes ${subject}`,
       `auth can-i list endpointslices.discovery.k8s.io ${subject} ${namespace}`,
       `auth can-i list replicasets.apps ${subject} ${namespace}`,
       `auth can-i list pods ${subject} ${namespace}`,
@@ -2314,6 +2366,9 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       `auth can-i get services ${monitoringSubject} ${namespace}`,
       `auth can-i list services ${monitoringSubject} ${namespace}`,
       `auth can-i watch services ${monitoringSubject} ${namespace}`,
+      `auth can-i get persistentvolumeclaims ${monitoringSubject} ${namespace}`,
+      `auth can-i list persistentvolumeclaims ${monitoringSubject} ${namespace}`,
+      `auth can-i watch persistentvolumeclaims ${monitoringSubject} ${namespace}`,
       `auth can-i get endpointslices.discovery.k8s.io ${monitoringSubject} ${namespace}`,
       `auth can-i list endpointslices.discovery.k8s.io ${monitoringSubject} ${namespace}`,
       `auth can-i watch endpointslices.discovery.k8s.io ${monitoringSubject} ${namespace}`,

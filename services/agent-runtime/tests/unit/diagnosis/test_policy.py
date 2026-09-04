@@ -148,6 +148,35 @@ def test_probe_alerts_and_scenarios_share_the_minimal_existing_tools(
 
 
 @pytest.mark.parametrize(
+    "scenario_id",
+    ["pvc-binding-pending", "pvc-storage-class-missing"],
+)
+def test_pvc_alert_and_scenarios_share_the_storage_evidence_policy(
+    scenario_id: str,
+) -> None:
+    policies, revision = _policies()
+
+    alert_policy = policies.resolve(
+        IncidentSource(
+            type="alertmanager",
+            ref="K8sIncidentPersistentVolumeClaimPending",
+            revision=revision,
+        )
+    )
+    scenario_policy = policies.resolve(
+        IncidentSource(type="scenario", ref=scenario_id, revision="1")
+    )
+
+    assert alert_policy == scenario_policy
+    assert alert_policy.tool_names == ("get_pvc_storage", "query_prometheus")
+    assert alert_policy.required_evidence == frozenset({"pvc_storage"})
+    assert alert_policy.prometheus_panel_ids == (
+        "pvc-pending-state",
+        "pvc-pending-age-seconds",
+    )
+
+
+@pytest.mark.parametrize(
     "source",
     [
         IncidentSource(

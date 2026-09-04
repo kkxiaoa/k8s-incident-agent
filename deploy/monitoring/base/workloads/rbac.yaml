@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/part-of: k8s-incident-agent
 rules:
   - apiGroups: [""]
-    resources: ["pods", "services"]
+    resources: ["persistentvolumeclaims", "pods", "services"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "replicasets"]

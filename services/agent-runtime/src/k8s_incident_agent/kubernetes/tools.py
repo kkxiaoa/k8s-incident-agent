@@ -20,6 +20,7 @@ from k8s_incident_agent.kubernetes.contracts import (
     DiagnosticTarget,
     EventsObservation,
     PodsObservation,
+    PvcStorageObservation,
     ServiceNetworkObservation,
     WorkloadObservation,
 )
@@ -37,6 +38,7 @@ type DiagnosticObservation = (
     | EventsObservation
     | ContainerLogsObservation
     | ServiceNetworkObservation
+    | PvcStorageObservation
 )
 type ObservationReader = Callable[[DiagnosticTarget], Awaitable[DiagnosticObservation]]
 type EvidenceKind = Literal[
@@ -45,6 +47,7 @@ type EvidenceKind = Literal[
     "events",
     "container_logs",
     "service_network",
+    "pvc_storage",
 ]
 
 
@@ -130,6 +133,19 @@ async def _get_service_network(
     )
 
 
+@tool("get_pvc_storage")
+async def _get_pvc_storage(
+    runtime: ToolRuntime[DiagnosticToolContext, object],
+) -> dict[str, JsonValue]:
+    """Observe the exact PVC, its Events, and only its referenced StorageClass."""
+    return await _execute_tool(
+        runtime,
+        tool_name="get_pvc_storage",
+        evidence_kind="pvc_storage",
+        reader=runtime.context.adapter.read_pvc_storage,
+    )
+
+
 def build_diagnostic_tools() -> tuple[BaseTool, ...]:
     return (
         _get_workload,
@@ -137,6 +153,7 @@ def build_diagnostic_tools() -> tuple[BaseTool, ...]:
         _get_events,
         _get_container_logs,
         _get_service_network,
+        _get_pvc_storage,
     )
 
 
@@ -328,8 +345,10 @@ def _success_output(
             observation = EventsObservation.model_validate(document)
         elif evidence_kind == "container_logs":
             observation = ContainerLogsObservation.model_validate(document)
-        else:
+        elif evidence_kind == "service_network":
             observation = ServiceNetworkObservation.model_validate(document)
+        else:
+            observation = PvcStorageObservation.model_validate(document)
     except ValidationError:
         raise FatalDiagnosticToolError(
             KubernetesErrorCode.RECOVERY_CONSISTENCY_ERROR

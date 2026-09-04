@@ -20,6 +20,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     CoreV1Api,
     DiscoveryV1Api,
     EventsV1Api,
+    StorageV1Api,
     VersionApi,
 )
 from kubernetes.aio.config import (  # pyright: ignore[reportMissingTypeStubs]
@@ -66,6 +67,7 @@ class KubernetesClients:
     core_api: CoreV1Api = field(repr=False)
     discovery_api: DiscoveryV1Api = field(repr=False)
     events_api: EventsV1Api = field(repr=False)
+    storage_api: StorageV1Api = field(repr=False)
     version_api: VersionApi = field(repr=False)
     authorization_api: AuthorizationV1Api = field(repr=False)
     timeout_seconds: float
@@ -200,6 +202,7 @@ async def _create_scoped_clients(
             core_api=CoreV1Api(api_client),
             discovery_api=DiscoveryV1Api(api_client),
             events_api=EventsV1Api(api_client),
+            storage_api=StorageV1Api(api_client),
             version_api=VersionApi(api_client),
             authorization_api=AuthorizationV1Api(api_client),
             timeout_seconds=timeout_seconds,

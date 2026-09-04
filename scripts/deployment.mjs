@@ -2804,10 +2804,22 @@ async function requireDiagnosticAccess(request, execute) {
     { verb: "list", resource: "events.events.k8s.io", expected: true, namespaced: true },
     { verb: "get", resource: "services", expected: true, namespaced: true },
     {
+      verb: "get",
+      resource: "persistentvolumeclaims",
+      expected: true,
+      namespaced: true,
+    },
+    {
       verb: "list",
       resource: "endpointslices.discovery.k8s.io",
       expected: true,
       namespaced: true,
+    },
+    {
+      verb: "get",
+      resource: "storageclasses.storage.k8s.io",
+      expected: true,
+      namespaced: false,
     },
     {
       verb: "create",
@@ -2816,6 +2828,24 @@ async function requireDiagnosticAccess(request, execute) {
       namespaced: false,
     },
     { verb: "get", resource: "secrets", expected: false, namespaced: true },
+    {
+      verb: "list",
+      resource: "storageclasses.storage.k8s.io",
+      expected: false,
+      namespaced: false,
+    },
+    {
+      verb: "get",
+      resource: "persistentvolumes",
+      expected: false,
+      namespaced: false,
+    },
+    {
+      verb: "list",
+      resource: "persistentvolumes",
+      expected: false,
+      namespaced: false,
+    },
     {
       verb: "create",
       resource: "pods",
@@ -2868,6 +2898,24 @@ async function requireMonitoringAccess(request, execute) {
       { verb: "get", resource: "services", expected: true, namespaced: true },
       { verb: "list", resource: "services", expected: true, namespaced: true },
       { verb: "watch", resource: "services", expected: true, namespaced: true },
+      {
+        verb: "get",
+        resource: "persistentvolumeclaims",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "list",
+        resource: "persistentvolumeclaims",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "watch",
+        resource: "persistentvolumeclaims",
+        expected: true,
+        namespaced: true,
+      },
       {
         verb: "get",
         resource: "endpointslices.discovery.k8s.io",
@@ -3458,9 +3506,9 @@ function requireReadyMonitoringDeployment(
   if (
     !isDeepStrictEqual(container.args, [
       "--namespaces=k8s-incident-scenarios",
-      "--resources=deployments,endpointslices,pods,replicasets,services",
-      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_pod_container_status_ready,kube_pod_container_status_restarts_total,kube_pod_container_status_running,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
-      "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],pods=[k8s-incident-agent.io/liveness-container,k8s-incident-agent.io/readiness-container,k8s-incident-agent.io/readiness-slo,k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
+      "--resources=deployments,endpointslices,persistentvolumeclaims,pods,replicasets,services",
+      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_persistentvolumeclaim_created,kube_persistentvolumeclaim_labels,kube_persistentvolumeclaim_status_phase,kube_pod_container_status_ready,kube_pod_container_status_restarts_total,kube_pod_container_status_running,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
+      "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],persistentvolumeclaims=[k8s-incident-agent.io/pending-policy],pods=[k8s-incident-agent.io/liveness-container,k8s-incident-agent.io/readiness-container,k8s-incident-agent.io/readiness-slo,k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
       "--use-apiserver-cache",
     ])
   ) {
@@ -3925,6 +3973,7 @@ function requireAlertmanagerConfiguration(rawConfiguration) {
         "namespace",
         "deployment",
         "service",
+        "persistentvolumeclaim",
       ],
       group_wait: "1s",
       group_interval: "15s",

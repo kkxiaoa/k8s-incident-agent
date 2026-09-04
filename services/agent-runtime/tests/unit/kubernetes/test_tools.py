@@ -39,9 +39,13 @@ from k8s_incident_agent.kubernetes.contracts import (
     ContainerLogsPayload,
     EventsObservation,
     EventsPayload,
+    PersistentVolumeClaimDetail,
     PodsObservation,
     PodsPayload,
+    PvcStorageObservation,
+    PvcStoragePayload,
     ReplicaSummary,
+    RequestedStorageClass,
     Selector,
     ServiceCandidatePod,
     ServiceDetail,
@@ -49,6 +53,7 @@ from k8s_incident_agent.kubernetes.contracts import (
     ServiceNetworkPayload,
     ServiceNetworkSummary,
     SourceWorkload,
+    StorageClassLookup,
     TargetRef,
     WorkloadDetail,
     WorkloadObservation,
@@ -76,7 +81,7 @@ DEPLOYMENT_TOOL_NAMES = (
     "get_events",
     "get_container_logs",
 )
-TOOL_NAMES = (*DEPLOYMENT_TOOL_NAMES, "get_service_network")
+TOOL_NAMES = (*DEPLOYMENT_TOOL_NAMES, "get_service_network", "get_pvc_storage")
 TARGET = ScenarioTarget(
     cluster="k8s-incident-agent",
     namespace="k8s-incident-scenarios",
@@ -90,6 +95,13 @@ SERVICE_TARGET = ScenarioTarget(
     api_version="v1",
     kind="Service",
     name="service-selector-mismatch",
+)
+PVC_TARGET = ScenarioTarget(
+    cluster="k8s-incident-agent",
+    namespace="k8s-incident-scenarios",
+    api_version="v1",
+    kind="PersistentVolumeClaim",
+    name="pvc-storage-class-missing",
 )
 
 
@@ -270,6 +282,35 @@ class _ObservationAdapter:
             redacted=False,
         )
 
+    async def read_pvc_storage(
+        self,
+        target: ScenarioTarget,
+    ) -> PvcStorageObservation:
+        call_index = await self._record("get_pvc_storage", target)
+        return PvcStorageObservation(
+            evidence_kind="pvc_storage",
+            target_ref=_pvc_target_ref(),
+            observed_at=NOW + timedelta(seconds=call_index),
+            payload=PvcStoragePayload(
+                persistent_volume_claim=PersistentVolumeClaimDetail(
+                    resource_version=str(call_index),
+                    phase="Pending",
+                    requested_storage_class=RequestedStorageClass(
+                        mode="explicit",
+                        name="pvc-storage-class-missing-absent",
+                    ),
+                    conditions=[],
+                ),
+                storage_class_lookup=StorageClassLookup(
+                    state="not_found",
+                    storage_class=None,
+                ),
+                events=[],
+            ),
+            truncated=False,
+            redacted=False,
+        )
+
     async def _record(self, tool_name: str, target: ScenarioTarget) -> int:
         assert target == self._expected_target
         self.calls.append(tool_name)
@@ -285,6 +326,16 @@ def _target_ref() -> TargetRef:
         namespace=cast(str, TARGET.namespace),
         name=TARGET.name,
         uid="deployment-uid",
+    )
+
+
+def _pvc_target_ref() -> TargetRef:
+    return TargetRef(
+        api_version="v1",
+        kind="PersistentVolumeClaim",
+        namespace=cast(str, PVC_TARGET.namespace),
+        name=PVC_TARGET.name,
+        uid="claim-uid",
     )
 
 
@@ -522,6 +573,50 @@ async def test_service_network_tool_persists_and_replays_its_typed_observation(
                 }
             ],
             "endpointSlices": [],
+        }
+
+
+@pytest.mark.asyncio
+async def test_pvc_storage_tool_persists_and_replays_its_typed_observation(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        adapter = _ObservationAdapter(expected_target=PVC_TARGET)
+        context = await _context(repository, adapter, target=PVC_TARGET)
+        tools = build_diagnostic_tools()
+
+        first = await _invoke(
+            tools,
+            context,
+            "get_pvc_storage",
+            "call-pvc-storage",
+        )
+        replay = await _invoke(
+            tools,
+            context,
+            "get_pvc_storage",
+            "call-pvc-storage",
+        )
+
+        assert adapter.calls == ["get_pvc_storage"]
+        assert replay == first
+        assert first["evidenceKind"] == "pvc_storage"
+        assert first["payload"] == {
+            "persistentVolumeClaim": {
+                "resourceVersion": "1",
+                "phase": "Pending",
+                "requestedStorageClass": {
+                    "mode": "explicit",
+                    "name": "pvc-storage-class-missing-absent",
+                },
+                "conditions": [],
+            },
+            "storageClassLookup": {
+                "state": "not_found",
+                "storageClass": None,
+            },
+            "events": [],
         }
 
 

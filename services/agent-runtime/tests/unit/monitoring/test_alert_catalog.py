@@ -10,10 +10,10 @@ from k8s_incident_agent.monitoring.catalog import (
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 
 
-def test_production_catalog_has_deployment_and_service_entries() -> None:
+def test_production_catalog_has_supported_alert_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-05.1"
+    assert catalog.version == "2026-09-05.2"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
@@ -21,6 +21,7 @@ def test_production_catalog_has_deployment_and_service_entries() -> None:
         "K8sIncidentServiceEndpointsUnavailable",
         "K8sIncidentReadinessProbeFailure",
         "K8sIncidentLivenessProbeRestart",
+        "K8sIncidentPersistentVolumeClaimPending",
     ]
     assert catalog.entries[0].target.model_dump() == {
         "api_version": "apps/v1",
@@ -49,6 +50,8 @@ def test_production_catalog_has_deployment_and_service_entries() -> None:
         "service-ready-endpoints",
         "readiness-probe-unready-containers",
         "liveness-probe-restarts",
+        "pvc-pending-state",
+        "pvc-pending-age-seconds",
     )
     assert catalog.entries[0].panels[0].model_dump() == {
         "panel_id": "image-pull-affected-pods",
@@ -150,6 +153,31 @@ def test_production_catalog_has_deployment_and_service_entries() -> None:
     assert liveness_panel.unit == "restarts"
     assert liveness_panel.threshold == 1.0
     assert liveness_panel.threshold_duration == "30s"
+    pvc = catalog.entries[6]
+    assert pvc.target.model_dump() == {
+        "api_version": "v1",
+        "kind": "PersistentVolumeClaim",
+        "cluster_label": "cluster",
+        "namespace_label": "namespace",
+        "name_label": "persistentvolumeclaim",
+    }
+    assert pvc.rule.for_duration == "5m"
+    assert "kube_persistentvolumeclaim_status_phase" in pvc.rule.expression
+    assert "label_k8s_incident_agent_io_pending_policy" in pvc.rule.expression
+    assert pvc.allowed_tools == ["get_pvc_storage", "query_prometheus"]
+    assert pvc.required_evidence == ["pvc_storage"]
+    pending_state, pending_age = pvc.panels
+    assert pending_state.panel_id == "pvc-pending-state"
+    assert pending_state.unit == "claims"
+    assert pending_state.threshold == 1.0
+    assert pending_state.threshold_duration == "5m"
+    assert pending_age.panel_id == "pvc-pending-age-seconds"
+    assert pending_age.unit == "seconds"
+    assert pending_age.threshold == 300.0
+    assert "kube_persistentvolumeclaim_created" in pending_age.query_template
+    assert "== bool 1" in pending_age.query_template
+    assert "kube_persistentvolumeclaim_info" not in pending_state.query_template
+    assert "kube_persistentvolumeclaim_info" not in pending_age.query_template
 
 
 @pytest.mark.parametrize(

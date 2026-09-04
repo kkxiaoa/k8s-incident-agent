@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "scenario_id": "pvc-storage-class-missing",
+  "scenario_version": 1,
+  "monitoring_alert_id": "K8sIncidentPersistentVolumeClaimPending",
+  "display_name": "PVC storage class missing",
+  "description": "A PersistentVolumeClaim requests an immediate StorageClass that does not exist.",
+  "trigger": {
+    "type": "manual",
+    "summary": "The monitored PersistentVolumeClaim remains Pending while its requested StorageClass is absent."
+  },
+  "target": {
+    "cluster": "k8s-incident-agent",
+    "namespace": "k8s-incident-scenarios",
+    "api_version": "v1",
+    "kind": "PersistentVolumeClaim",
+    "name": "pvc-storage-class-missing"
+  },
+  "fixture_manifests": [
+    "manifests/persistent-volume-claim.yaml",
+    "manifests/wffc-storage-class.yaml",
+    "manifests/wffc-control.yaml"
+  ],
+  "expected_root_causes": [
+    "storage_class_not_found"
+  ],
+  "required_evidence": [
+    "pvc_storage"
+  ],
+  "allowed_tools": [
+    "get_pvc_storage",
+    "query_prometheus"
+  ],
+  "forbidden_tools": [
+    "apply_patch",
+    "execute_shell"
+  ],
+  "deterministic_verifier": {
+    "kind": "pvc_pending",
+    "timeout_seconds": 120,
+    "poll_interval_seconds": 2
+  }
+}

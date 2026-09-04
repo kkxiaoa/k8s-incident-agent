@@ -11,6 +11,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     CoreV1Api,
     DiscoveryV1Api,
     EventsV1Api,
+    StorageV1Api,
     V1SelfSubjectAccessReview,
     V1SubjectAccessReviewStatus,
     VersionApi,
@@ -76,6 +77,16 @@ EXPECTED_ALLOWED: frozenset[AccessKey] = frozenset(
         ("", "v1", "pods", "log", "get", TARGET.namespace, None),
         ("", "v1", "services", None, "get", TARGET.namespace, None),
         (
+            "",
+            "v1",
+            "persistentvolumeclaims",
+            None,
+            "get",
+            TARGET.namespace,
+            None,
+        ),
+        ("storage.k8s.io", "v1", "storageclasses", None, "get", None, None),
+        (
             "discovery.k8s.io",
             "v1",
             "endpointslices",
@@ -108,6 +119,9 @@ EXPECTED_ALLOWED: frozenset[AccessKey] = frozenset(
 EXPECTED_DENIED: frozenset[AccessKey] = frozenset(
     {
         FORBIDDEN_SECRET_GET,
+        ("storage.k8s.io", "v1", "storageclasses", None, "list", None, None),
+        ("", "v1", "persistentvolumes", None, "get", None, None),
+        ("", "v1", "persistentvolumes", None, "list", None, None),
         ("", "v1", "pods", "exec", "create", TARGET.namespace, None),
         ("", "v1", "pods", "attach", "create", TARGET.namespace, None),
         *{
@@ -246,6 +260,7 @@ async def _clients(
         core_api=CoreV1Api(api_client),
         discovery_api=DiscoveryV1Api(api_client),
         events_api=EventsV1Api(api_client),
+        storage_api=StorageV1Api(api_client),
         version_api=cast(VersionApi, version_api),
         authorization_api=cast(AuthorizationV1Api, authorization_api),
         timeout_seconds=10,

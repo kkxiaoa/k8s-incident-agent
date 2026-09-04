@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -302,6 +302,50 @@ class ServiceNetworkPayload(_EvidenceContract):
     endpoint_slices: list[EndpointSliceSummary]
 
 
+class RequestedStorageClass(_EvidenceContract):
+    mode: Literal["explicit", "default", "none"]
+    name: str | None
+
+    @model_validator(mode="after")
+    def require_name_only_for_explicit_request(self) -> Self:
+        if (self.mode == "explicit") is not (self.name is not None):
+            raise ValueError("StorageClass request mode does not match its name")
+        return self
+
+
+class PersistentVolumeClaimDetail(_EvidenceContract):
+    resource_version: str = Field(min_length=1)
+    phase: Literal["Pending", "Bound", "Lost"]
+    requested_storage_class: RequestedStorageClass
+    conditions: list[ConditionSummary]
+
+
+class StorageClassDetail(_EvidenceContract):
+    name: str = Field(min_length=1)
+    uid: str = Field(min_length=1)
+    resource_version: str = Field(min_length=1)
+    provisioner: str = Field(min_length=1)
+    volume_binding_mode: Literal["Immediate", "WaitForFirstConsumer"]
+    is_default: bool
+
+
+class StorageClassLookup(_EvidenceContract):
+    state: Literal["found", "not_found", "not_requested"]
+    storage_class: StorageClassDetail | None
+
+    @model_validator(mode="after")
+    def require_storage_class_only_when_found(self) -> Self:
+        if (self.state == "found") is not (self.storage_class is not None):
+            raise ValueError("StorageClass lookup state does not match its result")
+        return self
+
+
+class PvcStoragePayload(_EvidenceContract):
+    persistent_volume_claim: PersistentVolumeClaimDetail
+    storage_class_lookup: StorageClassLookup
+    events: list[EventSummary]
+
+
 class _Observation(_EvidenceContract):
     target_ref: TargetRef
     observed_at: datetime
@@ -339,3 +383,8 @@ class ContainerLogsObservation(_Observation):
 class ServiceNetworkObservation(_Observation):
     evidence_kind: Literal["service_network"]
     payload: ServiceNetworkPayload
+
+
+class PvcStorageObservation(_Observation):
+    evidence_kind: Literal["pvc_storage"]
+    payload: PvcStoragePayload

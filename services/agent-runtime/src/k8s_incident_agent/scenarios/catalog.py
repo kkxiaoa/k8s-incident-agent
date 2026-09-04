@@ -39,6 +39,7 @@ class _Verifier(_StrictContract):
         "service_selector_mismatch",
         "readiness_probe_failure",
         "liveness_probe_failure",
+        "pvc_pending",
     ]
     timeout_seconds: Literal[120]
     poll_interval_seconds: Literal[2]

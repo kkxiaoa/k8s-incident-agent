@@ -1,0 +1,6 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: pvc-binding-pending-immediate
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: Immediate

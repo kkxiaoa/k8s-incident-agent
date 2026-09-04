@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-binding-pending
+  namespace: k8s-incident-scenarios
+  labels:
+    k8s-incident-agent.io/pending-policy: immediate
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: pvc-binding-pending-immediate
+  resources:
+    requests:
+      storage: 1Mi

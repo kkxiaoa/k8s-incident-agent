@@ -158,6 +158,69 @@ test("probe fixtures pin monitored containers, timings, and healthy controls", (
   }
 });
 
+test("PVC fixtures distinguish immediate-policy failures from legal WFFC waiting", () => {
+  for (const scenarioId of [
+    "pvc-binding-pending",
+    "pvc-storage-class-missing",
+  ]) {
+    const scenarioRoot = path.join(REPOSITORY_ROOT, "scenarios", scenarioId);
+    const failing = load(
+      readFileSync(
+        path.join(
+          scenarioRoot,
+          "manifests",
+          "persistent-volume-claim.yaml",
+        ),
+        "utf8",
+      ),
+    );
+    const control = load(
+      readFileSync(
+        path.join(scenarioRoot, "manifests", "wffc-control.yaml"),
+        "utf8",
+      ),
+    );
+    const wffcClass = load(
+      readFileSync(
+        path.join(scenarioRoot, "manifests", "wffc-storage-class.yaml"),
+        "utf8",
+      ),
+    );
+
+    assert.equal(
+      failing.metadata.labels["k8s-incident-agent.io/pending-policy"],
+      "immediate",
+    );
+    assert.equal(
+      control.metadata.labels?.["k8s-incident-agent.io/pending-policy"],
+      undefined,
+    );
+    assert.equal(control.spec.storageClassName, `${scenarioId}-wffc`);
+    assert.equal(wffcClass.metadata.namespace, undefined);
+    assert.equal(wffcClass.provisioner, "kubernetes.io/no-provisioner");
+    assert.equal(wffcClass.volumeBindingMode, "WaitForFirstConsumer");
+
+    if (scenarioId === "pvc-binding-pending") {
+      const immediateClass = load(
+        readFileSync(
+          path.join(scenarioRoot, "manifests", "storage-class.yaml"),
+          "utf8",
+        ),
+      );
+      assert.equal(
+        failing.spec.storageClassName,
+        "pvc-binding-pending-immediate",
+      );
+      assert.equal(immediateClass.volumeBindingMode, "Immediate");
+    } else {
+      assert.equal(
+        failing.spec.storageClassName,
+        "pvc-storage-class-missing-absent",
+      );
+    }
+  }
+});
+
 function validScenario() {
   return {
     schema_version: 2,
@@ -646,6 +709,80 @@ function probeFailureOutput(args, resource, probeKind, options = {}) {
   return undefined;
 }
 
+function pvcPendingOutput(args, resource, scenarioId) {
+  const missingClass = scenarioId === "pvc-storage-class-missing";
+  const targetClass = missingClass
+    ? `${scenarioId}-absent`
+    : `${scenarioId}-immediate`;
+  if (resource === "persistentvolumeclaim") {
+    const name = args[args.indexOf("persistentvolumeclaim") + 1];
+    const control = name === `${scenarioId}-wffc-control`;
+    return JSON.stringify({
+      apiVersion: "v1",
+      kind: "PersistentVolumeClaim",
+      metadata: {
+        name,
+        namespace: NAMESPACE,
+        uid: `${name}-uid`,
+        ...(control
+          ? {}
+          : {
+              labels: {
+                "k8s-incident-agent.io/pending-policy": "immediate",
+              },
+            }),
+      },
+      spec: {
+        storageClassName: control ? `${scenarioId}-wffc` : targetClass,
+      },
+      status: { phase: "Pending" },
+    });
+  }
+  if (resource === "storageclass") {
+    const name = args[args.indexOf("storageclass") + 1];
+    if (missingClass && name === targetClass) return "";
+    return JSON.stringify({
+      apiVersion: "storage.k8s.io/v1",
+      kind: "StorageClass",
+      metadata: { name },
+      provisioner: "kubernetes.io/no-provisioner",
+      volumeBindingMode: name.endsWith("-wffc")
+        ? "WaitForFirstConsumer"
+        : "Immediate",
+    });
+  }
+  if (resource === "events.events.k8s.io") {
+    return JSON.stringify({
+      apiVersion: "v1",
+      kind: "List",
+      items: [
+        {
+          apiVersion: "events.k8s.io/v1",
+          kind: "Event",
+          metadata: {
+            name: `${scenarioId}-event`,
+            namespace: NAMESPACE,
+          },
+          type: missingClass ? "Warning" : "Normal",
+          reason: missingClass ? "ProvisioningFailed" : "FailedBinding",
+          reportingController: "persistentvolume-controller",
+          note: missingClass
+            ? `storageclass.storage.k8s.io \"${targetClass}\" not found`
+            : "no persistent volumes available for this claim and no storage class is set",
+          regarding: {
+            apiVersion: "v1",
+            kind: "PersistentVolumeClaim",
+            namespace: NAMESPACE,
+            name: scenarioId,
+            uid: `${scenarioId}-uid`,
+          },
+        },
+      ],
+    });
+  }
+  return undefined;
+}
+
 let cachedK3sStatusFixtures;
 
 function k3sStatusFixtures() {
@@ -1007,6 +1144,8 @@ function k3sStatusResponse(args, options, fixtures) {
     const denied = [
       " get secrets ",
       " list configmaps ",
+      " list storageclasses.storage.k8s.io ",
+      " get persistentvolumes ",
       " list persistentvolumes ",
       " create pods ",
       " create pods --subresource=exec ",
@@ -1186,6 +1325,44 @@ test("the versioned fixture exposes only the public scenario contract", async ()
         api_version: "apps/v1",
         kind: "Deployment",
         name: "liveness-probe-misconfigured",
+      },
+    },
+    {
+      scenario_id: "pvc-binding-pending",
+      scenario_version: 1,
+      display_name: "PVC binding pending",
+      description:
+        "A PersistentVolumeClaim requests an immediate static StorageClass without an available PersistentVolume.",
+      trigger: {
+        type: "manual",
+        summary:
+          "The monitored PersistentVolumeClaim remains Pending because no matching volume can bind.",
+      },
+      target: {
+        cluster: CLUSTER_NAME,
+        namespace: NAMESPACE,
+        api_version: "v1",
+        kind: "PersistentVolumeClaim",
+        name: "pvc-binding-pending",
+      },
+    },
+    {
+      scenario_id: "pvc-storage-class-missing",
+      scenario_version: 1,
+      display_name: "PVC storage class missing",
+      description:
+        "A PersistentVolumeClaim requests an immediate StorageClass that does not exist.",
+      trigger: {
+        type: "manual",
+        summary:
+          "The monitored PersistentVolumeClaim remains Pending while its requested StorageClass is absent.",
+      },
+      target: {
+        cluster: CLUSTER_NAME,
+        namespace: NAMESPACE,
+        api_version: "v1",
+        kind: "PersistentVolumeClaim",
+        name: "pvc-storage-class-missing",
       },
     },
     {
@@ -1450,6 +1627,60 @@ test("probe verifier rejects a matching event from a non-kubelet producer", asyn
       return true;
     },
   );
+});
+
+test("PVC verifiers prove exact failure evidence and exclude legal WFFC waiting", async (t) => {
+  for (const scenarioId of [
+    "pvc-binding-pending",
+    "pvc-storage-class-missing",
+  ]) {
+    await t.test(scenarioId, async () => {
+      const executor = createExecutor({
+        resolveOutput: ({ args, resource }) =>
+          pvcPendingOutput(args, resource, scenarioId),
+      });
+
+      const result = await runScenarioCommand("verify", scenarioId, {
+        repositoryRoot: REPOSITORY_ROOT,
+        environment: {},
+        execute: executor.execute,
+      });
+
+      assert.deepEqual(result, {
+        status: "verified",
+        scenario_id: scenarioId,
+        persistent_volume_claim: {
+          name: scenarioId,
+          phase: "Pending",
+          requested_storage_class:
+            scenarioId === "pvc-storage-class-missing"
+              ? `${scenarioId}-absent`
+              : `${scenarioId}-immediate`,
+        },
+        storage_class:
+          scenarioId === "pvc-storage-class-missing"
+            ? "not_found"
+            : "immediate_without_volume",
+        event: {
+          name: `${scenarioId}-event`,
+          reason:
+            scenarioId === "pvc-storage-class-missing"
+              ? "ProvisioningFailed"
+              : "FailedBinding",
+        },
+        wffc_control: "pending_but_not_selected",
+      });
+      assert.equal(
+        executor.calls.some(({ args }) =>
+          args.includes("persistentvolumes")),
+        false,
+      );
+      assert.equal(
+        executor.calls.some(({ args }) => args.includes("--selector")),
+        false,
+      );
+    });
+  }
 });
 
 test("catalog rejects incompatible versions, extra fields, and target drift", async (t) => {

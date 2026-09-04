@@ -259,13 +259,15 @@ test("diagnostic RBAC grants only the approved read contract", () => {
     ),
     (document) => documents.push(document),
   );
-  assert.equal(documents.length, 4);
+  assert.equal(documents.length, 6);
 
   const byKind = new Map(documents.map((document) => [document.kind, document]));
   const namespace = byKind.get("Namespace");
   const serviceAccount = byKind.get("ServiceAccount");
   const role = byKind.get("Role");
   const roleBinding = byKind.get("RoleBinding");
+  const clusterRole = byKind.get("ClusterRole");
+  const clusterRoleBinding = byKind.get("ClusterRoleBinding");
 
   assert.equal(namespace.metadata.name, FIXED_NAMESPACE);
   assert.deepEqual(
@@ -295,6 +297,7 @@ test("diagnostic RBAC grants only the approved read contract", () => {
     [
       { apiGroups: [""], resources: ["pods"], verbs: ["list"] },
       { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
+      { apiGroups: [""], resources: ["persistentvolumeclaims"], verbs: ["get"] },
       { apiGroups: [""], resources: ["services"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["get"] },
       { apiGroups: ["apps"], resources: ["replicasets"], verbs: ["list"] },
@@ -320,6 +323,34 @@ test("diagnostic RBAC grants only the approved read contract", () => {
     apiGroup: "rbac.authorization.k8s.io",
     kind: "Role",
     name: "diagnostic-agent-read",
+  });
+  assert.deepEqual(
+    {
+      name: clusterRole.metadata.name,
+      rules: clusterRole.rules,
+    },
+    {
+      name: "diagnostic-agent-storage-class-read",
+      rules: [
+        {
+          apiGroups: ["storage.k8s.io"],
+          resources: ["storageclasses"],
+          verbs: ["get"],
+        },
+      ],
+    },
+  );
+  assert.deepEqual(clusterRoleBinding.subjects, [
+    {
+      kind: "ServiceAccount",
+      name: FIXED_SERVICE_ACCOUNT,
+      namespace: FIXED_NAMESPACE,
+    },
+  ]);
+  assert.deepEqual(clusterRoleBinding.roleRef, {
+    apiGroup: "rbac.authorization.k8s.io",
+    kind: "ClusterRole",
+    name: "diagnostic-agent-storage-class-read",
   });
 });
 
