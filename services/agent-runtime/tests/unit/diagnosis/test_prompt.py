@@ -23,8 +23,10 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     assert "get_events" in prompt
     assert "query_prometheus" in prompt
     assert "image-pull-affected-pods" in prompt
-    assert "successful query completes that panel's Evidence" in prompt
-    assert "do not query the same panel again" in prompt
+    assert "single panel and window" in prompt
+    assert "do not query another panel or window" in prompt
+    assert "Do not call the same Kubernetes" in prompt
+    assert "tool again after it succeeds" in prompt
     assert "read-only" in lowered
     assert "insufficient_evidence" in prompt
     assert "8" in prompt

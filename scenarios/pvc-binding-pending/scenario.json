@@ -26,7 +26,8 @@
     "persistent_volume_claim_unbound",
     "no_provisioner_and_no_prebound_pv",
     "no_matching_provisioner_plugin",
-    "no_provisioner_no_volume_plugin"
+    "no_provisioner_no_volume_plugin",
+    "no_provisioner_plugin"
   ],
   "required_evidence": [
     "pvc_storage"
