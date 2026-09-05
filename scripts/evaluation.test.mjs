@@ -464,6 +464,7 @@ test("diagnosis accepts Evidence-backed codes in approved root cause namespaces"
     ["image_pull_failed_dns_resolution", "no_provisioner_storageclass_no_matching_pv"],
     ["invalid_image_registry_dns", "unmatched_no_provisioner_plugin"],
     ["image_registry_dns_resolution_failure", "no_matching_provisioner_plugin"],
+    ["image_pull_forbidden_invalid_registry", "invalid_provisioner_no_volume_plugin"],
   ]) {
     await t.test(`${imageCode} / ${pvcCode}`, async () => {
       const harness = createHarness({

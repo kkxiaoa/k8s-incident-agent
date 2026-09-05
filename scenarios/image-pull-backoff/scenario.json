@@ -20,7 +20,8 @@
     "manifests/deployment.yaml"
   ],
   "expected_root_causes": [
-    "*image_*dns*"
+    "*image_*dns*",
+    "*image_*invalid_registry*"
   ],
   "required_evidence": [
     "workload",
