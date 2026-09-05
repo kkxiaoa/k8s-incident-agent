@@ -40,6 +40,8 @@ const COMMAND_TIMEOUT_MILLISECONDS = 5 * 60_000;
 const TERMINAL_RUN_STATUSES = new Set(["COMPLETED", "FAILED"]);
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const ROOT_CAUSE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const ROOT_CAUSE_GLOB_PATTERN = /^[a-z][a-z0-9_]*(?:\*[a-z0-9_]*)+$/;
 const RELEASE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const RELEASE_REVISION_PATTERN = /^[a-f0-9]{40}$/;
 const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";
@@ -663,6 +665,14 @@ function requireEvaluationCatalog(scenarios) {
       !isPlainObject(scenario.target) ||
       !Array.isArray(scenario.expectedRootCauses) ||
       scenario.expectedRootCauses.length === 0 ||
+      scenario.expectedRootCauses.some(
+        (value) =>
+          typeof value !== "string" ||
+          (!ROOT_CAUSE_CODE_PATTERN.test(value) &&
+            (value.length > 64 ||
+              value.includes("**") ||
+              !ROOT_CAUSE_GLOB_PATTERN.test(value))),
+      ) ||
       !Array.isArray(scenario.requiredEvidence) ||
       scenario.requiredEvidence.length === 0 ||
       !Array.isArray(scenario.allowedTools) ||
@@ -969,7 +979,7 @@ function validateTerminalDiagnosis(scenario, detail) {
   const expectedEvidenceKinds = new Set();
   for (const rootCause of detail.diagnosis.rootCauses) {
     if (
-      !isNormalizedString(rootCause?.code) ||
+      !ROOT_CAUSE_CODE_PATTERN.test(rootCause?.code ?? "") ||
       !Array.isArray(rootCause.evidenceIds) ||
       rootCause.evidenceIds.length === 0 ||
       new Set(rootCause.evidenceIds).size !== rootCause.evidenceIds.length ||
@@ -984,7 +994,11 @@ function validateTerminalDiagnosis(scenario, detail) {
       );
     }
     diagnosisCodes.push(rootCause.code);
-    if (scenario.expectedRootCauses.includes(rootCause.code)) {
+    if (
+      scenario.expectedRootCauses.some((expected) =>
+        matchesExpectedRootCause(expected, rootCause.code),
+      )
+    ) {
       for (const evidenceId of rootCause.evidenceIds) {
         expectedEvidenceKinds.add(evidenceById.get(evidenceId).evidenceKind);
       }
@@ -992,7 +1006,9 @@ function validateTerminalDiagnosis(scenario, detail) {
   }
   diagnosisCodes.sort();
   if (
-    !scenario.expectedRootCauses.some((code) => diagnosisCodes.includes(code))
+    !scenario.expectedRootCauses.some((expected) =>
+      diagnosisCodes.some((code) => matchesExpectedRootCause(expected, code)),
+    )
   ) {
     throw contractError(
       "diagnosis_root_cause_mismatch",
@@ -1012,6 +1028,13 @@ function validateTerminalDiagnosis(scenario, detail) {
     evidenceKinds,
     diagnosisCodes,
   };
+}
+
+function matchesExpectedRootCause(expected, actual) {
+  if (!expected.includes("*")) return actual === expected;
+  return new RegExp(
+    `^${expected.split("*").join("[a-z0-9_]*")}$`,
+  ).test(actual);
 }
 
 async function validateFiringPanels(incidentId, fetchImpl) {

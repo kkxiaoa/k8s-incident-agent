@@ -20,10 +20,8 @@
     "manifests/deployment.yaml"
   ],
   "expected_root_causes": [
-    "image_pull_failure",
-    "image_pull_registry_dns_failure",
-    "image_registry_dns_resolution_failure",
-    "image_registry_dns_unresolvable"
+    "image_pull_*dns*",
+    "image_*registry*dns*"
   ],
   "required_evidence": [
     "workload",

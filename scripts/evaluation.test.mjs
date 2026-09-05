@@ -459,6 +459,41 @@ test("diagnosis requires expected root causes to link all required Evidence", as
   );
 });
 
+test("diagnosis accepts an Evidence-backed code within an approved root cause namespace", async () => {
+  const harness = createHarness({
+    diagnosisCodeByScenario: {
+      "image-pull-backoff": "image_pull_failed_dns_resolution",
+      "pvc-binding-pending": "no_provisioner_storageclass_no_matching_pv",
+    },
+  });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  assert.equal(result.artifact.status, "passed");
+});
+
+test("diagnosis rejects a code outside the approved root cause namespace", async () => {
+  const harness = createHarness({
+    diagnosisCodeByScenario: {
+      "image-pull-backoff": "image_pull_registry_credentials_failure",
+    },
+  });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const scenario = result.artifact.scenarios.find(
+    ({ scenarioId }) => scenarioId === "image-pull-backoff",
+  );
+  assert.equal(scenario.status, "failed");
+  assert.equal(scenario.failure.code, "diagnosis_root_cause_mismatch");
+});
+
 test("Console proof requires stable Incident details, not an echoed id", async () => {
   const harness = createHarness({ consoleEchoOnly: true });
 
@@ -902,9 +937,10 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       rootCauses: [
         {
           code:
-            options.failingScenarioId === scenario.scenarioId
+            options.diagnosisCodeByScenario?.[scenario.scenarioId] ??
+            (options.failingScenarioId === scenario.scenarioId
               ? "unexpected_root_cause"
-              : scenario.expectedRootCauses[0],
+              : representativeRootCauseCode(scenario.expectedRootCauses[0])),
           evidenceIds:
             options.omitDiagnosisEvidenceLinks === true ? [] : evidence.map((item) => item.id),
         },
@@ -915,6 +951,12 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     },
     eventCursor: "3",
   });
+}
+
+function representativeRootCauseCode(expected) {
+  return expected.includes("*")
+    ? expected.replaceAll("*", "observed_") + "failure"
+    : expected;
 }
 
 function prometheusVector(value, metric = {}) {

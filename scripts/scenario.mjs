@@ -24,6 +24,8 @@ const SCENARIO_VERSION = 1;
 const MAX_FILE_BYTES = 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const COMMAND_TIMEOUT_MILLISECONDS = 30_000;
+const ROOT_CAUSE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const ROOT_CAUSE_GLOB_PATTERN = /^[a-z][a-z0-9_]*(?:\*[a-z0-9_]*)+$/;
 const EXPECTED_IMAGE = "registry.invalid/k8s-incident-agent/missing:v1";
 const AGNHOST_IMAGE =
   "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85";
@@ -402,6 +404,17 @@ function validateScenarioDefinition(definition, directoryName) {
     "forbidden_tools",
   ]) {
     assertNonEmptyUniqueStringArray(definition[field]);
+  }
+  if (
+    definition.expected_root_causes.some(
+      (value) =>
+        !ROOT_CAUSE_CODE_PATTERN.test(value) &&
+        (value.length > 64 ||
+          value.includes("**") ||
+          !ROOT_CAUSE_GLOB_PATTERN.test(value)),
+    )
+  ) {
+    throw new Error();
   }
   const forbidden = new Set(definition.forbidden_tools);
   const allowed = new Set(definition.allowed_tools);
