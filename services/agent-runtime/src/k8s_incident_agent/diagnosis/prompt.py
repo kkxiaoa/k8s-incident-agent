@@ -28,7 +28,8 @@ def build_diagnostic_system_prompt(
     panel_list = ", ".join(prometheus_panel_ids)
     prometheus_instruction = (
         f"Use query_prometheus only with one of these fixed panel IDs: {panel_list}. "
-        "Its window must be 15m, 1h, 6h, 7d, or 15d."
+        "Its window must be 15m, 1h, 6h, 7d, or 15d. A successful query completes "
+        "that panel's Evidence: do not query the same panel again with another window."
         if prometheus_panel_ids
         else "Prometheus queries are not available for this incident."
     )

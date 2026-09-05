@@ -399,7 +399,7 @@ async function evaluateInfrastructureRecovery(probe, options) {
     return { status: "failed", failureCode: "panel_probe_unavailable" };
   }
   const incidentId = await findLatestIncidentIdForScenario(
-    probe.scenarioId,
+    scenario,
     options.fetchImpl,
   );
   if (incidentId === undefined) {
@@ -1393,11 +1393,11 @@ async function getIncident(incidentId, fetchImpl) {
   return document;
 }
 
-async function findLatestIncidentIdForScenario(scenarioId, fetchImpl) {
+async function findLatestIncidentIdForScenario(scenario, fetchImpl) {
   const ids = await listIncidentIds(fetchImpl);
   for (const incidentId of ids) {
     const detail = await getIncident(incidentId, fetchImpl);
-    if (detail.incident?.target?.name === scenarioId) return incidentId;
+    if (matchesScenarioIncident(detail.incident, scenario)) return incidentId;
   }
   return undefined;
 }

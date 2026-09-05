@@ -185,9 +185,10 @@ test("one failed scenario does not prevent the remaining catalog entries", async
   assert.equal(harness.calls.scenarioVerify, 8);
 });
 
-test("another alert for the same target does not mask the catalog alert", async () => {
+test("infrastructure probe ignores another alert for the same Deployment", async () => {
   const harness = createHarness({
-    otherAlertSameTargetScenarioId: "crash-loop-backoff",
+    failingScenarioId: "service-selector-mismatch",
+    otherAlertSameTargetScenarioId: "readiness-probe-misconfigured",
   });
 
   const result = await runEvaluationCommand(
@@ -195,13 +196,20 @@ test("another alert for the same target does not mask the catalog alert", async 
     harness.dependencies,
   );
 
-  assert.equal(result.artifact.status, "passed");
+  assert.equal(result.artifact.status, "failed");
   assert.equal(
     result.artifact.scenarios.find(
-      (scenario) => scenario.scenarioId === "crash-loop-backoff",
+      (scenario) => scenario.scenarioId === "readiness-probe-misconfigured",
     )?.status,
     "passed",
   );
+  assert.equal(
+    result.artifact.scenarios.find(
+      (scenario) => scenario.scenarioId === "service-selector-mismatch",
+    )?.status,
+    "failed",
+  );
+  assert.equal(result.artifact.monitoring.infrastructure.status, "passed");
 });
 
 test("scenario failures keep their safe operator classification", async () => {
@@ -718,20 +726,20 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
         scenario.repeated,
     );
     const scenarioItems = [...scenarioById.values()]
-      .filter((scenario) => scenario.applied || scenario.resolved)
+      .filter(
+        (scenario) =>
+          scenario.scenarioId === options.otherAlertSameTargetScenarioId &&
+          (scenario.applied || scenario.resolved),
+      )
       .map((scenario) => ({
-        id: scenario.incidentId,
+        id: scenario.otherIncidentId,
         updatedAt: scenario.updatedAt,
       }))
       .concat(
         [...scenarioById.values()]
-          .filter(
-            (scenario) =>
-              scenario.scenarioId === options.otherAlertSameTargetScenarioId &&
-              (scenario.applied || scenario.resolved),
-          )
+          .filter((scenario) => scenario.applied || scenario.resolved)
           .map((scenario) => ({
-            id: scenario.otherIncidentId,
+            id: scenario.incidentId,
             updatedAt: scenario.updatedAt,
           })),
       )
@@ -799,6 +807,7 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     });
   }
   if (suffix.startsWith("/monitoring/panels/")) {
+    if (isOtherIncident) return new Response(null, { status: 404 });
     const panelId = suffix.split("/").at(-1);
     const panelState = !state.prometheus
       ? "monitoring_unavailable"

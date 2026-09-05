@@ -23,7 +23,8 @@
   ],
   "expected_root_causes": [
     "storage_class_not_found",
-    "referenced_storage_class_not_found"
+    "referenced_storage_class_not_found",
+    "pvc_storage_class_not_found"
   ],
   "required_evidence": [
     "pvc_storage"

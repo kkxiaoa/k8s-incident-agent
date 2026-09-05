@@ -24,7 +24,8 @@
   "expected_root_causes": [
     "readiness_probe_targets_undeclared_named_port",
     "readiness_probe_invalid_port_ref",
-    "readiness_probe_misconfigured_named_port"
+    "readiness_probe_misconfigured_named_port",
+    "readiness_probe_invalid_named_port"
   ],
   "required_evidence": [
     "workload",

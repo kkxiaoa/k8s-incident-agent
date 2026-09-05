@@ -24,7 +24,8 @@
   ],
   "expected_root_causes": [
     "service_selector_mismatch",
-    "selector_mismatch"
+    "selector_mismatch",
+    "selector_label_mismatch"
   ],
   "required_evidence": [
     "service_network"
