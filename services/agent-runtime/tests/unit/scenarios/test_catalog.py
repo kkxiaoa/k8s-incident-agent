@@ -122,6 +122,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
         "duplicate",
         "overlap",
         "target",
+        "verifier_timeout",
     ],
 )
 def test_rejects_documents_outside_the_node_producer_contract(
@@ -140,10 +141,14 @@ def test_rejects_documents_outside_the_node_producer_contract(
         value["allowed_tools"] = ["get_workload", "get_workload"]
     elif mutation == "overlap":
         value["forbidden_tools"] = ["get_workload", "execute_shell"]
-    else:
+    elif mutation == "target":
         target = value["target"]
         assert isinstance(target, dict)
         cast(dict[object, object], target)["namespace"] = "default"
+    else:
+        verifier = value["deterministic_verifier"]
+        assert isinstance(verifier, dict)
+        cast(dict[object, object], verifier)["timeout_seconds"] = 300
     _write_definition(catalog, value)
 
     with pytest.raises(RuntimeError, match="Scenario catalog"):

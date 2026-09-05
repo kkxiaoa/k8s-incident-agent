@@ -33,7 +33,11 @@ class DiagnosticPolicyCatalog:
             entry.alert_id: _policy(
                 tuple(entry.allowed_tools),
                 frozenset(entry.required_evidence),
-                tuple(panel.panel_id for panel in entry.panels),
+                tuple(
+                    panel.panel_id
+                    for panel in entry.panels
+                    if panel.signal_role == "trigger"
+                ),
             )
             for entry in alerts.entries
         }

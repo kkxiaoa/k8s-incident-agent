@@ -52,12 +52,10 @@ def test_resolves_exact_alert_and_scenario_diagnostic_policies() -> None:
     assert alert_policy.required_evidence == frozenset(
         {"workload", "pods", "events", "container_logs"}
     )
-    assert alert_policy.prometheus_panel_ids == (
-        "crash-loop-restarts",
-        "crash-loop-waiting-containers",
-    )
+    assert alert_policy.prometheus_panel_ids == ("crash-loop-waiting-containers",)
     assert "get_container_logs" not in image_pull_policy.tool_names
     assert "container_logs" not in image_pull_policy.required_evidence
+    assert image_pull_policy.prometheus_panel_ids == ("image-pull-affected-pods",)
 
 
 def test_resolves_generic_deployment_availability_policy_without_inventing_logs() -> (
@@ -170,10 +168,7 @@ def test_pvc_alert_and_scenarios_share_the_storage_evidence_policy(
     assert alert_policy == scenario_policy
     assert alert_policy.tool_names == ("get_pvc_storage", "query_prometheus")
     assert alert_policy.required_evidence == frozenset({"pvc_storage"})
-    assert alert_policy.prometheus_panel_ids == (
-        "pvc-pending-state",
-        "pvc-pending-age-seconds",
-    )
+    assert alert_policy.prometheus_panel_ids == ("pvc-pending-state",)
 
 
 @pytest.mark.parametrize(

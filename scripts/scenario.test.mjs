@@ -763,12 +763,12 @@ function pvcPendingOutput(args, resource, scenarioId) {
             name: `${scenarioId}-event`,
             namespace: NAMESPACE,
           },
-          type: missingClass ? "Warning" : "Normal",
-          reason: missingClass ? "ProvisioningFailed" : "FailedBinding",
+          type: "Warning",
+          reason: "ProvisioningFailed",
           reportingController: "persistentvolume-controller",
           note: missingClass
             ? `storageclass.storage.k8s.io \"${targetClass}\" not found`
-            : "no persistent volumes available for this claim and no storage class is set",
+            : "no volume plugin matched name: kubernetes.io/no-provisioner",
           regarding: {
             apiVersion: "v1",
             kind: "PersistentVolumeClaim",
@@ -1528,7 +1528,7 @@ test("Service verifier proves mismatch and a ready selector-matched control", as
               ],
             },
             addressType: "IPv4",
-            endpoints: healthy ? [{ conditions: { ready: true } }] : [],
+            endpoints: healthy ? [{ conditions: { ready: true } }] : null,
           },
         ]);
       }
@@ -1663,10 +1663,7 @@ test("PVC verifiers prove exact failure evidence and exclude legal WFFC waiting"
             : "immediate_without_volume",
         event: {
           name: `${scenarioId}-event`,
-          reason:
-            scenarioId === "pvc-storage-class-missing"
-              ? "ProvisioningFailed"
-              : "FailedBinding",
+          reason: "ProvisioningFailed",
         },
         wffc_control: "pending_but_not_selected",
       });

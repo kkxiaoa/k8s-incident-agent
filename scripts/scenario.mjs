@@ -64,7 +64,7 @@ const VALID_EXECUTION_PROFILES = new Set([
 ]);
 const NOOP_LOGGER = { info() {}, error() {} };
 
-class ScenarioCommandError extends Error {
+export class ScenarioCommandError extends Error {
   constructor(code, message) {
     super(message);
     this.name = "ScenarioCommandError";
@@ -96,6 +96,45 @@ function loadScenarioCatalog(repositoryRoot, environment = process.env) {
       "Scenario catalog does not satisfy the supported contract",
     );
   }
+}
+
+export function loadEvaluationScenarioCatalog(
+  repositoryRoot = repositoryRootFromModule(),
+  environment = process.env,
+) {
+  return loadScenarioCatalog(repositoryRoot, environment).map(({ definition }) => ({
+    scenarioId: definition.scenario_id,
+    scenarioVersion: definition.scenario_version,
+    alertId: definition.monitoring_alert_id,
+    target: {
+      cluster: definition.target.cluster,
+      namespace: definition.target.namespace,
+      apiVersion: definition.target.api_version,
+      kind: definition.target.kind,
+      name: definition.target.name,
+    },
+    expectedRootCauses: [...definition.expected_root_causes],
+    requiredEvidence: [...definition.required_evidence],
+    allowedTools: [...definition.allowed_tools],
+    forbiddenTools: [...definition.forbidden_tools],
+    verifierKind: definition.deterministic_verifier.kind,
+    healthyControlNames: evaluationControlNames(definition),
+  }));
+}
+
+function evaluationControlNames(definition) {
+  const verifierKind = definition.deterministic_verifier.kind;
+  if (verifierKind === "image_pull_backoff") return [];
+  if (verifierKind === "readiness_probe_failure") {
+    return [
+      `${definition.target.name}-healthy-control`,
+      `${definition.target.name}-slow-start-control`,
+    ];
+  }
+  if (verifierKind === "pvc_pending") {
+    return [`${definition.target.name}-wffc-control`];
+  }
+  return [`${definition.target.name}-healthy-control`];
 }
 
 export async function runScenarioCommand(
@@ -385,9 +424,11 @@ function validateScenarioDefinition(definition, directoryName) {
     "timeout_seconds",
     "poll_interval_seconds",
   ]);
+  const expectedTimeout =
+    definition.deterministic_verifier.kind === "crash_loop_backoff" ? 300 : 120;
   if (
     !VALID_VERIFIERS.has(definition.deterministic_verifier.kind) ||
-    definition.deterministic_verifier.timeout_seconds !== 120 ||
+    definition.deterministic_verifier.timeout_seconds !== expectedTimeout ||
     definition.deterministic_verifier.poll_interval_seconds !== 2
   ) {
     throw new Error();
@@ -938,19 +979,20 @@ async function verifyPvcPendingOnce(
   }
 
   const events = await readScenarioEvents(context, executeKubectlQuery);
-  const expectedReason = missingClass ? "ProvisioningFailed" : "FailedBinding";
+  const expectedReason = "ProvisioningFailed";
   const event = events.items.find((candidate) => {
     assertPlainUpstreamObject(candidate);
     const regarding = candidate.regarding;
     return (
-      candidate.type === (missingClass ? "Warning" : "Normal") &&
+      candidate.type === "Warning" &&
       candidate.reason === expectedReason &&
       candidate.reportingController === "persistentvolume-controller" &&
       typeof candidate.note === "string" &&
       (missingClass
         ? candidate.note.includes(requestedClass) &&
           /not found/i.test(candidate.note)
-        : /no persistent volumes available/i.test(candidate.note)) &&
+        : candidate.note.includes("kubernetes.io/no-provisioner") &&
+          /no volume plugin matched name/i.test(candidate.note)) &&
       isPlainObject(regarding) &&
       regarding.apiVersion === "v1" &&
       regarding.kind === "PersistentVolumeClaim" &&
@@ -1418,6 +1460,7 @@ async function readServiceNetworkState(serviceName, context, executeKubectlQuery
   let readyEndpoints = 0;
   for (const slice of slices.items) {
     const metadata = requireMetadata(slice, { namespace: NAMESPACE });
+    const endpoints = slice.endpoints ?? [];
     if (
       metadata.labels?.[ENDPOINT_SLICE_SERVICE_LABEL] !== serviceName ||
       !hasControllerOwner(metadata, {
@@ -1426,11 +1469,11 @@ async function readServiceNetworkState(serviceName, context, executeKubectlQuery
         name: serviceName,
         uid: serviceMetadata.uid,
       }) ||
-      !Array.isArray(slice.endpoints)
+      !Array.isArray(endpoints)
     ) {
       throw upstreamContractError();
     }
-    readyEndpoints += slice.endpoints.filter(
+    readyEndpoints += endpoints.filter(
       (endpoint) => endpoint?.conditions?.ready === true,
     ).length;
   }

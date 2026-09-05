@@ -35,9 +35,9 @@ const REAL_KUBECTL =
     encoding: "utf8",
   }).trim();
 const CONSOLE_IMAGE =
-  "k8s-incident-agent-console@sha256:62310090946e27a4274680ab09084046e6708994a499761d0e2fed3a69b64fa1";
+  "k8s-incident-agent-console@sha256:440b2f2df143ded1965830d21d7c2c579fe17400174663c0956de63d1bf1539c";
 const RUNTIME_IMAGE =
-  "k8s-incident-agent-runtime@sha256:395f13fd3f5c01e28ff9c5656e28563b714b6018e9aa79e81b84cace9d66663d";
+  "k8s-incident-agent-runtime@sha256:99cc3b2c800d4081920ce29507efdbf2ad985cb5d9a414a9d5424334225e35f9";
 const PROMETHEUS_IMAGE =
   "quay.io/prometheus/prometheus@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893";
 const ALERTMANAGER_IMAGE =
@@ -1042,7 +1042,7 @@ function runtimeOutput(command) {
     planDigest,
     sourceHead: "20260814_0001",
     state: "stage_one",
-    targetHead: "20260901_0002",
+    targetHead: "20260902_0003",
     targets: {
       artifactRunIds: ["artifact-run-id"],
       businessFiles: ["incidents.sqlite3"],
@@ -1056,7 +1056,7 @@ function runtimeOutput(command) {
         businessFiles: ["incidents.sqlite3"],
         checkpointFiles: ["checkpoints.sqlite3"],
       },
-      newHead: "20260901_0002",
+      newHead: "20260902_0003",
       outcome: "reset",
     } : {}),
   };
@@ -1820,7 +1820,7 @@ test("cutover preview creates isolation, releases only the admitted gated Pod, a
   assert.match(output.confirmation, /^cutover:v1:sha256:[a-f0-9]{64}$/);
   assert.deepEqual(output.reset, {
     sourceHead: "20260814_0001",
-    targetHead: "20260901_0002",
+    targetHead: "20260902_0003",
     state: "stage_one",
     rowCounts: { incidents: 1, agent_runs: 1 },
     businessFileCount: 1,
@@ -1908,7 +1908,7 @@ test("cutover confirm runs a fresh preview and passes only its plan digest to th
   const output = JSON.parse(confirmed.stdout);
   assert.equal(output.mode, "confirmed");
   assert.equal(output.reset.outcome, "reset");
-  assert.equal(output.reset.newHead, "20260901_0002");
+  assert.equal(output.reset.newHead, "20260902_0003");
   assert.deepEqual(output.reset.deleted, {
     businessFileCount: 1,
     checkpointFileCount: 1,

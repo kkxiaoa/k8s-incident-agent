@@ -29,6 +29,7 @@ const CUTOVER_CONTAINER = "runtime-reset";
 const CUTOVER_RUNTIME_ROOT = "/var/lib/k8s-incident-agent/runtime";
 const CUTOVER_GATE = "k8s-incident-agent.io/runtime-data-cutover";
 const DEFAULT_DENY_POLICY = "default-deny";
+const CUTOVER_TARGET_HEAD = "20260902_0003";
 const CUTOVER_CONFIRMATION_PATTERN = /^cutover:v1:sha256:[a-f0-9]{64}$/;
 const PLAN_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const CUTOVER_DEFAULT_TOLERATIONS = Object.freeze([
@@ -1861,7 +1862,7 @@ function normalizeCutoverRuntimeSuccess(rawLog, mode, expectedPlanDigest) {
   if (
     payload.planDigest !== expectedPlanDigest ||
     !["reset", "migrated", "already_complete"].includes(payload.outcome) ||
-    payload.newHead !== "20260901_0002"
+    payload.newHead !== CUTOVER_TARGET_HEAD
   ) {
     throw new DeploymentContractError(
       "cutover_runtime_output_invalid",
@@ -1899,7 +1900,7 @@ function normalizeCutoverRuntimeSuccess(rawLog, mode, expectedPlanDigest) {
 function normalizeCutoverRuntimePlan(payload, mode) {
   if (
     payload.mode !== mode ||
-    payload.targetHead !== "20260901_0002" ||
+    payload.targetHead !== CUTOVER_TARGET_HEAD ||
     !["stage_one", "deletion_complete", "empty_database", "already_complete"]
       .includes(payload.state) ||
     !(payload.sourceHead === null ||
@@ -1921,7 +1922,7 @@ function normalizeCutoverRuntimePlan(payload, mode) {
     "Runtime row counts",
   );
   if (
-    Object.keys(rowCounts).length > 5 ||
+    Object.keys(rowCounts).length > 6 ||
     Object.entries(rowCounts).some(
       ([name, count]) =>
         name === "" ||

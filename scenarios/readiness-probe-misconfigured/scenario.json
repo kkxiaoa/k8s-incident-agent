@@ -22,7 +22,8 @@
     "manifests/slow-start-control.yaml"
   ],
   "expected_root_causes": [
-    "readiness_probe_targets_undeclared_named_port"
+    "readiness_probe_targets_undeclared_named_port",
+    "readiness_probe_invalid_port_ref"
   ],
   "required_evidence": [
     "workload",

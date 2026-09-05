@@ -1754,6 +1754,8 @@ async def _apply_existing_alert_occurrence(
     if existing_event is not None:
         raise RecoveryConsistencyError
     if occurrence.status is AlertSignalStatus.FIRING:
+        incident.updated_at = datetime.now(UTC)
+        await session.flush()
         return None
     if occurrence.ends_at is None:
         raise RecoveryConsistencyError

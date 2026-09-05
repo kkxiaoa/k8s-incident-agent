@@ -34,6 +34,8 @@ npm run doctor
 | `npm run deployment -- install\|upgrade\|uninstall ... --confirm` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
 | `npm run deployment -- purge ... --preview\|--confirm <identity>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
 | `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation>` | `deployment.mjs` | 用固定一次性 Job 预览或确认保留 PVC 的 Stage 1 数据 cutover | 是；`--confirm` 额外删除旧业务数据 |
+| `npm run evaluation -- run <evaluation-profile> [--context <context>]` | `evaluation.mjs` | 逐项验证七个 catalog scenario 与五类真实告警/诊断切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
+| `npm run evaluation -- online k3s-online --context <context>` | `evaluation.mjs` | 验证 online profile 的只读 API 与人工入口缺失边界 | 否 |
 | `npm run scenario -- list` | `scenario.mjs` | 校验并列出版本化场景的公开信息 | 否 |
 | `npm run scenario -- apply <scenario-id>` | `scenario.mjs` | 安装指定 catalog fixture | 是 |
 | `npm run scenario -- verify <scenario-id>` | `scenario.mjs` | 等待并验证场景的确定性证据条件 | 否 |
@@ -151,6 +153,44 @@ npm run openapi:check
 `check` 重新生成临时产物并按字节比较，不修改 tracked 文件。脚本只接受
 `generate` 或 `check`，schema input 和 TypeScript output 均固定在仓库内，不接受
 路径或 URL 参数；执行前需要先在 `services/agent-runtime` 完成 `uv sync --locked`。
+
+## `evaluation.mjs`
+
+Task 9 的评估入口不接受任意 URL、Namespace、manifest、PromQL、artifact 路径或
+kubectl 参数。Kind 只使用固定 context；K3s 必须显式提供经过 deployment status
+门禁的 context。命令会在本机回环建立 Runtime、Console、Prometheus 与
+Alertmanager 的固定临时 port-forward，完成后关闭。
+
+```bash
+npm run evaluation -- run kind-evaluation
+npm run evaluation -- run k3s-evaluation --context <context>
+npm run evaluation -- online k3s-online --context <context>
+```
+
+`run` 复用 `scenario.mjs` 已校验的私有评估投影，逐 entry 证明健康基线、真实
+Prometheus/Alertmanager firing、健康对照不触发、唯一 Incident/Run、required
+Evidence 及其根因引用、必要 panel、具备完整 lifecycle payload 的 SSE replay、Console
+稳定详情、目标 Incident 自身的重复投递去重和 resolved 信号。场景彼此独立执行；单项
+失败会保留固定错误分类并继续后续 entry。重复投递按目标 Incident 的 `updatedAt` 推进
+判断，不使用可能被 Watchdog 等其他告警污染的全局 webhook 计数。
+最后还会受控缩放并恢复 kube-state-metrics/Prometheus，以验证 stale 与 monitoring
+unavailable 状态，然后轮换两个 Namespace 的同值 Webhook Secret、重建 Runtime 与
+Alertmanager，并要求 Watchdog 接收时间严格推进后再次证明链路健康。
+
+命令在任何 live 副作用前要求 Git worktree 干净，并从固定的
+`.runtime/release/console-oci` 与 `.runtime/release/runtime-oci` OCI layout 核对 lock 中的
+顶层 digest、`linux/arm64`/`linux/amd64` 两个 child 以及每个 image config 的
+`org.opencontainers.image.revision`。两份 layout 必须来自同一个 committed source
+revision；当前 clean `HEAD` 只能在该 revision 之后修改两个固定 digest-lock 文件，其他
+源码或部署漂移都会 fail closed。这个两提交约束避免 digest lock 对自身 commit 产生不可
+构建的哈希自引用，同时仍拒绝旧镜像、可变 tag、单架构 image 与未提交源码。
+
+产物固定原子写入 `.runtime/evaluation/<profile>.json`，目录/文件权限分别为
+`0700`/`0600`。artifact 只包含 release revision/image digest、布尔检查、状态、计数、
+Evidence kind、诊断 code 和 panel ID；不包含 Secret、token/hash、原始 Evidence、模型
+陈述、Event note、日志、上游响应或任意凭据。该命令具有上述精确 live 副作用，仍须在
+用户授权后运行；它不会 install/uninstall、purge、删除 Namespace/PVC/PV/Secret，或
+修改 cert-manager 与兄弟项目资源。
 
 ## `deployment.mjs`
 

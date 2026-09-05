@@ -1580,12 +1580,15 @@ def _project_endpoint_slice(
     if address_type not in {"IPv4", "IPv6", "FQDN"}:
         raise _contract_error()
     raw_endpoints = endpoint_slice_view.endpoints
-    if not isinstance(raw_endpoints, list) or not all(
+    if raw_endpoints is None:
+        endpoints: list[V1Endpoint] = []
+    elif not isinstance(raw_endpoints, list) or not all(
         isinstance(endpoint, V1Endpoint)
         for endpoint in cast(list[object], raw_endpoints)
     ):
         raise _contract_error()
-    endpoints = cast(list[V1Endpoint], raw_endpoints)
+    else:
+        endpoints = cast(list[V1Endpoint], raw_endpoints)
     ready_count = 0
     not_ready_count = 0
     unknown_ready_count = 0

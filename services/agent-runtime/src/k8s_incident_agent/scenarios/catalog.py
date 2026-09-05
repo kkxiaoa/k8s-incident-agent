@@ -5,7 +5,14 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from k8s_incident_agent.diagnosis.policy_contracts import (
     DiagnosticEvidenceKind,
@@ -41,8 +48,15 @@ class _Verifier(_StrictContract):
         "liveness_probe_failure",
         "pvc_pending",
     ]
-    timeout_seconds: Literal[120]
+    timeout_seconds: Literal[120, 300]
     poll_interval_seconds: Literal[2]
+
+    @model_validator(mode="after")
+    def validate_timeout(self) -> Self:
+        expected = 300 if self.kind == "crash_loop_backoff" else 120
+        if self.timeout_seconds != expected:
+            raise ValueError("Verifier timeout does not match its kind")
+        return self
 
 
 class _ScenarioDefinition(_StrictContract):

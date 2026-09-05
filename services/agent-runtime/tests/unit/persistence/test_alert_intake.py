@@ -250,7 +250,9 @@ async def test_nanosecond_distinct_occurrences_keep_distinct_database_identity(
 
 
 @pytest.mark.asyncio
-async def test_repeat_firing_and_unknown_resolved_are_no_ops(tmp_path: Path) -> None:
+async def test_repeat_refreshes_incident_and_unknown_resolved_remains_noop(
+    tmp_path: Path,
+) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
         first = await repository.apply_alert_occurrences(
@@ -258,6 +260,11 @@ async def test_repeat_firing_and_unknown_resolved_are_no_ops(tmp_path: Path) -> 
             _model(),
             _budget(),
         )
+        async with database.session_factory() as session:
+            incident = await session.scalar(select(IncidentRow))
+            assert incident is not None
+            incident.updated_at = START_TIME
+            await session.commit()
         repeated = await repository.apply_alert_occurrences(
             (_occurrence(),),
             _model(),
@@ -282,6 +289,10 @@ async def test_repeat_firing_and_unknown_resolved_are_no_ops(tmp_path: Path) -> 
         assert await _count(database, RunRow) == 1
         assert await _count(database, AlertSignalRow) == 1
         assert await _count(database, RunEventRow) == 1
+        async with database.session_factory() as session:
+            incident = await session.scalar(select(IncidentRow))
+            assert incident is not None
+            assert incident.updated_at.replace(tzinfo=UTC) > START_TIME
 
 
 @pytest.mark.asyncio

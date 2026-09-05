@@ -30,6 +30,7 @@ from k8s_incident_agent.kubernetes.errors import (
     KubernetesErrorCode,
     validate_kubernetes_failure_contract,
 )
+from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
 
 type DiagnosticObservation = (
@@ -328,27 +329,28 @@ def _success_output(
     evidence: PersistedEvidence,
     evidence_kind: EvidenceKind,
 ) -> dict[str, JsonValue]:
-    document: dict[str, object] = {
+    document: dict[str, JsonValue] = {
         "evidenceKind": evidence.evidence_kind,
         "targetRef": evidence.target_ref,
-        "observedAt": evidence.observed_at,
+        "observedAt": evidence.observed_at.isoformat(),
         "payload": evidence.payload,
         "truncated": evidence.truncated,
         "redacted": evidence.redacted,
     }
+    serialized = canonical_json(document)
     try:
         if evidence_kind == "workload":
-            observation = WorkloadObservation.model_validate(document)
+            observation = WorkloadObservation.model_validate_json(serialized)
         elif evidence_kind == "pods":
-            observation = PodsObservation.model_validate(document)
+            observation = PodsObservation.model_validate_json(serialized)
         elif evidence_kind == "events":
-            observation = EventsObservation.model_validate(document)
+            observation = EventsObservation.model_validate_json(serialized)
         elif evidence_kind == "container_logs":
-            observation = ContainerLogsObservation.model_validate(document)
+            observation = ContainerLogsObservation.model_validate_json(serialized)
         elif evidence_kind == "service_network":
-            observation = ServiceNetworkObservation.model_validate(document)
+            observation = ServiceNetworkObservation.model_validate_json(serialized)
         else:
-            observation = PvcStorageObservation.model_validate(document)
+            observation = PvcStorageObservation.model_validate_json(serialized)
     except ValidationError:
         raise FatalDiagnosticToolError(
             KubernetesErrorCode.RECOVERY_CONSISTENCY_ERROR

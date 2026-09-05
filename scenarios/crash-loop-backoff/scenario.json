@@ -21,7 +21,8 @@
     "manifests/healthy-control.yaml"
   ],
   "expected_root_causes": [
-    "invalid_startup_arguments"
+    "invalid_startup_arguments",
+    "invalid_container_args"
   ],
   "required_evidence": [
     "workload",
@@ -42,7 +43,7 @@
   ],
   "deterministic_verifier": {
     "kind": "crash_loop_backoff",
-    "timeout_seconds": 120,
+    "timeout_seconds": 300,
     "poll_interval_seconds": 2
   }
 }

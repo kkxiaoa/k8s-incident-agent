@@ -35,10 +35,14 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.contracts import (
+    ContainerLogLine,
+    ContainerLogSnapshot,
     ContainerLogsObservation,
     ContainerLogsPayload,
+    ContainerLogSummary,
     EventsObservation,
     EventsPayload,
+    OwnerSummary,
     PersistentVolumeClaimDetail,
     PodsObservation,
     PodsPayload,
@@ -223,7 +227,44 @@ class _ObservationAdapter:
                     resource_version=str(call_index),
                     selector=Selector(match_labels={"app": "broken-image"}),
                 ),
-                containers=[],
+                containers=[
+                    ContainerLogSummary(
+                        pod_ref=_target_ref().model_copy(
+                            update={"api_version": "v1", "kind": "Pod"}
+                        ),
+                        owner=OwnerSummary(
+                            api_version="apps/v1",
+                            kind="ReplicaSet",
+                            name="image-pull-backoff-abc123",
+                            uid="replica-set-uid",
+                            controller=True,
+                        ),
+                        container="workload",
+                        restart_count=1,
+                        snapshots=[
+                            ContainerLogSnapshot(
+                                source="current",
+                                status="available",
+                                lines=[
+                                    ContainerLogLine(
+                                        timestamp=NOW,
+                                        message="current log line",
+                                    )
+                                ],
+                            ),
+                            ContainerLogSnapshot(
+                                source="previous",
+                                status="available",
+                                lines=[
+                                    ContainerLogLine(
+                                        timestamp=NOW - timedelta(seconds=1),
+                                        message="previous log line",
+                                    )
+                                ],
+                            ),
+                        ],
+                    )
+                ],
             ),
             truncated=False,
             redacted=False,

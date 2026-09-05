@@ -268,6 +268,24 @@ async def test_projects_selector_mismatch_without_addresses_or_unrelated_labels(
 
 
 @pytest.mark.asyncio
+async def test_normalizes_null_endpoints_from_empty_endpoint_slice() -> None:
+    endpoint_slice = _endpoint_slice()
+    endpoint_slice.endpoints = None
+    adapter, _, _ = _adapter(
+        _service(),
+        [_pod("candidate")],
+        [endpoint_slice],
+    )
+
+    observation = await adapter.read_service_network(TARGET)
+
+    assert observation.payload.summary.state == "selector_mismatch"
+    assert observation.payload.summary.endpoint_slice_count == 1
+    assert observation.payload.summary.ready_endpoint_count == 0
+    assert observation.payload.endpoint_slices[0].endpoint_count == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("service", "pods", "slices", "expected_state"),
     [

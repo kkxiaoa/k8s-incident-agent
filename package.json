@@ -16,6 +16,7 @@
     "cluster": "node scripts/kind-cluster.mjs",
     "deployment": "node scripts/deployment.mjs",
     "doctor": "node scripts/doctor.mjs",
+    "evaluation": "node scripts/evaluation.mjs",
     "openapi:check": "node scripts/openapi-types.mjs check",
     "openapi:generate": "node scripts/openapi-types.mjs generate",
     "scenario": "node scripts/scenario.mjs"
