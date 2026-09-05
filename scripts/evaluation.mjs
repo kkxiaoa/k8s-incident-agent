@@ -888,7 +888,7 @@ async function waitForNewIncident(scenario, incidentsBefore, fetchImpl, sleep) {
       for (const incidentId of current) {
         if (incidentsBefore.has(incidentId)) continue;
         const detail = await getIncident(incidentId, fetchImpl);
-        if (sameTarget(detail.incident?.target, scenario.target)) {
+        if (matchesScenarioIncident(detail.incident, scenario)) {
           candidates.push(detail);
         }
       }
@@ -899,15 +899,6 @@ async function waitForNewIncident(scenario, incidentsBefore, fetchImpl, sleep) {
         );
       }
       if (candidates.length === 0) return undefined;
-      if (
-        candidates[0].incident?.source?.type !== "alertmanager" ||
-        candidates[0].incident?.source?.ref !== scenario.alertId
-      ) {
-        throw contractError(
-          "unexpected_target_incident",
-          "The target Incident was created from an unexpected alert",
-        );
-      }
       return candidates[0];
     },
     DIAGNOSIS_TIMEOUT_MILLISECONDS,
@@ -1273,7 +1264,7 @@ async function requireSingleIncidentAndRun(
   for (const candidateId of current) {
     if (incidentsBefore.has(candidateId)) continue;
     const detail = await getIncident(candidateId, fetchImpl);
-    if (sameTarget(detail.incident?.target, scenario.target)) {
+    if (matchesScenarioIncident(detail.incident, scenario)) {
       targetIncidents.push(candidateId);
     }
   }
@@ -1418,6 +1409,14 @@ function sameTarget(actual, expected) {
     actual?.apiVersion === expected.apiVersion &&
     actual?.kind === expected.kind &&
     actual?.name === expected.name
+  );
+}
+
+function matchesScenarioIncident(incident, scenario) {
+  return (
+    sameTarget(incident?.target, scenario.target) &&
+    incident?.source?.type === "alertmanager" &&
+    incident?.source?.ref === scenario.alertId
   );
 }
 

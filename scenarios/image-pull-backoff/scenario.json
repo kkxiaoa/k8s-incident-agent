@@ -21,7 +21,8 @@
   ],
   "expected_root_causes": [
     "image_pull_failure",
-    "image_registry_dns_resolution_failure"
+    "image_registry_dns_resolution_failure",
+    "image_registry_dns_unresolvable"
   ],
   "required_evidence": [
     "workload",

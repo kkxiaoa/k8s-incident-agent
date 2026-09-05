@@ -34,16 +34,29 @@ const REAL_KUBECTL =
   execFileSync("sh", ["-c", "command -v kubectl"], {
     encoding: "utf8",
   }).trim();
-const CONSOLE_IMAGE =
-  "k8s-incident-agent-console@sha256:440b2f2df143ded1965830d21d7c2c579fe17400174663c0956de63d1bf1539c";
-const RUNTIME_IMAGE =
-  "k8s-incident-agent-runtime@sha256:99cc3b2c800d4081920ce29507efdbf2ad985cb5d9a414a9d5424334225e35f9";
+const WORKLOAD_IMAGE_LOCK = load(
+  readFileSync(
+    path.join(APPLICATION_ROOT, "base", "workloads", "kustomization.yaml"),
+    "utf8",
+  ),
+);
+const CONSOLE_IMAGE = lockedImage("k8s-incident-agent-console");
+const RUNTIME_IMAGE = lockedImage("k8s-incident-agent-runtime");
 const PROMETHEUS_IMAGE =
   "quay.io/prometheus/prometheus@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893";
 const ALERTMANAGER_IMAGE =
   "quay.io/prometheus/alertmanager@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d";
 const KUBE_STATE_METRICS_IMAGE =
   "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b";
+
+function lockedImage(name) {
+  const image = WORKLOAD_IMAGE_LOCK.images?.find(
+    (candidate) => candidate.name === name,
+  );
+  assert.equal(image?.newName, name);
+  assert.match(image?.digest ?? "", /^sha256:[a-f0-9]{64}$/);
+  return `${image.newName}@${image.digest}`;
+}
 
 function render(relativePath) {
   return execFileSync(

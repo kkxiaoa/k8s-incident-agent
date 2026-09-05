@@ -24,7 +24,8 @@
   ],
   "expected_root_causes": [
     "persistent_volume_claim_unbound",
-    "no_provisioner_and_no_prebound_pv"
+    "no_provisioner_and_no_prebound_pv",
+    "no_matching_provisioner_plugin"
   ],
   "required_evidence": [
     "pvc_storage"

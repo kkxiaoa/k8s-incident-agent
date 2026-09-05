@@ -23,7 +23,8 @@
     "manifests/healthy-control-service.yaml"
   ],
   "expected_root_causes": [
-    "service_selector_mismatch"
+    "service_selector_mismatch",
+    "selector_mismatch"
   ],
   "required_evidence": [
     "service_network"

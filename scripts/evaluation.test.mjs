@@ -185,6 +185,25 @@ test("one failed scenario does not prevent the remaining catalog entries", async
   assert.equal(harness.calls.scenarioVerify, 8);
 });
 
+test("another alert for the same target does not mask the catalog alert", async () => {
+  const harness = createHarness({
+    otherAlertSameTargetScenarioId: "crash-loop-backoff",
+  });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  assert.equal(result.artifact.status, "passed");
+  assert.equal(
+    result.artifact.scenarios.find(
+      (scenario) => scenario.scenarioId === "crash-loop-backoff",
+    )?.status,
+    "passed",
+  );
+});
+
 test("scenario failures keep their safe operator classification", async () => {
   const harness = createHarness();
   const scenarioRunner = harness.dependencies.runScenarioCommand;
@@ -472,6 +491,7 @@ function createHarness(options = {}) {
         ...scenario,
         displayName: scenario.scenarioId,
         incidentId: `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        otherIncidentId: `60000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
         controlIncidentId: `40000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
         runId: `20000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
         applied: false,
@@ -704,6 +724,18 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
         updatedAt: scenario.updatedAt,
       }))
       .concat(
+        [...scenarioById.values()]
+          .filter(
+            (scenario) =>
+              scenario.scenarioId === options.otherAlertSameTargetScenarioId &&
+              (scenario.applied || scenario.resolved),
+          )
+          .map((scenario) => ({
+            id: scenario.otherIncidentId,
+            updatedAt: scenario.updatedAt,
+          })),
+      )
+      .concat(
         controlScenario === undefined
           ? []
           : [
@@ -738,9 +770,11 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   const scenario = [...scenarioById.values()].find(
     (candidate) =>
       candidate.incidentId === match[1] ||
+      candidate.otherIncidentId === match[1] ||
       candidate.controlIncidentId === match[1],
   );
   if (scenario === undefined) return new Response(null, { status: 404 });
+  const isOtherIncident = scenario.otherIncidentId === match[1];
   const isControlIncident = scenario.controlIncidentId === match[1];
   const suffix = match[2];
   if (suffix === "/runs") {
@@ -825,8 +859,18 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   return jsonResponse({
     schemaVersion: 3,
     incident: {
-      id: isControlIncident ? scenario.controlIncidentId : scenario.incidentId,
-      source: { type: "alertmanager", ref: scenario.alertId, revision: "catalog-v1" },
+      id: isControlIncident
+        ? scenario.controlIncidentId
+        : isOtherIncident
+          ? scenario.otherIncidentId
+          : scenario.incidentId,
+      source: {
+        type: "alertmanager",
+        ref: isOtherIncident
+          ? "K8sIncidentDeploymentReplicasUnavailable"
+          : scenario.alertId,
+        revision: "catalog-v1",
+      },
       target: isControlIncident
         ? { ...scenario.target, name: scenario.healthyControlNames[0] }
         : scenario.target,

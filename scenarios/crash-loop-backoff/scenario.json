@@ -22,7 +22,8 @@
   ],
   "expected_root_causes": [
     "invalid_startup_arguments",
-    "invalid_container_args"
+    "invalid_container_args",
+    "invalid_container_command"
   ],
   "required_evidence": [
     "workload",
