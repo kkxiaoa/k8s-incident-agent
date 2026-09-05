@@ -41,7 +41,7 @@ const TERMINAL_RUN_STATUSES = new Set(["COMPLETED", "FAILED"]);
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ROOT_CAUSE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-const ROOT_CAUSE_GLOB_PATTERN = /^[a-z][a-z0-9_]*(?:\*[a-z0-9_]*)+$/;
+const ROOT_CAUSE_GLOB_PATTERN = /^(?:\*)?[a-z][a-z0-9_]*(?:\*[a-z0-9_]*)+$/;
 const RELEASE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const RELEASE_REVISION_PATTERN = /^[a-f0-9]{40}$/;
 const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";

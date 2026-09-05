@@ -460,14 +460,15 @@ test("diagnosis requires expected root causes to link all required Evidence", as
 });
 
 test("diagnosis accepts Evidence-backed codes in approved root cause namespaces", async (t) => {
-  for (const pvcCode of [
-    "no_provisioner_storageclass_no_matching_pv",
-    "unmatched_no_provisioner_plugin",
+  for (const [imageCode, pvcCode] of [
+    ["image_pull_failed_dns_resolution", "no_provisioner_storageclass_no_matching_pv"],
+    ["invalid_image_registry_dns", "unmatched_no_provisioner_plugin"],
+    ["image_registry_dns_resolution_failure", "no_matching_provisioner_plugin"],
   ]) {
-    await t.test(pvcCode, async () => {
+    await t.test(`${imageCode} / ${pvcCode}`, async () => {
       const harness = createHarness({
         diagnosisCodeByScenario: {
-          "image-pull-backoff": "image_pull_failed_dns_resolution",
+          "image-pull-backoff": imageCode,
           "pvc-binding-pending": pvcCode,
         },
       });
@@ -482,23 +483,28 @@ test("diagnosis accepts Evidence-backed codes in approved root cause namespaces"
   }
 });
 
-test("diagnosis rejects a code outside the approved root cause namespace", async () => {
-  const harness = createHarness({
-    diagnosisCodeByScenario: {
-      "image-pull-backoff": "image_pull_registry_credentials_failure",
-    },
-  });
+test("diagnosis rejects codes outside approved root cause namespaces", async (t) => {
+  for (const [scenarioId, diagnosisCode] of [
+    ["image-pull-backoff", "image_pull_registry_credentials_failure"],
+    ["pvc-binding-pending", "pvc_storageclass_not_found"],
+  ]) {
+    await t.test(scenarioId, async () => {
+      const harness = createHarness({
+        diagnosisCodeByScenario: { [scenarioId]: diagnosisCode },
+      });
 
-  const result = await runEvaluationCommand(
-    { action: "run", profile: "kind-evaluation" },
-    harness.dependencies,
-  );
+      const result = await runEvaluationCommand(
+        { action: "run", profile: "kind-evaluation" },
+        harness.dependencies,
+      );
 
-  const scenario = result.artifact.scenarios.find(
-    ({ scenarioId }) => scenarioId === "image-pull-backoff",
-  );
-  assert.equal(scenario.status, "failed");
-  assert.equal(scenario.failure.code, "diagnosis_root_cause_mismatch");
+      const scenario = result.artifact.scenarios.find(
+        (candidate) => candidate.scenarioId === scenarioId,
+      );
+      assert.equal(scenario.status, "failed");
+      assert.equal(scenario.failure.code, "diagnosis_root_cause_mismatch");
+    });
+  }
 });
 
 test("Console proof requires stable Incident details, not an echoed id", async () => {
