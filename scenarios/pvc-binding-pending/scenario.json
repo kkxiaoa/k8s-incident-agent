@@ -27,7 +27,8 @@
     "no_provisioner_and_no_prebound_pv",
     "no_matching_provisioner_plugin",
     "no_provisioner_no_volume_plugin",
-    "no_provisioner_plugin"
+    "no_provisioner_plugin",
+    "no_provisioner_mismatch"
   ],
   "required_evidence": [
     "pvc_storage"
