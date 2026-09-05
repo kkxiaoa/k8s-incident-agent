@@ -21,7 +21,8 @@
   ],
   "expected_root_causes": [
     "*image_*dns*",
-    "*image_*invalid_registry*"
+    "*image_*invalid_registry*",
+    "*image_*unreachable_registry*"
   ],
   "required_evidence": [
     "workload",
