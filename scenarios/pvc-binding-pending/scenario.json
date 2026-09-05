@@ -25,6 +25,7 @@
   "expected_root_causes": [
     "persistent_volume_claim_unbound",
     "no_matching_provisioner_plugin",
+    "unmatched_no_provisioner_plugin",
     "no_provisioner_*"
   ],
   "required_evidence": [

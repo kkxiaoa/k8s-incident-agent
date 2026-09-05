@@ -459,20 +459,27 @@ test("diagnosis requires expected root causes to link all required Evidence", as
   );
 });
 
-test("diagnosis accepts an Evidence-backed code within an approved root cause namespace", async () => {
-  const harness = createHarness({
-    diagnosisCodeByScenario: {
-      "image-pull-backoff": "image_pull_failed_dns_resolution",
-      "pvc-binding-pending": "no_provisioner_storageclass_no_matching_pv",
-    },
-  });
+test("diagnosis accepts Evidence-backed codes in approved root cause namespaces", async (t) => {
+  for (const pvcCode of [
+    "no_provisioner_storageclass_no_matching_pv",
+    "unmatched_no_provisioner_plugin",
+  ]) {
+    await t.test(pvcCode, async () => {
+      const harness = createHarness({
+        diagnosisCodeByScenario: {
+          "image-pull-backoff": "image_pull_failed_dns_resolution",
+          "pvc-binding-pending": pvcCode,
+        },
+      });
 
-  const result = await runEvaluationCommand(
-    { action: "run", profile: "kind-evaluation" },
-    harness.dependencies,
-  );
+      const result = await runEvaluationCommand(
+        { action: "run", profile: "kind-evaluation" },
+        harness.dependencies,
+      );
 
-  assert.equal(result.artifact.status, "passed");
+      assert.equal(result.artifact.status, "passed");
+    });
+  }
 });
 
 test("diagnosis rejects a code outside the approved root cause namespace", async () => {
