@@ -10,7 +10,7 @@ resources:
 images:
   - name: k8s-incident-agent-console
     newName: k8s-incident-agent-console
-    digest: sha256:54adb8e6bf0ddb0a160849810872685259ca73d38bcba776810668614cb26e9d
+    digest: sha256:cbcba95a1df5148d7a57c6317fb32e07adb1a0c62d0c504a783db9969d552f1d
   - name: k8s-incident-agent-runtime
     newName: k8s-incident-agent-runtime
-    digest: sha256:51cc76e90749eb032d5efe58a28889e8350617198ba1474d1b8b18707503460b
+    digest: sha256:2b6d82c4191b9ed990cf8eaa8cf489e85cf6c8730d9ed89822e4de57e7b5b248
