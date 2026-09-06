@@ -561,35 +561,41 @@ async function evaluateInfrastructureRecovery(probe, options) {
 }
 
 async function evaluateOnlineBoundary(options) {
-  const openapi = await requestJson(
+  await requestJson(
     options.fetchImpl,
     endpointOrigin("runtime"),
-    "/openapi.json",
+    "/api/v1/incidents?limit=1",
   );
-  const paths = openapi?.paths;
-  if (!isPlainObject(paths)) throw upstreamContractError();
-  const incidents = paths["/api/v1/incidents"];
+  const [scenariosStatus, createIncidentStatus, createRunStatus] =
+    await Promise.all([
+      requestStatus(
+        options.fetchImpl,
+        endpointOrigin("runtime"),
+        "/api/v1/scenarios",
+      ),
+      requestStatus(
+        options.fetchImpl,
+        endpointOrigin("runtime"),
+        "/api/v1/incidents",
+        { method: "POST" },
+      ),
+      requestStatus(
+        options.fetchImpl,
+        endpointOrigin("runtime"),
+        "/api/v1/incidents/not-a-uuid/runs",
+        { method: "POST" },
+      ),
+    ]);
   if (
-    !isPlainObject(incidents) ||
-    !isPlainObject(incidents.get) ||
-    Object.hasOwn(incidents, "post") ||
-    Object.keys(paths).some(
-      (value) =>
-        value === "/api/v1/scenarios" ||
-        value === "/api/v1/incidents/{incident_id}/runs" &&
-          Object.hasOwn(paths[value], "post"),
-    )
+    scenariosStatus !== 404 ||
+    createIncidentStatus !== 405 ||
+    createRunStatus !== 405
   ) {
     throw contractError(
       "online_route_set_invalid",
       "Online profile exposes a manual intake route",
     );
   }
-  await requestJson(
-    options.fetchImpl,
-    endpointOrigin("runtime"),
-    "/api/v1/incidents?limit=1",
-  );
   const home = await requestText(
     options.fetchImpl,
     endpointOrigin("console"),
@@ -1745,21 +1751,14 @@ async function requestJson(fetchImpl, origin, pathname, options = {}) {
   return parseJson(raw);
 }
 
+async function requestStatus(fetchImpl, origin, pathname, options = {}) {
+  return (await request(fetchImpl, origin, pathname, options)).status;
+}
+
 async function requestText(fetchImpl, origin, pathname, options = {}) {
-  let response;
-  try {
-    response = await fetchImpl(`${origin}${pathname}`, {
-      headers: { Accept: options.accept ?? "application/json" },
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MILLISECONDS),
-    });
-  } catch {
-    throw new TransientEvaluationError(
-      "http_unavailable",
-      "An evaluation endpoint is temporarily unavailable",
-    );
-  }
-  if (!response.ok) {
-    if (options.transientStatuses?.has(response.status)) {
+  const result = await request(fetchImpl, origin, pathname, options);
+  if (!result.ok) {
+    if (options.transientStatuses?.has(result.status)) {
       throw new TransientEvaluationError(
         "http_unavailable",
         "An evaluation endpoint is temporarily unavailable",
@@ -1770,13 +1769,34 @@ async function requestText(fetchImpl, origin, pathname, options = {}) {
       "An evaluation endpoint returned an unexpected status",
     );
   }
+  return result.body;
+}
+
+async function request(fetchImpl, origin, pathname, options = {}) {
+  let response;
+  try {
+    response = await fetchImpl(`${origin}${pathname}`, {
+      headers: { Accept: options.accept ?? "application/json" },
+      method: options.method ?? "GET",
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MILLISECONDS),
+    });
+  } catch {
+    throw new TransientEvaluationError(
+      "http_unavailable",
+      "An evaluation endpoint is temporarily unavailable",
+    );
+  }
   const length = Number(response.headers.get("content-length"));
   if (Number.isFinite(length) && length > MAX_HTTP_BODY_BYTES) {
     throw responseTooLarge();
   }
   const body = await response.arrayBuffer();
   if (body.byteLength > MAX_HTTP_BODY_BYTES) throw responseTooLarge();
-  return new TextDecoder("utf-8", { fatal: true }).decode(body);
+  return {
+    body: new TextDecoder("utf-8", { fatal: true }).decode(body),
+    ok: response.ok,
+    status: response.status,
+  };
 }
 
 async function waitUntil(code, operation, timeoutMilliseconds, sleep) {

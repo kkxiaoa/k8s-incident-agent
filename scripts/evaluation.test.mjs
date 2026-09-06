@@ -289,6 +289,26 @@ test("online evaluation proves the manual route and control boundary", async () 
   });
 });
 
+test("online evaluation rejects an assembled manual runtime route", async () => {
+  const harness = createHarness({ onlineManualRoutes: true });
+  harness.state.online = true;
+
+  const result = await runEvaluationCommand(
+    {
+      action: "online",
+      profile: "k3s-online",
+      context: "k3s-k8s-incident-agent",
+    },
+    harness.dependencies,
+  );
+
+  assert.equal(result.artifact.status, "failed");
+  assert.deepEqual(result.artifact.failure, {
+    code: "online_route_set_invalid",
+    message: "Online profile exposes a manual intake route",
+  });
+});
+
 test("deployment checks receive expected nonzero command results", async () => {
   const harness = createHarness();
   harness.state.online = true;
@@ -753,12 +773,23 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
 
   if (url.port !== "18080") return new Response(null, { status: 404 });
   if (url.pathname === "/healthz") return jsonResponse({ status: "ok" });
-  if (url.pathname === "/openapi.json") {
-    return jsonResponse({
-      paths: {
-        "/api/v1/incidents": { get: {} },
-        "/api/v1/incidents/{incident_id}": { get: {} },
-      },
+  const method = init?.method ?? "GET";
+  if (url.pathname === "/api/v1/scenarios") {
+    return new Response(null, {
+      status: options.onlineManualRoutes === true ? 200 : 404,
+    });
+  }
+  if (url.pathname === "/api/v1/incidents" && method === "POST") {
+    return new Response(null, {
+      status: options.onlineManualRoutes === true ? 422 : 405,
+    });
+  }
+  if (
+    url.pathname === "/api/v1/incidents/not-a-uuid/runs" &&
+    method === "POST"
+  ) {
+    return new Response(null, {
+      status: options.onlineManualRoutes === true ? 422 : 405,
     });
   }
   if (url.pathname === "/api/v1/monitoring/health") {
