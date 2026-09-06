@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Final, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import ValidationError
@@ -18,7 +19,12 @@ from k8s_incident_agent.domain.models import (
     PersistedEvidence,
     ToolFailureRecord,
 )
-from k8s_incident_agent.kubernetes.contracts import ContainerLogsPayload
+from k8s_incident_agent.kubernetes.contracts import (
+    ContainerLogsPayload,
+    EventsPayload,
+    PodsPayload,
+    WorkloadPayload,
+)
 from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
@@ -27,6 +33,8 @@ from k8s_incident_agent.persistence.repositories import (
 from k8s_incident_agent.security.sanitizer import sanitize_untrusted_text
 
 _MAX_DIAGNOSIS_BYTES: Final = 16 * 1024
+_INVALID_REGISTRY_ROOT_CAUSE: Final = "image_invalid_registry"
+_IMAGE_PULL_WAITING_REASONS: Final = frozenset({"ErrImagePull", "ImagePullBackOff"})
 
 
 class DiagnosisValidationError(RuntimeError):
@@ -96,8 +104,98 @@ async def validate_diagnosis(
         }
         if not required_evidence.issubset(cited_kinds):
             raise DiagnosisValidationError
+        validated = _canonicalize_evidence_backed_root_causes(
+            validated,
+            snapshot.evidence_by_id,
+        )
 
     return validated
+
+
+def _canonicalize_evidence_backed_root_causes(
+    diagnosis: ValidatedDiagnosis,
+    evidence_by_id: dict[UUID, PersistedEvidence],
+) -> ValidatedDiagnosis:
+    root_causes = [
+        root_cause.model_copy(
+            update={
+                "code": (
+                    _INVALID_REGISTRY_ROOT_CAUSE
+                    if "image" in root_cause.code.split("_")
+                    and _proves_reserved_invalid_registry(
+                        tuple(
+                            evidence_by_id[value] for value in root_cause.evidence_ids
+                        )
+                    )
+                    else root_cause.code
+                )
+            }
+        )
+        for root_cause in diagnosis.root_causes
+    ]
+    return diagnosis.model_copy(update={"root_causes": root_causes})
+
+
+def _proves_reserved_invalid_registry(
+    evidence: tuple[PersistedEvidence, ...],
+) -> bool:
+    by_kind = {item.evidence_kind: item for item in evidence}
+    if not {"workload", "pods", "events"}.issubset(by_kind):
+        return False
+    try:
+        workload = WorkloadPayload.model_validate(by_kind["workload"].payload)
+        pods = PodsPayload.model_validate(by_kind["pods"].payload)
+        events = EventsPayload.model_validate(by_kind["events"].payload)
+    except ValidationError:
+        raise RecoveryConsistencyError from None
+
+    invalid_images = {
+        container.image
+        for container in workload.workload.containers
+        if _uses_reserved_invalid_registry(container.image)
+    }
+    failed_pods = {
+        (pod.namespace, pod.name, pod.uid)
+        for pod in pods.pods
+        if any(
+            container.image in invalid_images
+            and container.state.status == "waiting"
+            and container.state.reason in _IMAGE_PULL_WAITING_REASONS
+            for container in pod.containers
+        )
+    }
+    return bool(invalid_images and failed_pods) and any(
+        event.type == "Warning"
+        and event.reason == "Failed"
+        and event.reporting_controller == "kubelet"
+        and (
+            event.regarding.namespace,
+            event.regarding.name,
+            event.regarding.uid,
+        )
+        in failed_pods
+        for event in events.events
+    )
+
+
+def _uses_reserved_invalid_registry(image: str) -> bool:
+    if "://" in image:
+        hostname = urlsplit(image).hostname
+    else:
+        authority, separator, _ = image.partition("/")
+        if not separator:
+            return False
+        if (
+            "." not in authority
+            and ":" not in authority
+            and authority.casefold() != "localhost"
+        ):
+            return False
+        hostname = authority.rsplit(":", 1)[0]
+    if hostname is None:
+        return False
+    normalized = hostname.rstrip(".").casefold()
+    return normalized == "invalid" or normalized.endswith(".invalid")
 
 
 def _usable_evidence_kind(evidence: PersistedEvidence) -> str | None:

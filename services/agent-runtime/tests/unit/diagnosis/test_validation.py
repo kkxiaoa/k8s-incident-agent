@@ -173,6 +173,121 @@ def _container_logs_payload(
     }
 
 
+def _image_pull_payloads(image: str) -> dict[str, dict[str, JsonValue]]:
+    source_workload: dict[str, JsonValue] = {
+        "resourceVersion": "17",
+        "selector": {"matchLabels": {"app": "image-pull"}},
+    }
+    return {
+        "get_workload": {
+            "workload": {
+                "resourceVersion": "17",
+                "generation": 1,
+                "observedGeneration": 1,
+                "replicas": {
+                    "desired": 1,
+                    "updated": 1,
+                    "ready": 0,
+                    "available": 0,
+                },
+                "selector": {"matchLabels": {"app": "image-pull"}},
+                "containers": [
+                    {
+                        "name": "workload",
+                        "image": image,
+                        "imagePullPolicy": "Always",
+                        "command": [],
+                        "args": [],
+                        "probes": [],
+                    }
+                ],
+                "conditions": [],
+            }
+        },
+        "get_pods": {
+            "sourceWorkload": source_workload,
+            "pods": [
+                {
+                    "apiVersion": "v1",
+                    "kind": "Pod",
+                    "namespace": "k8s-incident-scenarios",
+                    "name": "image-pull-pod",
+                    "uid": "pod-uid",
+                    "resourceVersion": "18",
+                    "owner": {
+                        "apiVersion": "apps/v1",
+                        "kind": "ReplicaSet",
+                        "name": "image-pull-rs",
+                        "uid": "rs-uid",
+                        "controller": True,
+                    },
+                    "phase": "Pending",
+                    "conditions": [],
+                    "containers": [
+                        {
+                            "name": "workload",
+                            "image": image,
+                            "imageId": None,
+                            "restartCount": 0,
+                            "state": {
+                                "status": "waiting",
+                                "reason": "ImagePullBackOff",
+                                "message": "Image pull failed.",
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+        "get_events": {
+            "sourceWorkload": source_workload,
+            "associatedReplicaSetCount": 1,
+            "associatedPodCount": 1,
+            "events": [
+                {
+                    "apiVersion": "events.k8s.io/v1",
+                    "kind": "Event",
+                    "namespace": "k8s-incident-scenarios",
+                    "name": "image-pull-event",
+                    "uid": "event-uid",
+                    "resourceVersion": "19",
+                    "regarding": {
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "namespace": "k8s-incident-scenarios",
+                        "name": "image-pull-pod",
+                        "uid": "pod-uid",
+                    },
+                    "type": "Warning",
+                    "reason": "Failed",
+                    "action": "Pulling",
+                    "note": "Image pull failed.",
+                    "eventTime": NOW.isoformat(),
+                    "seriesCount": 1,
+                    "reportingController": "kubelet",
+                }
+            ],
+        },
+    }
+
+
+def _diagnosed_with_evidence(
+    evidence_ids: tuple[UUID, ...],
+    *,
+    code: str,
+) -> DiagnosisCandidate:
+    candidate = _diagnosed(evidence_ids[0], code=code)
+    return candidate.model_copy(
+        update={
+            "root_causes": [
+                candidate.root_causes[0].model_copy(
+                    update={"evidence_ids": list(evidence_ids)}
+                )
+            ]
+        }
+    )
+
+
 async def _record_failure(
     repository: IncidentRepository,
     run_id: UUID,
@@ -270,6 +385,82 @@ async def test_validator_sanitizes_model_text_and_preserves_model_code(
         assert "provider-secret" not in serialized
         assert "opaque-secret" not in serialized
         assert "[REDACTED]" in serialized
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_code",
+    ["image_pull_forbidden", "image_reference_unavailable_or_unauthenticated"],
+)
+async def test_validator_canonicalizes_reserved_invalid_registry_failure(
+    tmp_path: Path,
+    model_code: str,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        run_id = await _running_run(repository, f"invalid-registry-{model_code}")
+        evidence_ids: list[UUID] = []
+        for tool_name, payload in _image_pull_payloads(
+            "registry.invalid/k8s-incident-agent/missing:v1"
+        ).items():
+            evidence_ids.append(
+                await _record_evidence(
+                    repository,
+                    run_id,
+                    tool_call_id=f"call-{tool_name}",
+                    tool_name=tool_name,
+                    payload=payload,
+                )
+            )
+
+        validated = await validate_diagnosis(
+            _diagnosed_with_evidence(tuple(evidence_ids), code=model_code),
+            run_id,
+            repository,
+            required_evidence=frozenset({"workload", "pods", "events"}),
+        )
+
+        assert validated.root_causes[0].code == "image_invalid_registry"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "image",
+    [
+        "registry.example.com/private/workload:v1",
+        "invalid/private/workload:v1",
+    ],
+)
+async def test_validator_preserves_credentials_code_for_regular_registry(
+    tmp_path: Path,
+    image: str,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        run_id = await _running_run(repository, "registry-credentials")
+        evidence_ids: list[UUID] = []
+        for tool_name, payload in _image_pull_payloads(image).items():
+            evidence_ids.append(
+                await _record_evidence(
+                    repository,
+                    run_id,
+                    tool_call_id=f"call-{tool_name}",
+                    tool_name=tool_name,
+                    payload=payload,
+                )
+            )
+
+        validated = await validate_diagnosis(
+            _diagnosed_with_evidence(
+                tuple(evidence_ids),
+                code="image_registry_credentials_failure",
+            ),
+            run_id,
+            repository,
+            required_evidence=frozenset({"workload", "pods", "events"}),
+        )
+
+        assert validated.root_causes[0].code == "image_registry_credentials_failure"
 
 
 @pytest.mark.asyncio
