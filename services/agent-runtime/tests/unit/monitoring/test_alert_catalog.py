@@ -14,7 +14,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_supported_alert_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-05.3"
+    assert catalog.version == "2026-09-06.1"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
@@ -34,11 +34,17 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     assert catalog.entries[0].rule.for_duration == "30s"
     assert catalog.entries[0].allowed_tools == [
         "get_workload",
+        "get_rollout_history",
         "get_pods",
         "get_events",
         "query_prometheus",
     ]
-    assert catalog.entries[0].required_evidence == ["workload", "pods", "events"]
+    assert catalog.entries[0].required_evidence == [
+        "workload",
+        "rollout_history",
+        "pods",
+        "events",
+    ]
     assert "kube_pod_container_status_waiting_reason" in (
         catalog.entries[0].rule.expression
     )

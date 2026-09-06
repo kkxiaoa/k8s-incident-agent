@@ -37,7 +37,7 @@ def test_resolves_exact_alert_and_scenario_diagnostic_policies() -> None:
         IncidentSource(
             type="scenario",
             ref="image-pull-backoff",
-            revision="1",
+            revision="2",
         )
     )
 
@@ -55,6 +55,8 @@ def test_resolves_exact_alert_and_scenario_diagnostic_policies() -> None:
     assert alert_policy.prometheus_panel_ids == ("crash-loop-waiting-containers",)
     assert "get_container_logs" not in image_pull_policy.tool_names
     assert "container_logs" not in image_pull_policy.required_evidence
+    assert "get_rollout_history" in image_pull_policy.tool_names
+    assert "rollout_history" in image_pull_policy.required_evidence
     assert image_pull_policy.prometheus_panel_ids == ("image-pull-affected-pods",)
 
 

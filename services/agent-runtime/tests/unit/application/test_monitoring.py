@@ -271,7 +271,7 @@ async def test_catalog_drives_alertmanager_and_evaluation_panel_references() -> 
     repository.context = _monitoring_context(
         source_type="scenario",
         source_ref="image-pull-backoff",
-        source_revision="1",
+        source_revision="2",
         runs_truncated=False,
     )
     scenario_panels = await service.list_panels(uuid4())

@@ -67,7 +67,7 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
 def _scenario() -> PublicScenario:
     return PublicScenario(
         scenario_id="image-pull-backoff",
-        scenario_version=1,
+        scenario_version=2,
         monitoring_alert_id="K8sIncidentImagePullBackOff",
         display_name="Image pull failure",
         description="A Deployment cannot pull its configured image.",
@@ -84,11 +84,12 @@ def _scenario() -> PublicScenario:
         ),
         allowed_tools=(
             "get_workload",
+            "get_rollout_history",
             "get_pods",
             "get_events",
             "query_prometheus",
         ),
-        required_evidence=("workload", "pods", "events"),
+        required_evidence=("workload", "rollout_history", "pods", "events"),
     )
 
 

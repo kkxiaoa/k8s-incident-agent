@@ -19,6 +19,7 @@ import {
   loadEvaluationScenarioCatalog,
   runScenarioCommand,
   ScenarioCommandError,
+  supportedScenarioVersion,
 } from "./scenario.mjs";
 
 const KIND_CONTEXT = "kind-k8s-incident-agent";
@@ -264,13 +265,14 @@ async function evaluateScenario(scenario, options) {
     result.checks.healthyBaseline = true;
 
     const incidentsBefore = await listIncidentIds(options.fetchImpl);
+    // The operator may fail after creating only part of a fixture.
+    applied = true;
     await options.scenarioRunner("apply", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
       profile: options.profile,
       context: options.profile === "kind-evaluation" ? undefined : options.context,
       execute: adaptScenarioExecutor(options.execute),
     });
-    applied = true;
     await options.scenarioRunner("verify", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
       profile: options.profile,
@@ -417,6 +419,7 @@ async function evaluateInfrastructureRecovery(probe, options) {
   };
   let applied = false;
   try {
+    applied = true;
     await options.scenarioRunner("apply", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
       profile: options.profile,
@@ -424,7 +427,6 @@ async function evaluateInfrastructureRecovery(probe, options) {
         options.profile === "kind-evaluation" ? undefined : options.context,
       execute: adaptScenarioExecutor(options.execute),
     });
-    applied = true;
     await options.scenarioRunner("verify", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
       profile: options.profile,
@@ -666,7 +668,7 @@ function requireEvaluationCatalog(scenarios) {
   for (const scenario of scenarios) {
     if (
       !isNormalizedString(scenario?.scenarioId) ||
-      scenario.scenarioVersion !== 1 ||
+      scenario.scenarioVersion !== supportedScenarioVersion(scenario.scenarioId) ||
       !isNormalizedString(scenario.alertId) ||
       !isPlainObject(scenario.target) ||
       !Array.isArray(scenario.expectedRootCauses) ||

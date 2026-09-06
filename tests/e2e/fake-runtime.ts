@@ -27,7 +27,7 @@ interface FakeIncident {
 
 const SCENARIO: ScenarioResponse = {
   scenarioId: "image-pull-backoff",
-  scenarioVersion: 1,
+  scenarioVersion: 2,
   displayName: "镜像拉取失败",
   description: "调查 Pod 的 ImagePullBackOff，并保留 Kubernetes Evidence 引用。",
   target: {

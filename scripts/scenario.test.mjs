@@ -225,7 +225,7 @@ function validScenario() {
   return {
     schema_version: 2,
     scenario_id: SCENARIO_ID,
-    scenario_version: 1,
+    scenario_version: 2,
     monitoring_alert_id: "K8sIncidentImagePullBackOff",
     display_name: "Image pull failure",
     description: "A Deployment cannot pull its configured image.",
@@ -240,11 +240,15 @@ function validScenario() {
       kind: "Deployment",
       name: SCENARIO_ID,
     },
-    fixture_manifests: ["manifests/deployment.yaml"],
+    fixture_manifests: [
+      "manifests/healthy-deployment.yaml",
+      "manifests/deployment.yaml",
+    ],
     expected_root_causes: ["image_pull_failure"],
-    required_evidence: ["workload", "pods", "events"],
+    required_evidence: ["workload", "rollout_history", "pods", "events"],
     allowed_tools: [
       "get_workload",
+      "get_rollout_history",
       "get_pods",
       "get_events",
       "query_prometheus",
@@ -264,6 +268,8 @@ function validManifest(overrides = {}) {
   const name = overrides.name ?? SCENARIO_ID;
   const namespace = overrides.namespace ?? NAMESPACE;
   const selector = overrides.selector ?? `matchLabels:\n      app: ${SCENARIO_ID}`;
+  const image = overrides.image ??
+    "registry.invalid/k8s-incident-agent/missing:v1";
   return `apiVersion: ${apiVersion}
 kind: ${kind}
 metadata:
@@ -280,8 +286,9 @@ spec:
     spec:
       containers:
         - name: workload
-          image: registry.invalid/k8s-incident-agent/missing:v1
-          imagePullPolicy: Always
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          args: ["pause"]
 `;
 }
 
@@ -302,6 +309,17 @@ function createCatalog(t, options = {}) {
     JSON.stringify(scenario),
   );
   const manifestPath = path.join(manifestDirectory, "deployment.yaml");
+  const healthyManifestPath = path.join(
+    manifestDirectory,
+    "healthy-deployment.yaml",
+  );
+  writeFileSync(
+    healthyManifestPath,
+    validManifest({
+      image:
+        "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85",
+    }),
+  );
   if (options.symlinkManifest) {
     const externalManifest = path.join(catalogDirectory, "external.yaml");
     writeFileSync(externalManifest, options.manifest ?? validManifest());
@@ -312,6 +330,7 @@ function createCatalog(t, options = {}) {
 
   return {
     manifestPath,
+    healthyManifestPath,
     environment: { SCENARIO_CATALOG_DIR: catalogDirectory },
   };
 }
@@ -1228,6 +1247,9 @@ function createExecutor(options = {}) {
     if (command === "kubectl" && args.includes("apply")) {
       return "deployment.apps/image-pull-backoff configured\n";
     }
+    if (command === "kubectl" && args.includes("rollout")) {
+      return "deployment \"image-pull-backoff\" successfully rolled out\n";
+    }
     if (command === "kubectl" && args.includes("delete")) {
       return "deployment.apps/image-pull-backoff deleted\n";
     }
@@ -1293,7 +1315,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: SCENARIO_ID,
-      scenario_version: 1,
+      scenario_version: 2,
       display_name: "Image pull failure",
       description: "A Deployment cannot pull its configured image.",
       trigger: {
@@ -1788,8 +1810,25 @@ test("catalog rejects unsafe Deployment manifest identities and selectors", asyn
   }
 });
 
-test("apply and cleanup use only the catalog manifest and fixed target", async (t) => {
-  const { environment, manifestPath } = createCatalog(t);
+test("catalog rejects image revisions that differ outside the workload image", async (t) => {
+  const { environment, healthyManifestPath } = createCatalog(t);
+  const healthyManifest = readFileSync(healthyManifestPath, "utf8").replace(
+    "    spec:\n      containers:",
+    "    spec:\n      terminationGracePeriodSeconds: 5\n      containers:",
+  );
+  writeFileSync(healthyManifestPath, healthyManifest);
+
+  await assert.rejects(
+    runScenarioCommand("list", undefined, {
+      repositoryRoot: REPOSITORY_ROOT,
+      environment,
+    }),
+    (error) => error?.code === "scenario_contract_invalid",
+  );
+});
+
+test("apply forms a healthy revision before fault injection and cleanup stays scoped", async (t) => {
+  const { environment, healthyManifestPath, manifestPath } = createCatalog(t);
   const { calls, execute } = createExecutor();
   const dependencies = {
     repositoryRoot: REPOSITORY_ROOT,
@@ -1805,15 +1844,35 @@ test("apply and cleanup use only the catalog manifest and fixed target", async (
       command === "kubectl" &&
       (args.includes("apply") || args.includes("delete")),
   );
-  assert.equal(mutations.length, 2);
+  assert.equal(mutations.length, 3);
   for (const call of mutations) {
     assert.ok(call.args.includes("--context"));
     assert.ok(call.args.includes(CONTEXT_NAME));
     assert.ok(call.args.includes("--namespace"));
     assert.ok(call.args.includes(NAMESPACE));
-    assert.equal(call.args[call.args.indexOf("--filename") + 1], manifestPath);
     assert.equal(call.args.includes("--all"), false);
   }
+  const rolloutIndex = calls.findIndex(
+    ({ command, args }) => command === "kubectl" && args.includes("rollout"),
+  );
+  const healthyApplyIndex = calls.findIndex(
+    ({ command, args }) =>
+      command === "kubectl" &&
+      args.includes("apply") &&
+      args.includes(healthyManifestPath),
+  );
+  const faultApplyIndex = calls.findIndex(
+    ({ command, args }) =>
+      command === "kubectl" &&
+      args.includes("apply") &&
+      args.includes(manifestPath),
+  );
+  assert.ok(healthyApplyIndex >= 0);
+  assert.ok(rolloutIndex > healthyApplyIndex);
+  assert.ok(faultApplyIndex > rolloutIndex);
+  const cleanup = mutations.find(({ args }) => args.includes("delete"));
+  assert.ok(cleanup.args.includes(manifestPath));
+  assert.equal(cleanup.args.includes(healthyManifestPath), false);
   assert.equal(
     calls.some(
       ({ command, args }) =>
@@ -1827,8 +1886,33 @@ test("apply and cleanup use only the catalog manifest and fixed target", async (
   );
 });
 
+test("failed healthy rollout never injects the faulty image", async (t) => {
+  const { environment, healthyManifestPath, manifestPath } = createCatalog(t);
+  const failure = Object.assign(new Error("rollout failed"), {
+    stderr: "rollout failed",
+  });
+  const { calls, execute } = createExecutor({
+    failure: ({ args }) => args.includes("rollout") ? failure : undefined,
+  });
+
+  await assert.rejects(
+    runScenarioCommand("apply", SCENARIO_ID, {
+      repositoryRoot: REPOSITORY_ROOT,
+      environment,
+      execute,
+    }),
+    (error) => error?.code === "upstream_unavailable",
+  );
+
+  const appliedManifests = calls
+    .filter(({ command, args }) => command === "kubectl" && args.includes("apply"))
+    .map(({ args }) => args[args.indexOf("--filename") + 1]);
+  assert.deepEqual(appliedManifests, [healthyManifestPath]);
+  assert.equal(appliedManifests.includes(manifestPath), false);
+});
+
 test("K3s evaluation uses its explicit context without calling Kind", async (t) => {
-  const { environment, manifestPath } = createCatalog(t);
+  const { environment, healthyManifestPath, manifestPath } = createCatalog(t);
   const { calls, execute } = createExecutor({ k3sStatus: true });
   const dependencies = {
     repositoryRoot: REPOSITORY_ROOT,
@@ -1866,8 +1950,10 @@ test("K3s evaluation uses its explicit context without calling Kind", async (t) 
     kubectlCalls.some(({ args }) => args.includes("auth")),
     true,
   );
-  const mutation = kubectlCalls.find(({ args }) => args.includes("apply"));
-  assert.equal(mutation.args[mutation.args.indexOf("--filename") + 1], manifestPath);
+  const appliedManifests = kubectlCalls
+    .filter(({ args }) => args.includes("apply"))
+    .map(({ args }) => args[args.indexOf("--filename") + 1]);
+  assert.deepEqual(appliedManifests, [healthyManifestPath, manifestPath]);
 });
 
 test("K3s evaluation rejects missing or option-shaped contexts before commands", async (t) => {
@@ -2305,23 +2391,43 @@ test("kubectl timeout and permission failures keep distinct safe codes", async (
   }
 });
 
-test("fixture image contract uses a deterministic non-latest pull failure", () => {
+test("fixture keeps an image-only healthy revision before deterministic failure", () => {
+  const scenarioRoot = path.join(
+    REPOSITORY_ROOT,
+    "scenarios",
+    SCENARIO_ID,
+    "manifests",
+  );
   const manifest = load(readFileSync(
     path.join(
-      REPOSITORY_ROOT,
-      "scenarios",
-      SCENARIO_ID,
-      "manifests",
+      scenarioRoot,
       "deployment.yaml",
     ),
     "utf8",
   ));
+  const healthy = load(readFileSync(
+    path.join(scenarioRoot, "healthy-deployment.yaml"),
+    "utf8",
+  ));
   const container = manifest.spec.template.spec.containers[0];
+  const healthyContainer = healthy.spec.template.spec.containers[0];
 
   assert.equal(
     container.image,
     "registry.invalid/k8s-incident-agent/missing:v1",
   );
-  assert.equal(container.imagePullPolicy, "Always");
+  assert.equal(container.imagePullPolicy, "IfNotPresent");
   assert.equal(container.image.endsWith(":latest"), false);
+  assert.equal(healthyContainer.image.includes("@sha256:"), true);
+  assert.equal(healthyContainer.imagePullPolicy, "IfNotPresent");
+  assert.deepEqual(container.args, ["pause"]);
+  assert.deepEqual(healthyContainer.args, ["pause"]);
+  assert.deepEqual(
+    { ...manifest.spec.template.spec, containers: undefined },
+    { ...healthy.spec.template.spec, containers: undefined },
+  );
+  assert.deepEqual(
+    { ...container, image: undefined },
+    { ...healthyContainer, image: undefined },
+  );
 });

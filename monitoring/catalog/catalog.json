@@ -1,6 +1,6 @@
 {
   "schemaVersion": 6,
-  "catalogVersion": "2026-09-05.3",
+  "catalogVersion": "2026-09-06.1",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -19,12 +19,14 @@
       },
       "allowedTools": [
         "get_workload",
+        "get_rollout_history",
         "get_pods",
         "get_events",
         "query_prometheus"
       ],
       "requiredEvidence": [
         "workload",
+        "rollout_history",
         "pods",
         "events"
       ],

@@ -6,7 +6,12 @@ from pydantic import ValidationError
 from k8s_incident_agent.kubernetes.contracts import (
     PodsObservation,
     ReplicaSummary,
+    RolloutContainer,
+    RolloutHistoryObservation,
+    RolloutHistoryPayload,
+    RolloutRevision,
     Selector,
+    SourceWorkload,
     TargetRef,
     WorkloadDetail,
     WorkloadObservation,
@@ -103,3 +108,126 @@ def test_contracts_reject_top_level_field_assignment() -> None:
 
     with pytest.raises(ValidationError):
         observation.redacted = True  # type: ignore[misc]
+
+
+def test_rollout_history_serializes_only_normalized_revision_evidence() -> None:
+    observation = RolloutHistoryObservation(
+        evidence_kind="rollout_history",
+        target_ref=_workload_observation().target_ref,
+        observed_at=datetime(2026, 9, 6, 9, 30, tzinfo=UTC),
+        payload=RolloutHistoryPayload(
+            source_workload=SourceWorkload(
+                resource_version="42",
+                selector=Selector(match_labels={"app": "broken-image"}),
+            ),
+            revisions=[
+                RolloutRevision(
+                    revision=2,
+                    replica_set_ref=TargetRef(
+                        api_version="apps/v1",
+                        kind="ReplicaSet",
+                        namespace="k8s-incident-scenarios",
+                        name="image-pull-backoff-new",
+                        uid="replica-set-uid",
+                    ),
+                    containers=[
+                        RolloutContainer(
+                            name="workload",
+                            image="registry.invalid/workload:v2",
+                        )
+                    ],
+                )
+            ],
+        ),
+        truncated=False,
+        redacted=False,
+    )
+
+    assert observation.model_dump(mode="json", by_alias=True)["payload"] == {
+        "sourceWorkload": {
+            "resourceVersion": "42",
+            "selector": {"matchLabels": {"app": "broken-image"}},
+        },
+        "revisions": [
+            {
+                "revision": 2,
+                "replicaSetRef": {
+                    "apiVersion": "apps/v1",
+                    "kind": "ReplicaSet",
+                    "namespace": "k8s-incident-scenarios",
+                    "name": "image-pull-backoff-new",
+                    "uid": "replica-set-uid",
+                },
+                "containers": [
+                    {
+                        "name": "workload",
+                        "image": "registry.invalid/workload:v2",
+                    }
+                ],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "ascending",
+        "duplicate_revision",
+        "duplicate_replica_set",
+        "revision_overflow",
+        "wrong_scope",
+    ],
+)
+def test_rollout_history_rejects_ambiguous_replay_shapes(mutation: str) -> None:
+    value = RolloutHistoryObservation(
+        evidence_kind="rollout_history",
+        target_ref=_workload_observation().target_ref,
+        observed_at=datetime(2026, 9, 6, 9, 30, tzinfo=UTC),
+        payload=RolloutHistoryPayload(
+            source_workload=SourceWorkload(
+                resource_version="42",
+                selector=Selector(match_labels={"app": "broken-image"}),
+            ),
+            revisions=[
+                RolloutRevision(
+                    revision=2,
+                    replica_set_ref=TargetRef(
+                        api_version="apps/v1",
+                        kind="ReplicaSet",
+                        namespace="k8s-incident-scenarios",
+                        name="new",
+                        uid="new-uid",
+                    ),
+                    containers=[RolloutContainer(name="workload", image="bad:v2")],
+                ),
+                RolloutRevision(
+                    revision=1,
+                    replica_set_ref=TargetRef(
+                        api_version="apps/v1",
+                        kind="ReplicaSet",
+                        namespace="k8s-incident-scenarios",
+                        name="old",
+                        uid="old-uid",
+                    ),
+                    containers=[RolloutContainer(name="workload", image="good:v1")],
+                ),
+            ],
+        ),
+        truncated=False,
+        redacted=False,
+    ).model_dump(mode="python")
+    revisions = value["payload"]["revisions"]
+    if mutation == "ascending":
+        revisions.reverse()
+    elif mutation == "duplicate_revision":
+        revisions[1]["revision"] = 2
+    elif mutation == "duplicate_replica_set":
+        revisions[1]["replica_set_ref"]["uid"] = "new-uid"
+    elif mutation == "revision_overflow":
+        revisions[0]["revision"] = 9223372036854775808
+    else:
+        revisions[1]["replica_set_ref"]["namespace"] = "another-namespace"
+
+    with pytest.raises(ValidationError):
+        RolloutHistoryObservation.model_validate(value)

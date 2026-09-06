@@ -50,6 +50,10 @@ from k8s_incident_agent.kubernetes.contracts import (
     PvcStoragePayload,
     ReplicaSummary,
     RequestedStorageClass,
+    RolloutContainer,
+    RolloutHistoryObservation,
+    RolloutHistoryPayload,
+    RolloutRevision,
     Selector,
     ServiceCandidatePod,
     ServiceDetail,
@@ -85,7 +89,15 @@ DEPLOYMENT_TOOL_NAMES = (
     "get_events",
     "get_container_logs",
 )
-TOOL_NAMES = (*DEPLOYMENT_TOOL_NAMES, "get_service_network", "get_pvc_storage")
+TOOL_NAMES = (
+    "get_workload",
+    "get_rollout_history",
+    "get_pods",
+    "get_events",
+    "get_container_logs",
+    "get_service_network",
+    "get_pvc_storage",
+)
 TARGET = ScenarioTarget(
     cluster="k8s-incident-agent",
     namespace="k8s-incident-scenarios",
@@ -172,6 +184,59 @@ class _ObservationAdapter:
                     containers=[],
                     conditions=[],
                 )
+            ),
+            truncated=False,
+            redacted=False,
+        )
+
+    async def read_rollout_history(
+        self,
+        target: ScenarioTarget,
+    ) -> RolloutHistoryObservation:
+        call_index = await self._record("get_rollout_history", target)
+        return RolloutHistoryObservation(
+            evidence_kind="rollout_history",
+            target_ref=_target_ref(),
+            observed_at=NOW + timedelta(seconds=call_index),
+            payload=RolloutHistoryPayload(
+                source_workload=SourceWorkload(
+                    resource_version=str(call_index),
+                    selector=Selector(match_labels={"app": "broken-image"}),
+                ),
+                revisions=[
+                    RolloutRevision(
+                        revision=2,
+                        replica_set_ref=TargetRef(
+                            api_version="apps/v1",
+                            kind="ReplicaSet",
+                            namespace=cast(str, TARGET.namespace),
+                            name="image-pull-backoff-new",
+                            uid="replica-set-new",
+                        ),
+                        containers=[
+                            RolloutContainer(
+                                name="workload",
+                                image="registry.invalid/workload:v2",
+                            )
+                        ],
+                    ),
+                    RolloutRevision(
+                        revision=1,
+                        replica_set_ref=TargetRef(
+                            api_version="apps/v1",
+                            kind="ReplicaSet",
+                            namespace=cast(str, TARGET.namespace),
+                            name="image-pull-backoff-old",
+                            uid="replica-set-old",
+                        ),
+                        containers=[
+                            RolloutContainer(
+                                name="workload",
+                                image="registry.example/workload:v1",
+                            )
+                        ],
+                    ),
+                ],
             ),
             truncated=False,
             redacted=False,
@@ -554,6 +619,74 @@ async def test_success_records_started_before_read_and_returns_persisted_evidenc
             "tool.started",
             "evidence.recorded",
         ]
+
+
+@pytest.mark.asyncio
+async def test_rollout_history_tool_persists_and_replays_typed_evidence(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        adapter = _ObservationAdapter()
+        context = await _context(repository, adapter)
+        tools = build_diagnostic_tools()
+
+        first = await _invoke(
+            tools,
+            context,
+            "get_rollout_history",
+            "call-rollout-history",
+        )
+        replayed = await _invoke(
+            tools,
+            context,
+            "get_rollout_history",
+            "call-rollout-history",
+        )
+
+        assert replayed == first
+        assert adapter.calls == ["get_rollout_history"]
+        assert first["evidenceKind"] == "rollout_history"
+        assert first["payload"] == {
+            "sourceWorkload": {
+                "resourceVersion": "1",
+                "selector": {"matchLabels": {"app": "broken-image"}},
+            },
+            "revisions": [
+                {
+                    "revision": 2,
+                    "replicaSetRef": {
+                        "apiVersion": "apps/v1",
+                        "kind": "ReplicaSet",
+                        "namespace": "k8s-incident-scenarios",
+                        "name": "image-pull-backoff-new",
+                        "uid": "replica-set-new",
+                    },
+                    "containers": [
+                        {
+                            "name": "workload",
+                            "image": "registry.invalid/workload:v2",
+                        }
+                    ],
+                },
+                {
+                    "revision": 1,
+                    "replicaSetRef": {
+                        "apiVersion": "apps/v1",
+                        "kind": "ReplicaSet",
+                        "namespace": "k8s-incident-scenarios",
+                        "name": "image-pull-backoff-old",
+                        "uid": "replica-set-old",
+                    },
+                    "containers": [
+                        {
+                            "name": "workload",
+                            "image": "registry.example/workload:v1",
+                        }
+                    ],
+                },
+            ],
+        }
 
 
 @pytest.mark.asyncio

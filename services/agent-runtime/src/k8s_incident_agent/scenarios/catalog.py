@@ -62,7 +62,7 @@ class _Verifier(_StrictContract):
 class _ScenarioDefinition(_StrictContract):
     schema_version: Literal[2]
     scenario_id: str = Field(min_length=1)
-    scenario_version: Literal[1]
+    scenario_version: Literal[1, 2]
     monitoring_alert_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -97,9 +97,11 @@ class _ScenarioDefinition(_StrictContract):
         return normalized
 
     def validate_relationships(self, directory_name: str) -> Self:
+        expected_version = 2 if self.scenario_id == "image-pull-backoff" else 1
         if (
             not _SCENARIO_ID.fullmatch(self.scenario_id)
             or self.scenario_id != directory_name
+            or self.scenario_version != expected_version
             or self.target.name != self.scenario_id
             or set(self.allowed_tools).intersection(self.forbidden_tools)
         ):

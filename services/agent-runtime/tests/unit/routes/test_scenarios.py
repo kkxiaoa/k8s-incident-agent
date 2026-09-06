@@ -27,7 +27,7 @@ class _ScenarioService:
             items=(
                 ScenarioResponse(
                     scenario_id="image-pull-backoff",
-                    scenario_version=1,
+                    scenario_version=2,
                     display_name="Image pull failure",
                     description="A Deployment cannot pull its configured image.",
                     trigger=ScenarioTriggerResponse(
@@ -83,7 +83,7 @@ async def test_scenario_route_returns_only_versioned_public_projection(
         "items": [
             {
                 "scenarioId": "image-pull-backoff",
-                "scenarioVersion": 1,
+                "scenarioVersion": 2,
                 "displayName": "Image pull failure",
                 "description": "A Deployment cannot pull its configured image.",
                 "trigger": {

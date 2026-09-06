@@ -7,6 +7,7 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { loadAll } from "js-yaml";
 
@@ -20,10 +21,14 @@ const CLUSTER_NAME = "k8s-incident-agent";
 const CONTEXT_NAME = "kind-k8s-incident-agent";
 const NAMESPACE = "k8s-incident-scenarios";
 const SCENARIO_SCHEMA_VERSION = 2;
-const SCENARIO_VERSION = 1;
+const DEFAULT_SCENARIO_VERSION = 1;
+const SCENARIO_VERSION_OVERRIDES = new Map([
+  ["image-pull-backoff", 2],
+]);
 const MAX_FILE_BYTES = 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const COMMAND_TIMEOUT_MILLISECONDS = 30_000;
+const HEALTHY_ROLLOUT_TIMEOUT_MILLISECONDS = 125_000;
 const ROOT_CAUSE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const ROOT_CAUSE_GLOB_PATTERN = /^(?:\*)?[a-z][a-z0-9_]*(?:\*[a-z0-9_]*)+$/;
 const EXPECTED_IMAGE = "registry.invalid/k8s-incident-agent/missing:v1";
@@ -51,6 +56,7 @@ const VALID_VERIFIERS = new Set([
 ]);
 const DIAGNOSTIC_EVIDENCE_TOOLS = new Map([
   ["workload", "get_workload"],
+  ["rollout_history", "get_rollout_history"],
   ["pods", "get_pods"],
   ["events", "get_events"],
   ["container_logs", "get_container_logs"],
@@ -122,6 +128,10 @@ export function loadEvaluationScenarioCatalog(
     verifierKind: definition.deterministic_verifier.kind,
     healthyControlNames: evaluationControlNames(definition),
   }));
+}
+
+export function supportedScenarioVersion(scenarioId) {
+  return SCENARIO_VERSION_OVERRIDES.get(scenarioId) ?? DEFAULT_SCENARIO_VERSION;
 }
 
 function evaluationControlNames(definition) {
@@ -320,6 +330,7 @@ function loadScenarioEntry(catalogDirectory, scenarioDirectoryName) {
   const definition = parseJsonFile(definitionPath);
   validateScenarioDefinition(definition, scenarioDirectoryName);
 
+  const deploymentManifests = new Map();
   const manifestPaths = definition.fixture_manifests.map((relativePath) => {
     validateManifestRelativePath(relativePath);
     const manifestPath = path.join(
@@ -331,9 +342,17 @@ function loadScenarioEntry(catalogDirectory, scenarioDirectoryName) {
       scenarioDirectory,
       manifestPath,
     );
-    validateScenarioManifest(manifestPath, relativePath, definition);
+    const manifest = validateScenarioManifest(
+      manifestPath,
+      relativePath,
+      definition,
+    );
+    if (manifest !== undefined) {
+      deploymentManifests.set(relativePath, manifest);
+    }
     return manifestPath;
   });
+  validateImagePullRevisionPair(definition, deploymentManifests);
 
   return { definition, manifestPaths };
 }
@@ -357,12 +376,16 @@ function validateScenarioDefinition(definition, directoryName) {
     "deterministic_verifier",
   ]);
   if (definition.schema_version !== SCENARIO_SCHEMA_VERSION) throw new Error();
-  if (definition.scenario_version !== SCENARIO_VERSION) throw new Error();
   assertNormalizedString(definition.scenario_id);
   if (!/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(definition.scenario_id)) {
     throw new Error();
   }
   if (definition.scenario_id !== directoryName) throw new Error();
+  if (
+    definition.scenario_version !== supportedScenarioVersion(definition.scenario_id)
+  ) {
+    throw new Error();
+  }
   assertNormalizedString(definition.monitoring_alert_id);
   assertNormalizedString(definition.display_name);
   assertNormalizedString(definition.description);
@@ -470,7 +493,7 @@ function validateScenarioManifest(manifestPath, relativePath, definition) {
     validatePvcPendingManifest(manifestPath, relativePath, definition);
     return;
   }
-  validateDeploymentManifest(manifestPath, relativePath, definition);
+  return validateDeploymentManifest(manifestPath, relativePath, definition);
 }
 
 function validatePvcPendingManifest(manifestPath, relativePath, definition) {
@@ -512,7 +535,7 @@ function validatePvcPendingManifest(manifestPath, relativePath, definition) {
     ) {
       throw new Error();
     }
-    return;
+    return manifest;
   }
 
   const isControl = relativePath === "manifests/wffc-control.yaml";
@@ -597,15 +620,26 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
   );
   if (workload === undefined) throw new Error();
   if (verifier === "image_pull_backoff") {
+    const expectedPaths = [
+      "manifests/healthy-deployment.yaml",
+      "manifests/deployment.yaml",
+    ];
+    const isHealthyRevision = relativePath === expectedPaths[0];
     if (
-      definition.fixture_manifests.length !== 1 ||
-      relativePath !== "manifests/deployment.yaml" ||
-      workload.image !== EXPECTED_IMAGE ||
-      workload.imagePullPolicy !== "Always"
+      definition.fixture_manifests.length !== expectedPaths.length ||
+      definition.fixture_manifests.some(
+        (item, index) => item !== expectedPaths[index],
+      ) ||
+      !expectedPaths.includes(relativePath) ||
+      workload.image !== (isHealthyRevision ? AGNHOST_IMAGE : EXPECTED_IMAGE) ||
+      workload.imagePullPolicy !== "IfNotPresent" ||
+      !Array.isArray(workload.args) ||
+      workload.args.length !== 1 ||
+      workload.args[0] !== "pause"
     ) {
       throw new Error();
     }
-    return;
+    return manifest;
   }
   if (
     verifier === "readiness_probe_failure" ||
@@ -620,7 +654,7 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
       isHealthyControl,
       isSlowStartControl,
     );
-    return;
+    return manifest;
   }
   if (
     definition.fixture_manifests.length !== 2 ||
@@ -635,6 +669,45 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
   ) {
     throw new Error();
   }
+  return manifest;
+}
+
+function validateImagePullRevisionPair(definition, deploymentManifests) {
+  if (definition.deterministic_verifier.kind !== "image_pull_backoff") return;
+  const healthy = deploymentManifests.get("manifests/healthy-deployment.yaml");
+  const fault = deploymentManifests.get("manifests/deployment.yaml");
+  if (
+    healthy === undefined ||
+    fault === undefined ||
+    !isDeepStrictEqual(
+      withoutWorkloadImage(healthy),
+      withoutWorkloadImage(fault),
+    )
+  ) {
+    throw new Error();
+  }
+}
+
+function withoutWorkloadImage(manifest) {
+  const template = manifest.spec.template;
+  const podSpec = template.spec;
+  return {
+    ...manifest,
+    spec: {
+      ...manifest.spec,
+      template: {
+        ...template,
+        spec: {
+          ...podSpec,
+          containers: podSpec.containers.map((container) =>
+            container.name === "workload"
+              ? { ...container, image: "<workload-image>" }
+              : container
+          ),
+        },
+      },
+    },
+  };
 }
 
 function validateProbeDeploymentManifest(
@@ -840,6 +913,13 @@ function publicScenario(definition) {
 }
 
 async function mutateFixture(action, entry, context, execute) {
+  if (
+    action === "apply" &&
+    entry.definition.deterministic_verifier.kind === "image_pull_backoff"
+  ) {
+    await applyImagePullFixture(entry, context, execute);
+    return;
+  }
   const verb = action === "apply" ? "apply" : "delete";
   const args = [
     "--context",
@@ -848,7 +928,12 @@ async function mutateFixture(action, entry, context, execute) {
     NAMESPACE,
     verb,
   ];
-  for (const manifestPath of entry.manifestPaths) {
+  const manifestPaths =
+    action === "cleanup" &&
+    entry.definition.deterministic_verifier.kind === "image_pull_backoff"
+      ? [entry.manifestPaths.at(-1)]
+      : entry.manifestPaths;
+  for (const manifestPath of manifestPaths) {
     args.push("--filename", manifestPath);
   }
   if (action === "apply") {
@@ -862,6 +947,46 @@ async function mutateFixture(action, entry, context, execute) {
     );
   }
   await executeKubectl(execute, args);
+}
+
+async function applyImagePullFixture(entry, context, execute) {
+  const [healthyManifest, faultManifest] = entry.manifestPaths;
+  await executeKubectl(execute, [
+    "--context",
+    context,
+    "--namespace",
+    NAMESPACE,
+    "apply",
+    "--filename",
+    healthyManifest,
+    "--validate=strict",
+    "--request-timeout=30s",
+  ]);
+  await executeKubectl(
+    execute,
+    [
+      "--context",
+      context,
+      "--namespace",
+      NAMESPACE,
+      "rollout",
+      "status",
+      `deployment.apps/${entry.definition.target.name}`,
+      "--timeout=120s",
+    ],
+    HEALTHY_ROLLOUT_TIMEOUT_MILLISECONDS,
+  );
+  await executeKubectl(execute, [
+    "--context",
+    context,
+    "--namespace",
+    NAMESPACE,
+    "apply",
+    "--filename",
+    faultManifest,
+    "--validate=strict",
+    "--request-timeout=30s",
+  ]);
 }
 
 async function verifyScenario(entry, context, execute, clock) {

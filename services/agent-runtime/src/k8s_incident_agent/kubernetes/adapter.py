@@ -46,6 +46,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1Probe,
     V1ReplicaSet,
     V1ReplicaSetList,
+    V1ReplicaSetSpec,
     V1Service,
     V1ServiceSpec,
     V1StorageClass,
@@ -59,6 +60,7 @@ from k8s_incident_agent.domain.models import JsonValue
 from k8s_incident_agent.kubernetes.access import require_diagnostic_target_scope
 from k8s_incident_agent.kubernetes.client import KubernetesClients
 from k8s_incident_agent.kubernetes.contracts import (
+    MAX_DEPLOYMENT_REVISION,
     ConditionSummary,
     ContainerLogLine,
     ContainerLogSnapshot,
@@ -86,6 +88,10 @@ from k8s_incident_agent.kubernetes.contracts import (
     RegardingSummary,
     ReplicaSummary,
     RequestedStorageClass,
+    RolloutContainer,
+    RolloutHistoryObservation,
+    RolloutHistoryPayload,
+    RolloutRevision,
     Selector,
     ServiceCandidatePod,
     ServiceDetail,
@@ -143,6 +149,7 @@ _SENSITIVE_ARGUMENT_PATTERN = re.compile(
     r"[A-Za-z0-9_.-]*$",
     re.IGNORECASE,
 )
+_DEPLOYMENT_REVISION_PATTERN = re.compile(r"^[1-9][0-9]{0,18}$")
 
 
 class _AppsApi(Protocol):
@@ -314,6 +321,11 @@ class _ReplicaSetView(Protocol):
     api_version: object
     kind: object
     metadata: object
+    spec: object
+
+
+class _ReplicaSetSpecView(Protocol):
+    template: object
 
 
 class _OwnerReferenceView(Protocol):
@@ -540,6 +552,41 @@ class KubernetesEvidenceAdapter:
             _enforce_payload_budget(payload)
             return WorkloadObservation(
                 evidence_kind="workload",
+                target_ref=workload.target_ref,
+                observed_at=_observation_time(self._clock),
+                payload=payload,
+                truncated=state.truncated,
+                redacted=state.redacted,
+            )
+        except KubernetesBoundaryError:
+            raise
+        except Exception as error:
+            raise map_kubernetes_exception(error) from None
+
+    async def read_rollout_history(
+        self,
+        target: DiagnosticTarget,
+    ) -> RolloutHistoryObservation:
+        try:
+            state = _SanitizationState()
+            workload, replica_sets = await self._read_owned_replica_sets(
+                target,
+                state,
+            )
+            revisions = [
+                _project_rollout_revision(replica_set, state)
+                for replica_set in replica_sets
+            ]
+            if len({item.revision for item in revisions}) != len(revisions):
+                raise _contract_error()
+            revisions.sort(key=lambda item: item.revision, reverse=True)
+            payload = RolloutHistoryPayload(
+                source_workload=_source_workload(workload),
+                revisions=revisions,
+            )
+            _enforce_payload_budget(payload)
+            return RolloutHistoryObservation(
+                evidence_kind="rollout_history",
                 target_ref=workload.target_ref,
                 observed_at=_observation_time(self._clock),
                 payload=payload,
@@ -1035,7 +1082,10 @@ class KubernetesEvidenceAdapter:
         target: DiagnosticTarget,
         state: _SanitizationState,
     ) -> _Associations:
-        workload = await self._read_deployment(target, state)
+        workload, associated_replica_sets = await self._read_owned_replica_sets(
+            target,
+            state,
+        )
         namespace = cast(str, target.namespace)
         references_by_uid: dict[str, RegardingSummary] = {}
         _remember_reference(
@@ -1048,31 +1098,10 @@ class KubernetesEvidenceAdapter:
                 uid=workload.target_ref.uid,
             ),
         )
-        replica_sets = await self._list_replica_sets(
-            namespace,
-            workload.label_selector,
-        )
-        associated_replica_sets: list[V1ReplicaSet] = []
         replica_set_uids: set[str] = set()
-        for replica_set in replica_sets:
+        for replica_set in associated_replica_sets:
             replica_set_view = cast(_ReplicaSetView, replica_set)
-            _validate_list_item_type_meta(
-                replica_set_view.api_version,
-                replica_set_view.kind,
-                expected_api_version="apps/v1",
-                expected_kind="ReplicaSet",
-            )
             metadata = _metadata(replica_set_view.metadata)
-            if _required_string(metadata.namespace) != target.namespace:
-                raise _contract_error()
-            owner = _controller_owner(
-                metadata,
-                expected_api_version="apps/v1",
-                expected_kind="Deployment",
-                expected_uids={workload.uid},
-            )
-            if owner is None:
-                continue
             reference = _resource_reference(
                 api_version="apps/v1",
                 kind="ReplicaSet",
@@ -1080,10 +1109,7 @@ class KubernetesEvidenceAdapter:
                 expected_namespace=namespace,
             )
             _remember_reference(references_by_uid, reference)
-            associated_replica_sets.append(replica_set)
             replica_set_uids.add(reference.uid)
-            if len(associated_replica_sets) > REPLICA_SET_LIMIT:
-                raise _budget_error()
 
         pods = await self._list_pods(namespace, workload.label_selector)
         associated_pods: list[_AssociatedPod] = []
@@ -1119,10 +1145,53 @@ class KubernetesEvidenceAdapter:
 
         return _Associations(
             workload=workload,
-            replica_sets=tuple(associated_replica_sets),
+            replica_sets=associated_replica_sets,
             pods=tuple(associated_pods),
             references_by_uid=references_by_uid,
         )
+
+    async def _read_owned_replica_sets(
+        self,
+        target: DiagnosticTarget,
+        state: _SanitizationState,
+    ) -> tuple[_DeploymentContext, tuple[V1ReplicaSet, ...]]:
+        workload = await self._read_deployment(target, state)
+        namespace = cast(str, target.namespace)
+        replica_sets = await self._list_replica_sets(
+            namespace,
+            workload.label_selector,
+        )
+        associated: list[V1ReplicaSet] = []
+        replica_set_uids: set[str] = set()
+        for replica_set in replica_sets:
+            replica_set_view = cast(_ReplicaSetView, replica_set)
+            _validate_list_item_type_meta(
+                replica_set_view.api_version,
+                replica_set_view.kind,
+                expected_api_version="apps/v1",
+                expected_kind="ReplicaSet",
+            )
+            metadata = _metadata(replica_set_view.metadata)
+            if _required_string(metadata.namespace) != namespace:
+                raise _contract_error()
+            owner = _controller_owner(
+                metadata,
+                expected_api_version="apps/v1",
+                expected_kind="Deployment",
+                expected_uids={workload.uid},
+            )
+            if owner is None:
+                continue
+            if _required_string(owner.name) != workload.target_ref.name:
+                raise _contract_error()
+            replica_set_uid = _required_string(metadata.uid)
+            if replica_set_uid in replica_set_uids:
+                raise _contract_error()
+            replica_set_uids.add(replica_set_uid)
+            associated.append(replica_set)
+            if len(associated) > REPLICA_SET_LIMIT:
+                raise _budget_error()
+        return workload, tuple(associated)
 
     async def _read_deployment(
         self,
@@ -1802,9 +1871,68 @@ def _project_workload(
     )
 
 
+def _project_rollout_revision(
+    replica_set: V1ReplicaSet,
+    state: _SanitizationState,
+) -> RolloutRevision:
+    replica_set_view = cast(_ReplicaSetView, replica_set)
+    metadata = _metadata(replica_set_view.metadata)
+    spec = replica_set_view.spec
+    if not isinstance(spec, V1ReplicaSetSpec):
+        raise _contract_error()
+    pod_spec = _pod_template_spec(cast(_ReplicaSetSpecView, spec).template)
+    raw_containers = cast(list[V1Container], pod_spec.containers)
+    containers = sorted(
+        (
+            RolloutContainer(
+                name=_required_string(cast(_WorkloadContainerView, container).name),
+                image=state.required(cast(_WorkloadContainerView, container).image),
+            )
+            for container in raw_containers
+        ),
+        key=lambda container: container.name,
+    )
+    if not containers or len({container.name for container in containers}) != len(
+        containers
+    ):
+        raise _contract_error()
+    namespace = _required_string(metadata.namespace)
+    return RolloutRevision(
+        revision=_deployment_revision(metadata),
+        replica_set_ref=TargetRef(
+            api_version="apps/v1",
+            kind="ReplicaSet",
+            namespace=namespace,
+            name=_required_string(metadata.name),
+            uid=_required_string(metadata.uid),
+        ),
+        containers=containers,
+    )
+
+
+def _deployment_revision(metadata: _MetadataView) -> int:
+    annotations = metadata.annotations
+    if not isinstance(annotations, dict):
+        raise _contract_error()
+    raw_revision = cast(dict[object, object], annotations).get(
+        "deployment.kubernetes.io/revision"
+    )
+    if (
+        not isinstance(raw_revision, str)
+        or _DEPLOYMENT_REVISION_PATTERN.fullmatch(raw_revision) is None
+    ):
+        raise _contract_error()
+    revision = int(raw_revision)
+    if revision > MAX_DEPLOYMENT_REVISION:
+        raise _contract_error()
+    return revision
+
+
 def _deployment_pod_spec(spec: V1DeploymentSpec) -> _PodSpecView:
-    spec_view = cast(_DeploymentSpecView, spec)
-    template = spec_view.template
+    return _pod_template_spec(cast(_DeploymentSpecView, spec).template)
+
+
+def _pod_template_spec(template: object) -> _PodSpecView:
     if not isinstance(template, V1PodTemplateSpec):
         raise _contract_error()
     template_view = cast(_PodTemplateView, template)
@@ -2590,6 +2718,7 @@ def _utc_now() -> datetime:
 def _enforce_payload_budget(
     payload: (
         WorkloadPayload
+        | RolloutHistoryPayload
         | PodsPayload
         | EventsPayload
         | ContainerLogsPayload

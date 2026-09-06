@@ -20,8 +20,9 @@ from k8s_incident_agent.scenarios.contracts import (
 def normalized_trigger(
     name: str = "image-pull-backoff",
 ) -> NormalizedIncidentTrigger:
+    revision = "2" if name == "image-pull-backoff" else "1"
     return NormalizedIncidentTrigger(
-        source=IncidentSource(type="scenario", ref=name, revision="1"),
+        source=IncidentSource(type="scenario", ref=name, revision=revision),
         display_name="Image pull failure",
         trigger_summary="The target Deployment is unavailable.",
         target=KubernetesTarget(
@@ -37,7 +38,7 @@ def normalized_trigger(
 def public_scenario(name: str = "image-pull-backoff") -> PublicScenario:
     return PublicScenario(
         scenario_id=name,
-        scenario_version=1,
+        scenario_version=2,
         monitoring_alert_id="K8sIncidentImagePullBackOff",
         display_name="Image pull failure",
         description="A Deployment cannot pull its configured image.",
@@ -54,11 +55,12 @@ def public_scenario(name: str = "image-pull-backoff") -> PublicScenario:
         ),
         allowed_tools=(
             "get_workload",
+            "get_rollout_history",
             "get_pods",
             "get_events",
             "query_prometheus",
         ),
-        required_evidence=("workload", "pods", "events"),
+        required_evidence=("workload", "rollout_history", "pods", "events"),
     )
 
 

@@ -21,6 +21,7 @@ from k8s_incident_agent.kubernetes.contracts import (
     EventsObservation,
     PodsObservation,
     PvcStorageObservation,
+    RolloutHistoryObservation,
     ServiceNetworkObservation,
     WorkloadObservation,
 )
@@ -35,6 +36,7 @@ from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
 
 type DiagnosticObservation = (
     WorkloadObservation
+    | RolloutHistoryObservation
     | PodsObservation
     | EventsObservation
     | ContainerLogsObservation
@@ -44,6 +46,7 @@ type DiagnosticObservation = (
 type ObservationReader = Callable[[DiagnosticTarget], Awaitable[DiagnosticObservation]]
 type EvidenceKind = Literal[
     "workload",
+    "rollout_history",
     "pods",
     "events",
     "container_logs",
@@ -92,6 +95,19 @@ async def _get_pods(
         tool_name="get_pods",
         evidence_kind="pods",
         reader=runtime.context.adapter.read_pods,
+    )
+
+
+@tool("get_rollout_history")
+async def _get_rollout_history(
+    runtime: ToolRuntime[DiagnosticToolContext, object],
+) -> dict[str, JsonValue]:
+    """Observe owner-bound ReplicaSet revisions and their container images."""
+    return await _execute_tool(
+        runtime,
+        tool_name="get_rollout_history",
+        evidence_kind="rollout_history",
+        reader=runtime.context.adapter.read_rollout_history,
     )
 
 
@@ -150,6 +166,7 @@ async def _get_pvc_storage(
 def build_diagnostic_tools() -> tuple[BaseTool, ...]:
     return (
         _get_workload,
+        _get_rollout_history,
         _get_pods,
         _get_events,
         _get_container_logs,
@@ -341,6 +358,8 @@ def _success_output(
     try:
         if evidence_kind == "workload":
             observation = WorkloadObservation.model_validate_json(serialized)
+        elif evidence_kind == "rollout_history":
+            observation = RolloutHistoryObservation.model_validate_json(serialized)
         elif evidence_kind == "pods":
             observation = PodsObservation.model_validate_json(serialized)
         elif evidence_kind == "events":

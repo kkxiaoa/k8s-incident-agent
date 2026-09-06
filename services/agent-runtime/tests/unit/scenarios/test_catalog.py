@@ -53,7 +53,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     )
     assert scenario.model_dump(mode="json") == {
         "scenario_id": "image-pull-backoff",
-        "scenario_version": 1,
+        "scenario_version": 2,
         "monitoring_alert_id": "K8sIncidentImagePullBackOff",
         "display_name": "Image pull failure",
         "description": "A Deployment cannot pull its configured image.",
@@ -70,11 +70,12 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
         },
         "allowed_tools": [
             "get_workload",
+            "get_rollout_history",
             "get_pods",
             "get_events",
             "query_prometheus",
         ],
-        "required_evidence": ["workload", "pods", "events"],
+        "required_evidence": ["workload", "rollout_history", "pods", "events"],
     }
     assert "expected_root_causes" not in scenario.model_dump()
     assert "deterministic_verifier" not in scenario.model_dump()
@@ -150,6 +151,25 @@ def test_rejects_documents_outside_the_node_producer_contract(
         assert isinstance(verifier, dict)
         cast(dict[object, object], verifier)["timeout_seconds"] = 300
     _write_definition(catalog, value)
+
+    with pytest.raises(RuntimeError, match="Scenario catalog"):
+        load_scenario_catalog(catalog)
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "scenario_version"),
+    [("image-pull-backoff", 1), ("crash-loop-backoff", 2)],
+)
+def test_rejects_versions_not_owned_by_the_exact_scenario(
+    tmp_path: Path,
+    scenario_id: str,
+    scenario_version: int,
+) -> None:
+    catalog = _catalog(tmp_path)
+    definition_path = catalog / scenario_id / "scenario.json"
+    value = cast(dict[str, object], json.loads(definition_path.read_text()))
+    value["scenario_version"] = scenario_version
+    definition_path.write_text(json.dumps(value), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="Scenario catalog"):
         load_scenario_catalog(catalog)

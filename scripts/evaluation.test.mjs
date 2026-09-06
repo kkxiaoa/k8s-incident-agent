@@ -30,6 +30,7 @@ images:
 `;
 const EVIDENCE_TOOL = Object.freeze({
   workload: "get_workload",
+  rollout_history: "get_rollout_history",
   pods: "get_pods",
   events: "get_events",
   container_logs: "get_container_logs",
@@ -110,6 +111,12 @@ test("the committed scenario catalog exposes seven entries across five families"
     ),
     true,
   );
+  const imagePull = scenarios.find(
+    (scenario) => scenario.scenarioId === "image-pull-backoff",
+  );
+  assert.equal(imagePull.scenarioVersion, 2);
+  assert.equal(imagePull.requiredEvidence.includes("rollout_history"), true);
+  assert.equal(imagePull.allowedTools.includes("get_rollout_history"), true);
 });
 
 test("catalog evaluation records independent passing results and redacted evidence", async () => {
@@ -212,6 +219,61 @@ test("infrastructure probe ignores another alert for the same Deployment", async
   assert.equal(result.artifact.monitoring.infrastructure.status, "passed");
 });
 
+test("infrastructure recovery cleans a partially applied probe", async () => {
+  const harness = createHarness();
+  const imagePull = harness.dependencies.scenarios.find(
+    (scenario) => scenario.scenarioId === "image-pull-backoff",
+  );
+  assert.ok(imagePull);
+  harness.dependencies.scenarios = [
+    ...harness.dependencies.scenarios.filter(
+      (scenario) => scenario.scenarioId !== "image-pull-backoff",
+    ),
+    imagePull,
+  ];
+  const scenarioRunner = harness.dependencies.runScenarioCommand;
+  const imagePullActions = [];
+  let imagePullApplyCount = 0;
+  harness.dependencies.runScenarioCommand = async (
+    action,
+    scenarioId,
+    dependencies,
+  ) => {
+    if (scenarioId === "image-pull-backoff") imagePullActions.push(action);
+    if (action === "apply" && scenarioId === "image-pull-backoff") {
+      imagePullApplyCount += 1;
+      if (imagePullApplyCount === 2) {
+        throw new ScenarioCommandError(
+          "upstream_unavailable",
+          "The healthy rollout did not complete",
+        );
+      }
+    }
+    return scenarioRunner(action, scenarioId, dependencies);
+  };
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  assert.deepEqual(result.artifact.monitoring.infrastructure, {
+    status: "failed",
+    failure: {
+      code: "upstream_unavailable",
+      message: "The healthy rollout did not complete",
+    },
+  });
+  assert.deepEqual(imagePullActions, [
+    "cleanup",
+    "apply",
+    "verify",
+    "cleanup",
+    "apply",
+    "cleanup",
+  ]);
+});
+
 test("scenario failures keep their safe operator classification", async () => {
   const harness = createHarness();
   const scenarioRunner = harness.dependencies.runScenarioCommand;
@@ -241,6 +303,40 @@ test("scenario failures keep their safe operator classification", async () => {
     code: "verification_failed",
     message: "Scenario did not reach its deterministic evidence condition",
   });
+});
+
+test("a partial scenario apply is cleaned before evaluation continues", async () => {
+  const harness = createHarness();
+  const scenarioRunner = harness.dependencies.runScenarioCommand;
+  const imagePullActions = [];
+  harness.dependencies.runScenarioCommand = async (
+    action,
+    scenarioId,
+    dependencies,
+  ) => {
+    if (scenarioId === "image-pull-backoff") imagePullActions.push(action);
+    if (action === "apply" && scenarioId === "image-pull-backoff") {
+      throw new ScenarioCommandError(
+        "upstream_unavailable",
+        "The healthy rollout did not complete",
+      );
+    }
+    return scenarioRunner(action, scenarioId, dependencies);
+  };
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const failed = result.artifact.scenarios.find(
+    (scenario) => scenario.scenarioId === "image-pull-backoff",
+  );
+  assert.deepEqual(failed.failure, {
+    code: "upstream_unavailable",
+    message: "The healthy rollout did not complete",
+  });
+  assert.deepEqual(imagePullActions.slice(0, 3), ["cleanup", "apply", "cleanup"]);
 });
 
 test("a healthy control Incident fails only its owning scenario", async () => {

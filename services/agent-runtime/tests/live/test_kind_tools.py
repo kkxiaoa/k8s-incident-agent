@@ -78,14 +78,14 @@ async def _invoke(
 @pytest.mark.parametrize(
     "order",
     (
-        ("get_workload", "get_pods", "get_events"),
-        ("get_pods", "get_events", "get_workload"),
-        ("get_events", "get_workload", "get_pods"),
+        ("get_workload", "get_rollout_history", "get_pods", "get_events"),
+        ("get_pods", "get_events", "get_workload", "get_rollout_history"),
+        ("get_events", "get_rollout_history", "get_workload", "get_pods"),
     ),
 )
-async def test_fixed_kind_tools_persist_three_fresh_observations(
+async def test_fixed_kind_tools_persist_four_fresh_observations(
     tmp_path: Path,
-    order: tuple[str, str, str],
+    order: tuple[str, str, str, str],
 ) -> None:
     settings = Settings()  # pyright: ignore[reportCallIssue]
     started_at = datetime.now(UTC)
@@ -134,7 +134,7 @@ async def test_fixed_kind_tools_persist_three_fresh_observations(
             assert [result["evidenceKind"] for result in results] == [
                 name.removeprefix("get_") for name in order
             ]
-            assert len({result["evidenceId"] for result in results}) == 3
+            assert len({result["evidenceId"] for result in results}) == 4
         finally:
             await database.dispose()
     finally:

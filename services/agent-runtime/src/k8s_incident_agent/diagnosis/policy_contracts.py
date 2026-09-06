@@ -3,6 +3,7 @@ from typing import Final, Literal
 
 type DiagnosticToolName = Literal[
     "get_workload",
+    "get_rollout_history",
     "get_pods",
     "get_events",
     "get_container_logs",
@@ -12,6 +13,7 @@ type DiagnosticToolName = Literal[
 ]
 type DiagnosticEvidenceKind = Literal[
     "workload",
+    "rollout_history",
     "pods",
     "events",
     "container_logs",
@@ -22,6 +24,7 @@ type DiagnosticEvidenceKind = Literal[
 
 KUBERNETES_DIAGNOSTIC_TOOL_NAMES: Final[tuple[DiagnosticToolName, ...]] = (
     "get_workload",
+    "get_rollout_history",
     "get_pods",
     "get_events",
     "get_container_logs",
@@ -37,6 +40,7 @@ DIAGNOSTIC_EVIDENCE_TOOL_NAMES: Final[
     tuple[tuple[DiagnosticEvidenceKind, DiagnosticToolName], ...]
 ] = (
     ("workload", "get_workload"),
+    ("rollout_history", "get_rollout_history"),
     ("pods", "get_pods"),
     ("events", "get_events"),
     ("container_logs", "get_container_logs"),

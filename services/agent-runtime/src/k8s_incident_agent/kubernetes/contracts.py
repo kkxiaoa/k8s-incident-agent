@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -9,6 +9,7 @@ from pydantic.alias_generators import to_camel
 from k8s_incident_agent.domain.contracts import KubernetesTarget
 
 DiagnosticTarget = KubernetesTarget
+MAX_DEPLOYMENT_REVISION: Final = (1 << 63) - 1
 type ServiceNetworkState = Literal[
     "selector_mismatch",
     "endpoints_unready",
@@ -121,6 +122,46 @@ class WorkloadPayload(_EvidenceContract):
 class SourceWorkload(_EvidenceContract):
     resource_version: str = Field(min_length=1)
     selector: Selector
+
+
+class RolloutContainer(_EvidenceContract):
+    name: str = Field(min_length=1)
+    image: str = Field(min_length=1)
+
+
+class RolloutRevision(_EvidenceContract):
+    revision: int = Field(ge=1, le=MAX_DEPLOYMENT_REVISION)
+    replica_set_ref: TargetRef
+    containers: list[RolloutContainer] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_replica_set_identity_and_sorted_containers(self) -> Self:
+        names = [container.name for container in self.containers]
+        if (
+            self.replica_set_ref.api_version != "apps/v1"
+            or self.replica_set_ref.kind != "ReplicaSet"
+            or names != sorted(names)
+            or len(set(names)) != len(names)
+        ):
+            raise ValueError("Rollout revision contract is invalid")
+        return self
+
+
+class RolloutHistoryPayload(_EvidenceContract):
+    source_workload: SourceWorkload
+    revisions: list[RolloutRevision] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def require_unique_descending_revisions(self) -> Self:
+        revisions = [item.revision for item in self.revisions]
+        replica_set_uids = [item.replica_set_ref.uid for item in self.revisions]
+        if (
+            revisions != sorted(revisions, reverse=True)
+            or len(set(revisions)) != len(revisions)
+            or len(set(replica_set_uids)) != len(replica_set_uids)
+        ):
+            raise ValueError("Rollout history ordering or identity is ambiguous")
+        return self
 
 
 class OwnerSummary(_EvidenceContract):
@@ -363,6 +404,24 @@ class _Observation(_EvidenceContract):
 class WorkloadObservation(_Observation):
     evidence_kind: Literal["workload"]
     payload: WorkloadPayload
+
+
+class RolloutHistoryObservation(_Observation):
+    evidence_kind: Literal["rollout_history"]
+    payload: RolloutHistoryPayload
+
+    @model_validator(mode="after")
+    def require_deployment_scope(self) -> Self:
+        if (
+            self.target_ref.api_version != "apps/v1"
+            or self.target_ref.kind != "Deployment"
+            or any(
+                item.replica_set_ref.namespace != self.target_ref.namespace
+                for item in self.payload.revisions
+            )
+        ):
+            raise ValueError("Rollout history target scope is invalid")
+        return self
 
 
 class PodsObservation(_Observation):
