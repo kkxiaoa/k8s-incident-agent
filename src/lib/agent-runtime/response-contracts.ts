@@ -629,15 +629,20 @@ function parseRepairProposal(value: unknown): RepairProposalView | null {
     value.containerIndex > 255 ||
     typeof value.containerName !== "string" ||
     value.containerName.length === 0 ||
+    value.containerName.length > 253 ||
     typeof value.currentImage !== "string" ||
     value.currentImage.length === 0 ||
+    value.currentImage.length > 2048 ||
     typeof value.replacementImage !== "string" ||
     value.replacementImage.length === 0 ||
+    value.replacementImage.length > 2048 ||
     value.currentImage === value.replacementImage ||
     typeof value.targetUid !== "string" ||
     value.targetUid.length === 0 ||
+    value.targetUid.length > 253 ||
     typeof value.targetResourceVersion !== "string" ||
     value.targetResourceVersion.length === 0 ||
+    value.targetResourceVersion.length > 253 ||
     typeof value.digest !== "string" ||
     !/^sha256:[a-f0-9]{64}$/.test(value.digest) ||
     !isTimestamp(value.schemaCheckedAt) ||

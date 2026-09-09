@@ -8,8 +8,9 @@
 
 - 已实现来源中立的持久化 Incident、可重复 Run、只读 Kubernetes Evidence、诊断 Agent、REST/SSE BFF 与 Incident Console；
 - 固定 Kind 与单节点 K3s profile 已使用同一组双架构 Console / Runtime 产物完成安装、真实诊断、网络与身份门禁、持久化恢复和普通卸载验证；这不是任意 Kubernetes 兼容性承诺；
-- development / evaluation 仍可手动触发版本化 `ImagePullBackOff` 场景；online profile 不暴露人工创建或重新运行入口；
-- Alertmanager Webhook intake、固定 Kind/K3s 的 managed monitoring 安装契约、有界 Prometheus 查询、Run-owned Evidence，以及 catalog 驱动的 Console 监控链路与必要指标图表已完成离线实现；真实监控链路尚未验收，其余四类故障、Patch 验证、审批与受控执行仍未实现。当前评估定义不代表已经取得准确率、延迟或恢复率结果。
+- development / evaluation 可手动触发版本化场景；online profile 不暴露人工创建或重新运行入口；
+- Alertmanager intake、managed monitoring、有界 Prometheus 查询、Run-owned Evidence 与 Console 必要指标图表已实现；五个故障族的七个场景已有 fixed Kind/K3s 组合 live 证据，不代表任意 Kubernetes 兼容性或统计准确率、延迟、恢复率基线；
+- Evidence-bound 镜像修复提案、独立 server-side dry-run 与只读修复验证 Console 已完成离线实现和验证；该修复链路尚未完成最终镜像与集群 live 验收。当前止于 `WAITING_APPROVAL`，尚未批准或执行；审批、受控执行、恢复验证与回滚仍未实现。
 
 ## 产品边界
 

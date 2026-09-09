@@ -184,9 +184,20 @@ export function reduceIncidentStream(
       }
 
       const sameRun = action.detail.selectedRun.id === state.detail.selectedRun.id;
+      const snapshotBehind = BigInt(action.detail.eventCursor) < BigInt(state.lastEventId);
+      const detail = snapshotBehind
+        ? {
+            ...action.detail,
+            incident: { ...action.detail.incident, status: state.detail.incident.status },
+            selectedRun: sameRun
+              ? { ...action.detail.selectedRun, status: state.detail.selectedRun.status }
+              : action.detail.selectedRun,
+          }
+        : action.detail;
       return {
         ...state,
-        detail: action.detail,
+        detail,
+        lastEventId: snapshotBehind ? state.lastEventId : action.detail.eventCursor,
         eventPageCursor: action.detail.eventPage.nextCursor,
         events: uniqueEvents([
           ...action.detail.eventPage.items,

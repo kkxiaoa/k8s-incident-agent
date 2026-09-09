@@ -11,6 +11,7 @@ type UiIconName =
   | "expand"
   | "external-link"
   | "info"
+  | "layers"
   | "refresh";
 
 function glyph(name: UiIconName) {
@@ -85,6 +86,14 @@ function glyph(name: UiIconName) {
           <circle cx="12" cy="12" r="8.5" />
           <path d="M12 10.75v5" />
           <path d="M12 7.75h.01" />
+        </>
+      );
+    case "layers":
+      return (
+        <>
+          <path d="m12 3 9 5-9 5-9-5 9-5Z" />
+          <path d="m3 12 9 5 9-5" />
+          <path d="m3 16 9 5 9-5" />
         </>
       );
     case "refresh":

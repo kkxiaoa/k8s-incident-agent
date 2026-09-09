@@ -10,11 +10,12 @@ import {
   INCIDENT_ID,
   RUN_ID,
   makeIncidentDetail,
+  makeWaitingApprovalIncidentDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import { DiagnosisPanel } from "./diagnosis-panel";
 import { EvidenceList } from "./evidence-card";
-import { EvidenceJsonViewer } from "./evidence-json-viewer";
+import { JsonViewer } from "./json-viewer";
 import { IncidentList } from "./incident-list";
 import { IncidentStatusBadge, RunStatusBadge } from "./incident-status";
 import { IncidentStream } from "./incident-stream";
@@ -130,6 +131,50 @@ afterEach(() => {
   navigation.replace.mockReset();
   navigation.refresh.mockReset();
   FakeEventSource.current = null;
+});
+
+describe("repair detail refresh", () => {
+  it.each(["passed", "unavailable", "invalid"])("waits for the persisted repair snapshot: %s", async (outcome) => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    let resolveRequest!: (response: Response) => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolveRequest = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const terminal = makeWaitingApprovalIncidentDetail();
+    terminal.eventCursor = "20";
+    const initial = structuredClone(terminal);
+    initial.repair = null;
+    initial.incident.status = "TRIAGING";
+    initial.selectedRun.status = "RUNNING";
+    initial.selectedRun.completedAt = null;
+    initial.eventCursor = "1";
+    renderIncidentStream(initial);
+    act(() => FakeEventSource.current!.emit("repair.waiting_approval", "20", {
+      schemaVersion: 4,
+      incidentId: INCIDENT_ID,
+      runId: RUN_ID,
+      proposalId: terminal.repair!.id,
+      proposalDigest: terminal.repair!.digest,
+      incidentStatus: "WAITING_APPROVAL",
+      runStatus: "COMPLETED",
+      occurredAt: "2026-08-29T01:00:08Z",
+    }));
+    expect(screen.getByText("正在读取持久化的修复验证结果…")).toBeInTheDocument();
+    expect(screen.queryByText("已通过验证，尚未批准或执行")).not.toBeInTheDocument();
+    const response = outcome === "unavailable"
+      ? new Response(null, { status: 503 })
+      : outcome === "invalid"
+        ? detailResponse({ ...terminal, repair: {} } as typeof terminal)
+        : detailResponse(terminal);
+    await act(async () => resolveRequest(response));
+    if (outcome === "passed") {
+      expect(screen.getByText("已通过验证，尚未批准或执行")).toBeInTheDocument();
+    } else {
+      expect(screen.getByText("修复详情暂不可用")).toBeInTheDocument();
+      expect(screen.queryByText("已通过验证，尚未批准或执行")).not.toBeInTheDocument();
+      if (outcome === "invalid") expect(screen.getByText("持久化详情不符合数据契约，未采用该响应。")).toBeInTheDocument();
+    }
+    expect(fetchMock).toHaveBeenCalledWith(`/api/runtime/incidents/${INCIDENT_ID}`, { method: "GET", cache: "no-store" });
+  });
 });
 
 describe("ScenarioLauncher", () => {
@@ -679,9 +724,9 @@ describe("read-only incident presentation", () => {
     });
 
     render(
-      <EvidenceJsonViewer
-        evidenceKind="kubernetes.pod"
-        payload={{ phase: "Pending" }}
+      <JsonViewer
+        title="kubernetes.pod JSON"
+        json={JSON.stringify({ phase: "Pending" }, null, 2)}
       />,
     );
 
@@ -701,9 +746,9 @@ describe("read-only incident presentation", () => {
     });
 
     render(
-      <EvidenceJsonViewer
-        evidenceKind="kubernetes.pod"
-        payload={{ phase: "Pending" }}
+      <JsonViewer
+        title="kubernetes.pod JSON"
+        json={JSON.stringify({ phase: "Pending" }, null, 2)}
       />,
     );
 

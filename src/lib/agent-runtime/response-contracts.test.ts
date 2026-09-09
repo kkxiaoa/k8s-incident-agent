@@ -125,6 +125,15 @@ describe("parseIncidentDetailResponse", () => {
     expect(parseIncidentDetailResponse(detail)?.repair).toEqual(detail.repair);
   });
 
+  it("rejects an oversized repair even when Patch and Diff repeat the same value", () => {
+    const detail = makeWaitingApprovalIncidentDetail();
+    const repair = detail.repair!;
+    repair.replacementImage = "x".repeat(2049);
+    repair.diff.after = repair.replacementImage;
+    repair.patch[4].value = repair.replacementImage;
+    expect(parseIncidentDetailResponse(detail)).toBeNull();
+  });
+
   it.each([
     "target",
     "evidence",

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import type { components } from "../../src/lib/agent-runtime/generated";
+import { makeWaitingApprovalIncidentDetail } from "../../src/test/agent-runtime-fixtures";
 
 type ScenarioResponse = components["schemas"]["ScenarioResponse"];
 type IncidentDetailResponse =
@@ -950,6 +951,58 @@ async function handleRequest(
   if (request.method === "POST" && url.pathname === "/__test__/showcase") {
     seedShowcase();
     json(response, 200, { incidents: incidents.size, ok: true });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/__test__/repair") {
+    const body = await requestBody(request) as { outcome?: string };
+    const detail = makeWaitingApprovalIncidentDetail();
+    const repair = detail.repair!;
+    detail.incident.target = SCENARIO.target;
+    repair.target = SCENARIO.target;
+    detail.incident.source = { type: "scenario", ref: SCENARIO.scenarioId, revision: "3" };
+    detail.incident.displayName = SCENARIO.displayName;
+    detail.evidence[0].targetRef = { api_version: "apps/v1", kind: "Deployment", namespace: SCENARIO.target.namespace, name: SCENARIO.target.name, uid: repair.targetUid };
+    detail.evidence[1].targetRef = detail.evidence[0].targetRef;
+    detail.evidence[0].payload = { workload: { resource_version: repair.targetResourceVersion, containers: [{ name: repair.containerName, image: repair.currentImage, source_index: repair.containerIndex }] } };
+    detail.evidence[1].payload = { source_workload: { resource_version: repair.targetResourceVersion }, revisions: [
+      { revision: 2, containers: [{ name: repair.containerName, image: repair.currentImage }] },
+      { revision: 1, containers: [{ name: repair.containerName, image: repair.replacementImage }] },
+    ] };
+    const base = { schemaVersion: 4 as const, incidentId: detail.incident.id, runId: detail.selectedRun.id };
+    const events: RunEventStreamItem[] = [{
+      id: eventId(), event: "diagnosis.completed", data: { ...base, diagnosisId: detail.diagnosis!.id, outcome: "diagnosed", incidentStatus: "DIAGNOSED", runStatus: "RUNNING", occurredAt: repair.schemaCheckedAt },
+    }, {
+      id: eventId(), event: "repair.patch_ready", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "PATCH_READY", runStatus: "RUNNING", occurredAt: repair.diffCheckedAt },
+    }];
+    if (["repair_schema_invalid", "repair_policy_denied", "repair_diff_invalid"].includes(body.outcome ?? "")) {
+      const code = body.outcome!;
+      detail.repair = null;
+      detail.incident.status = "FAILED";
+      detail.selectedRun.status = "FAILED";
+      detail.selectedRun.error = { code, retryable: false };
+      if (code === "repair_schema_invalid") {
+        detail.diagnosis = null;
+        events.length = 0;
+      } else {
+        events.splice(1);
+      }
+      events.push({ id: eventId(), event: "run.failed", data: { ...base, errorCode: code, retryable: false, incidentStatus: "FAILED", runStatus: "FAILED", occurredAt: detail.selectedRun.completedAt! } });
+    } else if (body.outcome === "stale") {
+      detail.incident.status = "STALE_RESOURCE";
+      detail.selectedRun.status = "FAILED";
+      detail.selectedRun.error = { code: "stale_resource", retryable: false };
+      repair.validation = { ...repair.validation, outcome: "failed", error: { code: "stale_resource", retryable: false } };
+      events.push({ id: eventId(), event: "run.failed", data: { ...base, errorCode: "stale_resource", retryable: false, incidentStatus: "STALE_RESOURCE", runStatus: "FAILED", occurredAt: detail.selectedRun.completedAt! } });
+    } else {
+      events.push({ id: eventId(), event: "repair.dry_run_passed", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "DRY_RUN_PASSED", runStatus: "RUNNING", occurredAt: repair.validation.checkedAt } },
+        { id: eventId(), event: "repair.waiting_approval", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "WAITING_APPROVAL", runStatus: "COMPLETED", occurredAt: detail.selectedRun.completedAt! } });
+    }
+    if (body.outcome === "invalid") repair.patch[4].path = "/spec/replicas";
+    detail.eventCursor = events.at(-1)!.id;
+    detail.eventPage = { items: [...events].reverse(), nextCursor: null };
+    incidents.set(detail.incident.id, { detail, events, finished: true, metricState: "ok", mode: "diagnosed" });
+    json(response, 200, { incidentId: detail.incident.id });
     return;
   }
 

@@ -34,6 +34,7 @@ import { DiagnosisPanel } from "./diagnosis-panel";
 import { EvidenceList } from "./evidence-card";
 import { IncidentStatusBadge, RunStatusBadge } from "./incident-status";
 import { RunTimeline } from "./run-timeline";
+import { RepairPanel } from "./repair-panel";
 
 function runSummary(detail: IncidentDetailResponse): RunSummaryView {
   const run = detail.selectedRun;
@@ -153,7 +154,9 @@ export function IncidentStream({
             dispatch({
               type: "refresh_failed",
               afterEventId,
-              message: "无法刷新持久化详情；实时事件仍保留在时间线中。",
+              message: result.failure === "invalid_response"
+                ? "持久化详情不符合数据契约，未采用该响应。"
+                : "无法刷新持久化详情；实时事件仍保留在时间线中。",
             });
           } else {
             dispatch({ type: "snapshot", afterEventId, detail: result.data });
@@ -433,6 +436,12 @@ export function IncidentStream({
         />
       </div>
 
+      <RepairPanel
+        detail={detail}
+        pending={state.detailRefreshEventId !== null &&
+          BigInt(detail.eventCursor) < BigInt(state.detailRefreshEventId)}
+        refreshError={state.refreshError}
+      />
       <EvidenceList evidence={detail.evidence} />
     </>
   );

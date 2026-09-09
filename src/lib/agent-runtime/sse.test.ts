@@ -7,6 +7,7 @@ import {
   REPAIR_PROPOSAL_ID,
   RUN_ID,
   makeIncidentDetail,
+  makeWaitingApprovalIncidentDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import { parseRunEventHistoryResponse } from "./response-contracts";
@@ -392,6 +393,59 @@ describe("reduceIncidentStream", () => {
       detail: makeIncidentDetail(),
     });
     expect(stale).toBe(afterSecond);
+  });
+
+  it("does not replay intermediate repair states over a newer persisted snapshot", () => {
+    const initial = makeIncidentDetail();
+    initial.eventCursor = "1";
+    initial.eventPage = { items: [incidentCreated("1")], nextCursor: null };
+    const waiting = reduceIncidentStream(createIncidentStreamState(initial), {
+      type: "event", event: alertResolved("2"),
+    });
+    const persisted = makeWaitingApprovalIncidentDetail();
+    persisted.eventCursor = "5";
+    persisted.eventPage = {
+      items: [repairEvent("repair.waiting_approval", "5"), repairEvent("repair.dry_run_passed", "4"), repairEvent("repair.patch_ready", "3")],
+      nextCursor: "3",
+    };
+    const snapshot = reduceIncidentStream(waiting, {
+      type: "snapshot", afterEventId: "2", detail: persisted,
+    });
+    const replay = reduceIncidentStream(snapshot, {
+      type: "event", event: repairEvent("repair.patch_ready", "3"),
+    });
+    expect(replay.detail.incident.status).toBe("WAITING_APPROVAL");
+    expect(replay.detail.selectedRun.status).toBe("COMPLETED");
+    expect(replay.lastEventId).toBe("5");
+    expect(replay.eventPageCursor).toBe("3");
+    expect(replay.events.map((event) => event.id)).toEqual(["1", "2", "3", "4", "5"]);
+    const newer = reduceIncidentStream(replay, {
+      type: "event", event: runStarted("6", OTHER_RUN_ID),
+    });
+    expect(newer.detail.incident.status).toBe("TRIAGING");
+    expect(newer.detail.selectedRun.status).toBe("COMPLETED");
+  });
+
+  it.each([true, false])("keeps newer streamed statuses when a slow snapshot arrives (latest=%s)", (latestMode) => {
+    const initial = makeIncidentDetail();
+    initial.eventCursor = "1";
+    const waiting = reduceIncidentStream(createIncidentStreamState(initial, latestMode), {
+      type: "event", event: alertResolved("2"),
+    });
+    const newer = reduceIncidentStream(waiting, {
+      type: "event", event: repairEvent("repair.patch_ready", "3"),
+    });
+    const persisted = makeIncidentDetail();
+    persisted.eventCursor = "2";
+    const snapshot = reduceIncidentStream(newer, {
+      type: "snapshot", afterEventId: "2", detail: persisted,
+    });
+    expect(snapshot.detail.incident.status).toBe("PATCH_READY");
+    expect(snapshot.detail.selectedRun.status).toBe("RUNNING");
+    expect(snapshot.detail.evidence).toEqual(persisted.evidence);
+    expect(snapshot.detail.eventCursor).toBe("2");
+    expect(snapshot.lastEventId).toBe("3");
+    expect(snapshot.events.map((event) => event.id)).toContain("3");
   });
 
   it("refreshes an Incident-level resolved signal without changing statuses", () => {

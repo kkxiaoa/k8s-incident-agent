@@ -119,7 +119,7 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   expect(firstPanel?.width ?? 0).toBeLessThan((dualContainer?.width ?? 0) * 0.6);
   await expect(page.locator(".metric-signal-state.is-firing")).toHaveCount(1);
   await expect(page.getByText("告警中", { exact: true })).toHaveCount(2);
-  await expect(page.getByText("< 3", { exact: true })).toBeVisible();
+  await expect(page.getByRole("definition").filter({ hasText: /^< 3/ })).toBeVisible();
   await expect(page.getByRole("img", { name: /概览趋势/ })).toHaveCount(0);
   await expect(
     page.getByRole("img", { name: /时间序列。当前值/ }),
@@ -129,8 +129,8 @@ test("renders the tests-only chart showcase with drill-down data", async ({
     "/incidents/10000000-0000-4000-8000-000000000006",
   );
   await expect(page.locator(".monitoring-panels--single .metric-panel")).toHaveCount(1);
-  const singleContainer = await page.locator(".monitoring-panels").boundingBox();
-  const singlePanel = await page.locator(".metric-panel").boundingBox();
+  const singleContainer = await page.locator(".monitoring-panels--single").boundingBox();
+  const singlePanel = await page.locator(".monitoring-panels--single .metric-panel").boundingBox();
   expect(singleContainer).not.toBeNull();
   expect(singlePanel).not.toBeNull();
   expect(Math.abs((singleContainer?.width ?? 0) - (singlePanel?.width ?? 0))).toBeLessThanOrEqual(1);

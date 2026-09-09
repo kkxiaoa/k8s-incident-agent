@@ -2,7 +2,7 @@ import { LocalTimestamp } from "@/components/local-timestamp";
 import type { EvidenceResponse } from "@/lib/agent-runtime/view-models";
 import { evidenceTargetLabel } from "@/lib/agent-runtime/view-models";
 
-import { EvidenceJsonViewer } from "./evidence-json-viewer";
+import { JsonViewer } from "./json-viewer";
 
 function EvidenceCard({ evidence, index }: { evidence: EvidenceResponse; index: number }) {
   return (
@@ -39,9 +39,9 @@ function EvidenceCard({ evidence, index }: { evidence: EvidenceResponse; index: 
         </div>
       </dl>
 
-      <EvidenceJsonViewer
-        evidenceKind={evidence.evidenceKind}
-        payload={evidence.payload}
+      <JsonViewer
+        title={`${evidence.evidenceKind} JSON`}
+        json={JSON.stringify(evidence.payload, null, 2)}
       />
     </article>
   );

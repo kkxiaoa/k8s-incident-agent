@@ -3,22 +3,20 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { UiIcon } from "@/components/ui/ui-icon";
-import type { EvidenceResponse } from "@/lib/agent-runtime/view-models";
 
 type CopyState = "idle" | "copied" | "failed";
 
-export function EvidenceJsonViewer({
-  evidenceKind,
-  payload,
+export function JsonViewer({
+  title,
+  json,
 }: {
-  evidenceKind: string;
-  payload: EvidenceResponse["payload"];
+  title: string;
+  json: string;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const payloadText = JSON.stringify(payload, null, 2);
 
   useEffect(() => {
     if (copyState === "idle") {
@@ -38,9 +36,9 @@ export function EvidenceJsonViewer({
       document.documentElement.classList.remove("dialog-scroll-locked");
   }, [dialogOpen]);
 
-  async function copyPayload() {
+  async function copyJson() {
     try {
-      await navigator.clipboard.writeText(payloadText);
+      await navigator.clipboard.writeText(json);
       setCopyState("copied");
     } catch {
       setCopyState("failed");
@@ -78,7 +76,7 @@ export function EvidenceJsonViewer({
           <div className="evidence-code-actions">
             <button
               type="button"
-              onClick={copyPayload}
+              onClick={copyJson}
               aria-label={copyLabel}
               title={copyLabel}
               className={copyFailed ? "is-copy-failed" : undefined}
@@ -102,8 +100,8 @@ export function EvidenceJsonViewer({
             </button>
           </div>
         </div>
-        <pre className="evidence-payload">
-          <code className="language-json">{payloadText}</code>
+        <pre className="evidence-payload" tabIndex={0} aria-label={`只读 ${title}`}>
+          <code className="language-json">{json}</code>
         </pre>
       </div>
       <span className="sr-only" role="status" aria-live="polite">
@@ -119,13 +117,13 @@ export function EvidenceJsonViewer({
         <div className="evidence-dialog__surface">
           <header className="evidence-dialog__header">
             <div>
-              <span className="eyebrow">JSON Evidence</span>
-              <h2 id={titleId}>{evidenceKind} JSON</h2>
+              <span className="eyebrow">Read-only JSON</span>
+              <h2 id={titleId}>{title}</h2>
             </div>
             <div className="evidence-code-actions">
               <button
                 type="button"
-                onClick={copyPayload}
+                onClick={copyJson}
                 aria-label={copyLabel}
                 title={copyLabel}
                 className={copyFailed ? "is-copy-failed" : undefined}
@@ -149,8 +147,8 @@ export function EvidenceJsonViewer({
               </button>
             </div>
           </header>
-          <pre className="evidence-dialog__payload">
-            <code className="language-json">{payloadText}</code>
+          <pre className="evidence-dialog__payload" tabIndex={0}>
+            <code className="language-json">{json}</code>
           </pre>
           <span className="sr-only" role="status" aria-live="polite">
             {dialogOpen ? copyStatus : ""}

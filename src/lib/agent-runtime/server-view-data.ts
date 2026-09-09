@@ -35,6 +35,7 @@ type IncidentPageData =
       monitoringPanels: MonitoringPanelListView | null;
     }
   | { state: "missing" }
+  | { state: "invalid" }
   | { state: "unavailable" };
 
 interface IncidentConsoleOverview {
@@ -114,8 +115,10 @@ export async function loadIncidentPage(
   const runs = runsResult.response.ok
     ? parseRunHistoryResponse(runsResult.value)
     : null;
-  return detail === null || runs === null
+  return !detailResult.response.ok || !runsResult.response.ok
     ? { state: "unavailable" }
+    : detail === null || runs === null
+    ? { state: "invalid" }
     : {
         state: "ready",
         detail,

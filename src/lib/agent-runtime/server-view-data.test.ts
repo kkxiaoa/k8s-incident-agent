@@ -124,13 +124,13 @@ describe("server view data", () => {
     });
   });
 
-  it("maps a successful detail without diagnosis to unavailable", async () => {
+  it("distinguishes malformed successful detail from an unavailable service", async () => {
     const malformed: Record<string, unknown> = { ...makeIncidentDetail() };
     Reflect.deleteProperty(malformed, "diagnosis");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(malformed)));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => jsonResponse(malformed)));
 
     await expect(loadIncidentPage(INCIDENT_ID)).resolves.toEqual({
-      state: "unavailable",
+      state: "invalid",
     });
   });
 

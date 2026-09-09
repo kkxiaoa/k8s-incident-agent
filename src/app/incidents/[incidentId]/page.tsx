@@ -36,11 +36,13 @@ export default async function IncidentPage({ params, searchParams }: IncidentPag
             <span>Incident 详情</span>
           </nav>
           <section className="unavailable-panel">
-            <h1>{missing ? "未找到相关记录" : "页面暂时不可用"}</h1>
+            <h1>{missing ? "未找到相关记录" : pageData.state === "invalid" ? "详情数据校验失败" : "页面暂时不可用"}</h1>
             <p>
               {missing
                 ? "记录可能不存在，或已被清理。"
-                : "暂时无法显示所需内容，请稍后重试。"}
+                : pageData.state === "invalid"
+                  ? "返回的详情不符合数据契约，无法展示可信的诊断与修复验证结果。"
+                  : "暂时无法显示所需内容，请稍后重试。"}
             </p>
             <Link className="secondary-button" href="/">
               返回 Incident Console
