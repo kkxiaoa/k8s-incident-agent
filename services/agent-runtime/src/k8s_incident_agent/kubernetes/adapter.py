@@ -1815,8 +1815,8 @@ def _project_workload(
         raise _contract_error()
     containers = sorted(
         (
-            _project_workload_container(container, state)
-            for container in cast(list[V1Container], containers_value)
+            _project_workload_container(container, state, source_index=index)
+            for index, container in enumerate(cast(list[V1Container], containers_value))
         ),
         key=lambda container: container.name,
     )
@@ -1952,6 +1952,8 @@ def _pod_template_spec(template: object) -> _PodSpecView:
 def _project_workload_container(
     container: V1Container,
     state: _SanitizationState,
+    *,
+    source_index: int,
 ) -> WorkloadContainer:
     container_view = cast(_WorkloadContainerView, container)
     command, redact_next = _project_workload_arguments(
@@ -1979,6 +1981,7 @@ def _project_workload_container(
         command=command,
         args=arguments,
         probes=probes,
+        source_index=source_index,
     )
 
 

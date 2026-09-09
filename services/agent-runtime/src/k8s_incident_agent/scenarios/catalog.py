@@ -59,10 +59,23 @@ class _Verifier(_StrictContract):
         return self
 
 
+class _ExpectedPatchConstraints(_StrictContract):
+    action: Literal["set_container_image"]
+    container_index: Literal[0]
+    container_name: str = Field(min_length=1, max_length=253)
+    current_image: str = Field(min_length=1, max_length=2048)
+    replacement_image: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("container_name", "current_image", "replacement_image")
+    @classmethod
+    def normalize_value(cls, value: str) -> str:
+        return _normalized_string(value)
+
+
 class _ScenarioDefinition(_StrictContract):
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     scenario_id: str = Field(min_length=1)
-    scenario_version: Literal[1, 2]
+    scenario_version: Literal[1, 3]
     monitoring_alert_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -74,6 +87,7 @@ class _ScenarioDefinition(_StrictContract):
     allowed_tools: tuple[DiagnosticToolName, ...] = Field(min_length=1)
     forbidden_tools: tuple[str, ...] = Field(min_length=1)
     deterministic_verifier: _Verifier
+    expected_patch_constraints: _ExpectedPatchConstraints | None = None
 
     @field_validator(
         "scenario_id", "monitoring_alert_id", "display_name", "description"
@@ -97,13 +111,15 @@ class _ScenarioDefinition(_StrictContract):
         return normalized
 
     def validate_relationships(self, directory_name: str) -> Self:
-        expected_version = 2 if self.scenario_id == "image-pull-backoff" else 1
+        expected_version = 3 if self.scenario_id == "image-pull-backoff" else 1
         if (
             not _SCENARIO_ID.fullmatch(self.scenario_id)
             or self.scenario_id != directory_name
             or self.scenario_version != expected_version
             or self.target.name != self.scenario_id
             or set(self.allowed_tools).intersection(self.forbidden_tools)
+            or (self.expected_patch_constraints is not None)
+            != (self.scenario_id == "image-pull-backoff")
         ):
             raise ValueError("Scenario definition relationships are invalid")
         return self

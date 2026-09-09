@@ -76,7 +76,7 @@ describe("server view data", () => {
             : url.pathname.endsWith("/scenarios")
             ? jsonResponse({ schemaVersion: 1, items: [null] })
             : jsonResponse({
-                schemaVersion: 3,
+                schemaVersion: 4,
                 items: [null],
                 nextCursor: null,
               }),
@@ -101,7 +101,7 @@ describe("server view data", () => {
           ? jsonResponse(monitoringHealth())
           : url.pathname.endsWith("/monitoring/overview")
           ? jsonResponse(monitoringOverview())
-          : jsonResponse({ schemaVersion: 3, items: [], nextCursor: null }),
+          : jsonResponse({ schemaVersion: 4, items: [], nextCursor: null }),
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -152,7 +152,7 @@ describe("server view data", () => {
             })
           : url.pathname.endsWith("/runs")
             ? jsonResponse({
-                schemaVersion: 3,
+                schemaVersion: 4,
                 items: [
                   {
                     id: makeIncidentDetail().selectedRun.id,

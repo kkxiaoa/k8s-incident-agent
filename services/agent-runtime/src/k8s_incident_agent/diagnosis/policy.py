@@ -7,6 +7,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import (
 )
 from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.monitoring.catalog import AlertCatalog
+from k8s_incident_agent.repair.contracts import RepairAction
 from k8s_incident_agent.scenarios.contracts import PublicScenario
 
 
@@ -15,6 +16,7 @@ class DiagnosticPolicy:
     tool_names: tuple[str, ...]
     required_evidence: frozenset[str]
     prometheus_panel_ids: tuple[str, ...]
+    repair_action: RepairAction | None = None
 
 
 class DiagnosticPolicyResolver(Protocol):
@@ -38,6 +40,7 @@ class DiagnosticPolicyCatalog:
                     for panel in entry.panels
                     if panel.signal_role == "trigger"
                 ),
+                entry.repair_action,
             )
             for entry in alerts.entries
         }
@@ -51,6 +54,7 @@ class DiagnosticPolicyCatalog:
                 scenario.allowed_tools,
                 frozenset(scenario.required_evidence),
                 alert_policy.prometheus_panel_ids,
+                alert_policy.repair_action,
             )
             if scenario_policy != alert_policy:
                 raise ValueError("Scenario diagnostic policy does not match its alert")
@@ -77,6 +81,7 @@ def _policy(
     configured_tools: tuple[str, ...],
     required_evidence: frozenset[str],
     panel_ids: tuple[str, ...],
+    repair_action: RepairAction | None,
 ) -> DiagnosticPolicy:
     validate_diagnostic_policy_contract(configured_tools, required_evidence)
     configured = set(configured_tools)
@@ -90,4 +95,5 @@ def _policy(
         tool_names=ordered_tools,
         required_evidence=required_evidence,
         prometheus_panel_ids=panel_ids,
+        repair_action=repair_action,
     )

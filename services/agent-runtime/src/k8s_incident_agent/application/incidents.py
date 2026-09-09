@@ -21,6 +21,11 @@ from k8s_incident_agent.api_contracts import (
     IncidentResponse,
     IncidentSourceResponse,
     IncidentTargetResponse,
+    RepairDiffResponse,
+    RepairPatchOperationResponse,
+    RepairProposalResponse,
+    RepairValidationErrorResponse,
+    RepairValidationResponse,
     RootCauseResponse,
     RunErrorResponse,
     RunEventHistoryResponse,
@@ -383,6 +388,52 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             starts_at=detail.alert_signal.starts_at,
             ends_at=detail.alert_signal.ends_at,
         )
+    repair = None
+    if detail.repair is not None:
+        proposal = detail.repair.proposal
+        validation = detail.repair.validation
+        validation_error = (
+            RepairValidationErrorResponse(
+                code=validation.error.code,
+                retryable=validation.error.retryable,
+            )
+            if validation.error is not None
+            else None
+        )
+        repair = RepairProposalResponse(
+            id=proposal.id,
+            action=proposal.action,
+            target=_target_response(proposal.target),
+            target_uid=proposal.target_uid,
+            target_resource_version=proposal.target_resource_version,
+            container_index=proposal.container_index,
+            container_name=proposal.container_name,
+            current_image=proposal.current_image,
+            replacement_image=proposal.replacement_image,
+            evidence_ids=proposal.evidence_ids,
+            patch=tuple(
+                RepairPatchOperationResponse(
+                    op=operation.op,
+                    path=operation.path,
+                    value=operation.value,
+                )
+                for operation in proposal.patch
+            ),
+            digest=proposal.digest,
+            diff=RepairDiffResponse(
+                path=proposal.diff.path,
+                before=proposal.diff.before,
+                after=proposal.diff.after,
+            ),
+            schema_checked_at=proposal.schema_checked_at,
+            policy_checked_at=proposal.policy_checked_at,
+            diff_checked_at=proposal.diff_checked_at,
+            validation=RepairValidationResponse(
+                outcome=validation.outcome,
+                checked_at=validation.checked_at,
+                error=validation_error,
+            ),
+        )
     next_cursor = None
     if detail.has_older_events and detail.events:
         next_cursor = _encode_cursor(
@@ -422,6 +473,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             for evidence in detail.evidence
         ),
         diagnosis=diagnosis,
+        repair=repair,
         alert_signal=alert_signal,
         event_cursor=str(detail.event_cursor),
     )

@@ -282,6 +282,10 @@ async def test_graph_has_exact_domain_topology_and_direct_agent_subgraph(
         "triage_target",
         "diagnose",
         "validate_diagnosis",
+        "validate_repair_schema",
+        "validate_repair_policy",
+        "validate_repair_diff",
+        "validate_repair_dry_run",
         "persist_terminal_state",
     }
     assert edges == {
@@ -289,7 +293,11 @@ async def test_graph_has_exact_domain_topology_and_direct_agent_subgraph(
         ("start_run", "triage_target"),
         ("triage_target", "diagnose"),
         ("diagnose", "validate_diagnosis"),
-        ("validate_diagnosis", "persist_terminal_state"),
+        ("validate_diagnosis", "validate_repair_schema"),
+        ("validate_repair_schema", "validate_repair_policy"),
+        ("validate_repair_policy", "validate_repair_diff"),
+        ("validate_repair_diff", "validate_repair_dry_run"),
+        ("validate_repair_dry_run", "persist_terminal_state"),
         ("persist_terminal_state", "__end__"),
     }
     assert len(subgraphs) == 1

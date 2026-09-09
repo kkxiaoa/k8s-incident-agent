@@ -53,7 +53,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     )
     assert scenario.model_dump(mode="json") == {
         "scenario_id": "image-pull-backoff",
-        "scenario_version": 2,
+        "scenario_version": 3,
         "monitoring_alert_id": "K8sIncidentImagePullBackOff",
         "display_name": "Image pull failure",
         "description": "A Deployment cannot pull its configured image.",
@@ -79,6 +79,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     }
     assert "expected_root_causes" not in scenario.model_dump()
     assert "deterministic_verifier" not in scenario.model_dump()
+    assert "expected_patch_constraints" not in scenario.model_dump()
     crash_loop = next(
         item for item in scenarios if item.scenario_id == "crash-loop-backoff"
     )
@@ -124,6 +125,8 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
         "overlap",
         "target",
         "verifier_timeout",
+        "missing_patch_constraints",
+        "invalid_patch_constraints",
     ],
 )
 def test_rejects_documents_outside_the_node_producer_contract(
@@ -146,10 +149,16 @@ def test_rejects_documents_outside_the_node_producer_contract(
         target = value["target"]
         assert isinstance(target, dict)
         cast(dict[object, object], target)["namespace"] = "default"
-    else:
+    elif mutation == "verifier_timeout":
         verifier = value["deterministic_verifier"]
         assert isinstance(verifier, dict)
         cast(dict[object, object], verifier)["timeout_seconds"] = 300
+    elif mutation == "missing_patch_constraints":
+        del value["expected_patch_constraints"]
+    else:
+        constraints = value["expected_patch_constraints"]
+        assert isinstance(constraints, dict)
+        cast(dict[object, object], constraints)["action"] = "arbitrary_patch"
     _write_definition(catalog, value)
 
     with pytest.raises(RuntimeError, match="Scenario catalog"):
@@ -158,7 +167,7 @@ def test_rejects_documents_outside_the_node_producer_contract(
 
 @pytest.mark.parametrize(
     ("scenario_id", "scenario_version"),
-    [("image-pull-backoff", 1), ("crash-loop-backoff", 2)],
+    [("image-pull-backoff", 2), ("crash-loop-backoff", 3)],
 )
 def test_rejects_versions_not_owned_by_the_exact_scenario(
     tmp_path: Path,

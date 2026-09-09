@@ -204,7 +204,7 @@ function buildEvents(
       id: eventId(),
       event: "incident.created",
       data: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId,
         runId,
         attempt: 1,
@@ -217,7 +217,7 @@ function buildEvents(
       id: eventId(),
       event: "run.started",
       data: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId,
         runId,
         attempt: 1,
@@ -230,7 +230,7 @@ function buildEvents(
       id: eventId(),
       event: "tool.started",
       data: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId,
         runId,
         toolCallId: "tool-call-1",
@@ -254,7 +254,7 @@ function buildEvents(
         id: eventId(),
         event: "tool.failed",
         data: {
-          schemaVersion: 3,
+          schemaVersion: 4,
           incidentId,
           runId,
           toolCallId: "tool-call-1",
@@ -268,7 +268,7 @@ function buildEvents(
         id: eventId(),
         event: "run.failed",
         data: {
-          schemaVersion: 3,
+          schemaVersion: 4,
           incidentId,
           runId,
           errorCode: "workflow_failed",
@@ -287,7 +287,7 @@ function buildEvents(
       id: eventId(),
       event: "evidence.recorded",
       data: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId,
         runId,
         evidenceId: workloadEvidenceId,
@@ -304,7 +304,7 @@ function buildEvents(
       id: eventId(),
       event: "tool.started",
       data: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId,
         runId,
         toolCallId: "tool-call-2",
@@ -316,7 +316,7 @@ function buildEvents(
       id: eventId(),
       event: "evidence.recorded",
       data: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId,
         runId,
         evidenceId: podsEvidenceId,
@@ -336,7 +336,7 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.completed",
       data: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId,
         runId,
         diagnosisId,
@@ -351,7 +351,7 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.insufficient",
       data: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId,
         runId,
         diagnosisId,
@@ -390,7 +390,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
     finished: false,
     events,
     detail: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       incident: {
         id: incidentId,
         source: {
@@ -420,6 +420,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
       eventCursor: initialEvent.id,
       evidence: [],
       diagnosis: null,
+      repair: null,
       alertSignal: null,
     },
   };
@@ -520,8 +521,9 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       break;
     case "diagnosis.completed":
       record.detail.incident.status = "DIAGNOSED";
-      record.detail.selectedRun.status = "COMPLETED";
-      record.detail.selectedRun.completedAt = event.data.occurredAt;
+      record.detail.selectedRun.status = event.data.runStatus;
+      record.detail.selectedRun.completedAt =
+        event.data.runStatus === "COMPLETED" ? event.data.occurredAt : null;
       record.detail.diagnosis = {
         id: event.data.diagnosisId,
         outcome: "diagnosed",
@@ -538,6 +540,20 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
         redacted: false,
         createdAt: event.data.occurredAt,
       };
+      record.finished = event.data.runStatus === "COMPLETED";
+      break;
+    case "repair.patch_ready":
+      record.detail.incident.status = "PATCH_READY";
+      record.detail.selectedRun.status = "RUNNING";
+      break;
+    case "repair.dry_run_passed":
+      record.detail.incident.status = "DRY_RUN_PASSED";
+      record.detail.selectedRun.status = "RUNNING";
+      break;
+    case "repair.waiting_approval":
+      record.detail.incident.status = "WAITING_APPROVAL";
+      record.detail.selectedRun.status = "COMPLETED";
+      record.detail.selectedRun.completedAt = event.data.occurredAt;
       record.finished = true;
       break;
     case "diagnosis.insufficient":
@@ -556,7 +572,7 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       record.finished = true;
       break;
     case "run.failed":
-      record.detail.incident.status = "FAILED";
+      record.detail.incident.status = event.data.incidentStatus;
       record.detail.selectedRun.status = "FAILED";
       record.detail.selectedRun.completedAt = event.data.occurredAt;
       record.detail.selectedRun.error = {
@@ -1006,7 +1022,7 @@ async function handleRequest(
 
   if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
     json(response, 200, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       items: [...incidents.values()].reverse().map(listItem),
       nextCursor: null,
     });
@@ -1034,7 +1050,7 @@ async function handleRequest(
     const record = createIncident(mode);
     incidents.set(record.detail.incident.id, record);
     json(response, 202, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       incidentId: record.detail.incident.id,
     });
     return;
@@ -1105,7 +1121,7 @@ async function handleRequest(
     }
     const run = record.detail.selectedRun;
     json(response, 200, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       items: [{
         id: run.id,
         attempt: run.attempt,
@@ -1129,7 +1145,7 @@ async function handleRequest(
       return;
     }
     json(response, 200, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       items: [...record.detail.eventPage.items],
       nextCursor: null,
     });

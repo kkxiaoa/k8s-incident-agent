@@ -48,6 +48,8 @@ const ALERTMANAGER_IMAGE =
   "quay.io/prometheus/alertmanager@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d";
 const KUBE_STATE_METRICS_IMAGE =
   "registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b";
+const PATCH_VALIDATOR_HMAC_KEY_TEMPLATE =
+  '{{if index .data "hmac-key"}}{{if eq (len (base64decode (index .data "hmac-key"))) 32}}present{{else}}missing{{end}}{{else}}missing{{end}}';
 
 function lockedImage(name) {
   const image = WORKLOAD_IMAGE_LOCK.images?.find(
@@ -283,6 +285,14 @@ test("Runtime render preserves one-writer migration, storage, identity, and imag
     pod.volumes.find((volume) => volume.name === "runtime-data").persistentVolumeClaim,
     { claimName: "runtime-data" },
   );
+  assert.deepEqual(
+    pod.volumes.find((volume) => volume.name === "patch-validator-auth").secret,
+    {
+      defaultMode: 0o440,
+      items: [{ key: "hmac-key", path: "hmac-key" }],
+      secretName: "patch-validator-auth",
+    },
+  );
   const projected = pod.volumes.find(
     (volume) => volume.name === "kubernetes-api-access",
   ).projected;
@@ -322,6 +332,141 @@ test("Runtime render preserves one-writer migration, storage, identity, and imag
     [...resources.values()].some((resource) => resource.kind === "Secret"),
     false,
   );
+});
+
+test("Patch Validator render isolates identity and enforces dry-run admission", () => {
+  const resources = indexDocuments(render("overlays/k3s-evaluation"));
+  const validator = getResource(
+    resources,
+    "Deployment",
+    "patch-validator",
+    "k8s-incident-agent",
+  );
+  const pod = validator.spec.template.spec;
+  const [container] = pod.containers;
+  assert.equal(validator.spec.replicas, 1);
+  assert.equal(pod.serviceAccountName, "patch-validator");
+  assert.equal(pod.automountServiceAccountToken, false);
+  assert.equal(container.image, RUNTIME_IMAGE);
+  assert.deepEqual(container.command, ["patch-validator"]);
+  assert.equal(container.envFrom, undefined);
+  assert.deepEqual(container.env, [
+    { name: "KUBERNETES_CLUSTER_ID", value: "k8s-incident-agent" },
+    {
+      name: "KUBERNETES_DIAGNOSTIC_NAMESPACE",
+      value: "k8s-incident-scenarios",
+    },
+    {
+      name: "PATCH_VALIDATOR_HMAC_KEY_FILE",
+      value: "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key",
+    },
+  ]);
+  assert.deepEqual(
+    pod.volumes.map((volume) => volume.name),
+    ["kubernetes-api-access", "patch-validator-auth"],
+  );
+  assert.deepEqual(
+    pod.volumes.find((volume) => volume.name === "kubernetes-api-access")
+      .projected,
+    {
+      defaultMode: 0o440,
+      sources: [
+        { serviceAccountToken: { expirationSeconds: 600, path: "token" } },
+        {
+          configMap: {
+            items: [{ key: "ca.crt", path: "ca.crt" }],
+            name: "kube-root-ca.crt",
+          },
+        },
+      ],
+    },
+  );
+  assert.equal(
+    JSON.stringify(validator).includes("agent-runtime-model"),
+    false,
+  );
+  assert.equal(JSON.stringify(validator).includes("runtime-data"), false);
+  assert.equal(
+    getResource(
+      resources,
+      "Service",
+      "patch-validator",
+      "k8s-incident-agent",
+    ).spec.type,
+    "ClusterIP",
+  );
+
+  assert.deepEqual(
+    getResource(
+      resources,
+      "Role",
+      "patch-validator-dry-run",
+      "k8s-incident-scenarios",
+    ).rules,
+    [
+      {
+        apiGroups: ["apps"],
+        resources: ["deployments"],
+        verbs: ["get", "patch"],
+      },
+    ],
+  );
+  assert.deepEqual(
+    getResource(
+      resources,
+      "RoleBinding",
+      "patch-validator-dry-run",
+      "k8s-incident-scenarios",
+    ).subjects,
+    [
+      {
+        kind: "ServiceAccount",
+        name: "patch-validator",
+        namespace: "k8s-incident-agent",
+      },
+    ],
+  );
+
+  const policy = getResource(
+    resources,
+    "ValidatingAdmissionPolicy",
+    "k8s-incident-agent-patch-validator-dry-run-only",
+  );
+  assert.equal(policy.spec.failurePolicy, "Fail");
+  assert.deepEqual(policy.spec.matchConstraints, {
+    matchPolicy: "Exact",
+    resourceRules: [
+      {
+        apiGroups: ["apps"],
+        apiVersions: ["v1"],
+        operations: ["UPDATE"],
+        resources: ["deployments"],
+        scope: "Namespaced",
+      },
+    ],
+  });
+  assert.equal(policy.spec.validations.length, 1);
+  assert.equal(
+    policy.spec.validations[0].expression,
+    "request.userInfo.username != 'system:serviceaccount:k8s-incident-agent:patch-validator' || request.namespace != 'k8s-incident-scenarios' || request.dryRun == true",
+  );
+  const binding = getResource(
+    resources,
+    "ValidatingAdmissionPolicyBinding",
+    "k8s-incident-agent-patch-validator-dry-run-only",
+  );
+  assert.deepEqual(binding.spec, {
+    policyName: "k8s-incident-agent-patch-validator-dry-run-only",
+    validationActions: ["Deny"],
+    matchResources: {
+      matchPolicy: "Exact",
+      namespaceSelector: {
+        matchLabels: {
+          "kubernetes.io/metadata.name": "k8s-incident-scenarios",
+        },
+      },
+    },
+  });
 });
 
 test("Kind render prepares only the fixed hostPath root before non-root migration", () => {
@@ -741,8 +886,11 @@ test("NetworkPolicy render has default deny plus only the required L3/L4 paths",
       "allow-console-runtime-egress",
       "allow-console-to-runtime",
       "allow-dns-egress",
+      "allow-patch-validator-kubernetes-egress",
       "allow-runtime-https-egress",
+      "allow-runtime-patch-validator-egress",
       "allow-runtime-prometheus-egress",
+      "allow-runtime-to-patch-validator",
       "allow-traefik-to-console",
       "default-deny",
     ],
@@ -788,6 +936,16 @@ test("NetworkPolicy render has default deny plus only the required L3/L4 paths",
       { port: 53, protocol: "TCP" },
     ],
   );
+  assert.deepEqual(
+    dns.spec.podSelector.matchExpressions,
+    [
+      {
+        key: "app.kubernetes.io/name",
+        operator: "In",
+        values: ["incident-console", "agent-runtime"],
+      },
+    ],
+  );
   const https = getResource(
     resources,
     "NetworkPolicy",
@@ -809,12 +967,36 @@ test("uninstall renders only non-data resources and never a Namespace or volume"
     const rendered = render(profile);
     assert.equal(rendered, render(profile));
     const resources = documents(rendered);
-    indexDocuments(rendered);
+    const indexed = indexDocuments(rendered);
     assert.equal(
       resources.some((resource) =>
         ["Namespace", "PersistentVolume", "PersistentVolumeClaim"].includes(
           resource.kind,
         ),
+      ),
+      false,
+    );
+    for (const key of [
+      "ServiceAccount/k8s-incident-agent/patch-validator",
+      "Deployment/k8s-incident-agent/patch-validator",
+      "Service/k8s-incident-agent/patch-validator",
+      "Role/k8s-incident-scenarios/patch-validator-dry-run",
+      "RoleBinding/k8s-incident-scenarios/patch-validator-dry-run",
+      "ValidatingAdmissionPolicy//k8s-incident-agent-patch-validator-dry-run-only",
+      "ValidatingAdmissionPolicyBinding//k8s-incident-agent-patch-validator-dry-run-only",
+    ]) {
+      assert.equal(indexed.has(key), true, `${profile}: ${key}`);
+    }
+    assert.equal(
+      resources.some((resource) =>
+        [
+          "Secret",
+          "Certificate",
+          "Issuer",
+          "ClusterIssuer",
+          "MutatingWebhookConfiguration",
+          "ValidatingWebhookConfiguration",
+        ].includes(resource.kind),
       ),
       false,
     );
@@ -862,6 +1044,44 @@ test("K3s producer contract stays exact and does not duplicate the kubectl pin",
     },
   });
   assert.equal(Object.hasOwn(contract, "kubectl"), false);
+});
+
+test("kubectl validates the decoded Patch Validator HMAC key length", () => {
+  for (const [length, expected] of [
+    [31, "missing"],
+    [32, "present"],
+    [33, "missing"],
+  ]) {
+    const actual = execFileSync(
+      REAL_KUBECTL,
+      [
+        "create",
+        "secret",
+        "generic",
+        "patch-validator-auth",
+        `--from-literal=hmac-key=${"x".repeat(length)}`,
+        "--dry-run=client",
+        `--output=go-template=${PATCH_VALIDATOR_HMAC_KEY_TEMPLATE}`,
+      ],
+      { cwd: REPOSITORY_ROOT, encoding: "utf8" },
+    );
+    assert.equal(actual, expected);
+  }
+
+  const missing = execFileSync(
+    REAL_KUBECTL,
+    [
+      "create",
+      "secret",
+      "generic",
+      "patch-validator-auth",
+      "--from-literal=unrelated=value",
+      "--dry-run=client",
+      `--output=go-template=${PATCH_VALIDATOR_HMAC_KEY_TEMPLATE}`,
+    ],
+    { cwd: REPOSITORY_ROOT, encoding: "utf8" },
+  );
+  assert.equal(missing, "missing");
 });
 
 function runDeployment(args, environment = {}) {
@@ -952,6 +1172,7 @@ function deployment(name, namespace = "k8s-incident-agent") {
   const document = fixture("Deployment", name, namespace);
   if (
     namespace === "k8s-incident-agent" &&
+    name !== "patch-validator" &&
     process.env.FAKE_DEPLOYMENT_INTAKE_MODE
   ) {
     const container = document.spec.template.spec.containers[0];
@@ -1109,6 +1330,11 @@ function response(key, args) {
   }
   if (key === 'get secret agent-runtime-model --namespace k8s-incident-agent --output=go-template={{if index .data "api-key"}}present{{else}}missing{{end}}') {
     return process.env.FAKE_SECRET_MISSING === "1" ? "missing\\n" : "present\\n";
+  }
+  if (key === 'get secret patch-validator-auth --namespace k8s-incident-agent --output=go-template={{if index .data "hmac-key"}}{{if eq (len (base64decode (index .data "hmac-key"))) 32}}present{{else}}missing{{end}}{{else}}missing{{end}}') {
+    return process.env.FAKE_PATCH_VALIDATOR_SECRET_INVALID === "1"
+      ? "missing\\n"
+      : "present\\n";
   }
   if (
     key === 'get secret alertmanager-webhook --namespace k8s-incident-agent --output=go-template={{if index .data "token"}}present{{else}}missing{{end}}' ||
@@ -1384,6 +1610,27 @@ function response(key, args) {
   if (key === "get deployment incident-console --namespace k8s-incident-agent --output=json") {
     return deployment("incident-console");
   }
+  if (key === "get deployment patch-validator --namespace k8s-incident-agent --output=json") {
+    const document = deployment("patch-validator");
+    if (process.env.FAKE_PATCH_VALIDATOR_DEPLOYMENT_DRIFT === "1") {
+      document.spec.template.spec.containers[0].env.push({
+        name: "DEEPSEEK_API_KEY",
+        value: "unexpected",
+      });
+    }
+    return document;
+  }
+  if (key === "get serviceaccount patch-validator --namespace k8s-incident-agent --output=json") {
+    const document = fixture(
+      "ServiceAccount",
+      "patch-validator",
+      "k8s-incident-agent",
+    );
+    if (process.env.FAKE_PATCH_VALIDATOR_SERVICE_ACCOUNT_DRIFT === "1") {
+      document.automountServiceAccountToken = true;
+    }
+    return document;
+  }
   const monitoringDeployment = key.match(
     /^get deployment (prometheus|alertmanager|kube-state-metrics) --namespace k8s-incident-monitoring --output=json$/,
   );
@@ -1394,6 +1641,7 @@ function response(key, args) {
     const pods = [
       ["agent-runtime", "runtime-current"],
       ["incident-console", "console-current"],
+      ["patch-validator", "validator-current"],
     ].map(([appName, name]) => ({
       metadata: {
         name,
@@ -1440,7 +1688,7 @@ function response(key, args) {
     }
     return { kind: "List", items: pods };
   }
-  const service = key.match(/^get service (agent-runtime|incident-console) --namespace k8s-incident-agent --output=json$/);
+  const service = key.match(/^get service (agent-runtime|incident-console|patch-validator) --namespace k8s-incident-agent --output=json$/);
   if (service) {
     return {
       kind: "Service",
@@ -1451,7 +1699,11 @@ function response(key, args) {
         selector: { "app.kubernetes.io/name": service[1] },
         ports: [{
           name: "http",
-          port: service[1] === "agent-runtime" ? 8000 : 80,
+          port: service[1] === "agent-runtime"
+            ? 8000
+            : service[1] === "patch-validator"
+              ? 8081
+              : 80,
           protocol: "TCP",
           targetPort: "http",
         }],
@@ -1524,6 +1776,8 @@ function response(key, args) {
           SCENARIO_CATALOG_DIR: "/workspace/scenarios",
           ALERT_CATALOG_DIR: "/workspace/monitoring/catalog",
           ALERTMANAGER_WEBHOOK_TOKEN_FILE: "/var/run/secrets/k8s-incident-agent/alertmanager/token",
+          PATCH_VALIDATOR_BASE_URL: "http://patch-validator.k8s-incident-agent.svc.cluster.local:8081",
+          PATCH_VALIDATOR_HMAC_KEY_FILE: "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key",
         }
         : {
           AGENT_RUNTIME_URL: "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000",
@@ -1578,6 +1832,63 @@ function response(key, args) {
       items,
     };
   }
+  if (key === "get role patch-validator-dry-run --namespace k8s-incident-scenarios --output=json") {
+    const document = fixture(
+      "Role",
+      "patch-validator-dry-run",
+      "k8s-incident-scenarios",
+    );
+    if (process.env.FAKE_PATCH_VALIDATOR_RBAC_DRIFT === "1") {
+      document.rules[0].verbs.push("update");
+    }
+    return document;
+  }
+  if (key === "get rolebinding patch-validator-dry-run --namespace k8s-incident-scenarios --output=json") {
+    return fixture(
+      "RoleBinding",
+      "patch-validator-dry-run",
+      "k8s-incident-scenarios",
+    );
+  }
+  if (key === "get validatingadmissionpolicy k8s-incident-agent-patch-validator-dry-run-only --output=json") {
+    const document = fixture(
+      "ValidatingAdmissionPolicy",
+      "k8s-incident-agent-patch-validator-dry-run-only",
+      "",
+    );
+    document.metadata.generation = 2;
+    let transientObservedGeneration;
+    if (process.env.FAKE_PATCH_VALIDATOR_POLICY_TRANSIENT === "1") {
+      const current = state();
+      current.sequence += 1;
+      saveState(current);
+      transientObservedGeneration = current.sequence === 1 ? 1 : 2;
+    }
+    document.status = {
+      observedGeneration:
+        process.env.FAKE_PATCH_VALIDATOR_POLICY_STALE === "1"
+          ? 1
+          : (transientObservedGeneration ?? 2),
+      typeChecking: {
+        expressionWarnings:
+          process.env.FAKE_PATCH_VALIDATOR_POLICY_WARNING === "1"
+            ? [{ fieldRef: "spec.validations[0].expression", warning: "bad" }]
+            : [],
+      },
+    };
+    return document;
+  }
+  if (key === "get validatingadmissionpolicybinding k8s-incident-agent-patch-validator-dry-run-only --output=json") {
+    const document = fixture(
+      "ValidatingAdmissionPolicyBinding",
+      "k8s-incident-agent-patch-validator-dry-run-only",
+      "",
+    );
+    if (process.env.FAKE_PATCH_VALIDATOR_BINDING_DRIFT === "1") {
+      document.spec.validationActions = ["Audit"];
+    }
+    return document;
+  }
   if (key === "get role managed-monitoring-read --namespace k8s-incident-scenarios --output=json") {
     const document = fixture(
       "Role",
@@ -1612,6 +1923,27 @@ function response(key, args) {
     };
   }
   if (key.startsWith("auth can-i ")) {
+    const patchValidator = key.includes(
+      "--as=system:serviceaccount:k8s-incident-agent:patch-validator",
+    );
+    if (patchValidator) {
+      const scenarioNamespace = key.includes(
+        "--namespace k8s-incident-scenarios",
+      );
+      const allowed =
+        (scenarioNamespace &&
+          !key.includes("--subresource=") &&
+          ((" " + key + " ").includes(" get deployments.apps ") ||
+            (" " + key + " ").includes(" patch deployments.apps "))) ||
+        (" " + key + " ").includes(
+          " create selfsubjectaccessreviews.authorization.k8s.io ",
+        ) ||
+        (process.env.FAKE_PATCH_VALIDATOR_RBAC_ALLOW_DRIFT === "1" &&
+          scenarioNamespace &&
+          (" " + key + " ").includes(" update deployments.apps "));
+      if (!allowed) process.exitCode = 1;
+      return allowed ? "yes\\n" : "no\\n";
+    }
     const monitoringReader = key.includes(
       "--as=system:serviceaccount:k8s-incident-monitoring:kube-state-metrics",
     );
@@ -1652,6 +1984,10 @@ function response(key, args) {
     }
     return "yes\\n";
   }
+  if (
+    key ===
+    "delete deployment patch-validator --namespace k8s-incident-agent --ignore-not-found=true --wait=true"
+  ) return "ok\\n";
   if (key.startsWith("apply ") || key.startsWith("rollout status ") || key.startsWith("delete --ignore-not-found=true ") || key.startsWith("wait --for=delete ")) return "ok\\n";
   if (key === "get deployments.apps,replicasets.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch,replicationcontrollers,pods --namespace k8s-incident-agent --ignore-not-found=true --output=name") {
     return process.env.FAKE_ACTIVE_WORKLOAD === "1" ? "pod/agent-runtime-active\\n" : "";
@@ -2269,7 +2605,9 @@ test("kubectl-shaped context input is rejected before external execution", () =>
 });
 
 test("confirmed online install preflights, applies, waits, and reports the real status contract", (t) => {
-  const fake = createFakeKubectl(t);
+  const fake = createFakeKubectl(t, {
+    FAKE_PATCH_VALIDATOR_POLICY_TRANSIENT: "1",
+  });
   const result = runDeployment(
     ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
     fake.environment,
@@ -2283,7 +2621,7 @@ test("confirmed online install preflights, applies, waits, and reports the real 
     intakeMode: "online",
     networkPolicies: "matched",
     networkPolicyEnforcement: "requires-live-probe",
-    pods: 2,
+    pods: 3,
     profile: "k3s-online",
     pvc: { name: "runtime-data", phase: "Bound", volumeName: "pvc-volume" },
     rbac: "matched",
@@ -2313,6 +2651,48 @@ test("confirmed online install preflights, applies, waits, and reports the real 
     calls.some((call) => call.includes("apply --kustomize")),
     true,
   );
+  const boundaryApply = fake.calls().find((call) =>
+    call.args.join(" ").includes("apply --filename=-"),
+  );
+  assert.notEqual(boundaryApply, undefined);
+  const boundaryResources = boundaryApply.input
+    .trim()
+    .split("\n---\n")
+    .map((document) => JSON.parse(document));
+  assert.deepEqual(
+    boundaryResources.map((resource) => resource.kind),
+    ["ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"],
+  );
+  assert.equal(boundaryApply.input.includes("Secret"), false);
+  const commandCalls = fake.calls().map((call) => call.args.join(" "));
+  const boundaryApplyIndex = commandCalls.findIndex((call) =>
+    call.includes("apply --filename=-"),
+  );
+  const firstPolicyReadyReadIndex = commandCalls.findIndex((call) =>
+    call.includes(
+      "get validatingadmissionpolicy k8s-incident-agent-patch-validator-dry-run-only",
+    ),
+  );
+  const workloadApplyIndex = commandCalls.findIndex((call) =>
+    call.includes("apply --kustomize"),
+  );
+  const firstRolloutIndex = commandCalls.findIndex((call) =>
+    call.includes("rollout status deployment/"),
+  );
+  assert.equal(
+    boundaryApplyIndex < firstPolicyReadyReadIndex &&
+      firstPolicyReadyReadIndex < workloadApplyIndex &&
+      workloadApplyIndex < firstRolloutIndex,
+    true,
+  );
+  assert.equal(
+    calls.filter((call) =>
+      call.includes(
+        "get validatingadmissionpolicy k8s-incident-agent-patch-validator-dry-run-only",
+      )
+    ).length,
+    3,
+  );
   assert.deepEqual(
     calls
       .filter((call) => call.includes("rollout status deployment/"))
@@ -2323,6 +2703,7 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       "deployment/alertmanager",
       "deployment/incident-console",
       "deployment/kube-state-metrics",
+      "deployment/patch-validator",
       "deployment/prometheus",
     ],
   );
@@ -2416,6 +2797,55 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       ].sort(),
     );
   }
+  const patchValidatorSubject =
+    "--as=system:serviceaccount:k8s-incident-agent:patch-validator";
+  assert.deepEqual(
+    calls
+      .filter(
+        (call) =>
+          call.includes("auth can-i") &&
+          call.includes(patchValidatorSubject),
+      )
+      .map((call) => call.slice(call.indexOf("auth can-i")))
+      .sort(),
+    [
+      `auth can-i get deployments.apps ${patchValidatorSubject} ${namespace}`,
+      `auth can-i patch deployments.apps ${patchValidatorSubject} ${namespace}`,
+      `auth can-i create deployments.apps ${patchValidatorSubject} ${namespace}`,
+      `auth can-i update deployments.apps ${patchValidatorSubject} ${namespace}`,
+      `auth can-i delete deployments.apps ${patchValidatorSubject} ${namespace}`,
+      `auth can-i patch deployments.apps --subresource=status ${patchValidatorSubject} ${namespace}`,
+      `auth can-i patch deployments.apps --subresource=scale ${patchValidatorSubject} ${namespace}`,
+      `auth can-i get pods ${patchValidatorSubject} ${namespace}`,
+      `auth can-i get replicasets.apps ${patchValidatorSubject} ${namespace}`,
+      `auth can-i patch pods ${patchValidatorSubject} ${namespace}`,
+      `auth can-i get secrets ${patchValidatorSubject} ${namespace}`,
+      `auth can-i create selfsubjectaccessreviews.authorization.k8s.io ${patchValidatorSubject}`,
+      `auth can-i get deployments.apps ${patchValidatorSubject} ${applicationNamespace}`,
+      `auth can-i patch deployments.apps ${patchValidatorSubject} ${applicationNamespace}`,
+      `auth can-i get secrets ${patchValidatorSubject} ${applicationNamespace}`,
+    ].sort(),
+  );
+});
+
+test("confirmed install does not apply workloads before the admission boundary is ready", (t) => {
+  const fake = createFakeKubectl(t, {
+    FAKE_PATCH_VALIDATOR_POLICY_WARNING: "1",
+  });
+  const result = runDeployment(
+    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    fake.environment,
+  );
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL installation_not_ready /);
+  const calls = fake.calls().map((call) => call.args.join(" "));
+  assert.equal(calls.some((call) => call.includes("apply --filename=-")), true);
+  assert.equal(calls.some((call) => call.includes("apply --kustomize")), false);
+  assert.equal(
+    calls.some((call) => call.includes("rollout status deployment/")),
+    false,
+  );
 });
 
 test("Kind status accepts the fixed ownership init and exact producer lists", (t) => {
@@ -2440,7 +2870,7 @@ test("Kind status accepts the fixed ownership init and exact producer lists", (t
     intakeMode: "manual",
     networkPolicies: "matched",
     networkPolicyEnforcement: "requires-live-probe",
-    pods: 2,
+    pods: 3,
     profile: "kind-evaluation",
     pvc: {
       name: "runtime-data",
@@ -2487,6 +2917,13 @@ test("status rejects monitoring component, storage, config, network, and RBAC dr
     { FAKE_MONITORING_NETWORK_POLICY_DRIFT: "1" },
     { FAKE_MONITORING_RBAC_DRIFT: "1" },
     { FAKE_MONITORING_RBAC_ALLOW_DRIFT: "1" },
+    { FAKE_PATCH_VALIDATOR_DEPLOYMENT_DRIFT: "1" },
+    { FAKE_PATCH_VALIDATOR_SERVICE_ACCOUNT_DRIFT: "1" },
+    { FAKE_PATCH_VALIDATOR_RBAC_DRIFT: "1" },
+    { FAKE_PATCH_VALIDATOR_RBAC_ALLOW_DRIFT: "1" },
+    { FAKE_PATCH_VALIDATOR_POLICY_STALE: "1" },
+    { FAKE_PATCH_VALIDATOR_POLICY_WARNING: "1" },
+    { FAKE_PATCH_VALIDATOR_BINDING_DRIFT: "1" },
   ];
   for (const environment of cases) {
     const fake = createFakeKubectl(t, environment);
@@ -2520,7 +2957,7 @@ test("status ignores an old terminating Console Pod after rollout", (t) => {
     fake.environment,
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).pods, 2);
+  assert.equal(JSON.parse(result.stdout).pods, 3);
 });
 
 test("status rejects a deployed intake mode that differs from the profile", (t) => {
@@ -2554,6 +2991,22 @@ test("confirmed install rejects an unavailable fixed K3s component before apply"
 test("confirmed install rejects a missing namespaced webhook credential before apply", (t) => {
   const fake = createFakeKubectl(t, {
     FAKE_WEBHOOK_SECRET_MISSING: "1",
+  });
+  const result = runDeployment(
+    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    fake.environment,
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL secret_contract_invalid /);
+  assert.equal(
+    fake.calls().some((call) => call.args.includes("apply")),
+    false,
+  );
+});
+
+test("confirmed install rejects invalid Patch Validator HMAC key material", (t) => {
+  const fake = createFakeKubectl(t, {
+    FAKE_PATCH_VALIDATOR_SECRET_INVALID: "1",
   });
   const result = runDeployment(
     ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
@@ -2650,6 +3103,15 @@ test("uninstall does not depend on a healthy model Secret and preserves the same
     calls.some((call) => call.includes("delete --ignore-not-found=true --wait=true --kustomize")),
     true,
   );
+  const validatorShutdown = calls.findIndex((call) =>
+    call.includes(
+      "delete deployment patch-validator --namespace k8s-incident-agent --ignore-not-found=true --wait=true",
+    ),
+  );
+  const bundleDelete = calls.findIndex((call) =>
+    call.includes("delete --ignore-not-found=true --wait=true --kustomize"),
+  );
+  assert.equal(validatorShutdown >= 0 && validatorShutdown < bundleDelete, true);
 });
 
 test("purge binds confirmation to current K3s PVC and PV UIDs before raw deletion", (t) => {

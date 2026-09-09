@@ -18,6 +18,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import (
     validate_diagnostic_policy_contract,
 )
 from k8s_incident_agent.monitoring.json import load_unique_json
+from k8s_incident_agent.repair.contracts import RepairAction
 
 _MAX_CATALOG_BYTES = 64 * 1024
 
@@ -121,6 +122,7 @@ class AlertCatalogEntry(_CatalogContract):
     target: AlertTargetMapping
     allowed_tools: list[DiagnosticToolName] = Field(min_length=1, max_length=5)
     required_evidence: list[DiagnosticEvidenceKind] = Field(min_length=1, max_length=5)
+    repair_action: RepairAction | None = None
     panels: list[MetricPanelContract] = Field(min_length=1, max_length=8)
 
     @field_validator("display_name", "trigger_summary")
@@ -141,11 +143,18 @@ class AlertCatalogEntry(_CatalogContract):
             raise ValueError("Alert entries require exactly one trigger panel")
         if trigger_panels[0].threshold_duration != self.rule.for_duration:
             raise ValueError("Trigger panel duration must match the alert rule")
+        if self.repair_action is not None and (
+            self.target.api_version != "apps/v1"
+            or self.target.kind != "Deployment"
+            or not {"workload", "rollout_history"}.issubset(self.required_evidence)
+            or "get_rollout_history" not in self.allowed_tools
+        ):
+            raise ValueError("Repair action requires Deployment rollout Evidence")
         return self
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[6]
+    schema_version: Literal[7]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,

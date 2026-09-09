@@ -41,6 +41,7 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
         event_rows=5,
         evidence_rows=1,
         diagnosis_rows=1,
+        repair_proposal_rows=1,
         run_rows=1,
         alert_signal_rows=1,
     )
@@ -73,6 +74,7 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
                 "eventRows": 5,
                 "evidenceRows": 1,
                 "incidentId": str(INCIDENT_ID),
+                "repairProposalRows": 1,
                 "runIds": [str(RUN_ID)],
                 "runRows": 1,
                 "updatedAt": "2026-09-01T08:00:00+00:00",

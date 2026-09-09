@@ -29,6 +29,7 @@ from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     RecoveryConsistencyError,
 )
+from k8s_incident_agent.repair.client import PatchValidator
 from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 from k8s_incident_agent.workflow.graph import (
     GraphDependencies,
@@ -45,6 +46,10 @@ _WORKFLOW_NODES: Final = frozenset(
         "triage_target",
         "diagnose",
         "validate_diagnosis",
+        "validate_repair_schema",
+        "validate_repair_policy",
+        "validate_repair_diff",
+        "validate_repair_dry_run",
         "persist_terminal_state",
     }
 )
@@ -65,6 +70,7 @@ class RunSupervisor:
         prometheus: PrometheusQueryService,
         policies: DiagnosticPolicyResolver,
         now: Callable[[], datetime],
+        patch_validator: PatchValidator | None = None,
     ) -> None:
         self._dependencies = GraphDependencies(
             repository=repository,
@@ -75,6 +81,7 @@ class RunSupervisor:
             adapter=adapter,
             prometheus=prometheus,
             now=now,
+            patch_validator=patch_validator,
         )
         self._repository = repository
         self._policies = policies

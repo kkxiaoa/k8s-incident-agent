@@ -26,3 +26,5 @@ data:
   SCENARIO_CATALOG_DIR: /workspace/scenarios
   ALERT_CATALOG_DIR: /workspace/monitoring/catalog
   ALERTMANAGER_WEBHOOK_TOKEN_FILE: /var/run/secrets/k8s-incident-agent/alertmanager/token
+  PATCH_VALIDATOR_BASE_URL: http://patch-validator.k8s-incident-agent.svc.cluster.local:8081
+  PATCH_VALIDATOR_HMAC_KEY_FILE: /var/run/secrets/k8s-incident-agent/patch-validator/hmac-key

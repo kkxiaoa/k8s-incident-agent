@@ -109,6 +109,18 @@ EXPECTED_EVENT_COMPONENTS = {
         "DiagnosisInsufficientEventPayload",
     ),
     "run.failed": ("RunFailedStreamEvent", "RunFailedEventPayload"),
+    "repair.patch_ready": (
+        "RepairPatchReadyStreamEvent",
+        "RepairPatchReadyEventPayload",
+    ),
+    "repair.dry_run_passed": (
+        "RepairDryRunPassedStreamEvent",
+        "RepairDryRunPassedEventPayload",
+    ),
+    "repair.waiting_approval": (
+        "RepairWaitingApprovalStreamEvent",
+        "RepairWaitingApprovalEventPayload",
+    ),
     "alert.resolved": (
         "AlertResolvedStreamEvent",
         "AlertResolvedEventPayload",

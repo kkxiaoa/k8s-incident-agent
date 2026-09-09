@@ -19,7 +19,11 @@ const INCIDENT_STATUS_LABELS: Record<IncidentStatus, string> = {
   RECEIVED: "已接收",
   TRIAGING: "诊断中",
   DIAGNOSED: "已诊断",
+  PATCH_READY: "修复建议已生成",
+  DRY_RUN_PASSED: "Dry-run 已通过",
+  WAITING_APPROVAL: "等待批准",
   INSUFFICIENT_EVIDENCE: "证据不足",
+  STALE_RESOURCE: "目标资源已变化",
   FAILED: "失败",
 };
 

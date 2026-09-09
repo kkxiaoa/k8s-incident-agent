@@ -1,6 +1,8 @@
 from collections.abc import Sequence
 
-DIAGNOSTIC_PROMPT_VERSION = "stage2-crashloop-v1"
+from k8s_incident_agent.repair.contracts import RepairAction
+
+DIAGNOSTIC_PROMPT_VERSION = "stage2-repair-v1"
 
 
 def build_diagnostic_system_prompt(
@@ -10,6 +12,7 @@ def build_diagnostic_system_prompt(
     allowed_tool_names: Sequence[str],
     required_evidence: Sequence[str],
     prometheus_panel_ids: Sequence[str],
+    repair_action: RepairAction | None,
 ) -> str:
     _require_positive_integer(max_model_calls, "Model call limit")
     _require_positive_integer(max_tool_calls, "Tool call limit")
@@ -33,6 +36,19 @@ def build_diagnostic_system_prompt(
         "Prometheus Evidence: do not query another panel or window."
         if prometheus_panel_ids
         else "Prometheus queries are not available for this incident."
+    )
+    repair_instruction = (
+        "Only when the observations establish root-cause code "
+        "image_invalid_registry, and the workload plus rollout-history Evidence "
+        "identify the exact current container image and the immediately preceding "
+        "revision image, include repair_intent. Its action must be "
+        "set_container_image; copy the fixed incident target; set container_name "
+        "to that observed container; set replacement_image to that observed prior "
+        "image; and cite exactly the supporting workload and rollout-history "
+        "evidenceId values. Never produce a raw patch, path, Kubernetes verb, URL, "
+        "or dry-run option. In every other case, repair_intent must be null."
+        if repair_action == "set_container_image"
+        else "No repair action is authorized for this incident; repair_intent must be null."
     )
     return f"""You are the single read-only diagnostic agent for one Kubernetes target.
 
@@ -58,6 +74,8 @@ terminal and must not be rewritten as missing evidence.
 Return diagnosed only when the cited observations establish a specific root cause.
 Otherwise return insufficient_evidence with concrete missing information and no root
 causes. Produce exactly one structured response and no prose fallback.
+
+{repair_instruction}
 
 The runtime enforces at most {max_model_calls} model calls and {max_tool_calls} total
 LangChain tool calls. The tool-call limit includes the final structured response, so

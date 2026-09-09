@@ -103,6 +103,7 @@ class WorkloadContainer(_EvidenceContract):
     command: list[str]
     args: list[str]
     probes: list[ContainerProbe] = Field(default_factory=list[ContainerProbe])
+    source_index: int | None = Field(default=None, ge=0, le=255)
 
 
 class WorkloadDetail(_EvidenceContract):
@@ -113,6 +114,17 @@ class WorkloadDetail(_EvidenceContract):
     selector: Selector
     containers: list[WorkloadContainer]
     conditions: list[ConditionSummary]
+
+    @model_validator(mode="after")
+    def require_unambiguous_source_indexes(self) -> Self:
+        indexes = [container.source_index for container in self.containers]
+        if any(index is not None for index in indexes) and (
+            any(index is None for index in indexes)
+            or len(set(indexes)) != len(indexes)
+            or set(indexes) != set(range(len(indexes)))
+        ):
+            raise ValueError("Workload container source indexes are ambiguous")
+        return self
 
 
 class WorkloadPayload(_EvidenceContract):

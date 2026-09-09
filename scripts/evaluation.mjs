@@ -304,6 +304,7 @@ async function evaluateScenario(scenario, options) {
     result.checks.run = diagnosisSummary.run;
     result.checks.evidenceKinds = diagnosisSummary.evidenceKinds;
     result.checks.diagnosisCodes = diagnosisSummary.diagnosisCodes;
+    result.checks.repair = diagnosisSummary.repair;
 
     const panels = await validateFiringPanels(
       incidentId,
@@ -314,6 +315,7 @@ async function evaluateScenario(scenario, options) {
       incidentId,
       terminal.eventCursor,
       terminal.selectedRun.id,
+      terminal.repair,
       options.fetchImpl,
     );
     result.checks.sseReplay = replay;
@@ -542,6 +544,7 @@ async function evaluateInfrastructureRecovery(probe, options) {
       incidentId,
       recovered.eventCursor,
       recovered.selectedRun.id,
+      recovered.repair,
       options.fetchImpl,
     );
     await requireConsoleIncident(recovered, options.fetchImpl);
@@ -649,6 +652,7 @@ function emptyScenarioResult(scenario) {
       panels: [],
       sseReplay: undefined,
       consoleDetail: false,
+      repair: undefined,
       repeatDeliveryDeduplicated: false,
       alertResolved: false,
       postResolutionPanelStates: [],
@@ -665,7 +669,9 @@ function requireEvaluationCatalog(scenarios) {
   }
   const scenarioIds = new Set();
   const families = new Set();
+  let repairExpectations = 0;
   for (const scenario of scenarios) {
+    const expectedRepair = scenario?.expectedPatchConstraints;
     if (
       !isNormalizedString(scenario?.scenarioId) ||
       scenario.scenarioVersion !== supportedScenarioVersion(scenario.scenarioId) ||
@@ -686,6 +692,29 @@ function requireEvaluationCatalog(scenarios) {
       !Array.isArray(scenario.allowedTools) ||
       !Array.isArray(scenario.forbiddenTools) ||
       !Array.isArray(scenario.healthyControlNames) ||
+      !(
+        expectedRepair === undefined ||
+        (isPlainObject(expectedRepair) &&
+          hasExactKeys(expectedRepair, [
+            "action",
+            "containerIndex",
+            "containerName",
+            "currentImage",
+            "replacementImage",
+          ]) &&
+          expectedRepair.action === "set_container_image" &&
+          Number.isInteger(expectedRepair.containerIndex) &&
+          expectedRepair.containerIndex >= 0 &&
+          expectedRepair.containerIndex <= 255 &&
+          isNormalizedString(expectedRepair.containerName) &&
+          isNormalizedString(expectedRepair.currentImage) &&
+          isNormalizedString(expectedRepair.replacementImage) &&
+          expectedRepair.currentImage !== expectedRepair.replacementImage &&
+          scenario.target.apiVersion === "apps/v1" &&
+          scenario.target.kind === "Deployment" &&
+          scenario.requiredEvidence.includes("workload") &&
+          scenario.requiredEvidence.includes("rollout_history"))
+      ) ||
       scenarioIds.has(scenario.scenarioId)
     ) {
       throw contractError(
@@ -695,11 +724,12 @@ function requireEvaluationCatalog(scenarios) {
     }
     scenarioIds.add(scenario.scenarioId);
     families.add(scenarioFamily(scenario.verifierKind));
+    if (expectedRepair !== undefined) repairExpectations += 1;
   }
-  if (families.size !== 5) {
+  if (families.size !== 5 || repairExpectations !== 1) {
     throw contractError(
       "evaluation_catalog_invalid",
-      "Evaluation catalog must cover exactly five approved fault families",
+      "Evaluation catalog must cover five fault families and one repair slice",
     );
   }
 }
@@ -869,7 +899,7 @@ async function listIncidentSummaries(fetchImpl) {
       query,
     );
     if (
-      document?.schemaVersion !== 3 ||
+      document?.schemaVersion !== 4 ||
       !Array.isArray(document.items) ||
       document.items.some((item) => !UUID_PATTERN.test(item?.id ?? "")) ||
       !(document.nextCursor === null ||
@@ -940,7 +970,7 @@ async function waitForTerminalIncident(incidentId, fetchImpl, sleep) {
 
 function validateTerminalDiagnosis(scenario, detail) {
   if (
-    detail.schemaVersion !== 3 ||
+    detail.schemaVersion !== 4 ||
     detail.selectedRun?.attempt !== 1 ||
     detail.selectedRun?.status !== "COMPLETED" ||
     detail.selectedRun?.error !== null ||
@@ -1031,11 +1061,180 @@ function validateTerminalDiagnosis(scenario, detail) {
       "Expected diagnosis does not reference every required Evidence kind",
     );
   }
+  const repair = validateTerminalRepair(scenario, detail, evidenceById);
   return {
     run: { attempt: 1, status: "COMPLETED" },
     evidenceKinds,
     diagnosisCodes,
+    repair,
   };
+}
+
+function validateTerminalRepair(scenario, detail, evidenceById) {
+  const expected = scenario.expectedPatchConstraints;
+  if (expected === undefined) {
+    if (detail.incident?.status !== "DIAGNOSED" || detail.repair !== null) {
+      throw contractError(
+        "repair_validation_invalid",
+        "A diagnosis without an approved repair slice exposed repair state",
+      );
+    }
+    return undefined;
+  }
+
+  const repair = detail.repair;
+  const imagePath =
+    `/spec/template/spec/containers/${expected.containerIndex}/image`;
+  const expectedPatch = [
+    { op: "test", path: "/metadata/uid", value: repair?.targetUid },
+    {
+      op: "test",
+      path: "/metadata/resourceVersion",
+      value: repair?.targetResourceVersion,
+    },
+    {
+      op: "test",
+      path: `/spec/template/spec/containers/${expected.containerIndex}/name`,
+      value: expected.containerName,
+    },
+    { op: "test", path: imagePath, value: expected.currentImage },
+    { op: "replace", path: imagePath, value: expected.replacementImage },
+  ];
+  const evidenceIds = repair?.evidenceIds;
+  const gateTimes = [
+    parseInstant(repair?.schemaCheckedAt),
+    parseInstant(repair?.policyCheckedAt),
+    parseInstant(repair?.diffCheckedAt),
+    parseInstant(repair?.validation?.checkedAt),
+  ];
+  if (
+    detail.incident?.status !== "WAITING_APPROVAL" ||
+    !isPlainObject(repair) ||
+    !hasExactKeys(repair, [
+      "schemaVersion",
+      "id",
+      "action",
+      "target",
+      "targetUid",
+      "targetResourceVersion",
+      "containerIndex",
+      "containerName",
+      "currentImage",
+      "replacementImage",
+      "evidenceIds",
+      "patch",
+      "digest",
+      "diff",
+      "schemaCheckedAt",
+      "policyCheckedAt",
+      "diffCheckedAt",
+      "validation",
+    ]) ||
+    repair.schemaVersion !== 1 ||
+    !UUID_PATTERN.test(repair.id ?? "") ||
+    repair.action !== expected.action ||
+    !isPlainObject(repair.target) ||
+    !hasExactKeys(repair.target, [
+      "cluster",
+      "namespace",
+      "apiVersion",
+      "kind",
+      "name",
+    ]) ||
+    !sameTarget(repair.target, scenario.target) ||
+    !isNormalizedString(repair.targetUid) ||
+    !isNormalizedString(repair.targetResourceVersion) ||
+    repair.containerIndex !== expected.containerIndex ||
+    repair.containerName !== expected.containerName ||
+    repair.currentImage !== expected.currentImage ||
+    repair.replacementImage !== expected.replacementImage ||
+    !Array.isArray(evidenceIds) ||
+    evidenceIds.length !== 2 ||
+    new Set(evidenceIds).size !== 2 ||
+    JSON.stringify(evidenceIds) !==
+      JSON.stringify([...evidenceIds].sort((left, right) => left.localeCompare(right))) ||
+    evidenceIds.some((id) => !UUID_PATTERN.test(id ?? "") || !evidenceById.has(id)) ||
+    !isPlainObject(repair.diff) ||
+    !hasExactKeys(repair.diff, ["path", "before", "after"]) ||
+    repair.diff.path !== imagePath ||
+    repair.diff.before !== expected.currentImage ||
+    repair.diff.after !== expected.replacementImage ||
+    !Array.isArray(repair.patch) ||
+    repair.patch.length !== 5 ||
+    repair.patch.some(
+      (operation) =>
+        !isPlainObject(operation) ||
+        !hasExactKeys(operation, ["op", "path", "value"]),
+    ) ||
+    JSON.stringify(repair.patch) !== JSON.stringify(expectedPatch) ||
+    !RELEASE_DIGEST_PATTERN.test(repair.digest ?? "") ||
+    gateTimes.some((value) => value === undefined) ||
+    gateTimes.some(
+      (value, index) => index > 0 && value < gateTimes[index - 1],
+    ) ||
+    !isPlainObject(repair.validation) ||
+    !hasExactKeys(repair.validation, ["outcome", "checkedAt", "error"]) ||
+    repair.validation.outcome !== "passed" ||
+    repair.validation.error !== null
+  ) {
+    throw contractError(
+      "repair_validation_invalid",
+      "The ImagePull repair did not satisfy the evidence-bound contract",
+    );
+  }
+  const repairKinds = new Set(
+    evidenceIds.map((evidenceId) => evidenceById.get(evidenceId).evidenceKind),
+  );
+  const repairRootCause = detail.diagnosis.rootCauses.find(
+    (rootCause) => rootCause.code === "image_invalid_registry",
+  );
+  if (
+    repairKinds.size !== 2 ||
+    !repairKinds.has("workload") ||
+    !repairKinds.has("rollout_history") ||
+    !Array.isArray(repairRootCause?.evidenceIds) ||
+    evidenceIds.some((evidenceId) =>
+      !repairRootCause.evidenceIds.includes(evidenceId)) ||
+    repair.digest !== expectedRepairDigest(detail.selectedRun.id, repair)
+  ) {
+    throw contractError(
+      "repair_validation_invalid",
+      "The ImagePull repair identity is not bound to its exact Run Evidence",
+    );
+  }
+  return {
+    action: repair.action,
+    proposalDigest: repair.digest,
+    validation: "passed",
+    terminalStatus: "WAITING_APPROVAL",
+  };
+}
+
+function expectedRepairDigest(runId, repair) {
+  const change = {
+    schema_version: 1,
+    run_id: runId,
+    action: repair.action,
+    target: {
+      cluster: repair.target.cluster,
+      namespace: repair.target.namespace,
+      api_version: repair.target.apiVersion,
+      kind: repair.target.kind,
+      name: repair.target.name,
+    },
+    target_uid: repair.targetUid,
+    target_resource_version: repair.targetResourceVersion,
+    container_index: repair.containerIndex,
+    container_name: repair.containerName,
+    current_image: repair.currentImage,
+    replacement_image: repair.replacementImage,
+    evidence_ids: repair.evidenceIds,
+  };
+  return `sha256:${createHash("sha256").update(canonicalJson({
+    domain: "k8s-incident-agent.repair-proposal.v1",
+    change,
+    patch: repair.patch,
+  })).digest("hex")}`;
 }
 
 function matchesExpectedRootCause(expected, actual) {
@@ -1132,7 +1331,7 @@ async function getPanel(incidentId, panelId, window, fetchImpl) {
   return document;
 }
 
-async function validateSseReplay(incidentId, cursor, runId, fetchImpl) {
+async function validateSseReplay(incidentId, cursor, runId, repair, fetchImpl) {
   if (!/^[1-9][0-9]*$/.test(cursor ?? "")) throw upstreamContractError();
   if (!UUID_PATTERN.test(runId ?? "")) throw upstreamContractError();
   const controller = new AbortController();
@@ -1186,7 +1385,7 @@ async function validateSseReplay(incidentId, cursor, runId, fetchImpl) {
         if (
           !/^[1-9][0-9]*$/.test(id) ||
           !isNormalizedString(event) ||
-          data?.schemaVersion !== 3 ||
+          data?.schemaVersion !== 4 ||
           data.incidentId !== incidentId ||
           data.runId !== runId ||
           (events.length > 0 && BigInt(id) <= BigInt(events.at(-1).id))
@@ -1196,7 +1395,7 @@ async function validateSseReplay(incidentId, cursor, runId, fetchImpl) {
             "SSE replay did not preserve the persisted event contract",
           );
         }
-        events.push({ id, event });
+        events.push({ id, event, data });
         reachedCursor = id === cursor;
         if (reachedCursor) break;
       }
@@ -1219,6 +1418,7 @@ async function validateSseReplay(incidentId, cursor, runId, fetchImpl) {
         "SSE replay omitted a required Incident lifecycle event",
       );
     }
+    requireRepairEventSequence(events, repair);
     return {
       events: events.length,
       eventTypes: [...eventTypes].sort(),
@@ -1227,6 +1427,65 @@ async function validateSseReplay(incidentId, cursor, runId, fetchImpl) {
   } finally {
     clearTimeout(timeout);
     controller.abort();
+  }
+}
+
+function requireRepairEventSequence(events, repair) {
+  const repairNames = [
+    "repair.patch_ready",
+    "repair.dry_run_passed",
+    "repair.waiting_approval",
+  ];
+  const matchingRepairEvents = repairNames.map((name) =>
+    events.filter((event) => event.event === name));
+  const repairEvents = matchingRepairEvents.map(([event]) => event);
+  const diagnosis = events.find((event) => event.event === "diagnosis.completed");
+  if (repair === null) {
+    if (
+      repairEvents.some((event) => event !== undefined) ||
+      diagnosis?.data?.incidentStatus !== "DIAGNOSED" ||
+      diagnosis?.data?.runStatus !== "COMPLETED"
+    ) {
+      throw contractError(
+        "sse_replay_invalid",
+        "SSE replay exposed repair events for a diagnosis-only Run",
+      );
+    }
+    return;
+  }
+  const statuses = [
+    ["PATCH_READY", "RUNNING"],
+    ["DRY_RUN_PASSED", "RUNNING"],
+    ["WAITING_APPROVAL", "COMPLETED"],
+  ];
+  if (
+    !isPlainObject(repair) ||
+    diagnosis?.data?.incidentStatus !== "DIAGNOSED" ||
+    diagnosis?.data?.runStatus !== "RUNNING" ||
+    matchingRepairEvents.some((matching) => matching.length !== 1) ||
+    repairEvents.some((event) => event === undefined) ||
+    repairEvents.some(
+      (event, index) =>
+        event.data?.proposalId !== repair.id ||
+        event.data?.proposalDigest !== repair.digest ||
+        event.data?.incidentStatus !== statuses[index][0] ||
+        event.data?.runStatus !== statuses[index][1],
+    )
+  ) {
+    throw contractError(
+      "sse_replay_invalid",
+      "SSE replay omitted or changed the repair lifecycle contract",
+    );
+  }
+  const positions = [
+    events.indexOf(diagnosis),
+    ...repairEvents.map((event) => events.indexOf(event)),
+  ];
+  if (positions.some((position, index) => index > 0 && position <= positions[index - 1])) {
+    throw contractError(
+      "sse_replay_invalid",
+      "SSE replay changed the repair lifecycle order",
+    );
   }
 }
 
@@ -1307,6 +1566,7 @@ async function requireSingleIncidentAndRun(
   if (
     targetIncidents.length !== 1 ||
     targetIncidents[0] !== incidentId ||
+    runs?.schemaVersion !== 4 ||
     !Array.isArray(runs?.items) ||
     runs.items.length !== 1 ||
     runs.items[0]?.attempt !== 1
@@ -1415,7 +1675,7 @@ async function getIncident(incidentId, fetchImpl) {
     { transientStatuses: new Set([502, 503, 504]) },
   );
   if (
-    document?.schemaVersion !== 3 ||
+    document?.schemaVersion !== 4 ||
     document.incident?.id !== incidentId ||
     !UUID_PATTERN.test(document.selectedRun?.id ?? "")
   ) {
@@ -2279,6 +2539,31 @@ function isPlainObject(value) {
     !Array.isArray(value) &&
     Object.getPrototypeOf(value) === Object.prototype
   );
+}
+
+function hasExactKeys(value, expected) {
+  return isPlainObject(value) &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify([...expected].sort());
+}
+
+function canonicalJson(value) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (isPlainObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  throw upstreamContractError();
 }
 
 function isNormalizedString(value) {

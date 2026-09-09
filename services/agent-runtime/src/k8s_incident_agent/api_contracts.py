@@ -24,6 +24,7 @@ from k8s_incident_agent.domain.models import (
     JsonValue,
     RunStatus,
 )
+from k8s_incident_agent.repair.contracts import PatchValidationErrorCode
 
 
 def _require_utc_datetime(value: datetime, field_name: str) -> datetime:
@@ -112,12 +113,12 @@ class CreateIncidentRequest(_ApiContract):
 
 
 class CreateIncidentResponse(_ApiContract):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     incident_id: UUID
 
 
 class CreateRunResponse(_ApiContract):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     run_id: UUID
 
 
@@ -130,7 +131,7 @@ class IncidentListItem(_ApiContract):
 
 
 class IncidentListResponse(_ApiContract):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     items: tuple[IncidentListItem, ...]
     next_cursor: str | None
 
@@ -164,7 +165,7 @@ class SelectedRunResponse(RunSummaryResponse):
 
 
 class RunHistoryResponse(_ApiContract):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     items: tuple[RunSummaryResponse, ...]
     next_cursor: str | None
 
@@ -198,6 +199,53 @@ class DiagnosisResponse(_ApiContract):
     created_at: datetime
 
 
+class RepairPatchOperationResponse(_ApiContract):
+    op: Literal["test", "replace"]
+    path: str
+    value: str
+
+
+class RepairDiffResponse(_ApiContract):
+    path: str
+    before: str
+    after: str
+
+
+class RepairValidationErrorResponse(_ApiContract):
+    code: PatchValidationErrorCode
+    retryable: bool
+
+
+class RepairValidationResponse(_ApiContract):
+    outcome: Literal["passed", "failed"]
+    checked_at: datetime
+    error: RepairValidationErrorResponse | None
+
+
+class RepairProposalResponse(_ApiContract):
+    schema_version: Literal[1] = 1
+    id: UUID
+    action: Literal["set_container_image"]
+    target: IncidentTargetResponse
+    target_uid: str
+    target_resource_version: str
+    container_index: int = Field(ge=0, le=255)
+    container_name: str
+    current_image: str
+    replacement_image: str
+    evidence_ids: tuple[UUID, ...] = Field(min_length=2, max_length=2)
+    patch: tuple[RepairPatchOperationResponse, ...] = Field(
+        min_length=5,
+        max_length=5,
+    )
+    digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    diff: RepairDiffResponse
+    schema_checked_at: datetime
+    policy_checked_at: datetime
+    diff_checked_at: datetime
+    validation: RepairValidationResponse
+
+
 class AlertSignalResponse(_ApiContract):
     status: AlertSignalStatus
     starts_at: _CanonicalAlertTimestamp
@@ -205,7 +253,7 @@ class AlertSignalResponse(_ApiContract):
 
 
 class RunEventPayload(_ApiContract):
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     incident_id: UUID
     run_id: UUID
     occurred_at: datetime
@@ -285,7 +333,7 @@ class DiagnosisCompletedEventPayload(RunEventPayload):
     diagnosis_id: UUID
     outcome: Literal["diagnosed"]
     incident_status: Literal["DIAGNOSED"]
-    run_status: Literal["COMPLETED"]
+    run_status: Literal["RUNNING", "COMPLETED"]
 
 
 class DiagnosisInsufficientEventPayload(RunEventPayload):
@@ -298,8 +346,29 @@ class DiagnosisInsufficientEventPayload(RunEventPayload):
 class RunFailedEventPayload(RunEventPayload):
     error_code: str
     retryable: bool
-    incident_status: Literal["FAILED"]
+    incident_status: Literal["FAILED", "STALE_RESOURCE"]
     run_status: Literal["FAILED"]
+
+
+class RepairPatchReadyEventPayload(RunEventPayload):
+    proposal_id: UUID
+    proposal_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    incident_status: Literal["PATCH_READY"]
+    run_status: Literal["RUNNING"]
+
+
+class RepairDryRunPassedEventPayload(RunEventPayload):
+    proposal_id: UUID
+    proposal_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    incident_status: Literal["DRY_RUN_PASSED"]
+    run_status: Literal["RUNNING"]
+
+
+class RepairWaitingApprovalEventPayload(RunEventPayload):
+    proposal_id: UUID
+    proposal_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    incident_status: Literal["WAITING_APPROVAL"]
+    run_status: Literal["COMPLETED"]
 
 
 class AlertResolvedEventPayload(RunEventPayload):
@@ -361,6 +430,24 @@ class RunFailedStreamEvent(_ApiContract):
     data: RunFailedEventPayload
 
 
+class RepairPatchReadyStreamEvent(_ApiContract):
+    id: str
+    event: Literal["repair.patch_ready"]
+    data: RepairPatchReadyEventPayload
+
+
+class RepairDryRunPassedStreamEvent(_ApiContract):
+    id: str
+    event: Literal["repair.dry_run_passed"]
+    data: RepairDryRunPassedEventPayload
+
+
+class RepairWaitingApprovalStreamEvent(_ApiContract):
+    id: str
+    event: Literal["repair.waiting_approval"]
+    data: RepairWaitingApprovalEventPayload
+
+
 class AlertResolvedStreamEvent(_ApiContract):
     id: str
     event: Literal["alert.resolved"]
@@ -379,6 +466,9 @@ class RunEventStreamItem(
             | DiagnosisCompletedStreamEvent
             | DiagnosisInsufficientStreamEvent
             | RunFailedStreamEvent
+            | RepairPatchReadyStreamEvent
+            | RepairDryRunPassedStreamEvent
+            | RepairWaitingApprovalStreamEvent
             | AlertResolvedStreamEvent,
             Field(discriminator="event"),
         ]
@@ -393,18 +483,19 @@ class EventPageResponse(_ApiContract):
 
 
 class RunEventHistoryResponse(_ApiContract):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     items: tuple[RunEventStreamItem, ...]
     next_cursor: str | None
 
 
 class IncidentDetailResponse(_ApiContract):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     incident: IncidentResponse
     selected_run: SelectedRunResponse
     event_page: EventPageResponse
     evidence: tuple[EvidenceResponse, ...]
     diagnosis: DiagnosisResponse | None
+    repair: RepairProposalResponse | None
     alert_signal: AlertSignalResponse | None
     event_cursor: str = Field(pattern=r"^[1-9][0-9]*$")
 

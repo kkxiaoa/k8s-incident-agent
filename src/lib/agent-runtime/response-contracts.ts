@@ -19,6 +19,10 @@ type ApiMonitoringOverviewFamily = components["schemas"]["MonitoringOverviewFami
 type ApiMonitoringOverviewSample = components["schemas"]["MonitoringOverviewSample"];
 type ApiMetricPanel = components["schemas"]["MetricPanelResult"];
 type ApiMetricMarker = components["schemas"]["MetricMarker"];
+type ApiRepairProposal = components["schemas"]["RepairProposalResponse"];
+type ApiRepairPatchOperation =
+  components["schemas"]["RepairPatchOperationResponse"];
+type ApiRepairValidation = components["schemas"]["RepairValidationResponse"];
 
 export interface TargetView {
   kind: string;
@@ -123,6 +127,8 @@ export type AlertSignalView = Pick<
   "status" | "startsAt" | "endsAt"
 >;
 
+export type RepairProposalView = ApiRepairProposal;
+
 export interface IncidentDetailView {
   incident: IncidentView;
   selectedRun: SelectedRunView;
@@ -130,6 +136,7 @@ export interface IncidentDetailView {
   eventCursor: string;
   evidence: EvidenceView[];
   diagnosis: DiagnosisView | null;
+  repair: RepairProposalView | null;
   alertSignal: AlertSignalView | null;
 }
 
@@ -267,7 +274,11 @@ function isIncidentStatus(
     value === "RECEIVED" ||
     value === "TRIAGING" ||
     value === "DIAGNOSED" ||
+    value === "PATCH_READY" ||
+    value === "DRY_RUN_PASSED" ||
+    value === "WAITING_APPROVAL" ||
     value === "INSUFFICIENT_EVIDENCE" ||
+    value === "STALE_RESOURCE" ||
     value === "FAILED"
   );
 }
@@ -554,16 +565,183 @@ function parseDiagnosis(value: unknown): DiagnosisView | null {
   };
 }
 
+function parseRepairPatchOperation(
+  value: unknown,
+): ApiRepairPatchOperation | null {
+  return isObject(value) &&
+    (value.op === "test" || value.op === "replace") &&
+    typeof value.path === "string" &&
+    value.path.startsWith("/") &&
+    typeof value.value === "string"
+    ? { op: value.op, path: value.path, value: value.value }
+    : null;
+}
+
+function isPatchValidationErrorCode(
+  value: unknown,
+): value is components["schemas"]["PatchValidationErrorCode"] {
+  return (
+    value === "stale_resource" ||
+    value === "patch_validator_authentication_failed" ||
+    value === "patch_validator_replay_rejected" ||
+    value === "patch_validator_permission_denied" ||
+    value === "patch_validator_admission_denied" ||
+    value === "patch_validator_timeout" ||
+    value === "patch_validator_upstream_failed" ||
+    value === "patch_validator_contract_invalid"
+  );
+}
+
+function parseRepairValidation(value: unknown): ApiRepairValidation | null {
+  if (
+    !isObject(value) ||
+    (value.outcome !== "passed" && value.outcome !== "failed") ||
+    !isTimestamp(value.checkedAt)
+  ) {
+    return null;
+  }
+  if (value.outcome === "passed") {
+    return value.error === null
+      ? { outcome: "passed", checkedAt: value.checkedAt, error: null }
+      : null;
+  }
+  if (
+    !isObject(value.error) ||
+    !isPatchValidationErrorCode(value.error.code) ||
+    typeof value.error.retryable !== "boolean"
+  ) {
+    return null;
+  }
+  return {
+    outcome: "failed",
+    checkedAt: value.checkedAt,
+    error: { code: value.error.code, retryable: value.error.retryable },
+  };
+}
+
+function parseRepairProposal(value: unknown): RepairProposalView | null {
+  if (
+    !isObject(value) ||
+    value.schemaVersion !== 1 ||
+    !isUuid(value.id) ||
+    value.action !== "set_container_image" ||
+    !isNonNegativeInteger(value.containerIndex) ||
+    value.containerIndex > 255 ||
+    typeof value.containerName !== "string" ||
+    value.containerName.length === 0 ||
+    typeof value.currentImage !== "string" ||
+    value.currentImage.length === 0 ||
+    typeof value.replacementImage !== "string" ||
+    value.replacementImage.length === 0 ||
+    value.currentImage === value.replacementImage ||
+    typeof value.targetUid !== "string" ||
+    value.targetUid.length === 0 ||
+    typeof value.targetResourceVersion !== "string" ||
+    value.targetResourceVersion.length === 0 ||
+    typeof value.digest !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/.test(value.digest) ||
+    !isTimestamp(value.schemaCheckedAt) ||
+    !isTimestamp(value.policyCheckedAt) ||
+    !isTimestamp(value.diffCheckedAt) ||
+    !Array.isArray(value.evidenceIds) ||
+    value.evidenceIds.length !== 2 ||
+    !value.evidenceIds.every(isUuid) ||
+    new Set(value.evidenceIds).size !== 2 ||
+    !Array.isArray(value.patch) ||
+    value.patch.length !== 5 ||
+    !isObject(value.target) ||
+    typeof value.target.cluster !== "string" ||
+    value.target.cluster.length === 0 ||
+    value.target.namespace === null ||
+    typeof value.target.namespace !== "string" ||
+    typeof value.target.apiVersion !== "string" ||
+    value.target.apiVersion !== "apps/v1" ||
+    value.target.kind !== "Deployment" ||
+    typeof value.target.name !== "string" ||
+    value.target.name.length === 0 ||
+    !isObject(value.diff)
+  ) {
+    return null;
+  }
+  const patch = value.patch.map(parseRepairPatchOperation);
+  const validation = parseRepairValidation(value.validation);
+  const imagePath =
+    `/spec/template/spec/containers/${value.containerIndex}/image`;
+  const expectedPatch: ApiRepairPatchOperation[] = [
+    { op: "test", path: "/metadata/uid", value: value.targetUid },
+    {
+      op: "test",
+      path: "/metadata/resourceVersion",
+      value: value.targetResourceVersion,
+    },
+    {
+      op: "test",
+      path: `/spec/template/spec/containers/${value.containerIndex}/name`,
+      value: value.containerName,
+    },
+    { op: "test", path: imagePath, value: value.currentImage },
+    { op: "replace", path: imagePath, value: value.replacementImage },
+  ];
+  const gateTimes = [
+    Date.parse(value.schemaCheckedAt),
+    Date.parse(value.policyCheckedAt),
+    Date.parse(value.diffCheckedAt),
+  ];
+  if (
+    patch.some((operation) => operation === null) ||
+    JSON.stringify(patch) !== JSON.stringify(expectedPatch) ||
+    value.diff.path !== imagePath ||
+    value.diff.before !== value.currentImage ||
+    value.diff.after !== value.replacementImage ||
+    validation === null ||
+    gateTimes[0] > gateTimes[1] ||
+    gateTimes[1] > gateTimes[2] ||
+    Date.parse(validation.checkedAt) < gateTimes[2]
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: 1,
+    id: value.id,
+    action: "set_container_image",
+    target: {
+      cluster: value.target.cluster,
+      namespace: value.target.namespace,
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      name: value.target.name,
+    },
+    targetUid: value.targetUid,
+    targetResourceVersion: value.targetResourceVersion,
+    containerIndex: value.containerIndex,
+    containerName: value.containerName,
+    currentImage: value.currentImage,
+    replacementImage: value.replacementImage,
+    evidenceIds: value.evidenceIds,
+    patch: patch as ApiRepairPatchOperation[],
+    digest: value.digest,
+    diff: {
+      path: value.diff.path,
+      before: value.diff.before,
+      after: value.diff.after,
+    },
+    schemaCheckedAt: value.schemaCheckedAt,
+    policyCheckedAt: value.policyCheckedAt,
+    diffCheckedAt: value.diffCheckedAt,
+    validation,
+  };
+}
+
 export function parseCreateIncidentResponse(
   value: unknown,
 ): CreateIncidentView | null {
-  return isObject(value) && value.schemaVersion === 3 && isUuid(value.incidentId)
+  return isObject(value) && value.schemaVersion === 4 && isUuid(value.incidentId)
     ? { incidentId: value.incidentId }
     : null;
 }
 
 export function parseCreateRunResponse(value: unknown): CreateRunView | null {
-  return isObject(value) && value.schemaVersion === 3 && isUuid(value.runId)
+  return isObject(value) && value.schemaVersion === 4 && isUuid(value.runId)
     ? { runId: value.runId }
     : null;
 }
@@ -586,7 +764,7 @@ export function parseIncidentListResponse(
 ): IncidentListView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 3 ||
+    value.schemaVersion !== 4 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -602,7 +780,7 @@ export function parseIncidentListResponse(
 export function parseRunHistoryResponse(value: unknown): RunHistoryView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 3 ||
+    value.schemaVersion !== 4 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -620,7 +798,7 @@ export function parseRunEventHistoryResponse(
   expectedIncidentId: string,
   expectedRunId: string,
 ): EventPageView | null {
-  if (!isObject(value) || value.schemaVersion !== 3) {
+  if (!isObject(value) || value.schemaVersion !== 4) {
     return null;
   }
   const page = parseEventPage(value);
@@ -639,7 +817,7 @@ export function parseIncidentDetailResponse(
 ): IncidentDetailView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 3 ||
+    value.schemaVersion !== 4 ||
     !isValidEventId(value.eventCursor) ||
     !Array.isArray(value.evidence)
   ) {
@@ -652,6 +830,7 @@ export function parseIncidentDetailResponse(
   const evidence = value.evidence.map(parseEvidence);
   const diagnosis =
     value.diagnosis === null ? null : parseDiagnosis(value.diagnosis);
+  const repair = value.repair === null ? null : parseRepairProposal(value.repair);
   const alertSignal =
     value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
   if (
@@ -665,11 +844,35 @@ export function parseIncidentDetailResponse(
     ) ||
     evidence.some((item) => item === null) ||
     (value.diagnosis !== null && diagnosis === null) ||
+    (value.repair !== null && repair === null) ||
     (value.alertSignal !== null && alertSignal === null) ||
     (incident.source.type === "scenario" && value.alertSignal !== null) ||
     (incident.source.type === "alertmanager" && alertSignal === null)
   ) {
     return null;
+  }
+  if (repair !== null) {
+    const evidenceIds = new Set(
+      (evidence as EvidenceView[]).map((item) => item.id),
+    );
+    const passed = repair.validation.outcome === "passed";
+    if (
+      diagnosis?.outcome !== "diagnosed" ||
+      repair.target.kind !== incident.target.kind ||
+      repair.target.namespace !== incident.target.namespace ||
+      repair.target.name !== incident.target.name ||
+      repair.evidenceIds.some((evidenceId) => !evidenceIds.has(evidenceId)) ||
+      (passed &&
+        (selectedRun.status !== "COMPLETED" ||
+          selectedRun.error !== null)) ||
+      (!passed &&
+        (selectedRun.status !== "FAILED" ||
+          selectedRun.error?.code !== repair.validation.error?.code ||
+          selectedRun.error?.retryable !==
+            repair.validation.error?.retryable))
+    ) {
+      return null;
+    }
   }
 
   return {
@@ -679,6 +882,7 @@ export function parseIncidentDetailResponse(
     eventCursor: value.eventCursor,
     evidence: evidence as EvidenceView[],
     diagnosis,
+    repair,
     alertSignal,
   };
 }

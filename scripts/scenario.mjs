@@ -20,10 +20,10 @@ import { runClusterCommand } from "./kind-cluster.mjs";
 const CLUSTER_NAME = "k8s-incident-agent";
 const CONTEXT_NAME = "kind-k8s-incident-agent";
 const NAMESPACE = "k8s-incident-scenarios";
-const SCENARIO_SCHEMA_VERSION = 2;
+const SCENARIO_SCHEMA_VERSION = 3;
 const DEFAULT_SCENARIO_VERSION = 1;
 const SCENARIO_VERSION_OVERRIDES = new Map([
-  ["image-pull-backoff", 2],
+  ["image-pull-backoff", 3],
 ]);
 const MAX_FILE_BYTES = 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
@@ -127,6 +127,17 @@ export function loadEvaluationScenarioCatalog(
     forbiddenTools: [...definition.forbidden_tools],
     verifierKind: definition.deterministic_verifier.kind,
     healthyControlNames: evaluationControlNames(definition),
+    expectedPatchConstraints:
+      definition.expected_patch_constraints === undefined
+        ? undefined
+        : {
+            action: definition.expected_patch_constraints.action,
+            containerIndex: definition.expected_patch_constraints.container_index,
+            containerName: definition.expected_patch_constraints.container_name,
+            currentImage: definition.expected_patch_constraints.current_image,
+            replacementImage:
+              definition.expected_patch_constraints.replacement_image,
+          },
   }));
 }
 
@@ -359,7 +370,7 @@ function loadScenarioEntry(catalogDirectory, scenarioDirectoryName) {
 
 function validateScenarioDefinition(definition, directoryName) {
   assertPlainObject(definition);
-  assertExactKeys(definition, [
+  const definitionKeys = [
     "schema_version",
     "scenario_id",
     "scenario_version",
@@ -374,7 +385,11 @@ function validateScenarioDefinition(definition, directoryName) {
     "allowed_tools",
     "forbidden_tools",
     "deterministic_verifier",
-  ]);
+  ];
+  if (definition.scenario_id === "image-pull-backoff") {
+    definitionKeys.push("expected_patch_constraints");
+  }
+  assertExactKeys(definition, definitionKeys);
   if (definition.schema_version !== SCENARIO_SCHEMA_VERSION) throw new Error();
   assertNormalizedString(definition.scenario_id);
   if (!/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(definition.scenario_id)) {
@@ -385,6 +400,27 @@ function validateScenarioDefinition(definition, directoryName) {
     definition.scenario_version !== supportedScenarioVersion(definition.scenario_id)
   ) {
     throw new Error();
+  }
+
+  if (definition.scenario_id === "image-pull-backoff") {
+    const expected = definition.expected_patch_constraints;
+    assertPlainObject(expected);
+    assertExactKeys(expected, [
+      "action",
+      "container_index",
+      "container_name",
+      "current_image",
+      "replacement_image",
+    ]);
+    if (
+      expected.action !== "set_container_image" ||
+      expected.container_index !== 0 ||
+      expected.container_name !== "workload" ||
+      expected.current_image !== EXPECTED_IMAGE ||
+      expected.replacement_image !== AGNHOST_IMAGE
+    ) {
+      throw new Error();
+    }
   }
   assertNormalizedString(definition.monitoring_alert_id);
   assertNormalizedString(definition.display_name);
@@ -679,6 +715,12 @@ function validateImagePullRevisionPair(definition, deploymentManifests) {
   if (
     healthy === undefined ||
     fault === undefined ||
+    definition.expected_patch_constraints?.container_name !== "workload" ||
+    definition.expected_patch_constraints?.container_index !== 0 ||
+    definition.expected_patch_constraints?.current_image !==
+      workloadImage(fault) ||
+    definition.expected_patch_constraints?.replacement_image !==
+      workloadImage(healthy) ||
     !isDeepStrictEqual(
       withoutWorkloadImage(healthy),
       withoutWorkloadImage(fault),
@@ -686,6 +728,12 @@ function validateImagePullRevisionPair(definition, deploymentManifests) {
   ) {
     throw new Error();
   }
+}
+
+function workloadImage(manifest) {
+  return manifest.spec.template.spec.containers.find(
+    (container) => container.name === "workload",
+  )?.image;
 }
 
 function withoutWorkloadImage(manifest) {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { makeIncidentDetail } from "@/test/agent-runtime-fixtures";
+import {
+  makeIncidentDetail,
+  makeWaitingApprovalIncidentDetail,
+} from "@/test/agent-runtime-fixtures";
 
 import {
   isMetricWindow,
@@ -114,6 +117,75 @@ describe("parseIncidentDetailResponse", () => {
     const detail = { ...makeIncidentDetail(), schemaVersion: 2 };
 
     expect(parseIncidentDetailResponse(detail)).toBeNull();
+  });
+
+  it("accepts the exact evidence-bound repair projection", () => {
+    const detail = makeWaitingApprovalIncidentDetail();
+
+    expect(parseIncidentDetailResponse(detail)?.repair).toEqual(detail.repair);
+  });
+
+  it.each([
+    "target",
+    "evidence",
+    "patch",
+    "diff",
+    "digest",
+    "gate-order",
+    "run-status",
+    "validation",
+  ])("rejects an incoherent repair %s", (mutation) => {
+    const detail = makeWaitingApprovalIncidentDetail();
+    const repair = detail.repair;
+    if (repair === null) throw new Error("repair fixture is missing");
+
+    if (mutation === "target") {
+      repair.target.name = "another-deployment";
+    } else if (mutation === "evidence") {
+      repair.evidenceIds[1] = "99999999-9999-4999-8999-999999999999";
+    } else if (mutation === "patch") {
+      repair.patch[4].path = "/spec/replicas";
+    } else if (mutation === "diff") {
+      repair.diff.before = repair.replacementImage;
+    } else if (mutation === "digest") {
+      repair.digest = "sha256:ABC";
+    } else if (mutation === "gate-order") {
+      repair.policyCheckedAt = "2026-08-29T01:00:03Z";
+    } else if (mutation === "run-status") {
+      detail.selectedRun.status = "RUNNING";
+    } else {
+      repair.validation = {
+        outcome: "failed",
+        checkedAt: "2026-08-29T01:00:07Z",
+        error: { code: "stale_resource", retryable: false },
+      };
+    }
+
+    expect(parseIncidentDetailResponse(detail)).toBeNull();
+  });
+
+  it("accepts a typed failed dry-run projection", () => {
+    const detail = makeWaitingApprovalIncidentDetail();
+    if (detail.repair === null) throw new Error("repair fixture is missing");
+    detail.repair.validation = {
+      outcome: "failed",
+      checkedAt: "2026-08-29T01:00:07Z",
+      error: { code: "stale_resource", retryable: false },
+    };
+    detail.incident.status = "STALE_RESOURCE";
+    detail.selectedRun.status = "FAILED";
+    detail.selectedRun.error = { code: "stale_resource", retryable: false };
+
+    expect(parseIncidentDetailResponse(detail)?.repair?.validation.outcome).toBe(
+      "failed",
+    );
+  });
+
+  it("accepts a historical repair Run while the Incident has advanced", () => {
+    const detail = makeWaitingApprovalIncidentDetail();
+    detail.incident.status = "TRIAGING";
+
+    expect(parseIncidentDetailResponse(detail)?.repair).not.toBeNull();
   });
 });
 

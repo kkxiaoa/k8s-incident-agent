@@ -87,6 +87,7 @@ def _target_payload(
         "eventRows": target.event_rows,
         "evidenceRows": target.evidence_rows,
         "incidentId": str(target.incident_id),
+        "repairProposalRows": target.repair_proposal_rows,
         "runIds": [str(run_id) for run_id in target.run_ids],
         "runRows": target.run_rows,
         "updatedAt": target.updated_at.isoformat(),

@@ -3,6 +3,8 @@ kind: Kustomization
 resources:
   - service-accounts.yaml
   - diagnostic-rbac.yaml
+  - patch-validator-rbac.yaml
+  - patch-validator-admission.yaml
   - config-maps.yaml
   - services.yaml
   - deployments.yaml

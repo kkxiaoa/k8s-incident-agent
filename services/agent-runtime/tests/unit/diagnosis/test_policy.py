@@ -37,7 +37,7 @@ def test_resolves_exact_alert_and_scenario_diagnostic_policies() -> None:
         IncidentSource(
             type="scenario",
             ref="image-pull-backoff",
-            revision="2",
+            revision="3",
         )
     )
 

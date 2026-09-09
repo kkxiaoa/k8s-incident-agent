@@ -50,6 +50,8 @@ from k8s_incident_agent.persistence.database import (
     require_alembic_head,
 )
 from k8s_incident_agent.persistence.repositories import IncidentRepository
+from k8s_incident_agent.repair.auth import load_hmac_key
+from k8s_incident_agent.repair.client import PatchValidatorClient
 from k8s_incident_agent.routes.alertmanager import router as alertmanager_router
 from k8s_incident_agent.routes.events import router as events_router
 from k8s_incident_agent.routes.incidents import (
@@ -194,6 +196,7 @@ async def build_runtime_container(
             if settings.alertmanager_webhook_token_file is not None
             else None
         )
+        patch_validator_key = load_hmac_key(settings.patch_validator_hmac_key_file)
 
         budget = RunBudget(
             max_model_calls=settings.agent_max_model_calls,
@@ -234,6 +237,18 @@ async def build_runtime_container(
         resources.callback(sync_http_client.close)
         async_http_client = httpx.AsyncClient()
         resources.push_async_callback(async_http_client.aclose)
+        patch_validator_http_client = httpx.AsyncClient(
+            trust_env=False,
+            follow_redirects=False,
+        )
+        resources.push_async_callback(patch_validator_http_client.aclose)
+        patch_validator = PatchValidatorClient(
+            http=patch_validator_http_client,
+            base_url=str(settings.patch_validator_base_url),
+            key=patch_validator_key,
+            timeout_seconds=settings.patch_validator_timeout_seconds,
+            now=now,
+        )
         model = create_deepseek_model(
             settings,
             http_client=sync_http_client,
@@ -271,6 +286,7 @@ async def build_runtime_container(
                 alerts=alert_catalog,
             ),
             now=now,
+            patch_validator=patch_validator,
         )
         resources.push_async_callback(supervisor.close)
         await supervisor.start()

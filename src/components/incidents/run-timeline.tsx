@@ -59,6 +59,24 @@ function eventCopy(event: RunEventStreamItem): {
         detail: "证据支持当前结论",
         tone: "success",
       };
+    case "repair.patch_ready":
+      return {
+        title: "修复 Patch 已生成",
+        detail: "Patch 已绑定当前资源与 Evidence",
+        tone: "active",
+      };
+    case "repair.dry_run_passed":
+      return {
+        title: "Server-side dry-run 已通过",
+        detail: "尚未批准或执行修复",
+        tone: "success",
+      };
+    case "repair.waiting_approval":
+      return {
+        title: "等待批准",
+        detail: "验证已完成，集群尚未发生持久修改",
+        tone: "warning",
+      };
     case "diagnosis.insufficient":
       return { title: "诊断已结束", detail: "现有证据不足", tone: "warning" };
     case "run.failed":

@@ -25,7 +25,11 @@ class IncidentStatus(StrEnum):
     RECEIVED = "RECEIVED"
     TRIAGING = "TRIAGING"
     DIAGNOSED = "DIAGNOSED"
+    PATCH_READY = "PATCH_READY"
+    DRY_RUN_PASSED = "DRY_RUN_PASSED"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+    STALE_RESOURCE = "STALE_RESOURCE"
     FAILED = "FAILED"
 
     def can_transition_to(self, target: IncidentStatus) -> bool:
@@ -260,12 +264,32 @@ _INCIDENT_TRANSITIONS: Final[dict[IncidentStatus, frozenset[IncidentStatus]]] = 
         }
     ),
     IncidentStatus.DIAGNOSED: frozenset(
+        {
+            IncidentStatus.TRIAGING,
+            IncidentStatus.PATCH_READY,
+            IncidentStatus.FAILED,
+        }
+    ),
+    IncidentStatus.PATCH_READY: frozenset(
+        {
+            IncidentStatus.DRY_RUN_PASSED,
+            IncidentStatus.STALE_RESOURCE,
+            IncidentStatus.FAILED,
+        }
+    ),
+    IncidentStatus.DRY_RUN_PASSED: frozenset(
+        {IncidentStatus.WAITING_APPROVAL, IncidentStatus.FAILED}
+    ),
+    IncidentStatus.WAITING_APPROVAL: frozenset(
         {IncidentStatus.TRIAGING, IncidentStatus.FAILED}
     ),
     IncidentStatus.INSUFFICIENT_EVIDENCE: frozenset(
         {IncidentStatus.TRIAGING, IncidentStatus.FAILED}
     ),
     IncidentStatus.FAILED: frozenset({IncidentStatus.TRIAGING, IncidentStatus.FAILED}),
+    IncidentStatus.STALE_RESOURCE: frozenset(
+        {IncidentStatus.TRIAGING, IncidentStatus.FAILED}
+    ),
 }
 
 _RUN_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {

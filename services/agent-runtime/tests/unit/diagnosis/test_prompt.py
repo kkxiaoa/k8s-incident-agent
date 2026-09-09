@@ -13,6 +13,7 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
         allowed_tool_names=ALLOWED_TOOLS,
         required_evidence=REQUIRED_EVIDENCE,
         prometheus_panel_ids=("image-pull-affected-pods",),
+        repair_action="set_container_image",
     )
     lowered = prompt.lower()
 
@@ -32,6 +33,9 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     assert "8" in prompt
     assert "6" in prompt
     assert "structured response" in lowered
+    assert "set_container_image" in prompt
+    assert "immediately preceding revision" in prompt
+    assert "raw patch" in prompt
 
 
 @pytest.mark.parametrize(
@@ -57,6 +61,7 @@ def test_prompt_does_not_leak_private_expectations_or_write_capabilities(
         allowed_tool_names=ALLOWED_TOOLS,
         required_evidence=REQUIRED_EVIDENCE,
         prometheus_panel_ids=("image-pull-affected-pods",),
+        repair_action="set_container_image",
     )
 
     assert forbidden.casefold() not in prompt.casefold()
@@ -77,6 +82,7 @@ def test_prompt_rejects_invalid_runtime_budgets(
             allowed_tool_names=ALLOWED_TOOLS,
             required_evidence=REQUIRED_EVIDENCE,
             prometheus_panel_ids=("image-pull-affected-pods",),
+            repair_action="set_container_image",
         )
 
 
@@ -98,4 +104,5 @@ def test_prompt_rejects_empty_or_duplicate_panel_identifiers(
             allowed_tool_names=ALLOWED_TOOLS,
             required_evidence=REQUIRED_EVIDENCE,
             prometheus_panel_ids=panel_ids,
+            repair_action="set_container_image",
         )

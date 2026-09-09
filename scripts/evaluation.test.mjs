@@ -114,9 +114,17 @@ test("the committed scenario catalog exposes seven entries across five families"
   const imagePull = scenarios.find(
     (scenario) => scenario.scenarioId === "image-pull-backoff",
   );
-  assert.equal(imagePull.scenarioVersion, 2);
+  assert.equal(imagePull.scenarioVersion, 3);
   assert.equal(imagePull.requiredEvidence.includes("rollout_history"), true);
   assert.equal(imagePull.allowedTools.includes("get_rollout_history"), true);
+  assert.deepEqual(imagePull.expectedPatchConstraints, {
+    action: "set_container_image",
+    containerIndex: 0,
+    containerName: "workload",
+    currentImage: "registry.invalid/k8s-incident-agent/missing:v1",
+    replacementImage:
+      "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85",
+  });
 });
 
 test("catalog evaluation records independent passing results and redacted evidence", async () => {
@@ -137,7 +145,11 @@ test("catalog evaluation records independent passing results and redacted eviden
     harness.dependencies,
   );
 
-  assert.equal(result.artifact.status, "passed");
+  assert.equal(
+    result.artifact.status,
+    "passed",
+    JSON.stringify(result.artifact),
+  );
   assert.equal(result.artifact.scenarios.length, 7);
   assert.equal(result.artifact.families.length, 5);
   assert.equal(
@@ -157,6 +169,24 @@ test("catalog evaluation records independent passing results and redacted eviden
   assert.equal(harness.calls.artifacts.length, 1);
   assert.equal(alertQueries.length > 0, true);
   assert.equal(alertQueries.every((query) => !query.includes("cluster=")), true);
+  assert.deepEqual(
+    result.artifact.scenarios.find(
+      (scenario) => scenario.scenarioId === "image-pull-backoff",
+    )?.checks.repair,
+    {
+      action: "set_container_image",
+      proposalDigest:
+        "sha256:bc924be471167c459ae2d28e0e8b443d7d66bf4b7b329e2e81252f2aa9af97bf",
+      validation: "passed",
+      terminalStatus: "WAITING_APPROVAL",
+    },
+  );
+  assert.equal(
+    result.artifact.scenarios
+      .filter((scenario) => scenario.scenarioId !== "image-pull-backoff")
+      .every((scenario) => scenario.checks.repair === undefined),
+    true,
+  );
 
   const serialized = JSON.stringify(result.artifact);
   assert.equal(serialized.includes("payload"), false);
@@ -575,18 +605,18 @@ test("diagnosis requires expected root causes to link all required Evidence", as
   );
 });
 
-test("diagnosis accepts Evidence-backed codes in approved root cause namespaces", async (t) => {
-  for (const [imageCode, pvcCode] of [
-    ["image_pull_failed_dns_resolution", "no_provisioner_storageclass_no_matching_pv"],
-    ["invalid_image_registry_dns", "unmatched_no_provisioner_plugin"],
-    ["image_registry_dns_resolution_failure", "no_matching_provisioner_plugin"],
-    ["image_pull_forbidden_invalid_registry", "invalid_provisioner_no_volume_plugin"],
-    ["image_pull_forbidden_unreachable_registry", "provisioner_not_available"],
+test("diagnosis accepts Evidence-backed PVC codes while preserving the fixed repair code", async (t) => {
+  for (const pvcCode of [
+    "no_provisioner_storageclass_no_matching_pv",
+    "unmatched_no_provisioner_plugin",
+    "no_matching_provisioner_plugin",
+    "invalid_provisioner_no_volume_plugin",
+    "provisioner_not_available",
   ]) {
-    await t.test(`${imageCode} / ${pvcCode}`, async () => {
+    await t.test(pvcCode, async () => {
       const harness = createHarness({
         diagnosisCodeByScenario: {
-          "image-pull-backoff": imageCode,
+          "image-pull-backoff": "image_invalid_registry",
           "pvc-binding-pending": pvcCode,
         },
       });
@@ -599,6 +629,25 @@ test("diagnosis accepts Evidence-backed codes in approved root cause namespaces"
       assert.equal(result.artifact.status, "passed");
     });
   }
+});
+
+test("ImagePull diagnosis alone cannot satisfy the repair evaluation slice", async () => {
+  const harness = createHarness({
+    diagnosisCodeByScenario: {
+      "image-pull-backoff": "image_pull_forbidden_invalid_registry",
+    },
+  });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const imagePull = result.artifact.scenarios.find(
+    (scenario) => scenario.scenarioId === "image-pull-backoff",
+  );
+  assert.equal(imagePull.status, "failed");
+  assert.equal(imagePull.failure.code, "repair_validation_invalid");
 });
 
 test("diagnosis rejects codes outside approved root cause namespaces", async (t) => {
@@ -655,6 +704,36 @@ test("SSE replay proof validates lifecycle payload identity", async () => {
 
   assert.equal(result.artifact.status, "failed");
   assert.equal(result.artifact.scenarios[0].failure.code, "sse_replay_invalid");
+});
+
+test("ImagePull SSE replay rejects duplicate repair lifecycle events", async () => {
+  const harness = createHarness({ duplicateRepairEvent: true });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const imagePull = result.artifact.scenarios.find(
+    (scenario) => scenario.scenarioId === "image-pull-backoff",
+  );
+  assert.equal(imagePull.status, "failed");
+  assert.equal(imagePull.failure.code, "sse_replay_invalid");
+});
+
+test("ImagePull evaluation rejects a proposal digest outside the compiler contract", async () => {
+  const harness = createHarness({ invalidRepairDigest: true });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const imagePull = result.artifact.scenarios.find(
+    (scenario) => scenario.scenarioId === "image-pull-backoff",
+  );
+  assert.equal(imagePull.status, "failed");
+  assert.equal(imagePull.failure.code, "repair_validation_invalid");
 });
 
 function createHarness(options = {}) {
@@ -943,13 +1022,13 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       const items = [...scenarioItems, ...retainedItems];
       const cursor = url.searchParams.get("cursor");
       return jsonResponse({
-        schemaVersion: 3,
+        schemaVersion: 4,
         items: cursor === null ? items.slice(0, 100) : items.slice(100),
         nextCursor: cursor === null ? "next-page" : null,
       });
     }
     return jsonResponse({
-      schemaVersion: 3,
+      schemaVersion: 4,
       items: scenarioItems,
       nextCursor: null,
     });
@@ -969,7 +1048,7 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   const suffix = match[2];
   if (suffix === "/runs") {
     return jsonResponse({
-      schemaVersion: 3,
+      schemaVersion: 4,
       items: [{ id: scenario.runId, attempt: 1, status: "COMPLETED" }],
       nextCursor: null,
     });
@@ -1015,23 +1094,69 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     });
   }
   if (suffix === "/events" && init?.headers?.["Last-Event-ID"] === "0") {
-    const eventData = (event) =>
-      JSON.stringify({
-        schemaVersion: 3,
-        incidentId: options.invalidSseContract === true
-          ? "90000000-0000-4000-8000-000000000001"
-          : scenario.incidentId,
-        runId: scenario.runId,
-        event,
-      });
+    const diagnosisCode = diagnosisCodeFor(scenario, options);
+    const repair = repairProjection(scenario, diagnosisCode, options);
+    const incidentId = options.invalidSseContract === true
+      ? "90000000-0000-4000-8000-000000000001"
+      : scenario.incidentId;
+    const eventData = (fields) => JSON.stringify({
+      schemaVersion: 4,
+      incidentId,
+      runId: scenario.runId,
+      occurredAt: "2026-09-05T00:00:00.000Z",
+      ...fields,
+    });
+    const frames = [
+      ["incident.created", eventData({
+        attempt: 1,
+        incidentStatus: "RECEIVED",
+        runStatus: "QUEUED",
+      })],
+      ["run.started", eventData({
+        attempt: 1,
+        incidentStatus: "TRIAGING",
+        runStatus: "RUNNING",
+      })],
+      ["diagnosis.completed", eventData({
+        diagnosisId: "50000000-0000-4000-8000-000000000001",
+        outcome: "diagnosed",
+        incidentStatus: "DIAGNOSED",
+        runStatus: repair === null ? "COMPLETED" : "RUNNING",
+      })],
+      ...(repair === null
+        ? []
+        : [
+            ["repair.patch_ready", eventData({
+              proposalId: repair.id,
+              proposalDigest: repair.digest,
+              incidentStatus: "PATCH_READY",
+              runStatus: "RUNNING",
+            })],
+            ["repair.dry_run_passed", eventData({
+              proposalId: repair.id,
+              proposalDigest: repair.digest,
+              incidentStatus: "DRY_RUN_PASSED",
+              runStatus: "RUNNING",
+            })],
+            ["repair.waiting_approval", eventData({
+              proposalId: repair.id,
+              proposalDigest: repair.digest,
+              incidentStatus: "WAITING_APPROVAL",
+              runStatus: "COMPLETED",
+            })],
+          ]),
+    ];
+    if (repair !== null && options.duplicateRepairEvent === true) {
+      frames.splice(4, 0, frames[3]);
+    }
     return new Response(
       new ReadableStream({
         start(controller) {
           controller.enqueue(
             new TextEncoder().encode(
-              `id: 1\nevent: incident.created\ndata: ${eventData("incident.created")}\n\n` +
-                `id: 2\nevent: run.started\ndata: ${eventData("run.started")}\n\n` +
-                `id: 3\nevent: diagnosis.completed\ndata: ${eventData("diagnosis.completed")}\n\n`,
+              frames.map(([event, data], index) =>
+                `id: ${index + 1}\nevent: ${event}\ndata: ${data}\n\n`
+              ).join(""),
             ),
           );
           controller.close();
@@ -1047,8 +1172,10 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     evidenceKind: kind,
     toolName: EVIDENCE_TOOL[kind],
   }));
+  const diagnosisCode = diagnosisCodeFor(scenario, options);
+  const repair = repairProjection(scenario, diagnosisCode, options, evidence);
   return jsonResponse({
-    schemaVersion: 3,
+    schemaVersion: 4,
     incident: {
       id: isControlIncident
         ? scenario.controlIncidentId
@@ -1065,7 +1192,7 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       target: isControlIncident
         ? { ...scenario.target, name: scenario.healthyControlNames[0] }
         : scenario.target,
-      status: "DIAGNOSED",
+      status: repair === null ? "DIAGNOSED" : "WAITING_APPROVAL",
       displayName: scenario.displayName,
     },
     selectedRun: {
@@ -1083,21 +1210,89 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       outcome: "diagnosed",
       rootCauses: [
         {
-          code:
-            options.diagnosisCodeByScenario?.[scenario.scenarioId] ??
-            (options.failingScenarioId === scenario.scenarioId
-              ? "unexpected_root_cause"
-              : representativeRootCauseCode(scenario.expectedRootCauses[0])),
+          code: diagnosisCode,
           evidenceIds:
             options.omitDiagnosisEvidenceLinks === true ? [] : evidence.map((item) => item.id),
         },
       ],
     },
+    repair,
     alertSignal: {
       status: scenario.resolved ? "RESOLVED" : "FIRING",
     },
-    eventCursor: "3",
+    eventCursor: repair === null ? "3" : "6",
   });
+}
+
+function diagnosisCodeFor(scenario, options) {
+  return options.diagnosisCodeByScenario?.[scenario.scenarioId] ??
+    (options.failingScenarioId === scenario.scenarioId
+      ? "unexpected_root_cause"
+      : scenario.expectedPatchConstraints === undefined
+        ? representativeRootCauseCode(scenario.expectedRootCauses[0])
+        : "image_invalid_registry");
+}
+
+function repairProjection(scenario, diagnosisCode, options, evidence) {
+  const expected = scenario.expectedPatchConstraints;
+  if (
+    expected === undefined ||
+    diagnosisCode !== "image_invalid_registry" ||
+    options.omitDiagnosisEvidenceLinks === true
+  ) {
+    return null;
+  }
+  const evidenceItems = evidence ?? scenario.requiredEvidence.map((kind, index) => ({
+    id: `30000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    evidenceKind: kind,
+  }));
+  const evidenceIds = ["workload", "rollout_history"]
+    .map((kind) => evidenceItems.find((item) => item.evidenceKind === kind)?.id)
+    .sort();
+  const imagePath =
+    `/spec/template/spec/containers/${expected.containerIndex}/image`;
+  const patch = [
+    { op: "test", path: "/metadata/uid", value: "deployment-uid" },
+    { op: "test", path: "/metadata/resourceVersion", value: "42" },
+    {
+      op: "test",
+      path: `/spec/template/spec/containers/${expected.containerIndex}/name`,
+      value: expected.containerName,
+    },
+    { op: "test", path: imagePath, value: expected.currentImage },
+    { op: "replace", path: imagePath, value: expected.replacementImage },
+  ];
+  return {
+    schemaVersion: 1,
+    id: "70000000-0000-4000-8000-000000000001",
+    action: expected.action,
+    target: { ...scenario.target },
+    targetUid: "deployment-uid",
+    targetResourceVersion: "42",
+    containerIndex: expected.containerIndex,
+    containerName: expected.containerName,
+    currentImage: expected.currentImage,
+    replacementImage: expected.replacementImage,
+    evidenceIds,
+    patch,
+    digest:
+      options.invalidRepairDigest === true
+        ? `sha256:${"f".repeat(64)}`
+        : "sha256:bc924be471167c459ae2d28e0e8b443d7d66bf4b7b329e2e81252f2aa9af97bf",
+    diff: {
+      path: imagePath,
+      before: expected.currentImage,
+      after: expected.replacementImage,
+    },
+    schemaCheckedAt: "2026-09-05T00:00:00.000Z",
+    policyCheckedAt: "2026-09-05T00:00:01.000Z",
+    diffCheckedAt: "2026-09-05T00:00:02.000Z",
+    validation: {
+      outcome: "passed",
+      checkedAt: "2026-09-05T00:00:03.000Z",
+      error: null,
+    },
+  };
 }
 
 function representativeRootCauseCode(expected) {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Final, Literal, cast
 from uuid import UUID
@@ -71,6 +71,19 @@ from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     RecoveryConsistencyError,
 )
+from k8s_incident_agent.repair.client import PatchValidator
+from k8s_incident_agent.repair.compiler import (
+    RepairPreparationError,
+    compile_repair_proposal,
+    require_exact_repair_proposal,
+    resolve_evidence_bound_change,
+)
+from k8s_incident_agent.repair.contracts import (
+    EvidenceBoundImageChange,
+    PatchValidationResponse,
+    RepairProposal,
+)
+from k8s_incident_agent.repair.records import RepairTerminalRecord
 from k8s_incident_agent.scenarios.contracts import validate_supported_target
 from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 from k8s_incident_agent.workflow.state import IncidentGraphInput, IncidentGraphState
@@ -96,6 +109,7 @@ class GraphDependencies:
     adapter: KubernetesEvidenceAdapter
     prometheus: PrometheusQueryService
     now: Callable[[], datetime]
+    patch_validator: PatchValidator | None = None
 
 
 def build_incident_graph(
@@ -103,6 +117,8 @@ def build_incident_graph(
     run: WorkflowRunSnapshot,
     policy: DiagnosticPolicy,
 ) -> IncidentGraph:
+    if policy.repair_action is not None and dependencies.patch_validator is None:
+        raise ValueError("Repair policy requires the Patch Validator boundary")
     registry = {
         tool.name: tool for tool in (*build_diagnostic_tools(), build_prometheus_tool())
     }
@@ -113,6 +129,7 @@ def build_incident_graph(
         max_tool_calls=run.budget.max_tool_calls,
         required_evidence=tuple(sorted(policy.required_evidence)),
         prometheus_panel_ids=policy.prometheus_panel_ids,
+        repair_action=policy.repair_action,
     )
     builder = StateGraph(
         IncidentGraphState,
@@ -136,6 +153,22 @@ def build_incident_graph(
         _validate_diagnosis_node(dependencies, run, policy),
     )
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
+        "validate_repair_schema",
+        _validate_repair_schema_node(dependencies),
+    )
+    builder.add_node(  # pyright: ignore[reportUnknownMemberType]
+        "validate_repair_policy",
+        _validate_repair_policy_node(dependencies, run, policy),
+    )
+    builder.add_node(  # pyright: ignore[reportUnknownMemberType]
+        "validate_repair_diff",
+        _validate_repair_diff_node(dependencies),
+    )
+    builder.add_node(  # pyright: ignore[reportUnknownMemberType]
+        "validate_repair_dry_run",
+        _validate_repair_dry_run_node(dependencies),
+    )
+    builder.add_node(  # pyright: ignore[reportUnknownMemberType]
         "persist_terminal_state",
         _persist_terminal_node(dependencies),
     )
@@ -143,7 +176,11 @@ def build_incident_graph(
     builder.add_edge("start_run", "triage_target")
     builder.add_edge("triage_target", "diagnose")
     builder.add_edge("diagnose", "validate_diagnosis")
-    builder.add_edge("validate_diagnosis", "persist_terminal_state")
+    builder.add_edge("validate_diagnosis", "validate_repair_schema")
+    builder.add_edge("validate_repair_schema", "validate_repair_policy")
+    builder.add_edge("validate_repair_policy", "validate_repair_diff")
+    builder.add_edge("validate_repair_diff", "validate_repair_dry_run")
+    builder.add_edge("validate_repair_dry_run", "persist_terminal_state")
     builder.add_edge("persist_terminal_state", END)
     return builder.compile(  # pyright: ignore[reportUnknownMemberType]
         checkpointer=dependencies.checkpointer,
@@ -288,13 +325,24 @@ def _validate_diagnosis_node(
         response = state.get("structured_response")
         try:
             candidate = DiagnosisCandidate.model_validate(response)
+        except ValidationError as error:
+            code = (
+                "repair_schema_invalid"
+                if any(
+                    details.get("loc", (None,))[0] == "repair_intent"
+                    for details in error.errors(include_input=False)
+                )
+                else "structured_output_invalid"
+            )
+            return _terminal_error(code, retryable=False)
+        try:
             validated = await validate_diagnosis(
                 candidate,
                 scheduled.id,
                 dependencies.repository,
                 required_evidence=policy.required_evidence,
             )
-        except (DiagnosisValidationError, StructuredDiagnosisError, ValidationError):
+        except (DiagnosisValidationError, StructuredDiagnosisError):
             return _terminal_error("structured_output_invalid", retryable=False)
         except UnresolvedToolFailuresError as error:
             failure = next(
@@ -317,6 +365,159 @@ def _validate_diagnosis_node(
     return validate
 
 
+def _validate_repair_schema_node(
+    dependencies: GraphDependencies,
+) -> Callable[..., object]:
+    def validate_schema(state: IncidentGraphState) -> dict[str, object]:
+        if _has_terminal_error(state):
+            return {}
+        try:
+            diagnosis = ValidatedDiagnosis.model_validate(
+                state.get("structured_response")
+            )
+        except ValidationError:
+            return _terminal_error(_RECOVERY_ERROR, retryable=False)
+        checked_at = dependencies.now().astimezone(UTC)
+        update: dict[str, object] = {"diagnosis_completed_at": _rfc3339(checked_at)}
+        if diagnosis.repair_intent is not None:
+            update["repair_schema_checked_at"] = _rfc3339(checked_at)
+        return update
+
+    return validate_schema
+
+
+def _validate_repair_policy_node(
+    dependencies: GraphDependencies,
+    scheduled: WorkflowRunSnapshot,
+    policy: DiagnosticPolicy,
+) -> Callable[..., object]:
+    async def validate_policy(state: IncidentGraphState) -> dict[str, object]:
+        if _has_terminal_error(state):
+            return {}
+        try:
+            diagnosis = ValidatedDiagnosis.model_validate(
+                state.get("structured_response")
+            )
+            if diagnosis.repair_intent is None:
+                return {}
+            schema_checked_at = _state_datetime(state, "repair_schema_checked_at")
+            snapshot = await dependencies.repository.get_diagnosis_validation_snapshot(
+                scheduled.id
+            )
+            change = resolve_evidence_bound_change(
+                diagnosis,
+                snapshot,
+                run_id=scheduled.id,
+                target=scheduled.target,
+                allowed_action=policy.repair_action,
+            )
+            checked_at = dependencies.now().astimezone(UTC)
+            if checked_at < schema_checked_at:
+                raise RecoveryConsistencyError
+        except RepairPreparationError as error:
+            return _terminal_error(error.code, retryable=error.retryable)
+        except (RecoveryConsistencyError, ValidationError, ValueError):
+            return _terminal_error(_RECOVERY_ERROR, retryable=False)
+        return {
+            "repair_change": cast(
+                dict[str, JsonValue],
+                change.model_dump(mode="json"),
+            ),
+            "repair_policy_checked_at": _rfc3339(checked_at),
+        }
+
+    return validate_policy
+
+
+def _validate_repair_diff_node(
+    dependencies: GraphDependencies,
+) -> Callable[..., object]:
+    def validate_diff(state: IncidentGraphState) -> dict[str, object]:
+        if _has_terminal_error(state):
+            return {}
+        try:
+            diagnosis = ValidatedDiagnosis.model_validate(
+                state.get("structured_response")
+            )
+            if diagnosis.repair_intent is None:
+                return {}
+            change = EvidenceBoundImageChange.model_validate_json(
+                canonical_json(state.get("repair_change"))
+            )
+            schema_checked_at = _state_datetime(state, "repair_schema_checked_at")
+            policy_checked_at = _state_datetime(state, "repair_policy_checked_at")
+            diff_checked_at = dependencies.now().astimezone(UTC)
+            proposal = compile_repair_proposal(
+                change,
+                schema_checked_at=schema_checked_at,
+                policy_checked_at=policy_checked_at,
+                diff_checked_at=diff_checked_at,
+            )
+        except RepairPreparationError as error:
+            return _terminal_error(error.code, retryable=error.retryable)
+        except (RecoveryConsistencyError, ValidationError, ValueError):
+            return _terminal_error(_RECOVERY_ERROR, retryable=False)
+        return {
+            "repair_proposal": cast(
+                dict[str, JsonValue],
+                proposal.model_dump(mode="json"),
+            )
+        }
+
+    return validate_diff
+
+
+def _validate_repair_dry_run_node(
+    dependencies: GraphDependencies,
+) -> Callable[..., object]:
+    async def validate_dry_run(
+        state: IncidentGraphState,
+        runtime: Runtime[DiagnosticToolContext],
+    ) -> dict[str, object]:
+        if _has_terminal_error(state):
+            return {}
+        try:
+            diagnosis = ValidatedDiagnosis.model_validate(
+                state.get("structured_response")
+            )
+            if diagnosis.repair_intent is None:
+                return {}
+            proposal = RepairProposal.model_validate_json(
+                canonical_json(state.get("repair_proposal"))
+            )
+            require_exact_repair_proposal(proposal)
+            validator = dependencies.patch_validator
+            if validator is None:
+                raise RecoveryConsistencyError
+            result = await validator.validate(
+                proposal,
+                deadline=_deadline(
+                    runtime.context.run.started_at,
+                    runtime.context.run.timeout_seconds,
+                ),
+            )
+        except (RecoveryConsistencyError, ValidationError, ValueError):
+            return _terminal_error(_RECOVERY_ERROR, retryable=False)
+        update: dict[str, object] = {
+            "patch_validation": cast(
+                dict[str, JsonValue],
+                result.model_dump(mode="json"),
+            )
+        }
+        if result.outcome == "failed":
+            if result.error is None:
+                return _terminal_error(_RECOVERY_ERROR, retryable=False)
+            update.update(
+                _terminal_error(
+                    result.error.code,
+                    retryable=result.error.retryable,
+                )
+            )
+        return update
+
+    return validate_dry_run
+
+
 def _persist_terminal_node(
     dependencies: GraphDependencies,
 ) -> Callable[..., object]:
@@ -324,13 +525,62 @@ def _persist_terminal_node(
         state: IncidentGraphState,
     ) -> dict[str, object]:
         run_id = _state_run_id(state)
-        completed_at = dependencies.now()
+        completed_at = dependencies.now().astimezone(UTC)
         error_code = state.get("terminal_error_code")
         error_retryable = state.get("terminal_error_retryable")
         if error_code is not None or error_retryable is not None:
             if not isinstance(error_code, str) or not isinstance(error_retryable, bool):
                 raise RecoveryConsistencyError
             require_terminal_error_contract(error_code, error_retryable)
+
+        try:
+            diagnosis = ValidatedDiagnosis.model_validate(
+                state.get("structured_response")
+            )
+        except ValidationError:
+            diagnosis = None
+        if (
+            diagnosis is not None
+            and diagnosis.outcome == "diagnosed"
+            and diagnosis.repair_intent is not None
+            and "diagnosis_completed_at" in state
+        ):
+            raw_proposal = state.get("repair_proposal")
+            raw_validation = state.get("patch_validation")
+            try:
+                proposal = (
+                    RepairProposal.model_validate_json(canonical_json(raw_proposal))
+                    if raw_proposal is not None
+                    else None
+                )
+                validation = (
+                    PatchValidationResponse.model_validate_json(
+                        canonical_json(raw_validation)
+                    )
+                    if raw_validation is not None
+                    else None
+                )
+                terminal = RepairTerminalRecord(
+                    run_id=run_id,
+                    diagnosis_completed_at=_state_datetime(
+                        state,
+                        "diagnosis_completed_at",
+                    ),
+                    completed_at=completed_at,
+                    diagnosis=diagnosis,
+                    proposal=proposal,
+                    validation=validation,
+                    error_code=error_code,
+                    error_retryable=error_retryable,
+                    model_calls=_required_usage(state, "model_calls"),
+                    tool_calls=_required_usage(state, "tool_calls"),
+                )
+            except (ValidationError, ValueError):
+                raise RecoveryConsistencyError from None
+            await dependencies.repository.persist_repair_terminal(terminal)
+            return {}
+
+        if error_code is not None or error_retryable is not None:
             terminal = TerminalRecord(
                 run_id=run_id,
                 completed_at=completed_at,
@@ -347,11 +597,7 @@ def _persist_terminal_node(
                 output_tokens=None,
             )
         else:
-            try:
-                diagnosis = ValidatedDiagnosis.model_validate(
-                    state.get("structured_response")
-                )
-            except ValidationError:
+            if diagnosis is None:
                 raise RecoveryConsistencyError from None
             terminal = TerminalRecord(
                 run_id=run_id,
@@ -467,6 +713,25 @@ def _context_deadline_expired(
 
 def _deadline(started_at: datetime, timeout_seconds: int) -> datetime:
     return started_at + timedelta(seconds=timeout_seconds)
+
+
+def _state_datetime(state: IncidentGraphState, field: str) -> datetime:
+    raw = cast(dict[str, object], state).get(field)
+    if not isinstance(raw, str):
+        raise RecoveryConsistencyError
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise RecoveryConsistencyError from None
+    if value.utcoffset() != timedelta(0) or _rfc3339(value) != raw:
+        raise RecoveryConsistencyError
+    return value.astimezone(UTC)
+
+
+def _rfc3339(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("Datetime must include a timezone")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _has_terminal_error(state: IncidentGraphState) -> bool:

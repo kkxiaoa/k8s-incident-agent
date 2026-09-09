@@ -59,12 +59,20 @@ from k8s_incident_agent.persistence.models import (
     EvidenceRow,
     IncidentRow,
     MonitoringSourceStateRow,
+    RepairProposalRow,
     RunEventRow,
     RunRow,
 )
+from k8s_incident_agent.repair.compiler import require_exact_repair_proposal
+from k8s_incident_agent.repair.contracts import (
+    PatchValidationResponse,
+    RepairProposal,
+    SetContainerImageIntent,
+)
+from k8s_incident_agent.repair.records import RepairTerminalRecord
 
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
-_SCHEMA_VERSION: Final = 3
+_SCHEMA_VERSION: Final = 4
 _CANONICAL_ALERT_TIMESTAMP = re.compile(CANONICAL_ALERT_TIMESTAMP_PATTERN)
 _OVERVIEW_HOUR = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
 
@@ -78,6 +86,7 @@ class PruneTarget:
     event_rows: int
     evidence_rows: int
     diagnosis_rows: int
+    repair_proposal_rows: int
     run_rows: int
     alert_signal_rows: int
 
@@ -136,12 +145,19 @@ class IncidentDiagnosisDetail:
 
 
 @dataclass(frozen=True, slots=True)
+class IncidentRepairDetail:
+    proposal: RepairProposal
+    validation: PatchValidationResponse
+
+
+@dataclass(frozen=True, slots=True)
 class IncidentDetailRecord:
     incident: IncidentListRecord
     trigger_summary: str
     run: IncidentRunDetail
     evidence: tuple[IncidentEvidenceDetail, ...]
     diagnosis: IncidentDiagnosisDetail | None
+    repair: IncidentRepairDetail | None
     alert_signal: AlertSignalRecord | None
     events: tuple[RunEvent, ...]
     has_older_events: bool
@@ -197,6 +213,17 @@ class RunListPage:
 class RunEventPage:
     items: tuple[RunEvent, ...]
     has_more: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkflowRows:
+    run: RunRow
+    incident: IncidentRow
+    diagnosis: DiagnosisRow | None
+    repair_proposal: RepairProposalRow | None
+    start_event: RunEventRow | None
+    terminal_event: RunEventRow | None
+    managed_events: tuple[RunEventRow, ...]
 
 
 class RepositoryError(RuntimeError):
@@ -629,28 +656,18 @@ class IncidentRepository:
                         raise RunNotFoundRepositoryError
                 if run is None:
                     raise RecoveryConsistencyError
-                diagnosis = await session.scalar(
-                    select(DiagnosisRow).where(DiagnosisRow.run_id == run.id)
-                )
+                rows = await _load_workflow_rows(session, UUID(run.id))
+                if rows.incident.id != incident.id:
+                    raise RecoveryConsistencyError
                 alert_signal = await session.get(AlertSignalRow, incident.id)
-                start_event = await session.scalar(
-                    select(RunEventRow).where(
-                        RunEventRow.run_id == run.id,
-                        RunEventRow.event_key == "run.started",
-                    )
-                )
-                terminal_event = await session.scalar(
-                    select(RunEventRow).where(
-                        RunEventRow.run_id == run.id,
-                        RunEventRow.event_key == "run:terminal",
-                    )
-                )
                 workflow, terminal = _workflow_run_projection(
-                    run,
-                    incident,
-                    diagnosis,
-                    start_event,
-                    terminal_event,
+                    rows.run,
+                    rows.incident,
+                    rows.diagnosis,
+                    rows.start_event,
+                    rows.terminal_event,
+                    rows.repair_proposal,
+                    rows.managed_events,
                 )
                 evidence_rows = list(
                     await session.scalars(
@@ -677,7 +694,8 @@ class IncidentRepository:
                 return _incident_detail_record(
                     incident,
                     run,
-                    diagnosis,
+                    rows.diagnosis,
+                    rows.repair_proposal,
                     alert_signal,
                     evidence_rows,
                     workflow,
@@ -771,48 +789,15 @@ class IncidentRepository:
     ) -> WorkflowRunSnapshot:
         try:
             async with self._session_factory() as session:
-                start_event_row = aliased(RunEventRow)
-                terminal_event_row = aliased(RunEventRow)
-                row = (
-                    await session.execute(
-                        select(
-                            RunRow,
-                            IncidentRow,
-                            DiagnosisRow,
-                            start_event_row,
-                            terminal_event_row,
-                        )
-                        .join(IncidentRow, IncidentRow.id == RunRow.incident_id)
-                        .outerjoin(
-                            DiagnosisRow,
-                            DiagnosisRow.run_id == RunRow.id,
-                        )
-                        .outerjoin(
-                            start_event_row,
-                            and_(
-                                start_event_row.run_id == RunRow.id,
-                                start_event_row.event_key == "run.started",
-                            ),
-                        )
-                        .outerjoin(
-                            terminal_event_row,
-                            and_(
-                                terminal_event_row.run_id == RunRow.id,
-                                terminal_event_row.event_key == "run:terminal",
-                            ),
-                        )
-                        .where(RunRow.id == str(run_id))
-                    )
-                ).one_or_none()
-                if row is None:
-                    raise RecoveryConsistencyError
-                run, incident, diagnosis, start_event, terminal_event = row
+                rows = await _load_workflow_rows(session, run_id)
                 return _workflow_run_snapshot(
-                    run,
-                    incident,
-                    diagnosis,
-                    start_event,
-                    terminal_event,
+                    rows.run,
+                    rows.incident,
+                    rows.diagnosis,
+                    rows.start_event,
+                    rows.terminal_event,
+                    rows.repair_proposal,
+                    rows.managed_events,
                 )
         except RepositoryError:
             raise
@@ -906,6 +891,13 @@ class IncidentRepository:
                     session,
                     delete(EvidenceRow).where(EvidenceRow.run_id.in_(run_ids)),
                     target.evidence_rows,
+                )
+                await _delete_exact_rows(
+                    session,
+                    delete(RepairProposalRow).where(
+                        RepairProposalRow.run_id.in_(run_ids)
+                    ),
+                    target.repair_proposal_rows,
                 )
                 await _delete_exact_rows(
                     session,
@@ -1627,6 +1619,135 @@ class IncidentRepository:
                 terminal, run, incident, diagnosis, terminal_event
             )
 
+    async def persist_repair_terminal(
+        self,
+        terminal: RepairTerminalRecord,
+    ) -> PersistedTerminal:
+        normalized = replace(
+            terminal,
+            diagnosis_completed_at=_require_aware_datetime(
+                terminal.diagnosis_completed_at
+            ),
+            completed_at=_require_aware_datetime(terminal.completed_at),
+        )
+        result = await _execute_with_replay(
+            lambda: self._persist_repair_terminal_once(normalized),
+            lambda: self._replay_repair_terminal(normalized),
+        )
+        await self._notify_committed_event(result.event)
+        return result
+
+    async def _persist_repair_terminal_once(
+        self,
+        terminal: RepairTerminalRecord,
+    ) -> PersistedTerminal:
+        async with self._session_factory() as session, session.begin():
+            run, incident = await _load_run_context(session, terminal.run_id)
+            diagnosis = await _diagnosis_by_run(session, terminal.run_id)
+            proposal = await _repair_proposal_by_run(session, terminal.run_id)
+            managed_events = await _repair_managed_events(session, terminal.run_id)
+            if diagnosis is not None or proposal is not None or managed_events:
+                return _resolve_repair_terminal_replay(
+                    terminal,
+                    run,
+                    incident,
+                    diagnosis,
+                    proposal,
+                    managed_events,
+                )
+
+            _require_active_run(run, incident)
+            diagnosis_id_value = diagnosis_id(terminal.run_id)
+            diagnosis_terminal = _diagnosis_terminal_record(terminal)
+            await _require_current_run_evidence(session, diagnosis_terminal)
+
+            incident_target = _repair_incident_status(terminal)
+            _require_repair_status_path(incident.status, terminal, incident_target)
+            _require_run_transition(run.status, _repair_run_status(terminal))
+
+            incident.status = incident_target
+            incident.updated_at = terminal.completed_at
+            run.status = _repair_run_status(terminal)
+            run.model_calls = terminal.model_calls
+            run.tool_calls = terminal.tool_calls
+            run.input_tokens = terminal.input_tokens
+            run.output_tokens = terminal.output_tokens
+            run.error_code = terminal.error_code
+            run.error_retryable = terminal.error_retryable
+            run.completed_at = terminal.completed_at
+            run.updated_at = terminal.completed_at
+
+            session.add(_repair_diagnosis_row(terminal, diagnosis_id_value))
+            if terminal.proposal is not None and terminal.validation is not None:
+                session.add(
+                    RepairProposalRow(
+                        id=str(terminal.proposal.id),
+                        run_id=str(terminal.run_id),
+                        schema_version=terminal.proposal.schema_version,
+                        proposal_json=canonical_json(
+                            cast(
+                                dict[str, JsonValue],
+                                terminal.proposal.model_dump(mode="json"),
+                            )
+                        ),
+                        validation_json=canonical_json(
+                            cast(
+                                dict[str, JsonValue],
+                                terminal.validation.model_dump(mode="json"),
+                            )
+                        ),
+                        created_at=terminal.proposal.diff_checked_at,
+                    )
+                )
+
+            event_rows = [
+                _new_event_row(
+                    run_id=terminal.run_id,
+                    event_key=event_key,
+                    event_type=event_type,
+                    occurred_at=occurred_at,
+                    payload=payload,
+                )
+                for event_key, event_type, occurred_at, payload in (
+                    _repair_event_documents(
+                        terminal,
+                        UUID(incident.id),
+                        diagnosis_id_value,
+                    )
+                )
+            ]
+            session.add_all(event_rows)
+            await session.flush()
+            final_event = event_rows[-1]
+            return PersistedTerminal(
+                run_id=terminal.run_id,
+                incident_status=incident_target,
+                run_status=run.status,
+                diagnosis_id=diagnosis_id_value,
+                event=_event_from_row(
+                    final_event,
+                    expected_incident_id=UUID(incident.id),
+                ),
+            )
+
+    async def _replay_repair_terminal(
+        self,
+        terminal: RepairTerminalRecord,
+    ) -> PersistedTerminal:
+        async with self._session_factory() as session:
+            run, incident = await _load_run_context(session, terminal.run_id)
+            diagnosis = await _diagnosis_by_run(session, terminal.run_id)
+            proposal = await _repair_proposal_by_run(session, terminal.run_id)
+            managed_events = await _repair_managed_events(session, terminal.run_id)
+            return _resolve_repair_terminal_replay(
+                terminal,
+                run,
+                incident,
+                diagnosis,
+                proposal,
+                managed_events,
+            )
+
     async def _notify_committed_event(self, event: RunEvent) -> None:
         if self._on_event_committed is None:
             return
@@ -1821,6 +1942,108 @@ async def _load_run_context(
     return run, incident
 
 
+async def _load_workflow_rows(
+    session: AsyncSession,
+    run_id: UUID,
+) -> _WorkflowRows:
+    start_event_row = aliased(RunEventRow)
+    diagnosis_event_row = aliased(RunEventRow)
+    patch_event_row = aliased(RunEventRow)
+    dry_run_event_row = aliased(RunEventRow)
+    terminal_event_row = aliased(RunEventRow)
+    row = (
+        await session.execute(
+            select(
+                RunRow,
+                IncidentRow,
+                DiagnosisRow,
+                RepairProposalRow,
+                start_event_row,
+                diagnosis_event_row,
+                patch_event_row,
+                dry_run_event_row,
+                terminal_event_row,
+            )
+            .join(IncidentRow, IncidentRow.id == RunRow.incident_id)
+            .outerjoin(DiagnosisRow, DiagnosisRow.run_id == RunRow.id)
+            .outerjoin(RepairProposalRow, RepairProposalRow.run_id == RunRow.id)
+            .outerjoin(
+                start_event_row,
+                and_(
+                    start_event_row.run_id == RunRow.id,
+                    start_event_row.event_key == "run.started",
+                ),
+            )
+            .outerjoin(
+                diagnosis_event_row,
+                and_(
+                    diagnosis_event_row.run_id == RunRow.id,
+                    diagnosis_event_row.event_key == "diagnosis.completed",
+                ),
+            )
+            .outerjoin(
+                patch_event_row,
+                and_(
+                    patch_event_row.run_id == RunRow.id,
+                    patch_event_row.event_key == "repair.patch_ready",
+                ),
+            )
+            .outerjoin(
+                dry_run_event_row,
+                and_(
+                    dry_run_event_row.run_id == RunRow.id,
+                    dry_run_event_row.event_key == "repair.dry_run_passed",
+                ),
+            )
+            .outerjoin(
+                terminal_event_row,
+                and_(
+                    terminal_event_row.run_id == RunRow.id,
+                    terminal_event_row.event_key == "run:terminal",
+                ),
+            )
+            .where(RunRow.id == str(run_id))
+        )
+    ).one_or_none()
+    if row is None:
+        raise RecoveryConsistencyError
+    (
+        run,
+        incident,
+        diagnosis,
+        repair_proposal,
+        start_event,
+        diagnosis_event,
+        patch_event,
+        dry_run_event,
+        terminal_event,
+    ) = row
+    managed_events = tuple(
+        sorted(
+            (
+                event
+                for event in (
+                    diagnosis_event,
+                    patch_event,
+                    dry_run_event,
+                    terminal_event,
+                )
+                if event is not None
+            ),
+            key=lambda event: event.id,
+        )
+    )
+    return _WorkflowRows(
+        run=run,
+        incident=incident,
+        diagnosis=diagnosis,
+        repair_proposal=repair_proposal,
+        start_event=start_event,
+        terminal_event=terminal_event,
+        managed_events=managed_events,
+    )
+
+
 async def _prune_target_from_incident(
     session: AsyncSession,
     incident: IncidentRow,
@@ -1846,15 +2069,15 @@ async def _prune_target_from_incident(
             run_id = UUID(run.id)
         except (TypeError, ValueError):
             raise RecoveryConsistencyError from None
-        diagnosis = await _diagnosis_by_run(session, run_id)
-        start_event = await _event_by_key(session, run_id, "run.started")
-        terminal_event = await _event_by_key(session, run_id, "run:terminal")
+        rows = await _load_workflow_rows(session, run_id)
         snapshot = _workflow_run_snapshot(
-            run,
-            incident,
-            diagnosis,
-            start_event,
-            terminal_event,
+            rows.run,
+            rows.incident,
+            rows.diagnosis,
+            rows.start_event,
+            rows.terminal_event,
+            rows.repair_proposal,
+            rows.managed_events,
         )
         if snapshot.incident_id != incident_id or snapshot.run_status not in (
             RunStatus.COMPLETED,
@@ -1880,6 +2103,11 @@ async def _prune_target_from_incident(
         .select_from(DiagnosisRow)
         .where(DiagnosisRow.run_id.in_(persisted_run_ids))
     )
+    repair_proposal_rows = await session.scalar(
+        select(func.count())
+        .select_from(RepairProposalRow)
+        .where(RepairProposalRow.run_id.in_(persisted_run_ids))
+    )
     alert_signal_rows = await session.scalar(
         select(func.count())
         .select_from(AlertSignalRow)
@@ -1892,6 +2120,8 @@ async def _prune_target_from_incident(
         or evidence_rows < 0
         or not isinstance(diagnosis_rows, int)
         or diagnosis_rows < 0
+        or not isinstance(repair_proposal_rows, int)
+        or repair_proposal_rows < 0
         or not isinstance(alert_signal_rows, int)
         or alert_signal_rows < 0
     ):
@@ -1904,6 +2134,7 @@ async def _prune_target_from_incident(
         event_rows=event_rows,
         evidence_rows=evidence_rows,
         diagnosis_rows=diagnosis_rows,
+        repair_proposal_rows=repair_proposal_rows,
         run_rows=len(runs),
         alert_signal_rows=alert_signal_rows,
     )
@@ -2025,6 +2256,7 @@ def _incident_detail_record(
     incident: IncidentRow,
     run: RunRow,
     diagnosis: DiagnosisRow | None,
+    repair_proposal: RepairProposalRow | None,
     alert_signal: AlertSignalRow | None,
     evidence_rows: list[EvidenceRow],
     workflow: WorkflowRunSnapshot,
@@ -2074,6 +2306,11 @@ def _incident_detail_record(
                 redacted=terminal.redacted,
                 created_at=_database_datetime(diagnosis.created_at),
             )
+        repair_detail = (
+            _incident_repair_detail(repair_proposal, run_id)
+            if repair_proposal is not None
+            else None
+        )
         return IncidentDetailRecord(
             incident=incident_record,
             trigger_summary=incident.trigger_summary,
@@ -2082,6 +2319,7 @@ def _incident_detail_record(
                 _incident_evidence_detail(row, run_id) for row in evidence_rows
             ),
             diagnosis=diagnosis_detail,
+            repair=repair_detail,
             alert_signal=_alert_signal_record(alert_signal, incident_record),
             events=tuple(
                 _event_from_row(
@@ -2102,27 +2340,17 @@ async def _run_detail_from_row(
     incident: IncidentRow,
     run: RunRow,
 ) -> IncidentRunDetail:
-    diagnosis = await session.scalar(
-        select(DiagnosisRow).where(DiagnosisRow.run_id == run.id)
-    )
-    start_event = await session.scalar(
-        select(RunEventRow).where(
-            RunEventRow.run_id == run.id,
-            RunEventRow.event_key == "run.started",
-        )
-    )
-    terminal_event = await session.scalar(
-        select(RunEventRow).where(
-            RunEventRow.run_id == run.id,
-            RunEventRow.event_key == "run:terminal",
-        )
-    )
+    rows = await _load_workflow_rows(session, UUID(run.id))
+    if rows.incident.id != incident.id:
+        raise RecoveryConsistencyError
     workflow, _ = _workflow_run_projection(
-        run,
-        incident,
-        diagnosis,
-        start_event,
-        terminal_event,
+        rows.run,
+        rows.incident,
+        rows.diagnosis,
+        rows.start_event,
+        rows.terminal_event,
+        rows.repair_proposal,
+        rows.managed_events,
     )
     return _incident_run_detail(run, workflow)
 
@@ -2188,12 +2416,55 @@ def _incident_evidence_detail(
         raise RecoveryConsistencyError from None
 
 
+def _incident_repair_detail(
+    row: RepairProposalRow,
+    run_id: UUID,
+) -> IncidentRepairDetail:
+    proposal, validation = _repair_contracts_from_row(row, run_id)
+    return IncidentRepairDetail(proposal=proposal, validation=validation)
+
+
+def _repair_contracts_from_row(
+    row: RepairProposalRow,
+    run_id: UUID,
+) -> tuple[RepairProposal, PatchValidationResponse]:
+    try:
+        proposal = RepairProposal.model_validate_json(row.proposal_json)
+        validation = PatchValidationResponse.model_validate_json(row.validation_json)
+        require_exact_repair_proposal(proposal)
+        proposal_json = canonical_json(
+            cast(dict[str, JsonValue], proposal.model_dump(mode="json"))
+        )
+        validation_json = canonical_json(
+            cast(dict[str, JsonValue], validation.model_dump(mode="json"))
+        )
+        if (
+            row.id != str(proposal.id)
+            or row.run_id != str(run_id)
+            or row.schema_version != proposal.schema_version
+            or proposal.run_id != run_id
+            or validation.run_id != run_id
+            or validation.proposal_id != proposal.id
+            or validation.proposal_digest != proposal.digest
+            or validation.checked_at < proposal.diff_checked_at
+            or row.proposal_json != proposal_json
+            or row.validation_json != validation_json
+            or _database_datetime(row.created_at) != proposal.diff_checked_at
+        ):
+            raise ValueError
+        return proposal, validation
+    except (AttributeError, TypeError, ValueError, ValidationError):
+        raise RecoveryConsistencyError from None
+
+
 def _workflow_run_snapshot(
     run: RunRow,
     incident: IncidentRow,
     diagnosis: DiagnosisRow | None,
     start_event: RunEventRow | None,
     terminal_event: RunEventRow | None,
+    repair_proposal: RepairProposalRow | None,
+    managed_events: tuple[RunEventRow, ...],
 ) -> WorkflowRunSnapshot:
     snapshot, _ = _workflow_run_projection(
         run,
@@ -2201,6 +2472,8 @@ def _workflow_run_snapshot(
         diagnosis,
         start_event,
         terminal_event,
+        repair_proposal,
+        managed_events,
     )
     return snapshot
 
@@ -2211,6 +2484,8 @@ def _workflow_run_projection(
     diagnosis: DiagnosisRow | None,
     start_event: RunEventRow | None,
     terminal_event: RunEventRow | None,
+    repair_proposal: RepairProposalRow | None,
+    managed_events: tuple[RunEventRow, ...],
 ) -> tuple[WorkflowRunSnapshot, TerminalRecord | None]:
     try:
         run_id = UUID(run.id)
@@ -2261,6 +2536,8 @@ def _workflow_run_projection(
             started_at is not None
             or completed_at is not None
             or not _has_empty_terminal_fields(run, diagnosis, terminal_event)
+            or repair_proposal is not None
+            or managed_events
         ):
             raise RecoveryConsistencyError
     elif run.status is RunStatus.RUNNING:
@@ -2268,16 +2545,49 @@ def _workflow_run_projection(
             incident.status is not IncidentStatus.TRIAGING
             or completed_at is not None
             or not _has_empty_terminal_fields(run, diagnosis, terminal_event)
+            or repair_proposal is not None
+            or managed_events
         ):
             raise RecoveryConsistencyError
     else:
-        terminal = _terminal_record_from_rows(
-            run,
-            diagnosis,
-            terminal_event,
+        is_repair_terminal = repair_proposal is not None or any(
+            event.event_key != "run:terminal" for event in managed_events
         )
-        _resolve_terminal_replay(terminal, run, incident, diagnosis, terminal_event)
-        completed_at = terminal.completed_at
+        if is_repair_terminal:
+            repair_terminal = _repair_terminal_record_from_rows(
+                run,
+                diagnosis,
+                repair_proposal,
+            )
+            _resolve_repair_terminal_replay(
+                repair_terminal,
+                run,
+                incident,
+                diagnosis,
+                repair_proposal,
+                managed_events,
+            )
+            terminal = replace(
+                _diagnosis_terminal_record(repair_terminal),
+                completed_at=repair_terminal.completed_at,
+            )
+            completed_at = repair_terminal.completed_at
+            if started_at is None:
+                raise RecoveryConsistencyError
+        else:
+            terminal = _terminal_record_from_rows(
+                run,
+                diagnosis,
+                terminal_event,
+            )
+            _resolve_terminal_replay(
+                terminal,
+                run,
+                incident,
+                diagnosis,
+                terminal_event,
+            )
+            completed_at = terminal.completed_at
         if run.status is RunStatus.COMPLETED and started_at is None:
             raise RecoveryConsistencyError
 
@@ -2478,6 +2788,60 @@ def _terminal_record_from_rows(
     )
 
 
+def _repair_terminal_record_from_rows(
+    run: RunRow,
+    diagnosis: DiagnosisRow | None,
+    proposal_row: RepairProposalRow | None,
+) -> RepairTerminalRecord:
+    if (
+        diagnosis is None
+        or run.completed_at is None
+        or not isinstance(run.model_calls, int)
+        or isinstance(run.model_calls, bool)
+        or run.model_calls < 0
+        or not isinstance(run.tool_calls, int)
+        or isinstance(run.tool_calls, bool)
+        or run.tool_calls < 0
+    ):
+        raise RecoveryConsistencyError
+    validated = _validated_diagnosis_from_row(diagnosis)
+    proposal: RepairProposal | None = None
+    validation: PatchValidationResponse | None = None
+    if proposal_row is not None:
+        proposal, validation = _repair_contracts_from_row(
+            proposal_row,
+            UUID(run.id),
+        )
+        validated = validated.model_copy(
+            update={
+                "repair_intent": SetContainerImageIntent(
+                    action=proposal.action,
+                    target=proposal.target,
+                    container_name=proposal.container_name,
+                    replacement_image=proposal.replacement_image,
+                    evidence_ids=list(proposal.evidence_ids),
+                )
+            }
+        )
+    try:
+        return RepairTerminalRecord(
+            run_id=UUID(run.id),
+            diagnosis_completed_at=_database_datetime(diagnosis.created_at),
+            completed_at=_database_datetime(run.completed_at),
+            diagnosis=validated,
+            proposal=proposal,
+            validation=validation,
+            error_code=run.error_code,
+            error_retryable=run.error_retryable,
+            model_calls=run.model_calls,
+            tool_calls=run.tool_calls,
+            input_tokens=run.input_tokens,
+            output_tokens=run.output_tokens,
+        )
+    except (TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+
+
 def _validated_diagnosis_from_row(
     diagnosis: DiagnosisRow,
 ) -> ValidatedDiagnosis:
@@ -2521,6 +2885,37 @@ async def _diagnosis_by_run(session: AsyncSession, run_id: UUID) -> DiagnosisRow
     return await session.scalar(
         select(DiagnosisRow).where(DiagnosisRow.run_id == str(run_id))
     )
+
+
+async def _repair_proposal_by_run(
+    session: AsyncSession,
+    run_id: UUID,
+) -> RepairProposalRow | None:
+    return await session.scalar(
+        select(RepairProposalRow).where(RepairProposalRow.run_id == str(run_id))
+    )
+
+
+async def _repair_managed_events(
+    session: AsyncSession,
+    run_id: UUID,
+) -> tuple[RunEventRow, ...]:
+    rows = await session.scalars(
+        select(RunEventRow)
+        .where(
+            RunEventRow.run_id == str(run_id),
+            RunEventRow.event_key.in_(
+                (
+                    "diagnosis.completed",
+                    "repair.patch_ready",
+                    "repair.dry_run_passed",
+                    "run:terminal",
+                )
+            ),
+        )
+        .order_by(RunEventRow.id)
+    )
+    return tuple(rows)
 
 
 def _new_run_row(
@@ -2682,8 +3077,8 @@ def _started_run(
         raise RecoveryConsistencyError
     return RunRecord(
         id=UUID(run.id),
-        incident_id=UUID(incident.id),
         status=run.status,
+        incident_id=UUID(incident.id),
         incident_status=IncidentStatus.TRIAGING,
         started_at=_database_datetime(run.started_at),
         event=_event_from_row(
@@ -3308,6 +3703,296 @@ def _resolve_terminal_replay(
             terminal_event,
             expected_incident_id=incident_id,
         ),
+    )
+
+
+def _diagnosis_terminal_record(terminal: RepairTerminalRecord) -> TerminalRecord:
+    diagnosis = terminal.diagnosis
+    return TerminalRecord(
+        run_id=terminal.run_id,
+        completed_at=terminal.diagnosis_completed_at,
+        outcome=DiagnosisOutcome.DIAGNOSED,
+        summary=diagnosis.summary,
+        root_causes=tuple(
+            RootCauseRecord(
+                code=root_cause.code,
+                statement=root_cause.statement,
+                confidence=root_cause.confidence,
+                evidence_ids=tuple(root_cause.evidence_ids),
+            )
+            for root_cause in diagnosis.root_causes
+        ),
+        missing_information=tuple(diagnosis.missing_information),
+        redacted=diagnosis.redacted,
+        error_code=None,
+        error_retryable=None,
+        model_calls=terminal.model_calls,
+        tool_calls=terminal.tool_calls,
+        input_tokens=terminal.input_tokens,
+        output_tokens=terminal.output_tokens,
+    )
+
+
+def _repair_diagnosis_row(
+    terminal: RepairTerminalRecord,
+    persisted_diagnosis_id: UUID,
+) -> DiagnosisRow:
+    diagnosis = _diagnosis_terminal_record(terminal)
+    return DiagnosisRow(
+        id=str(persisted_diagnosis_id),
+        run_id=str(terminal.run_id),
+        outcome=DiagnosisOutcome.DIAGNOSED,
+        summary=_diagnosis_summary(diagnosis),
+        root_causes_json=_root_causes_json(diagnosis.root_causes),
+        missing_information_json=_string_list_json(diagnosis.missing_information),
+        redacted=diagnosis.redacted,
+        created_at=terminal.diagnosis_completed_at,
+    )
+
+
+def _repair_run_status(terminal: RepairTerminalRecord) -> RunStatus:
+    return RunStatus.COMPLETED if terminal.error_code is None else RunStatus.FAILED
+
+
+def _repair_incident_status(terminal: RepairTerminalRecord) -> IncidentStatus:
+    if terminal.error_code is None:
+        return IncidentStatus.WAITING_APPROVAL
+    if terminal.error_code == "stale_resource":
+        return IncidentStatus.STALE_RESOURCE
+    return IncidentStatus.FAILED
+
+
+def _require_repair_status_path(
+    current: IncidentStatus,
+    terminal: RepairTerminalRecord,
+    target: IncidentStatus,
+) -> None:
+    _require_incident_transition(current, IncidentStatus.DIAGNOSED)
+    current = IncidentStatus.DIAGNOSED
+    if terminal.proposal is not None:
+        _require_incident_transition(current, IncidentStatus.PATCH_READY)
+        current = IncidentStatus.PATCH_READY
+    if terminal.error_code is None:
+        _require_incident_transition(current, IncidentStatus.DRY_RUN_PASSED)
+        _require_incident_transition(
+            IncidentStatus.DRY_RUN_PASSED,
+            IncidentStatus.WAITING_APPROVAL,
+        )
+    else:
+        _require_incident_transition(current, target)
+
+
+def _repair_event_documents(
+    terminal: RepairTerminalRecord,
+    incident_id: UUID,
+    persisted_diagnosis_id: UUID,
+) -> tuple[tuple[str, str, datetime, dict[str, JsonValue]], ...]:
+    diagnosis_payload = _base_payload(
+        incident_id,
+        terminal.run_id,
+        terminal.diagnosis_completed_at,
+    )
+    diagnosis_payload.update(
+        {
+            "diagnosisId": str(persisted_diagnosis_id),
+            "outcome": DiagnosisOutcome.DIAGNOSED.value,
+            "incidentStatus": IncidentStatus.DIAGNOSED.value,
+            "runStatus": RunStatus.RUNNING.value,
+        }
+    )
+    documents: list[tuple[str, str, datetime, dict[str, JsonValue]]] = [
+        (
+            "diagnosis.completed",
+            "diagnosis.completed",
+            terminal.diagnosis_completed_at,
+            diagnosis_payload,
+        )
+    ]
+    proposal = terminal.proposal
+    validation = terminal.validation
+    if proposal is not None:
+        patch_payload = _base_payload(
+            incident_id,
+            terminal.run_id,
+            proposal.diff_checked_at,
+        )
+        patch_payload.update(
+            {
+                "proposalId": str(proposal.id),
+                "proposalDigest": proposal.digest,
+                "incidentStatus": IncidentStatus.PATCH_READY.value,
+                "runStatus": RunStatus.RUNNING.value,
+            }
+        )
+        documents.append(
+            (
+                "repair.patch_ready",
+                "repair.patch_ready",
+                proposal.diff_checked_at,
+                patch_payload,
+            )
+        )
+    if (
+        proposal is not None
+        and validation is not None
+        and validation.outcome == "passed"
+    ):
+        dry_run_payload = _base_payload(
+            incident_id,
+            terminal.run_id,
+            validation.checked_at,
+        )
+        dry_run_payload.update(
+            {
+                "proposalId": str(proposal.id),
+                "proposalDigest": proposal.digest,
+                "incidentStatus": IncidentStatus.DRY_RUN_PASSED.value,
+                "runStatus": RunStatus.RUNNING.value,
+            }
+        )
+        waiting_payload = _base_payload(
+            incident_id,
+            terminal.run_id,
+            terminal.completed_at,
+        )
+        waiting_payload.update(
+            {
+                "proposalId": str(proposal.id),
+                "proposalDigest": proposal.digest,
+                "incidentStatus": IncidentStatus.WAITING_APPROVAL.value,
+                "runStatus": RunStatus.COMPLETED.value,
+            }
+        )
+        documents.extend(
+            (
+                (
+                    "repair.dry_run_passed",
+                    "repair.dry_run_passed",
+                    validation.checked_at,
+                    dry_run_payload,
+                ),
+                (
+                    "run:terminal",
+                    "repair.waiting_approval",
+                    terminal.completed_at,
+                    waiting_payload,
+                ),
+            )
+        )
+    else:
+        if terminal.error_code is None or terminal.error_retryable is None:
+            raise RecoveryConsistencyError
+        failed_payload = _base_payload(
+            incident_id,
+            terminal.run_id,
+            terminal.completed_at,
+        )
+        failed_payload.update(
+            {
+                "errorCode": terminal.error_code,
+                "retryable": terminal.error_retryable,
+                "incidentStatus": _repair_incident_status(terminal).value,
+                "runStatus": RunStatus.FAILED.value,
+            }
+        )
+        documents.append(
+            (
+                "run:terminal",
+                "run.failed",
+                terminal.completed_at,
+                failed_payload,
+            )
+        )
+    return tuple(documents)
+
+
+def _resolve_repair_terminal_replay(
+    terminal: RepairTerminalRecord,
+    run: RunRow,
+    incident: IncidentRow,
+    diagnosis: DiagnosisRow | None,
+    proposal: RepairProposalRow | None,
+    managed_events: tuple[RunEventRow, ...],
+) -> PersistedTerminal:
+    diagnosis_record = _diagnosis_terminal_record(terminal)
+    persisted_diagnosis_id = diagnosis_id(terminal.run_id)
+    if diagnosis is None or not _diagnosis_matches(diagnosis, diagnosis_record):
+        raise RecoveryConsistencyError
+    if not _repair_row_matches(proposal, terminal):
+        raise RecoveryConsistencyError
+
+    incident_id = UUID(incident.id)
+    expected_documents = _repair_event_documents(
+        terminal,
+        incident_id,
+        persisted_diagnosis_id,
+    )
+    if len(managed_events) != len(expected_documents):
+        raise RecoveryConsistencyError
+    for row, (event_key, event_type, occurred_at, payload) in zip(
+        managed_events,
+        expected_documents,
+        strict=True,
+    ):
+        if not _event_matches(
+            row,
+            incident_id=incident_id,
+            run_id=terminal.run_id,
+            event_key=event_key,
+            event_type=event_type,
+            occurred_at=occurred_at,
+            payload=payload,
+        ):
+            raise RecoveryConsistencyError
+
+    incident_target = _repair_incident_status(terminal)
+    run_target = _repair_run_status(terminal)
+    if (
+        run.status is not run_target
+        or run.completed_at is None
+        or _database_datetime(run.completed_at) != terminal.completed_at
+        or _database_datetime(run.updated_at) != terminal.completed_at
+        or run.model_calls != terminal.model_calls
+        or run.tool_calls != terminal.tool_calls
+        or run.input_tokens != terminal.input_tokens
+        or run.output_tokens != terminal.output_tokens
+        or run.error_code != terminal.error_code
+        or run.error_retryable != terminal.error_retryable
+    ):
+        raise RecoveryConsistencyError
+    return PersistedTerminal(
+        run_id=terminal.run_id,
+        incident_status=incident_target,
+        run_status=run_target,
+        diagnosis_id=persisted_diagnosis_id,
+        event=_event_from_row(
+            managed_events[-1],
+            expected_incident_id=incident_id,
+        ),
+    )
+
+
+def _repair_row_matches(
+    row: RepairProposalRow | None,
+    terminal: RepairTerminalRecord,
+) -> bool:
+    if terminal.proposal is None or terminal.validation is None:
+        return row is None
+    if row is None:
+        return False
+    proposal_json = canonical_json(
+        cast(dict[str, JsonValue], terminal.proposal.model_dump(mode="json"))
+    )
+    validation_json = canonical_json(
+        cast(dict[str, JsonValue], terminal.validation.model_dump(mode="json"))
+    )
+    return (
+        row.id == str(terminal.proposal.id)
+        and row.run_id == str(terminal.run_id)
+        and row.schema_version == terminal.proposal.schema_version
+        and row.proposal_json == proposal_json
+        and row.validation_json == validation_json
+        and _database_datetime(row.created_at) == terminal.proposal.diff_checked_at
     )
 
 

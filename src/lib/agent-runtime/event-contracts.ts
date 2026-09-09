@@ -11,6 +11,9 @@ export const RUN_EVENT_NAMES = [
   "evidence.recorded",
   "tool.failed",
   "diagnosis.completed",
+  "repair.patch_ready",
+  "repair.dry_run_passed",
+  "repair.waiting_approval",
   "diagnosis.insufficient",
   "run.failed",
   "alert.resolved",
@@ -113,12 +116,12 @@ function literalField<const T extends string>(
 }
 
 function commonFields(value: JsonObject) {
-  if (value.schemaVersion !== 3) {
+  if (value.schemaVersion !== 4) {
     return invalidEvent();
   }
 
   return {
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     incidentId: uuidField(value, "incidentId"),
     runId: uuidField(value, "runId"),
     occurredAt: timestampField(value, "occurredAt"),
@@ -183,6 +186,41 @@ function parseEventData(
         diagnosisId: uuidField(value, "diagnosisId"),
         incidentStatus: literalField(value, "incidentStatus", "DIAGNOSED"),
         outcome: literalField(value, "outcome", "diagnosed"),
+        runStatus:
+          value.runStatus === "RUNNING" || value.runStatus === "COMPLETED"
+            ? value.runStatus
+            : invalidEvent(),
+      };
+    case "repair.patch_ready":
+      return {
+        ...common,
+        proposalId: uuidField(value, "proposalId"),
+        proposalDigest: digestField(value, "proposalDigest"),
+        incidentStatus: literalField(value, "incidentStatus", "PATCH_READY"),
+        runStatus: literalField(value, "runStatus", "RUNNING"),
+      };
+    case "repair.dry_run_passed":
+      return {
+        ...common,
+        proposalId: uuidField(value, "proposalId"),
+        proposalDigest: digestField(value, "proposalDigest"),
+        incidentStatus: literalField(
+          value,
+          "incidentStatus",
+          "DRY_RUN_PASSED",
+        ),
+        runStatus: literalField(value, "runStatus", "RUNNING"),
+      };
+    case "repair.waiting_approval":
+      return {
+        ...common,
+        proposalId: uuidField(value, "proposalId"),
+        proposalDigest: digestField(value, "proposalDigest"),
+        incidentStatus: literalField(
+          value,
+          "incidentStatus",
+          "WAITING_APPROVAL",
+        ),
         runStatus: literalField(value, "runStatus", "COMPLETED"),
       };
     case "diagnosis.insufficient":
@@ -201,7 +239,11 @@ function parseEventData(
       return {
         ...common,
         errorCode: textField(value, "errorCode"),
-        incidentStatus: literalField(value, "incidentStatus", "FAILED"),
+        incidentStatus:
+          value.incidentStatus === "FAILED" ||
+          value.incidentStatus === "STALE_RESOURCE"
+            ? value.incidentStatus
+            : invalidEvent(),
         retryable: booleanField(value, "retryable"),
         runStatus: literalField(value, "runStatus", "FAILED"),
       };
@@ -212,6 +254,11 @@ function parseEventData(
         endsAt: canonicalAlertTimestampField(value, "endsAt"),
       };
   }
+}
+
+function digestField(value: JsonObject, key: string): string {
+  const field = textField(value, key);
+  return /^sha256:[a-f0-9]{64}$/.test(field) ? field : invalidEvent();
 }
 
 function isEventName(value: unknown): value is RunEventStreamItem["event"] {

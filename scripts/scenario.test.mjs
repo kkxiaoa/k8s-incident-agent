@@ -30,6 +30,9 @@ const CLUSTER_NAME = "k8s-incident-agent";
 const CONTEXT_NAME = "kind-k8s-incident-agent";
 const K3S_CONTEXT_NAME = "k3s-k8s-incident-agent";
 const NAMESPACE = "k8s-incident-scenarios";
+const EXPECTED_IMAGE = "registry.invalid/k8s-incident-agent/missing:v1";
+const AGNHOST_IMAGE =
+  "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85";
 const NODE_IMAGE =
   "kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5";
 
@@ -223,9 +226,9 @@ test("PVC fixtures distinguish immediate-policy failures from legal WFFC waiting
 
 function validScenario() {
   return {
-    schema_version: 2,
+    schema_version: 3,
     scenario_id: SCENARIO_ID,
-    scenario_version: 2,
+    scenario_version: 3,
     monitoring_alert_id: "K8sIncidentImagePullBackOff",
     display_name: "Image pull failure",
     description: "A Deployment cannot pull its configured image.",
@@ -254,6 +257,13 @@ function validScenario() {
       "query_prometheus",
     ],
     forbidden_tools: ["get_container_logs", "apply_patch", "execute_shell"],
+    expected_patch_constraints: {
+      action: "set_container_image",
+      container_index: 0,
+      container_name: "workload",
+      current_image: EXPECTED_IMAGE,
+      replacement_image: AGNHOST_IMAGE,
+    },
     deterministic_verifier: {
       kind: "image_pull_backoff",
       timeout_seconds: 120,
@@ -930,6 +940,12 @@ function k3sStatusResponse(args, options, fixtures) {
   }
   if (
     key ===
+    'get secret patch-validator-auth --namespace k8s-incident-agent --output=go-template={{if index .data "hmac-key"}}{{if eq (len (base64decode (index .data "hmac-key"))) 32}}present{{else}}missing{{end}}{{else}}missing{{end}}'
+  ) {
+    return "present\n";
+  }
+  if (
+    key ===
     "get deployment agent-runtime --namespace k8s-incident-agent --output=json"
   ) {
     return readyDeployment(
@@ -945,6 +961,27 @@ function k3sStatusResponse(args, options, fixtures) {
     return readyDeployment(
       fixtures,
       "incident-console",
+      "k8s-incident-agent",
+    );
+  }
+  if (
+    key ===
+    "get deployment patch-validator --namespace k8s-incident-agent --output=json"
+  ) {
+    return readyDeployment(
+      fixtures,
+      "patch-validator",
+      "k8s-incident-agent",
+    );
+  }
+  if (
+    key ===
+    "get serviceaccount patch-validator --namespace k8s-incident-agent --output=json"
+  ) {
+    return requireRenderedResource(
+      fixtures,
+      "ServiceAccount",
+      "patch-validator",
       "k8s-incident-agent",
     );
   }
@@ -964,7 +1001,7 @@ function k3sStatusResponse(args, options, fixtures) {
   ) {
     return {
       kind: "List",
-      items: ["agent-runtime", "incident-console"].map((name) => ({
+      items: ["agent-runtime", "incident-console", "patch-validator"].map((name) => ({
         metadata: {
           name: `${name}-current`,
           labels: {
@@ -1003,7 +1040,7 @@ function k3sStatusResponse(args, options, fixtures) {
     };
   }
   const service = key.match(
-    /^get service (agent-runtime|incident-console) --namespace k8s-incident-agent --output=json$/,
+    /^get service (agent-runtime|incident-console|patch-validator) --namespace k8s-incident-agent --output=json$/,
   );
   if (service !== null) {
     const document = requireRenderedResource(
@@ -1132,6 +1169,46 @@ function k3sStatusResponse(args, options, fixtures) {
       "k8s-incident-scenarios",
     );
   }
+  for (const kind of ["role", "rolebinding"]) {
+    if (
+      key ===
+      `get ${kind} patch-validator-dry-run --namespace k8s-incident-scenarios --output=json`
+    ) {
+      const resourceKind = kind === "role" ? "Role" : "RoleBinding";
+      return requireRenderedResource(
+        fixtures,
+        resourceKind,
+        "patch-validator-dry-run",
+        "k8s-incident-scenarios",
+      );
+    }
+  }
+  if (
+    key ===
+    "get validatingadmissionpolicy k8s-incident-agent-patch-validator-dry-run-only --output=json"
+  ) {
+    const policy = requireRenderedResource(
+      fixtures,
+      "ValidatingAdmissionPolicy",
+      "k8s-incident-agent-patch-validator-dry-run-only",
+    );
+    policy.metadata.generation = 2;
+    policy.status = {
+      observedGeneration: 2,
+      typeChecking: { expressionWarnings: [] },
+    };
+    return policy;
+  }
+  if (
+    key ===
+    "get validatingadmissionpolicybinding k8s-incident-agent-patch-validator-dry-run-only --output=json"
+  ) {
+    return requireRenderedResource(
+      fixtures,
+      "ValidatingAdmissionPolicyBinding",
+      "k8s-incident-agent-patch-validator-dry-run-only",
+    );
+  }
   if (
     key ===
     "get ingress incident-console --namespace k8s-incident-agent --output=json"
@@ -1146,6 +1223,29 @@ function k3sStatusResponse(args, options, fixtures) {
     return ingress;
   }
   if (key.startsWith("auth can-i ")) {
+    const validatorSubject = key.includes(
+      "--as=system:serviceaccount:k8s-incident-agent:patch-validator",
+    );
+    if (validatorSubject) {
+      const scenarioNamespace = key.includes(
+        "--namespace k8s-incident-scenarios",
+      );
+      const permitted =
+        key.includes(
+          " create selfsubjectaccessreviews.authorization.k8s.io ",
+        ) ||
+        (scenarioNamespace &&
+          (key.includes(" get deployments.apps ") ||
+            key.includes(" patch deployments.apps ")) &&
+          !key.includes("--subresource="));
+      if (!permitted) {
+        throw Object.assign(new Error("expected RBAC deny"), {
+          exitCode: 1,
+          stdout: "no\n",
+        });
+      }
+      return "yes\n";
+    }
     if (
       (key.includes(
         "--as=system:serviceaccount:k8s-incident-monitoring:prometheus",
@@ -1315,7 +1415,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: SCENARIO_ID,
-      scenario_version: 2,
+      scenario_version: 3,
       display_name: "Image pull failure",
       description: "A Deployment cannot pull its configured image.",
       trigger: {
@@ -1435,6 +1535,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     "deterministic_verifier",
     "fixture_manifests",
     "monitoring_alert_id",
+    "expected_patch_constraints",
   ]) {
     assert.equal(serialized.includes(privateField), false);
   }
@@ -1707,6 +1808,12 @@ test("catalog rejects incompatible versions, extra fields, and target drift", as
     ["schema version", (scenario) => { scenario.schema_version = 1; }],
     ["scenario version", (scenario) => { scenario.scenario_version = 0; }],
     ["extra field", (scenario) => { scenario.unconsumed = "value"; }],
+    ["missing patch expectation", (scenario) => {
+      delete scenario.expected_patch_constraints;
+    }],
+    ["patch expectation drift", (scenario) => {
+      scenario.expected_patch_constraints.replacement_image = EXPECTED_IMAGE;
+    }],
     ["unknown diagnostic tool", (scenario) => {
       scenario.allowed_tools = ["get_workload", "unknown_tool"];
     }],

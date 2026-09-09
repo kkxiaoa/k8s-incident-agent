@@ -1281,7 +1281,7 @@ async def test_terminal_commit_is_not_rewritten_when_checkpoint_save_fails(
                 lambda config, checkpoint, metadata: (
                     _checkpoint_namespace(config) == ""
                     and metadata.get("source") == "loop"
-                    and metadata.get("step") == 5
+                    and metadata.get("step") == 9
                 ),
             )
             supervisor = _supervisor(

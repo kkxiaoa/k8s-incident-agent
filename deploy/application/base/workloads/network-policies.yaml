@@ -19,7 +19,13 @@ metadata:
   labels:
     app.kubernetes.io/part-of: k8s-incident-agent
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - incident-console
+          - agent-runtime
   policyTypes:
     - Egress
   egress:
@@ -91,6 +97,70 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: agent-runtime
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-runtime-to-patch-validator
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: patch-validator
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agent-runtime
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-runtime-patch-validator-egress
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-runtime
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: patch-validator
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-patch-validator-kubernetes-egress
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: patch-validator
   policyTypes:
     - Egress
   egress:

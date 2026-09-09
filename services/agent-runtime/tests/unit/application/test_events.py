@@ -25,12 +25,14 @@ INCIDENT_ID = UUID("00000000-0000-0000-0000-000000000001")
 RUN_ID = UUID("00000000-0000-0000-0000-000000000002")
 EVIDENCE_ID = UUID("00000000-0000-0000-0000-000000000003")
 DIAGNOSIS_ID = UUID("00000000-0000-0000-0000-000000000004")
+PROPOSAL_ID = UUID("00000000-0000-0000-0000-000000000005")
+PROPOSAL_DIGEST = f"sha256:{'a' * 64}"
 NOW = datetime(2026, 8, 26, 9, 0, tzinfo=UTC)
 
 
 def _base_payload() -> dict[str, JsonValue]:
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "incidentId": str(INCIDENT_ID),
         "runId": str(RUN_ID),
         "occurredAt": "2026-08-26T09:00:00Z",
@@ -138,6 +140,39 @@ EVENT_CASES = (
     ),
     _event(
         9,
+        "repair.patch_ready",
+        "repair.patch_ready",
+        {
+            "proposalId": str(PROPOSAL_ID),
+            "proposalDigest": PROPOSAL_DIGEST,
+            "incidentStatus": "PATCH_READY",
+            "runStatus": "RUNNING",
+        },
+    ),
+    _event(
+        10,
+        "repair.dry_run_passed",
+        "repair.dry_run_passed",
+        {
+            "proposalId": str(PROPOSAL_ID),
+            "proposalDigest": PROPOSAL_DIGEST,
+            "incidentStatus": "DRY_RUN_PASSED",
+            "runStatus": "RUNNING",
+        },
+    ),
+    _event(
+        11,
+        "repair.waiting_approval",
+        "run:terminal",
+        {
+            "proposalId": str(PROPOSAL_ID),
+            "proposalDigest": PROPOSAL_DIGEST,
+            "incidentStatus": "WAITING_APPROVAL",
+            "runStatus": "COMPLETED",
+        },
+    ),
+    _event(
+        12,
         "alert.resolved",
         "alert.resolved",
         {
@@ -146,7 +181,7 @@ EVENT_CASES = (
         },
     ),
     _event(
-        10,
+        13,
         "run.failed",
         "run:terminal",
         {

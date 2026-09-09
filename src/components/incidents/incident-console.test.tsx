@@ -164,7 +164,7 @@ describe("ScenarioLauncher", () => {
     resolveRequest?.(
       new Response(
         JSON.stringify({
-          schemaVersion: 3,
+          schemaVersion: 4,
           incidentId: INCIDENT_ID,
         }),
         { status: 202, headers: { "content-type": "application/json" } },
@@ -180,7 +180,7 @@ describe("ScenarioLauncher", () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          schemaVersion: 3,
+          schemaVersion: 4,
           incidentId: INCIDENT_ID,
         }),
         { status: 202, headers: { "content-type": "application/json" } },
@@ -280,7 +280,7 @@ describe("read-only incident presentation", () => {
         "incident.created",
         "1",
         JSON.stringify({
-          schemaVersion: 3,
+          schemaVersion: 4,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           attempt: 1,
@@ -303,7 +303,7 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("diagnosis.completed", "2", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         diagnosisId: DIAGNOSIS_ID,
@@ -325,7 +325,7 @@ describe("read-only incident presentation", () => {
     const source = FakeEventSource.current;
     act(() => {
       source?.emit("run.started", "2", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: "66666666-6666-4666-8666-666666666666",
         runId: RUN_ID,
         attempt: 1,
@@ -349,7 +349,7 @@ describe("read-only incident presentation", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schemaVersion: 3,
+            schemaVersion: 4,
             runId: "55555555-5555-4555-8555-555555555555",
           }),
           { status: 202, headers: { "content-type": "application/json" } },
@@ -425,7 +425,7 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("incident.created", "1", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         attempt: 1,
@@ -434,7 +434,7 @@ describe("read-only incident presentation", () => {
         occurredAt: "2026-08-29T01:00:00Z",
       });
       source?.emit("run.started", "2", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         attempt: 1,
@@ -443,7 +443,7 @@ describe("read-only incident presentation", () => {
         occurredAt: "2026-08-29T01:00:01Z",
       });
       source?.emit("tool.started", "3", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -456,7 +456,7 @@ describe("read-only incident presentation", () => {
     act(() => {
       for (const id of ["4", "5", "6"]) {
         source?.emit("evidence.recorded", id, {
-          schemaVersion: 3,
+          schemaVersion: 4,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           evidenceId: EVIDENCE_ID,
@@ -494,7 +494,7 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("evidence.recorded", "4", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         evidenceId: EVIDENCE_ID,
@@ -507,7 +507,7 @@ describe("read-only incident presentation", () => {
         occurredAt: "2026-08-29T01:00:03Z",
       });
       source?.emit("tool.started", "5", {
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-2",
@@ -724,7 +724,7 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "1",
       JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -737,7 +737,7 @@ describe("read-only incident presentation", () => {
       "evidence.recorded",
       "2",
       JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         evidenceId: EVIDENCE_ID,
@@ -755,7 +755,7 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "3",
       JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-2",
@@ -876,7 +876,7 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "7",
       JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -889,7 +889,7 @@ describe("read-only incident presentation", () => {
       "tool.failed",
       "8",
       JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -929,7 +929,7 @@ describe("read-only incident presentation", () => {
       "alert.resolved",
       "9",
       JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         alertStatus: "RESOLVED",

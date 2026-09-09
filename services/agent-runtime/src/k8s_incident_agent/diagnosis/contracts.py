@@ -10,6 +10,8 @@ from pydantic import (
     model_validator,
 )
 
+from k8s_incident_agent.repair.contracts import SetContainerImageIntent
+
 
 def _parse_evidence_id(value: object) -> UUID:
     if isinstance(value, UUID):
@@ -62,6 +64,7 @@ class DiagnosisCandidate(_StrictDiagnosisContract):
     missing_information: list[Annotated[str, Field(min_length=1, max_length=512)]] = (
         Field(max_length=10)
     )
+    repair_intent: SetContainerImageIntent | None = None
 
     @model_validator(mode="after")
     def require_outcome_shape(self) -> Self:
@@ -69,7 +72,7 @@ class DiagnosisCandidate(_StrictDiagnosisContract):
             if not self.root_causes:
                 raise ValueError("A diagnosed outcome requires at least one root cause")
             return self
-        if self.root_causes or not self.missing_information:
+        if self.root_causes or not self.missing_information or self.repair_intent:
             raise ValueError(
                 "An insufficient evidence outcome requires missing information only"
             )

@@ -205,6 +205,7 @@ async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> No
                         "command": ["/agnhost"],
                         "args": ["invalid-command"],
                         "probes": [],
+                        "sourceIndex": 1,
                     },
                     {
                         "name": "z-sidecar",
@@ -213,6 +214,7 @@ async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> No
                         "command": [],
                         "args": [],
                         "probes": [],
+                        "sourceIndex": 0,
                     },
                 ],
                 "conditions": [

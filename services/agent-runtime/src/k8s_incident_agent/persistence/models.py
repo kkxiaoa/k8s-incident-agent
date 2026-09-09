@@ -53,7 +53,8 @@ class IncidentRow(Base):
         ),
         CheckConstraint(
             "status IN ('RECEIVED', 'TRIAGING', 'DIAGNOSED', "
-            "'INSUFFICIENT_EVIDENCE', 'FAILED')",
+            "'PATCH_READY', 'DRY_RUN_PASSED', 'WAITING_APPROVAL', "
+            "'INSUFFICIENT_EVIDENCE', 'STALE_RESOURCE', 'FAILED')",
             name="status",
         ),
         Index("ix_incidents_created_at_id", "created_at", "id"),
@@ -270,6 +271,23 @@ class DiagnosisRow(Base):
     root_causes_json: Mapped[str] = mapped_column(Text, nullable=False)
     missing_information_json: Mapped[str] = mapped_column(Text, nullable=False)
     redacted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class RepairProposalRow(Base):
+    __tablename__ = "repair_proposals"
+    __table_args__ = (
+        CheckConstraint("schema_version = 1", name="schema_version"),
+        UniqueConstraint("run_id", name="uq_repair_proposals_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposal_json: Mapped[str] = mapped_column(Text, nullable=False)
+    validation_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )

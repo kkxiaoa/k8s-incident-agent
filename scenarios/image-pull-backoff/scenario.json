@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "scenario_id": "image-pull-backoff",
-  "scenario_version": 2,
+  "scenario_version": 3,
   "monitoring_alert_id": "K8sIncidentImagePullBackOff",
   "display_name": "Image pull failure",
   "description": "A Deployment cannot pull its configured image.",
@@ -43,6 +43,13 @@
     "apply_patch",
     "execute_shell"
   ],
+  "expected_patch_constraints": {
+    "action": "set_container_image",
+    "container_index": 0,
+    "container_name": "workload",
+    "current_image": "registry.invalid/k8s-incident-agent/missing:v1",
+    "replacement_image": "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85"
+  },
   "deterministic_verifier": {
     "kind": "image_pull_backoff",
     "timeout_seconds": 120,

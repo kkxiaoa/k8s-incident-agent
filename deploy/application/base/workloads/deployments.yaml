@@ -160,6 +160,9 @@ spec:
             - name: alertmanager-webhook
               mountPath: /var/run/secrets/k8s-incident-agent/alertmanager
               readOnly: true
+            - name: patch-validator-auth
+              mountPath: /var/run/secrets/k8s-incident-agent/patch-validator
+              readOnly: true
       volumes:
         - name: runtime-data
           persistentVolumeClaim:
@@ -189,3 +192,107 @@ spec:
             items:
               - key: token
                 path: token
+        - name: patch-validator-auth
+          secret:
+            secretName: patch-validator-auth
+            defaultMode: 0440
+            items:
+              - key: hmac-key
+                path: hmac-key
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patch-validator
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/name: patch-validator
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: patch-validator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: patch-validator
+        app.kubernetes.io/part-of: k8s-incident-agent
+    spec:
+      serviceAccountName: patch-validator
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: validator
+          image: k8s-incident-agent-runtime
+          imagePullPolicy: IfNotPresent
+          command: ["patch-validator"]
+          env:
+            - name: KUBERNETES_CLUSTER_ID
+              value: k8s-incident-agent
+            - name: KUBERNETES_DIAGNOSTIC_NAMESPACE
+              value: k8s-incident-scenarios
+            - name: PATCH_VALIDATOR_HMAC_KEY_FILE
+              value: /var/run/secrets/k8s-incident-agent/patch-validator/hmac-key
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: kubernetes-api-access
+              mountPath: /var/run/secrets/k8s-incident-agent/kubernetes
+              readOnly: true
+            - name: patch-validator-auth
+              mountPath: /var/run/secrets/k8s-incident-agent/patch-validator
+              readOnly: true
+      volumes:
+        - name: kubernetes-api-access
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  expirationSeconds: 600
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: patch-validator-auth
+          secret:
+            secretName: patch-validator-auth
+            defaultMode: 0440
+            items:
+              - key: hmac-key
+                path: hmac-key

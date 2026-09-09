@@ -1,0 +1,41 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: k8s-incident-agent-patch-validator-dry-run-only
+  labels:
+    app.kubernetes.io/name: patch-validator
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Exact
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["deployments"]
+        scope: Namespaced
+  validations:
+    - expression: >-
+        request.userInfo.username !=
+        'system:serviceaccount:k8s-incident-agent:patch-validator' ||
+        request.namespace != 'k8s-incident-scenarios' ||
+        request.dryRun == true
+      message: Patch Validator may update scenario Deployments only with dryRun=All.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: k8s-incident-agent-patch-validator-dry-run-only
+  labels:
+    app.kubernetes.io/name: patch-validator
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  policyName: k8s-incident-agent-patch-validator-dry-run-only
+  validationActions: [Deny]
+  matchResources:
+    matchPolicy: Exact
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: k8s-incident-scenarios

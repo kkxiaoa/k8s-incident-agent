@@ -45,13 +45,17 @@ export type IncidentStreamAction =
   | { type: "invalid"; message: string };
 
 const TERMINAL_EVENTS = new Set<RunEventStreamItem["event"]>([
-  "diagnosis.completed",
   "diagnosis.insufficient",
   "run.failed",
+  "repair.waiting_approval",
 ]);
 
 export function isTerminalRunEvent(event: RunEventStreamItem): boolean {
-  return TERMINAL_EVENTS.has(event.event);
+  return (
+    TERMINAL_EVENTS.has(event.event) ||
+    (event.event === "diagnosis.completed" &&
+      event.data.runStatus === "COMPLETED")
+  );
 }
 
 export function requiresIncidentDetailRefresh(
@@ -108,6 +112,9 @@ function applyIncidentStatus(
     case "incident.created":
     case "run.started":
     case "diagnosis.completed":
+    case "repair.patch_ready":
+    case "repair.dry_run_passed":
+    case "repair.waiting_approval":
     case "diagnosis.insufficient":
     case "run.failed":
       return {
@@ -136,6 +143,9 @@ function applySelectedRunStatus(
     case "run.queued":
     case "run.started":
     case "diagnosis.completed":
+    case "repair.patch_ready":
+    case "repair.dry_run_passed":
+    case "repair.waiting_approval":
     case "diagnosis.insufficient":
     case "run.failed":
       return {

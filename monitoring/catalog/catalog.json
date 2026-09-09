@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 6,
-  "catalogVersion": "2026-09-06.1",
+  "schemaVersion": 7,
+  "catalogVersion": "2026-09-07.1",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -30,6 +30,7 @@
         "pods",
         "events"
       ],
+      "repairAction": "set_container_image",
       "panels": [
         {
           "panelId": "image-pull-affected-pods",

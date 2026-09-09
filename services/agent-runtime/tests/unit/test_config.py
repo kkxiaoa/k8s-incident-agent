@@ -6,6 +6,7 @@ from pydantic import SecretStr, ValidationError
 import k8s_incident_agent.config as config_module
 from k8s_incident_agent.config import (
     ConfigurationInvalidError,
+    PatchValidatorSettings,
     Settings,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
@@ -32,6 +33,11 @@ MODEL_ENVIRONMENT_VARIABLES = (
     "ALERT_CATALOG_DIR",
     "ALERTMANAGER_WEBHOOK_TOKEN_FILE",
     "PROMETHEUS_BASE_URL",
+    "PATCH_VALIDATOR_BASE_URL",
+    "PATCH_VALIDATOR_HMAC_KEY_FILE",
+    "PATCH_VALIDATOR_TIMEOUT_SECONDS",
+    "PATCH_VALIDATOR_AUTH_FRESHNESS_SECONDS",
+    "PATCH_VALIDATOR_REPLAY_CAPACITY",
 )
 
 
@@ -75,6 +81,13 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     assert str(settings.prometheus_base_url) == (
         "http://prometheus.k8s-incident-monitoring.svc.cluster.local:9090/"
     )
+    assert str(settings.patch_validator_base_url) == (
+        "http://patch-validator.k8s-incident-agent.svc.cluster.local:8081/"
+    )
+    assert settings.patch_validator_hmac_key_file == Path(
+        "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key"
+    )
+    assert settings.patch_validator_timeout_seconds == 10
 
 
 def test_runtime_data_dir_is_projected_once_to_runtime_paths(
@@ -173,6 +186,7 @@ def test_retention_days_outside_safe_range_are_rejected(
         ("AGENT_MAX_MODEL_CALLS", "0"),
         ("AGENT_MAX_TOOL_CALLS", "0"),
         ("AGENT_TIMEOUT_SECONDS", "0"),
+        ("PATCH_VALIDATOR_TIMEOUT_SECONDS", "0"),
     ],
 )
 def test_task_11_budgets_must_be_positive(
@@ -309,6 +323,66 @@ def test_prometheus_url_allows_loopback_for_local_development(
     settings = settings_without_dotenv()
 
     assert str(settings.prometheus_base_url) == "http://127.0.0.1:9090/"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://patch-validator.k8s-incident-agent.svc.cluster.local:8081",
+        "http://patch-validator.example:8081",
+        "http://patch-validator.k8s-incident-agent.svc.cluster.local:8082",
+        "http://user:password@localhost:8081",
+        "http://localhost:8081/internal",
+        "http://localhost:8081?token=value",
+    ],
+)
+def test_patch_validator_url_rejects_unmanaged_or_sensitive_locations(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("PATCH_VALIDATOR_BASE_URL", value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+def test_patch_validator_url_allows_loopback_for_local_testing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATCH_VALIDATOR_BASE_URL", "http://127.0.0.1:8081")
+
+    settings = settings_without_dotenv()
+
+    assert str(settings.patch_validator_base_url) == "http://127.0.0.1:8081/"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["relative/key", "/"],
+)
+def test_patch_validator_key_path_must_be_absolute_and_dedicated(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("PATCH_VALIDATOR_HMAC_KEY_FILE", value)
+
+    with pytest.raises(ValidationError):
+        settings_without_dotenv()
+
+
+def test_patch_validator_process_settings_have_only_narrow_dependencies() -> None:
+    settings = PatchValidatorSettings(_env_file=None)  # pyright: ignore[reportCallIssue]
+
+    assert set(type(settings).model_fields) == {
+        "kubernetes_cluster_id",
+        "kubernetes_diagnostic_namespace",
+        "kubernetes_timeout_seconds",
+        "patch_validator_hmac_key_file",
+        "patch_validator_auth_freshness_seconds",
+        "patch_validator_replay_capacity",
+    }
+    assert settings.patch_validator_auth_freshness_seconds == 30
+    assert settings.patch_validator_replay_capacity == 4096
 
 
 def test_api_key_uses_secret_type_and_is_redacted(

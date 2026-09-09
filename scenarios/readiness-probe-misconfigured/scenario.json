@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "scenario_id": "readiness-probe-misconfigured",
   "scenario_version": 1,
   "monitoring_alert_id": "K8sIncidentReadinessProbeFailure",

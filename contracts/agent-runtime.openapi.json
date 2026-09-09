@@ -30,7 +30,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -291,8 +291,8 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
-            "default": 3,
+            "const": 4,
+            "default": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -312,8 +312,8 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
-            "default": 3,
+            "const": 4,
+            "default": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -358,12 +358,15 @@
             "type": "string"
           },
           "runStatus": {
-            "const": "COMPLETED",
+            "enum": [
+              "RUNNING",
+              "COMPLETED"
+            ],
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -444,7 +447,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -648,7 +651,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -810,7 +813,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -892,9 +895,19 @@
           "incident": {
             "$ref": "#/components/schemas/IncidentResponse"
           },
+          "repair": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepairProposalResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "schemaVersion": {
-            "const": 3,
-            "default": 3,
+            "const": 4,
+            "default": 4,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -908,6 +921,7 @@
           "eventPage",
           "evidence",
           "diagnosis",
+          "repair",
           "alertSignal",
           "eventCursor"
         ],
@@ -970,8 +984,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 3,
-            "default": 3,
+            "const": 4,
+            "default": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1116,7 +1130,11 @@
           "RECEIVED",
           "TRIAGING",
           "DIAGNOSED",
+          "PATCH_READY",
+          "DRY_RUN_PASSED",
+          "WAITING_APPROVAL",
           "INSUFFICIENT_EVIDENCE",
+          "STALE_RESOURCE",
           "FAILED"
         ],
         "title": "IncidentStatus",
@@ -1609,6 +1627,19 @@
         "title": "MonitoringPanelReference",
         "type": "object"
       },
+      "PatchValidationErrorCode": {
+        "enum": [
+          "stale_resource",
+          "patch_validator_authentication_failed",
+          "patch_validator_replay_rejected",
+          "patch_validator_permission_denied",
+          "patch_validator_admission_denied",
+          "patch_validator_timeout",
+          "patch_validator_upstream_failed",
+          "patch_validator_contract_invalid"
+        ],
+        "type": "string"
+      },
       "PrometheusToolCallIdentity": {
         "additionalProperties": false,
         "properties": {
@@ -1635,6 +1666,470 @@
           "window"
         ],
         "title": "PrometheusToolCallIdentity",
+        "type": "object"
+      },
+      "RepairDiffResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "string"
+          },
+          "before": {
+            "title": "Before",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "before",
+          "after"
+        ],
+        "title": "RepairDiffResponse",
+        "type": "object"
+      },
+      "RepairDryRunPassedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "incidentStatus": {
+            "const": "DRY_RUN_PASSED",
+            "title": "Incidentstatus",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "proposalDigest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Proposaldigest",
+            "type": "string"
+          },
+          "proposalId": {
+            "format": "uuid",
+            "title": "Proposalid",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "runStatus": {
+            "const": "RUNNING",
+            "title": "Runstatus",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 4,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "proposalId",
+          "proposalDigest",
+          "incidentStatus",
+          "runStatus"
+        ],
+        "title": "RepairDryRunPassedEventPayload",
+        "type": "object"
+      },
+      "RepairDryRunPassedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RepairDryRunPassedEventPayload"
+          },
+          "event": {
+            "const": "repair.dry_run_passed",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "RepairDryRunPassedStreamEvent",
+        "type": "object"
+      },
+      "RepairPatchOperationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "enum": [
+              "test",
+              "replace"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op",
+          "path",
+          "value"
+        ],
+        "title": "RepairPatchOperationResponse",
+        "type": "object"
+      },
+      "RepairPatchReadyEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "incidentStatus": {
+            "const": "PATCH_READY",
+            "title": "Incidentstatus",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "proposalDigest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Proposaldigest",
+            "type": "string"
+          },
+          "proposalId": {
+            "format": "uuid",
+            "title": "Proposalid",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "runStatus": {
+            "const": "RUNNING",
+            "title": "Runstatus",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 4,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "proposalId",
+          "proposalDigest",
+          "incidentStatus",
+          "runStatus"
+        ],
+        "title": "RepairPatchReadyEventPayload",
+        "type": "object"
+      },
+      "RepairPatchReadyStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RepairPatchReadyEventPayload"
+          },
+          "event": {
+            "const": "repair.patch_ready",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "RepairPatchReadyStreamEvent",
+        "type": "object"
+      },
+      "RepairProposalResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "set_container_image",
+            "title": "Action",
+            "type": "string"
+          },
+          "containerIndex": {
+            "maximum": 255.0,
+            "minimum": 0.0,
+            "title": "Containerindex",
+            "type": "integer"
+          },
+          "containerName": {
+            "title": "Containername",
+            "type": "string"
+          },
+          "currentImage": {
+            "title": "Currentimage",
+            "type": "string"
+          },
+          "diff": {
+            "$ref": "#/components/schemas/RepairDiffResponse"
+          },
+          "diffCheckedAt": {
+            "format": "date-time",
+            "title": "Diffcheckedat",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "evidenceIds": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Evidenceids",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "patch": {
+            "items": {
+              "$ref": "#/components/schemas/RepairPatchOperationResponse"
+            },
+            "maxItems": 5,
+            "minItems": 5,
+            "title": "Patch",
+            "type": "array"
+          },
+          "policyCheckedAt": {
+            "format": "date-time",
+            "title": "Policycheckedat",
+            "type": "string"
+          },
+          "replacementImage": {
+            "title": "Replacementimage",
+            "type": "string"
+          },
+          "schemaCheckedAt": {
+            "format": "date-time",
+            "title": "Schemacheckedat",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "title": "Schemaversion",
+            "type": "integer"
+          },
+          "target": {
+            "$ref": "#/components/schemas/IncidentTargetResponse"
+          },
+          "targetResourceVersion": {
+            "title": "Targetresourceversion",
+            "type": "string"
+          },
+          "targetUid": {
+            "title": "Targetuid",
+            "type": "string"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/RepairValidationResponse"
+          }
+        },
+        "required": [
+          "id",
+          "action",
+          "target",
+          "targetUid",
+          "targetResourceVersion",
+          "containerIndex",
+          "containerName",
+          "currentImage",
+          "replacementImage",
+          "evidenceIds",
+          "patch",
+          "digest",
+          "diff",
+          "schemaCheckedAt",
+          "policyCheckedAt",
+          "diffCheckedAt",
+          "validation"
+        ],
+        "title": "RepairProposalResponse",
+        "type": "object"
+      },
+      "RepairValidationErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/PatchValidationErrorCode"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "retryable"
+        ],
+        "title": "RepairValidationErrorResponse",
+        "type": "object"
+      },
+      "RepairValidationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checkedAt": {
+            "format": "date-time",
+            "title": "Checkedat",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepairValidationErrorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "passed",
+              "failed"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "checkedAt",
+          "error"
+        ],
+        "title": "RepairValidationResponse",
+        "type": "object"
+      },
+      "RepairWaitingApprovalEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "incidentStatus": {
+            "const": "WAITING_APPROVAL",
+            "title": "Incidentstatus",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "proposalDigest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Proposaldigest",
+            "type": "string"
+          },
+          "proposalId": {
+            "format": "uuid",
+            "title": "Proposalid",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "runStatus": {
+            "const": "COMPLETED",
+            "title": "Runstatus",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 4,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "proposalId",
+          "proposalDigest",
+          "incidentStatus",
+          "runStatus"
+        ],
+        "title": "RepairWaitingApprovalEventPayload",
+        "type": "object"
+      },
+      "RepairWaitingApprovalStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RepairWaitingApprovalEventPayload"
+          },
+          "event": {
+            "const": "repair.waiting_approval",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "RepairWaitingApprovalStreamEvent",
         "type": "object"
       },
       "RootCauseResponse": {
@@ -1716,8 +2211,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 3,
-            "default": 3,
+            "const": 4,
+            "default": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1737,6 +2232,9 @@
             "diagnosis.insufficient": "#/components/schemas/DiagnosisInsufficientStreamEvent",
             "evidence.recorded": "#/components/schemas/EvidenceRecordedStreamEvent",
             "incident.created": "#/components/schemas/IncidentCreatedStreamEvent",
+            "repair.dry_run_passed": "#/components/schemas/RepairDryRunPassedStreamEvent",
+            "repair.patch_ready": "#/components/schemas/RepairPatchReadyStreamEvent",
+            "repair.waiting_approval": "#/components/schemas/RepairWaitingApprovalStreamEvent",
             "run.failed": "#/components/schemas/RunFailedStreamEvent",
             "run.queued": "#/components/schemas/RunQueuedStreamEvent",
             "run.started": "#/components/schemas/RunStartedStreamEvent",
@@ -1774,6 +2272,15 @@
             "$ref": "#/components/schemas/RunFailedStreamEvent"
           },
           {
+            "$ref": "#/components/schemas/RepairPatchReadyStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/RepairDryRunPassedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/RepairWaitingApprovalStreamEvent"
+          },
+          {
             "$ref": "#/components/schemas/AlertResolvedStreamEvent"
           }
         ],
@@ -1792,7 +2299,10 @@
             "type": "string"
           },
           "incidentStatus": {
-            "const": "FAILED",
+            "enum": [
+              "FAILED",
+              "STALE_RESOURCE"
+            ],
             "title": "Incidentstatus",
             "type": "string"
           },
@@ -1816,7 +2326,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1880,8 +2390,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 3,
-            "default": 3,
+            "const": 4,
+            "default": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1922,7 +2432,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1996,7 +2506,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2313,7 +2823,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -2392,7 +2902,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 3,
+            "const": 4,
             "title": "Schemaversion",
             "type": "integer"
           },

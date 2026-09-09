@@ -255,6 +255,7 @@ def _sanitize_candidate(candidate: DiagnosisCandidate) -> ValidatedDiagnosis:
             summary=summary.value,
             root_causes=root_causes,
             missing_information=missing_information,
+            repair_intent=candidate.repair_intent,
             redacted=redacted,
         )
     except ValidationError:

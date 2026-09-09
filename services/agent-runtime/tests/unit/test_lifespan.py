@@ -124,11 +124,16 @@ def _install_runtime_fakes(
             events.append("model.sync.close")
 
     class FakeAsyncClient:
-        def __init__(self) -> None:
-            events.append("model.async.open")
+        def __init__(self, *_args: object, **kwargs: object) -> None:
+            self.role = (
+                "patch-validator.http"
+                if kwargs.get("trust_env") is False
+                else "model.async"
+            )
+            events.append(f"{self.role}.open")
 
         async def aclose(self) -> None:
-            events.append("model.async.close")
+            events.append(f"{self.role}.close")
 
     class FakePrometheusHttpClient:
         @classmethod
@@ -186,6 +191,11 @@ def _install_runtime_fakes(
         events.append("alert.catalog")
         fail("alert-catalog")
         return load_real_alert_catalog(path)
+
+    def patch_validator_key(_path: Path) -> bytes:
+        events.append("patch-validator.key")
+        fail("patch-validator-key")
+        return b"0" * 32
 
     class FakeAlertAuthenticator:
         @classmethod
@@ -268,6 +278,7 @@ def _install_runtime_fakes(
     monkeypatch.setattr(api, "open_checkpoint_store", checkpoint)
     monkeypatch.setattr(api, "load_scenario_catalog", catalog)
     monkeypatch.setattr(api, "load_alert_catalog", alert_catalog)
+    monkeypatch.setattr(api, "load_hmac_key", patch_validator_key)
     monkeypatch.setattr(
         api,
         "AlertmanagerWebhookAuthenticator",
@@ -310,6 +321,7 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
             "checkpoint.open",
             "catalog",
             "alert.catalog",
+            "patch-validator.key",
             "credential",
             "credential.window:240",
             "kubernetes.open",
@@ -317,15 +329,17 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
             "kubernetes.access",
             "model.sync.open",
             "model.async.open",
+            "patch-validator.http.open",
             "model.create",
             "prometheus.open",
             "supervisor.init",
             "supervisor.start",
         ]
 
-    assert events[-8:-1] == [
+    assert events[-9:-1] == [
         "supervisor.close",
         "prometheus.close",
+        "patch-validator.http.close",
         "model.async.close",
         "model.sync.close",
         "kubernetes.close",
@@ -357,10 +371,12 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
             "database.head",
             "checkpoint.open",
             "alert.catalog",
+            "patch-validator.key",
             "kubernetes.incluster.open",
             "kubernetes.access",
             "model.sync.open",
             "model.async.open",
+            "patch-validator.http.open",
             "model.create",
             "prometheus.open",
             "supervisor.init",
@@ -483,6 +499,10 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
             "credential",
             ["checkpoint.close", "database.close", "lock.release"],
         ),
+        (
+            "patch-validator-key",
+            ["checkpoint.close", "database.close", "lock.release"],
+        ),
         ("ttl", ["checkpoint.close", "database.close", "lock.release"]),
         (
             "kubernetes",
@@ -509,6 +529,7 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
         (
             "model",
             [
+                "patch-validator.http.close",
                 "model.async.close",
                 "model.sync.close",
                 "kubernetes.close",
@@ -522,6 +543,7 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
             [
                 "supervisor.close",
                 "prometheus.close",
+                "patch-validator.http.close",
                 "model.async.close",
                 "model.sync.close",
                 "kubernetes.close",
@@ -533,6 +555,7 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
         (
             "prometheus",
             [
+                "patch-validator.http.close",
                 "model.async.close",
                 "model.sync.close",
                 "kubernetes.close",

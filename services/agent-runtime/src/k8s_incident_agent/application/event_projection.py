@@ -1,6 +1,7 @@
 from pydantic import ValidationError
 
 from k8s_incident_agent.api_contracts import (
+    DiagnosisCompletedEventPayload,
     EvidenceRecordedEventPayload,
     RunEventPayload,
     RunEventStreamItem,
@@ -66,8 +67,20 @@ def validated_event_json(event: RunEvent) -> str:
 
 
 def _expected_event_key(event_type: str, payload: RunEventPayload) -> str:
-    if event_type in {"diagnosis.completed", "diagnosis.insufficient", "run.failed"}:
+    if event_type in {
+        "diagnosis.insufficient",
+        "repair.waiting_approval",
+        "run.failed",
+    }:
         return "run:terminal"
+    if event_type == "diagnosis.completed":
+        if not isinstance(payload, DiagnosisCompletedEventPayload):
+            raise RecoveryConsistencyError
+        return (
+            "run:terminal"
+            if payload.run_status == "COMPLETED"
+            else "diagnosis.completed"
+        )
     suffix = {
         "tool.started": "started",
         "evidence.recorded": "evidence",

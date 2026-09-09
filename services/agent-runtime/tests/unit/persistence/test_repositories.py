@@ -132,7 +132,7 @@ async def test_create_incident_run_and_event_are_one_transaction(
             "occurredAt": created.event.occurred_at.isoformat().replace("+00:00", "Z"),
             "runId": str(created.run_id),
             "runStatus": "QUEUED",
-            "schemaVersion": 3,
+            "schemaVersion": 4,
         }
         assert await _row_count(database, IncidentRow) == 1
         assert await _row_count(database, RunRow) == 1

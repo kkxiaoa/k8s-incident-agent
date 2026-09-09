@@ -19,6 +19,12 @@ class IncidentGraphState(IncidentGraphInput, total=False):
     target: dict[str, str]
     messages: Annotated[list[AnyMessage], add_messages]
     structured_response: dict[str, JsonValue]
+    diagnosis_completed_at: str
+    repair_schema_checked_at: str
+    repair_policy_checked_at: str
+    repair_change: dict[str, JsonValue]
+    repair_proposal: dict[str, JsonValue]
+    patch_validation: dict[str, JsonValue]
     model_calls: int
     tool_calls: int
     terminal_error_code: str

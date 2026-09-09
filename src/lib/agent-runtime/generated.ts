@@ -242,7 +242,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** AlertResolvedStreamEvent */
         AlertResolvedStreamEvent: {
@@ -347,10 +347,10 @@ export interface components {
             incidentId: string;
             /**
              * Schemaversion
-             * @default 3
+             * @default 4
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** CreateRunResponse */
         CreateRunResponse: {
@@ -361,10 +361,10 @@ export interface components {
             runId: string;
             /**
              * Schemaversion
-             * @default 3
+             * @default 4
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** DiagnosisCompletedEventPayload */
         DiagnosisCompletedEventPayload: {
@@ -400,14 +400,14 @@ export interface components {
             runId: string;
             /**
              * Runstatus
-             * @constant
+             * @enum {string}
              */
-            runStatus: "COMPLETED";
+            runStatus: "RUNNING" | "COMPLETED";
             /**
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** DiagnosisCompletedStreamEvent */
         DiagnosisCompletedStreamEvent: {
@@ -461,7 +461,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** DiagnosisInsufficientStreamEvent */
         DiagnosisInsufficientStreamEvent: {
@@ -556,7 +556,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -648,7 +648,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** IncidentCreatedStreamEvent */
         IncidentCreatedStreamEvent: {
@@ -671,12 +671,13 @@ export interface components {
             /** Evidence */
             evidence: components["schemas"]["EvidenceResponse"][];
             incident: components["schemas"]["IncidentResponse"];
+            repair: components["schemas"]["RepairProposalResponse"] | null;
             /**
              * Schemaversion
-             * @default 3
+             * @default 4
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
             selectedRun: components["schemas"]["SelectedRunResponse"];
         };
         /** IncidentListItem */
@@ -704,10 +705,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 3
+             * @default 4
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** IncidentMetricPanel */
         IncidentMetricPanel: {
@@ -770,7 +771,7 @@ export interface components {
          * IncidentStatus
          * @enum {string}
          */
-        IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "INSUFFICIENT_EVIDENCE" | "FAILED";
+        IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "PATCH_READY" | "DRY_RUN_PASSED" | "WAITING_APPROVAL" | "INSUFFICIENT_EVIDENCE" | "STALE_RESOURCE" | "FAILED";
         /** IncidentTargetResponse */
         IncidentTargetResponse: {
             /** Apiversion */
@@ -948,6 +949,8 @@ export interface components {
             /** Thresholdduration */
             thresholdDuration: string | null;
         };
+        /** @enum {string} */
+        PatchValidationErrorCode: "stale_resource" | "patch_validator_authentication_failed" | "patch_validator_replay_rejected" | "patch_validator_permission_denied" | "patch_validator_admission_denied" | "patch_validator_timeout" | "patch_validator_upstream_failed" | "patch_validator_contract_invalid";
         /** PrometheusToolCallIdentity */
         PrometheusToolCallIdentity: {
             /** Panelid */
@@ -957,6 +960,255 @@ export interface components {
              * @enum {string}
              */
             window: "15m" | "1h" | "6h" | "7d" | "15d";
+        };
+        /** RepairDiffResponse */
+        RepairDiffResponse: {
+            /** After */
+            after: string;
+            /** Before */
+            before: string;
+            /** Path */
+            path: string;
+        };
+        /** RepairDryRunPassedEventPayload */
+        RepairDryRunPassedEventPayload: {
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Incidentstatus
+             * @constant
+             */
+            incidentStatus: "DRY_RUN_PASSED";
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Proposaldigest */
+            proposalDigest: string;
+            /**
+             * Proposalid
+             * Format: uuid
+             */
+            proposalId: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            /**
+             * Runstatus
+             * @constant
+             */
+            runStatus: "RUNNING";
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 4;
+        };
+        /** RepairDryRunPassedStreamEvent */
+        RepairDryRunPassedStreamEvent: {
+            data: components["schemas"]["RepairDryRunPassedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "repair.dry_run_passed";
+            /** Id */
+            id: string;
+        };
+        /** RepairPatchOperationResponse */
+        RepairPatchOperationResponse: {
+            /**
+             * Op
+             * @enum {string}
+             */
+            op: "test" | "replace";
+            /** Path */
+            path: string;
+            /** Value */
+            value: string;
+        };
+        /** RepairPatchReadyEventPayload */
+        RepairPatchReadyEventPayload: {
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Incidentstatus
+             * @constant
+             */
+            incidentStatus: "PATCH_READY";
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Proposaldigest */
+            proposalDigest: string;
+            /**
+             * Proposalid
+             * Format: uuid
+             */
+            proposalId: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            /**
+             * Runstatus
+             * @constant
+             */
+            runStatus: "RUNNING";
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 4;
+        };
+        /** RepairPatchReadyStreamEvent */
+        RepairPatchReadyStreamEvent: {
+            data: components["schemas"]["RepairPatchReadyEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "repair.patch_ready";
+            /** Id */
+            id: string;
+        };
+        /** RepairProposalResponse */
+        RepairProposalResponse: {
+            /**
+             * Action
+             * @constant
+             */
+            action: "set_container_image";
+            /** Containerindex */
+            containerIndex: number;
+            /** Containername */
+            containerName: string;
+            /** Currentimage */
+            currentImage: string;
+            diff: components["schemas"]["RepairDiffResponse"];
+            /**
+             * Diffcheckedat
+             * Format: date-time
+             */
+            diffCheckedAt: string;
+            /** Digest */
+            digest: string;
+            /** Evidenceids */
+            evidenceIds: string[];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Patch */
+            patch: components["schemas"]["RepairPatchOperationResponse"][];
+            /**
+             * Policycheckedat
+             * Format: date-time
+             */
+            policyCheckedAt: string;
+            /** Replacementimage */
+            replacementImage: string;
+            /**
+             * Schemacheckedat
+             * Format: date-time
+             */
+            schemaCheckedAt: string;
+            /**
+             * Schemaversion
+             * @default 1
+             * @constant
+             */
+            schemaVersion: 1;
+            target: components["schemas"]["IncidentTargetResponse"];
+            /** Targetresourceversion */
+            targetResourceVersion: string;
+            /** Targetuid */
+            targetUid: string;
+            validation: components["schemas"]["RepairValidationResponse"];
+        };
+        /** RepairValidationErrorResponse */
+        RepairValidationErrorResponse: {
+            code: components["schemas"]["PatchValidationErrorCode"];
+            /** Retryable */
+            retryable: boolean;
+        };
+        /** RepairValidationResponse */
+        RepairValidationResponse: {
+            /**
+             * Checkedat
+             * Format: date-time
+             */
+            checkedAt: string;
+            error: components["schemas"]["RepairValidationErrorResponse"] | null;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "passed" | "failed";
+        };
+        /** RepairWaitingApprovalEventPayload */
+        RepairWaitingApprovalEventPayload: {
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Incidentstatus
+             * @constant
+             */
+            incidentStatus: "WAITING_APPROVAL";
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Proposaldigest */
+            proposalDigest: string;
+            /**
+             * Proposalid
+             * Format: uuid
+             */
+            proposalId: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            /**
+             * Runstatus
+             * @constant
+             */
+            runStatus: "COMPLETED";
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 4;
+        };
+        /** RepairWaitingApprovalStreamEvent */
+        RepairWaitingApprovalStreamEvent: {
+            data: components["schemas"]["RepairWaitingApprovalEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "repair.waiting_approval";
+            /** Id */
+            id: string;
         };
         /** RootCauseResponse */
         RootCauseResponse: {
@@ -987,13 +1239,13 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 3
+             * @default 4
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */
@@ -1005,9 +1257,9 @@ export interface components {
             incidentId: string;
             /**
              * Incidentstatus
-             * @constant
+             * @enum {string}
              */
-            incidentStatus: "FAILED";
+            incidentStatus: "FAILED" | "STALE_RESOURCE";
             /**
              * Occurredat
              * Format: date-time
@@ -1029,7 +1281,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** RunFailedStreamEvent */
         RunFailedStreamEvent: {
@@ -1050,10 +1302,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 3
+             * @default 4
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** RunQueuedEventPayload */
         RunQueuedEventPayload: {
@@ -1083,7 +1335,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** RunQueuedStreamEvent */
         RunQueuedStreamEvent: {
@@ -1129,7 +1381,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** RunStartedStreamEvent */
         RunStartedStreamEvent: {
@@ -1260,7 +1512,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -1299,7 +1551,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */

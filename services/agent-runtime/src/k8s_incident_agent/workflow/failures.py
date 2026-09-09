@@ -11,6 +11,17 @@ _WORKFLOW_FAILURE_RETRYABILITY: Final = {
     "tool_call_limit_exceeded": False,
     "structured_output_invalid": False,
     "model_upstream_failed": True,
+    "repair_schema_invalid": False,
+    "repair_policy_denied": False,
+    "repair_diff_invalid": False,
+    "stale_resource": False,
+    "patch_validator_authentication_failed": False,
+    "patch_validator_replay_rejected": False,
+    "patch_validator_permission_denied": False,
+    "patch_validator_admission_denied": False,
+    "patch_validator_timeout": True,
+    "patch_validator_upstream_failed": True,
+    "patch_validator_contract_invalid": False,
 }
 
 

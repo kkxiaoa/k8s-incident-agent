@@ -114,6 +114,7 @@ class _IncidentService:
             event_page=EventPageResponse(items=(), next_cursor=None),
             evidence=(),
             diagnosis=None,
+            repair=None,
             alert_signal=None,
             event_cursor="1",
         )
@@ -204,7 +205,7 @@ async def test_create_returns_202_and_exact_versioned_projection(
 
     assert response.status_code == 202
     assert response.json() == {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "incidentId": str(INCIDENT_ID),
     }
 
@@ -233,13 +234,14 @@ async def test_detail_preserves_nullable_run_and_diagnosis_fields(
 
     assert response.status_code == 200
     document = response.json()
-    assert document["schemaVersion"] == 3
+    assert document["schemaVersion"] == 4
     assert document["selectedRun"]["startedAt"] is None
     assert document["selectedRun"]["completedAt"] is None
     assert document["selectedRun"]["error"] is None
     assert document["eventCursor"] == "1"
     assert document["eventPage"] == {"items": [], "nextCursor": None}
     assert document["diagnosis"] is None
+    assert document["repair"] is None
     assert document["alertSignal"] is None
     assert document["evidence"] == []
 
@@ -260,7 +262,7 @@ async def test_list_query_bounds_use_validation_envelope(
 
 
 @pytest.mark.asyncio
-async def test_run_routes_use_v3_minimal_contracts(tmp_path: Path) -> None:
+async def test_run_routes_use_v4_minimal_contracts(tmp_path: Path) -> None:
     service = _IncidentService()
     async with _client(tmp_path, service) as client:
         created = await client.post(f"/api/v1/incidents/{INCIDENT_ID}/runs")
@@ -270,8 +272,8 @@ async def test_run_routes_use_v3_minimal_contracts(tmp_path: Path) -> None:
         )
 
     assert created.status_code == 202
-    assert created.json() == {"schemaVersion": 3, "runId": str(RUN_ID)}
+    assert created.json() == {"schemaVersion": 4, "runId": str(RUN_ID)}
     assert history.status_code == 200
     assert history.json()["items"][0]["attempt"] == 1
     assert events.status_code == 200
-    assert events.json() == {"schemaVersion": 3, "items": [], "nextCursor": None}
+    assert events.json() == {"schemaVersion": 4, "items": [], "nextCursor": None}

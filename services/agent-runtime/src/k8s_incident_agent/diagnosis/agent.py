@@ -34,6 +34,7 @@ from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
 from k8s_incident_agent.diagnosis.policy_contracts import DIAGNOSTIC_TOOL_NAMES
 from k8s_incident_agent.diagnosis.prompt import build_diagnostic_system_prompt
 from k8s_incident_agent.domain.models import JsonValue
+from k8s_incident_agent.repair.contracts import RepairAction
 
 _DEFAULT_MAX_MODEL_CALLS = 8
 _DEFAULT_MAX_TOOL_CALLS = 6
@@ -239,6 +240,7 @@ def build_diagnostic_agent(
     max_tool_calls: int = _DEFAULT_MAX_TOOL_CALLS,
     required_evidence: Sequence[str],
     prometheus_panel_ids: Sequence[str],
+    repair_action: RepairAction | None = None,
 ) -> _DiagnosticAgentGraph:
     """Build the one-shot read-only diagnosis graph embedded by the orchestrator."""
     tool_names = tuple(tool.name for tool in tools)
@@ -257,6 +259,7 @@ def build_diagnostic_agent(
         allowed_tool_names=tool_names,
         required_evidence=required_evidence,
         prometheus_panel_ids=prometheus_panel_ids,
+        repair_action=repair_action,
     )
     agent_factory = cast(Callable[..., object], create_agent)
     graph = agent_factory(

@@ -18,8 +18,13 @@ const DIAGNOSTIC_NAMESPACE = "k8s-incident-scenarios";
 const MONITORING_NAMESPACE = "k8s-incident-monitoring";
 const KIND_CONTEXT = "kind-k8s-incident-agent";
 const RUNTIME_SERVICE_ACCOUNT = "agent-runtime";
+const PATCH_VALIDATOR_SERVICE_ACCOUNT = "patch-validator";
 const RUNTIME_SECRET = "agent-runtime-model";
 const RUNTIME_SECRET_KEY = "api-key";
+const PATCH_VALIDATOR_SECRET = "patch-validator-auth";
+const PATCH_VALIDATOR_SECRET_KEY = "hmac-key";
+const PATCH_VALIDATOR_ADMISSION_POLICY =
+  "k8s-incident-agent-patch-validator-dry-run-only";
 const RUNTIME_PVC = "runtime-data";
 const PROMETHEUS_PVC = "prometheus-data";
 const ALERTMANAGER_WEBHOOK_SECRET = "alertmanager-webhook";
@@ -51,6 +56,8 @@ const READ_TIMEOUT_MILLISECONDS = 30_000;
 const WRITE_TIMEOUT_MILLISECONDS = 10 * 60_000;
 const CUTOVER_DEADLINE_MILLISECONDS = 5 * 60_000;
 const CUTOVER_POLL_INTERVAL_MILLISECONDS = 250;
+const ADMISSION_POLICY_DEADLINE_MILLISECONDS = 10_000;
+const ADMISSION_POLICY_POLL_INTERVAL_MILLISECONDS = 250;
 const WAIT_TIMEOUT = "300s";
 
 const PROFILE_DEFINITIONS = Object.freeze({
@@ -581,7 +588,7 @@ function normalizeMonitoringContract(rawVersions, rawImages, rawAlertCatalog) {
 function normalizeAlertRuleCatalog(rawAlertCatalog) {
   const document = parseJsonObject(rawAlertCatalog, "alert catalog");
   if (
-    document.schemaVersion !== 6 ||
+    document.schemaVersion !== 7 ||
     typeof document.catalogVersion !== "string" ||
     document.catalogVersion === "" ||
     !Array.isArray(document.alerts) ||
@@ -2095,10 +2102,8 @@ async function confirmApply(contract, request, execute) {
     request.profile,
     execute,
   );
-  requireRenderedMonitoringContract(
-    indexRenderedManifest(desiredManifest),
-    contract.monitoring.catalog,
-  );
+  const desiredResources = indexRenderedManifest(desiredManifest);
+  requireRenderedMonitoringContract(desiredResources, contract.monitoring.catalog);
   await runKubectl(
     execute,
     request.context,
@@ -2106,6 +2111,8 @@ async function confirmApply(contract, request, execute) {
     WRITE_TIMEOUT_MILLISECONDS,
     "server-side admission preview",
   );
+  await applyAdmissionBoundary(request, execute, desiredResources);
+  await waitForAdmissionPolicyReady(request, execute, desiredResources);
   await runKubectl(
     execute,
     request.context,
@@ -2116,6 +2123,7 @@ async function confirmApply(contract, request, execute) {
   for (const [namespace, deployment] of [
     [APPLICATION_NAMESPACE, "agent-runtime"],
     [APPLICATION_NAMESPACE, "incident-console"],
+    [APPLICATION_NAMESPACE, "patch-validator"],
     [MONITORING_NAMESPACE, "prometheus"],
     [MONITORING_NAMESPACE, "alertmanager"],
     [MONITORING_NAMESPACE, "kube-state-metrics"],
@@ -2141,6 +2149,65 @@ async function confirmApply(contract, request, execute) {
   });
 }
 
+async function applyAdmissionBoundary(request, execute, desiredResources) {
+  const policy = requireRenderedResource(
+    desiredResources,
+    "ValidatingAdmissionPolicy",
+    PATCH_VALIDATOR_ADMISSION_POLICY,
+    "",
+  );
+  const binding = requireRenderedResource(
+    desiredResources,
+    "ValidatingAdmissionPolicyBinding",
+    PATCH_VALIDATOR_ADMISSION_POLICY,
+    "",
+  );
+  const input = [policy, binding]
+    .map((resource) => serializeKubernetesResource(resource))
+    .join("---\n");
+  await runKubectl(
+    execute,
+    request.context,
+    ["apply", "--filename=-"],
+    WRITE_TIMEOUT_MILLISECONDS,
+    "Patch Validator admission boundary apply",
+    input,
+  );
+}
+
+async function waitForAdmissionPolicyReady(request, execute, desiredResources) {
+  const deadline = Date.now() + ADMISSION_POLICY_DEADLINE_MILLISECONDS;
+  while (true) {
+    const [policy, binding] = await Promise.all([
+      readJsonResource(execute, request.context, [
+        "get",
+        "validatingadmissionpolicy",
+        PATCH_VALIDATOR_ADMISSION_POLICY,
+        "--output=json",
+      ], "Patch Validator admission policy"),
+      readJsonResource(execute, request.context, [
+        "get",
+        "validatingadmissionpolicybinding",
+        PATCH_VALIDATOR_ADMISSION_POLICY,
+        "--output=json",
+      ], "Patch Validator admission policy binding"),
+    ]);
+    try {
+      requireReadyAdmissionPolicy(policy, binding, desiredResources);
+      return;
+    } catch (error) {
+      if (
+        !(error instanceof DeploymentContractError) ||
+        !isAdmissionPolicyObservationPending(policy) ||
+        Date.now() >= deadline
+      ) {
+        throw error;
+      }
+      await delay(ADMISSION_POLICY_POLL_INTERVAL_MILLISECONDS);
+    }
+  }
+}
+
 async function confirmUninstall(contract, request, execute) {
   await requireClusterPrerequisites(contract, request, execute, {
     components: false,
@@ -2150,6 +2217,21 @@ async function confirmUninstall(contract, request, execute) {
     readOptionalPvc(request, execute, APPLICATION_NAMESPACE, RUNTIME_PVC),
     readOptionalPvc(request, execute, MONITORING_NAMESPACE, PROMETHEUS_PVC),
   ]);
+  await runKubectl(
+    execute,
+    request.context,
+    [
+      "delete",
+      "deployment",
+      "patch-validator",
+      "--namespace",
+      APPLICATION_NAMESPACE,
+      "--ignore-not-found=true",
+      "--wait=true",
+    ],
+    WRITE_TIMEOUT_MILLISECONDS,
+    "Patch Validator shutdown",
+  );
   await runKubectl(
     execute,
     request.context,
@@ -2207,13 +2289,20 @@ async function readInstallationStatus(
   const [
     runtime,
     console,
+    patchValidator,
+    patchValidatorServiceAccount,
     applicationPods,
     runtimeService,
     consoleService,
+    patchValidatorService,
     runtimePvc,
     runtimeConfig,
     consoleConfig,
     applicationNetworkPolicies,
+    patchValidatorRole,
+    patchValidatorRoleBinding,
+    patchValidatorAdmissionPolicy,
+    patchValidatorAdmissionPolicyBinding,
     prometheus,
     alertmanager,
     kubeStateMetrics,
@@ -2248,6 +2337,22 @@ async function readInstallationStatus(
       ], "Console Deployment"),
       readJsonResource(execute, request.context, [
         "get",
+        "deployment",
+        "patch-validator",
+        "--namespace",
+        APPLICATION_NAMESPACE,
+        "--output=json",
+      ], "Patch Validator Deployment"),
+      readJsonResource(execute, request.context, [
+        "get",
+        "serviceaccount",
+        PATCH_VALIDATOR_SERVICE_ACCOUNT,
+        "--namespace",
+        APPLICATION_NAMESPACE,
+        "--output=json",
+      ], "Patch Validator ServiceAccount"),
+      readJsonResource(execute, request.context, [
+        "get",
         "pods",
         "--namespace",
         APPLICATION_NAMESPACE,
@@ -2270,6 +2375,14 @@ async function readInstallationStatus(
         APPLICATION_NAMESPACE,
         "--output=json",
       ], "Console Service"),
+      readJsonResource(execute, request.context, [
+        "get",
+        "service",
+        "patch-validator",
+        "--namespace",
+        APPLICATION_NAMESPACE,
+        "--output=json",
+      ], "Patch Validator Service"),
       readJsonResource(execute, request.context, [
         "get",
         "persistentvolumeclaim",
@@ -2301,6 +2414,34 @@ async function readInstallationStatus(
         APPLICATION_NAMESPACE,
         "--output=json",
       ], "application NetworkPolicies"),
+      readJsonResource(execute, request.context, [
+        "get",
+        "role",
+        "patch-validator-dry-run",
+        "--namespace",
+        DIAGNOSTIC_NAMESPACE,
+        "--output=json",
+      ], "Patch Validator Role"),
+      readJsonResource(execute, request.context, [
+        "get",
+        "rolebinding",
+        "patch-validator-dry-run",
+        "--namespace",
+        DIAGNOSTIC_NAMESPACE,
+        "--output=json",
+      ], "Patch Validator RoleBinding"),
+      readJsonResource(execute, request.context, [
+        "get",
+        "validatingadmissionpolicy",
+        PATCH_VALIDATOR_ADMISSION_POLICY,
+        "--output=json",
+      ], "Patch Validator admission policy"),
+      readJsonResource(execute, request.context, [
+        "get",
+        "validatingadmissionpolicybinding",
+        PATCH_VALIDATOR_ADMISSION_POLICY,
+        "--output=json",
+      ], "Patch Validator admission policy binding"),
       readJsonResource(execute, request.context, [
         "get",
         "deployment",
@@ -2433,9 +2574,21 @@ async function readInstallationStatus(
     contract.images,
     request.profile,
   );
+  requireReadyDeployment(
+    patchValidator,
+    "patch-validator",
+    contract.images,
+    request.profile,
+  );
+  requireRenderedServiceAccount(
+    patchValidatorServiceAccount,
+    desiredResources,
+    PATCH_VALIDATOR_SERVICE_ACCOUNT,
+  );
   requireReadyPods(applicationPods);
   requireClusterIpService(runtimeService, "agent-runtime", 8000);
   requireClusterIpService(consoleService, "incident-console", 80);
+  requireClusterIpService(patchValidatorService, "patch-validator", 8081);
   const volumeName = requireBoundPvc(runtimePvc, request.profile);
   requireRuntimeConfig(runtimeConfig);
   requireConsoleConfig(consoleConfig);
@@ -2444,6 +2597,23 @@ async function readInstallationStatus(
     desiredResources,
     APPLICATION_NAMESPACE,
     "application",
+  );
+  requireRenderedRbacResource(
+    patchValidatorRole,
+    desiredResources,
+    "Role",
+    "patch-validator-dry-run",
+  );
+  requireRenderedRbacResource(
+    patchValidatorRoleBinding,
+    desiredResources,
+    "RoleBinding",
+    "patch-validator-dry-run",
+  );
+  requireReadyAdmissionPolicy(
+    patchValidatorAdmissionPolicy,
+    patchValidatorAdmissionPolicyBinding,
+    desiredResources,
   );
 
   requireReadyMonitoringDeployment(
@@ -2534,6 +2704,7 @@ async function readInstallationStatus(
   }
   await Promise.all([
     requireDiagnosticAccess(request, execute),
+    requirePatchValidatorAccess(request, execute),
     requireMonitoringAccess(request, execute),
   ]);
 
@@ -2546,7 +2717,7 @@ async function readInstallationStatus(
     intakeMode: request.profile.intakeMode,
     networkPolicies: "matched",
     networkPolicyEnforcement: "requires-live-probe",
-    pods: 2,
+    pods: 3,
     profile: request.profile.name,
     pvc: { name: RUNTIME_PVC, phase: "Bound", volumeName },
     rbac: "matched",
@@ -2707,21 +2878,39 @@ async function requireK3sComponents(contract, context, execute) {
 }
 
 async function requireRequiredSecrets(context, execute) {
-  for (const [namespace, name, key, label] of [
-    [APPLICATION_NAMESPACE, RUNTIME_SECRET, RUNTIME_SECRET_KEY, "Runtime model"],
+  for (const [namespace, name, key, label, expectedLength] of [
+    [
+      APPLICATION_NAMESPACE,
+      RUNTIME_SECRET,
+      RUNTIME_SECRET_KEY,
+      "Runtime model",
+      undefined,
+    ],
     [
       APPLICATION_NAMESPACE,
       ALERTMANAGER_WEBHOOK_SECRET,
       ALERTMANAGER_WEBHOOK_SECRET_KEY,
       "Runtime webhook",
+      undefined,
     ],
     [
       MONITORING_NAMESPACE,
       ALERTMANAGER_WEBHOOK_SECRET,
       ALERTMANAGER_WEBHOOK_SECRET_KEY,
       "Alertmanager webhook",
+      undefined,
+    ],
+    [
+      APPLICATION_NAMESPACE,
+      PATCH_VALIDATOR_SECRET,
+      PATCH_VALIDATOR_SECRET_KEY,
+      "Patch Validator HMAC",
+      32,
     ],
   ]) {
+    const template = expectedLength === undefined
+      ? `{{if index .data "${key}"}}present{{else}}missing{{end}}`
+      : `{{if index .data "${key}"}}{{if eq (len (base64decode (index .data "${key}"))) ${expectedLength}}}present{{else}}missing{{end}}{{else}}missing{{end}}`;
     const state = (
       await runKubectl(
         execute,
@@ -2732,7 +2921,7 @@ async function requireRequiredSecrets(context, execute) {
           name,
           "--namespace",
           namespace,
-          `--output=go-template={{if index .data "${key}"}}present{{else}}missing{{end}}`,
+          `--output=go-template=${template}`,
         ],
         READ_TIMEOUT_MILLISECONDS,
         `${label} Secret key check`,
@@ -2741,7 +2930,7 @@ async function requireRequiredSecrets(context, execute) {
     if (state !== "present") {
       throw new DeploymentContractError(
         "secret_contract_invalid",
-        `${label} Secret is missing the required non-empty key`,
+        `${label} Secret does not contain the required key material`,
       );
     }
   }
@@ -2881,6 +3070,101 @@ async function requireDiagnosticAccess(request, execute) {
     APPLICATION_NAMESPACE,
     [{ verb: "get", resource: "secrets", expected: false, namespaced: true }],
     "Runtime ServiceAccount must not read mounted Secret objects",
+  );
+}
+
+async function requirePatchValidatorAccess(request, execute) {
+  const subject =
+    `system:serviceaccount:${APPLICATION_NAMESPACE}:${PATCH_VALIDATOR_SERVICE_ACCOUNT}`;
+  await requireAccessChecks(
+    request,
+    execute,
+    subject,
+    DIAGNOSTIC_NAMESPACE,
+    [
+      {
+        verb: "get",
+        resource: "deployments.apps",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "patch",
+        resource: "deployments.apps",
+        expected: true,
+        namespaced: true,
+      },
+      {
+        verb: "create",
+        resource: "deployments.apps",
+        expected: false,
+        namespaced: true,
+      },
+      {
+        verb: "update",
+        resource: "deployments.apps",
+        expected: false,
+        namespaced: true,
+      },
+      {
+        verb: "delete",
+        resource: "deployments.apps",
+        expected: false,
+        namespaced: true,
+      },
+      {
+        verb: "patch",
+        resource: "deployments.apps",
+        subresource: "status",
+        expected: false,
+        namespaced: true,
+      },
+      {
+        verb: "patch",
+        resource: "deployments.apps",
+        subresource: "scale",
+        expected: false,
+        namespaced: true,
+      },
+      { verb: "get", resource: "pods", expected: false, namespaced: true },
+      {
+        verb: "get",
+        resource: "replicasets.apps",
+        expected: false,
+        namespaced: true,
+      },
+      { verb: "patch", resource: "pods", expected: false, namespaced: true },
+      { verb: "get", resource: "secrets", expected: false, namespaced: true },
+      {
+        verb: "create",
+        resource: "selfsubjectaccessreviews.authorization.k8s.io",
+        expected: true,
+        namespaced: false,
+      },
+    ],
+    "Patch Validator ServiceAccount permissions do not match the dry-run gate",
+  );
+  await requireAccessChecks(
+    request,
+    execute,
+    subject,
+    APPLICATION_NAMESPACE,
+    [
+      {
+        verb: "get",
+        resource: "deployments.apps",
+        expected: false,
+        namespaced: true,
+      },
+      {
+        verb: "patch",
+        resource: "deployments.apps",
+        expected: false,
+        namespaced: true,
+      },
+      { verb: "get", resource: "secrets", expected: false, namespaced: true },
+    ],
+    "Patch Validator ServiceAccount permissions escape the scenario namespace",
   );
 }
 
@@ -3250,7 +3534,12 @@ async function readOptionalPvc(request, execute, namespace, name) {
 function requireReadyDeployment(document, name, images, profile) {
   const pod = document.spec?.template?.spec;
   const isRuntime = name === "agent-runtime";
-  const expectedServiceAccount = isRuntime ? "agent-runtime" : "incident-console";
+  const isValidator = name === "patch-validator";
+  const expectedServiceAccount = isRuntime
+    ? "agent-runtime"
+    : isValidator
+      ? PATCH_VALIDATOR_SERVICE_ACCOUNT
+      : "incident-console";
   if (
     document.kind !== "Deployment" ||
     document.metadata?.name !== name ||
@@ -3265,10 +3554,9 @@ function requireReadyDeployment(document, name, images, profile) {
   ) {
     throw stateError(`${name} Deployment is not ready at one replica`);
   }
-  const expectedImage =
-    isRuntime
-      ? images["k8s-incident-agent-runtime"]
-      : images["k8s-incident-agent-console"];
+  const expectedImage = isRuntime || isValidator
+    ? images["k8s-incident-agent-runtime"]
+    : images["k8s-incident-agent-console"];
   const initContainers = pod.initContainers ?? [];
   const containers = pod.containers ?? [];
   const expectedInitNames = isRuntime
@@ -3285,16 +3573,19 @@ function requireReadyDeployment(document, name, images, profile) {
       expectedInitNames,
     ) ||
     containers.length !== 1 ||
-    containers[0]?.name !== (isRuntime ? "runtime" : "console") ||
+    containers[0]?.name !==
+      (isRuntime ? "runtime" : isValidator ? "validator" : "console") ||
     containerImages.some((image) => image !== expectedImage)
   ) {
     throw stateError(`${name} Deployment does not use the locked image`);
   }
-  requireContainerIntakeMode(
-    containers[0],
-    profile.intakeMode,
-    `${name} Deployment`,
-  );
+  if (!isValidator) {
+    requireContainerIntakeMode(
+      containers[0],
+      profile.intakeMode,
+      `${name} Deployment`,
+    );
+  }
   if (isRuntime) {
     const migration = initContainers.find(
       (container) => container?.name === "migrate",
@@ -3310,6 +3601,9 @@ function requireReadyDeployment(document, name, images, profile) {
     );
     const alertmanagerWebhook = pod.volumes?.find(
       (volume) => volume?.name === "alertmanager-webhook",
+    );
+    const patchValidatorAuth = pod.volumes?.find(
+      (volume) => volume?.name === "patch-validator-auth",
     );
     if (
       runtimeData?.persistentVolumeClaim?.claimName !== RUNTIME_PVC ||
@@ -3343,6 +3637,18 @@ function requireReadyDeployment(document, name, images, profile) {
       alertmanagerWebhook?.secret?.defaultMode !== 0o400 ||
       !isDeepStrictEqual(alertmanagerWebhook?.secret?.items, [
         { key: ALERTMANAGER_WEBHOOK_SECRET_KEY, path: "token" },
+      ]) ||
+      !containers[0]?.volumeMounts?.some(
+        (mount) =>
+          mount?.name === "patch-validator-auth" &&
+          mount?.mountPath ===
+            "/var/run/secrets/k8s-incident-agent/patch-validator" &&
+          mount?.readOnly === true,
+      ) ||
+      patchValidatorAuth?.secret?.secretName !== PATCH_VALIDATOR_SECRET ||
+      patchValidatorAuth?.secret?.defaultMode !== 0o440 ||
+      !isDeepStrictEqual(patchValidatorAuth?.secret?.items, [
+        { key: PATCH_VALIDATOR_SECRET_KEY, path: "hmac-key" },
       ])
     ) {
       throw stateError("agent-runtime Deployment does not use the fixed identity and storage");
@@ -3371,7 +3677,85 @@ function requireReadyDeployment(document, name, images, profile) {
     ) {
       throw stateError("Kind Runtime volume preparation is not minimally scoped");
     }
+    return;
   }
+  if (isValidator) {
+    requirePatchValidatorDeployment(pod, containers[0]);
+  }
+}
+
+function requirePatchValidatorDeployment(pod, container) {
+  const apiAccess = findVolume(pod, "kubernetes-api-access")?.projected;
+  const auth = findVolume(pod, "patch-validator-auth")?.secret;
+  if (
+    pod?.terminationGracePeriodSeconds !== 15 ||
+    !isDeepStrictEqual(pod?.securityContext, {
+      fsGroup: 10001,
+      fsGroupChangePolicy: "OnRootMismatch",
+      runAsGroup: 10001,
+      runAsNonRoot: true,
+      runAsUser: 10001,
+      seccompProfile: { type: "RuntimeDefault" },
+    }) ||
+    !isDeepStrictEqual(container?.command, ["patch-validator"]) ||
+    Object.hasOwn(container ?? {}, "args") ||
+    Object.hasOwn(container ?? {}, "envFrom") ||
+    !isDeepStrictEqual(container?.env, [
+      { name: "KUBERNETES_CLUSTER_ID", value: "k8s-incident-agent" },
+      {
+        name: "KUBERNETES_DIAGNOSTIC_NAMESPACE",
+        value: DIAGNOSTIC_NAMESPACE,
+      },
+      {
+        name: "PATCH_VALIDATOR_HMAC_KEY_FILE",
+        value: "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key",
+      },
+    ]) ||
+    !isDeepStrictEqual(container?.ports, [
+      { containerPort: 8081, name: "http", protocol: "TCP" },
+    ]) ||
+    !isDeepStrictEqual(container?.volumeMounts, [
+      {
+        mountPath: "/var/run/secrets/k8s-incident-agent/kubernetes",
+        name: "kubernetes-api-access",
+        readOnly: true,
+      },
+      {
+        mountPath: "/var/run/secrets/k8s-incident-agent/patch-validator",
+        name: "patch-validator-auth",
+        readOnly: true,
+      },
+    ]) ||
+    !isDeepStrictEqual(apiAccess, {
+      defaultMode: 0o440,
+      sources: [
+        {
+          serviceAccountToken: { expirationSeconds: 600, path: "token" },
+        },
+        {
+          configMap: {
+            items: [{ key: "ca.crt", path: "ca.crt" }],
+            name: "kube-root-ca.crt",
+          },
+        },
+      ],
+    }) ||
+    auth?.secretName !== PATCH_VALIDATOR_SECRET ||
+    auth?.defaultMode !== 0o440 ||
+    !isDeepStrictEqual(auth?.items, [
+      { key: PATCH_VALIDATOR_SECRET_KEY, path: "hmac-key" },
+    ]) ||
+    !isDeepStrictEqual(
+      pod?.volumes?.map((volume) => volume?.name),
+      ["kubernetes-api-access", "patch-validator-auth"],
+    )
+  ) {
+    throw stateError(
+      "patch-validator Deployment does not match the isolated credential boundary",
+    );
+  }
+  requireHardenedContainer(container, "patch-validator");
+  requireHttpProbes(container, "/healthz", "http", "/healthz", "http");
 }
 
 function requireReadyMonitoringDeployment(
@@ -3578,8 +3962,8 @@ function requireContainerIntakeMode(container, intakeMode, label) {
 function requireReadyPods(document) {
   requireReadyPodSet(
     document,
-    ["agent-runtime", "incident-console"],
-    "application Pods are not both ready",
+    ["agent-runtime", "incident-console", "patch-validator"],
+    "application Pods are not all ready",
   );
 }
 
@@ -3730,6 +4114,10 @@ function requireRuntimeConfig(document) {
     ALERT_CATALOG_DIR: "/workspace/monitoring/catalog",
     ALERTMANAGER_WEBHOOK_TOKEN_FILE:
       "/var/run/secrets/k8s-incident-agent/alertmanager/token",
+    PATCH_VALIDATOR_BASE_URL:
+      "http://patch-validator.k8s-incident-agent.svc.cluster.local:8081",
+    PATCH_VALIDATOR_HMAC_KEY_FILE:
+      "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key",
   };
   if (
     document.kind !== "ConfigMap" ||
@@ -3821,6 +4209,65 @@ function requireRenderedRbacResource(document, desiredResources, kind, name) {
   ) {
     throw stateError(`${name} ${kind} does not match the rendered contract`);
   }
+}
+
+function requireRenderedServiceAccount(document, desiredResources, name) {
+  const desired = requireRenderedResource(
+    desiredResources,
+    "ServiceAccount",
+    name,
+    APPLICATION_NAMESPACE,
+  );
+  if (
+    document.kind !== "ServiceAccount" ||
+    document.metadata?.name !== name ||
+    document.metadata?.namespace !== APPLICATION_NAMESPACE ||
+    !isDeepStrictEqual(document.metadata?.labels, desired.metadata?.labels) ||
+    document.automountServiceAccountToken !== false ||
+    document.automountServiceAccountToken !==
+      desired.automountServiceAccountToken
+  ) {
+    throw stateError(`${name} ServiceAccount does not match the rendered contract`);
+  }
+}
+
+function requireReadyAdmissionPolicy(policy, binding, desiredResources) {
+  const desiredPolicy = requireRenderedResource(
+    desiredResources,
+    "ValidatingAdmissionPolicy",
+    PATCH_VALIDATOR_ADMISSION_POLICY,
+    "",
+  );
+  const desiredBinding = requireRenderedResource(
+    desiredResources,
+    "ValidatingAdmissionPolicyBinding",
+    PATCH_VALIDATOR_ADMISSION_POLICY,
+    "",
+  );
+  const expressionWarnings = policy.status?.typeChecking?.expressionWarnings;
+  if (
+    policy.kind !== "ValidatingAdmissionPolicy" ||
+    policy.metadata?.name !== PATCH_VALIDATOR_ADMISSION_POLICY ||
+    !Number.isInteger(policy.metadata?.generation) ||
+    policy.status?.observedGeneration !== policy.metadata.generation ||
+    (expressionWarnings !== undefined &&
+      (!Array.isArray(expressionWarnings) || expressionWarnings.length !== 0)) ||
+    !isDeepStrictEqual(policy.spec, desiredPolicy.spec) ||
+    binding.kind !== "ValidatingAdmissionPolicyBinding" ||
+    binding.metadata?.name !== PATCH_VALIDATOR_ADMISSION_POLICY ||
+    !isDeepStrictEqual(binding.spec, desiredBinding.spec)
+  ) {
+    throw stateError(
+      "Patch Validator admission policy is not active at the rendered contract",
+    );
+  }
+}
+
+function isAdmissionPolicyObservationPending(policy) {
+  return (
+    Number.isInteger(policy.metadata?.generation) &&
+    policy.status?.observedGeneration !== policy.metadata.generation
+  );
 }
 
 function requireRenderedMonitoringContract(desiredResources, catalog) {

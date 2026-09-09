@@ -14,7 +14,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_supported_alert_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-06.1"
+    assert catalog.version == "2026-09-07.1"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
@@ -45,6 +45,8 @@ def test_production_catalog_has_supported_alert_entries() -> None:
         "pods",
         "events",
     ]
+    assert catalog.entries[0].repair_action == "set_container_image"
+    assert all(entry.repair_action is None for entry in catalog.entries[1:])
     assert "kube_pod_container_status_waiting_reason" in (
         catalog.entries[0].rule.expression
     )
@@ -193,9 +195,9 @@ def test_production_catalog_has_supported_alert_entries() -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        '{"schemaVersion":6,"catalogVersion":"v1","alerts":[]}',
+        '{"schemaVersion":7,"catalogVersion":"v1","alerts":[]}',
         (
-            '{"schemaVersion":6,"catalogVersion":"v1","alerts":['
+            '{"schemaVersion":7,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -210,7 +212,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             'name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schemaVersion":6,"schemaVersion":6,"catalogVersion":"v1",'
+            '{"schemaVersion":7,"schemaVersion":7,"catalogVersion":"v1",'
             '"alerts":[{"alertId":"A","displayName":"A",'
             '"triggerSummary":"A","rule":{"expression":"vector(1)",'
             '"for":"1s"},"target":{"apiVersion":"v1",'
@@ -225,7 +227,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             '"metric{namespace="{{namespace}}",name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schema_version":6,"catalogVersion":"v1","alerts":['
+            '{"schema_version":7,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -254,7 +256,7 @@ def test_catalog_rejects_empty_ambiguous_or_duplicate_key_contracts(
 
 def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     document = {
-        "schemaVersion": 6,
+        "schemaVersion": 7,
         "catalogVersion": "v1",
         "alerts": [
             {
@@ -322,6 +324,17 @@ def test_alert_entry_rejects_an_ambiguous_trigger_panel(
         AlertCatalogEntry.model_validate(entry)
 
 
+def test_repair_action_requires_deployment_rollout_evidence() -> None:
+    document = json.loads(
+        (REPOSITORY_ROOT / "monitoring" / "catalog" / "catalog.json").read_text()
+    )
+    entry = document["alerts"][0]
+    entry["requiredEvidence"].remove("rollout_history")
+
+    with pytest.raises(ValueError, match="rollout Evidence"):
+        AlertCatalogEntry.model_validate(entry)
+
+
 def test_catalog_rejects_higher_risk_without_a_static_threshold() -> None:
     with pytest.raises(ValueError, match="Higher-is-worse"):
         MetricPanelContract.model_validate(
@@ -346,7 +359,7 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     document = {
-        "schemaVersion": 6,
+        "schemaVersion": 7,
         "catalogVersion": "v1",
         "alerts": [
             {
