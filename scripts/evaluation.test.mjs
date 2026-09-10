@@ -607,6 +607,8 @@ test("diagnosis requires expected root causes to link all required Evidence", as
 
 test("diagnosis accepts Evidence-backed PVC codes while preserving the fixed repair code", async (t) => {
   for (const pvcCode of [
+    "persistent_binding_failure_pending_state",
+    "static_provisioner_no_dynamic_provisioning",
     "no_provisioner_storageclass_no_matching_pv",
     "unmatched_no_provisioner_plugin",
     "no_matching_provisioner_plugin",

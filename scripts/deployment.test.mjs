@@ -738,6 +738,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.equal(rules[1].for, "30s");
   assert.deepEqual(rules[1].labels, { severity: "warning" });
   assert.equal(rules[2].for, "30s");
+  assert.equal(rules[2].keep_firing_for, "2m");
   assert.match(
     rules[2].expr,
     /kube_pod_container_status_restarts_total/,

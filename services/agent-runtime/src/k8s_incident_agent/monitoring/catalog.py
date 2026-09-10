@@ -57,6 +57,10 @@ class AlertTargetMapping(_CatalogContract):
 class AlertRuleContract(_CatalogContract):
     expression: str = Field(min_length=1, max_length=4096)
     for_duration: str = Field(alias="for", pattern=r"^[1-9][0-9]*(?:ms|s|m|h)$")
+    keep_firing_for: str | None = Field(
+        default=None,
+        pattern=r"^[1-9][0-9]*(?:ms|s|m|h)$",
+    )
 
     @field_validator("expression")
     @classmethod
@@ -154,7 +158,7 @@ class AlertCatalogEntry(_CatalogContract):
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[7]
+    schema_version: Literal[8]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,

@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 7,
-  "catalogVersion": "2026-09-07.1",
+  "schemaVersion": 8,
+  "catalogVersion": "2026-09-10.1",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -64,7 +64,8 @@
       "triggerSummary": "A Deployment container repeatedly exits and is waiting in CrashLoopBackOff.",
       "rule": {
         "expression": "max by (namespace, deployment) (max by (namespace, pod) ((kube_pod_container_status_waiting_reason{reason=\"CrashLoopBackOff\"} == 1) * on (namespace, pod, container) (kube_pod_container_status_restarts_total > 0)) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
-        "for": "30s"
+        "for": "30s",
+        "keepFiringFor": "2m"
       },
       "target": {
         "apiVersion": "apps/v1",

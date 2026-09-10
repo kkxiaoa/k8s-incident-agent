@@ -14,7 +14,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_supported_alert_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-07.1"
+    assert catalog.version == "2026-09-10.1"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
@@ -86,6 +86,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     )
     crash_loop = catalog.entries[1]
     assert "kube_pod_container_status_restarts_total" in crash_loop.rule.expression
+    assert crash_loop.rule.keep_firing_for == "2m"
     assert crash_loop.required_evidence == [
         "workload",
         "pods",
@@ -195,9 +196,9 @@ def test_production_catalog_has_supported_alert_entries() -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        '{"schemaVersion":7,"catalogVersion":"v1","alerts":[]}',
+        '{"schemaVersion":8,"catalogVersion":"v1","alerts":[]}',
         (
-            '{"schemaVersion":7,"catalogVersion":"v1","alerts":['
+            '{"schemaVersion":8,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -212,7 +213,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             'name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schemaVersion":7,"schemaVersion":7,"catalogVersion":"v1",'
+            '{"schemaVersion":8,"schemaVersion":8,"catalogVersion":"v1",'
             '"alerts":[{"alertId":"A","displayName":"A",'
             '"triggerSummary":"A","rule":{"expression":"vector(1)",'
             '"for":"1s"},"target":{"apiVersion":"v1",'
@@ -227,7 +228,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             '"metric{namespace="{{namespace}}",name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schema_version":7,"catalogVersion":"v1","alerts":['
+            '{"schema_version":8,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -256,7 +257,7 @@ def test_catalog_rejects_empty_ambiguous_or_duplicate_key_contracts(
 
 def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     document = {
-        "schemaVersion": 7,
+        "schemaVersion": 8,
         "catalogVersion": "v1",
         "alerts": [
             {
@@ -359,7 +360,7 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     document = {
-        "schemaVersion": 7,
+        "schemaVersion": 8,
         "catalogVersion": "v1",
         "alerts": [
             {

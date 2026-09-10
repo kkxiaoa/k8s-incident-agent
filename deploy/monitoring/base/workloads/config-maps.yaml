@@ -121,6 +121,7 @@ data:
                   )
               ) > 0
             for: 30s
+            keep_firing_for: 2m
             labels:
               severity: warning
           - alert: K8sIncidentDeploymentReplicasUnavailable

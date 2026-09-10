@@ -588,7 +588,7 @@ function normalizeMonitoringContract(rawVersions, rawImages, rawAlertCatalog) {
 function normalizeAlertRuleCatalog(rawAlertCatalog) {
   const document = parseJsonObject(rawAlertCatalog, "alert catalog");
   if (
-    document.schemaVersion !== 7 ||
+    document.schemaVersion !== 8 ||
     typeof document.catalogVersion !== "string" ||
     document.catalogVersion === "" ||
     !Array.isArray(document.alerts) ||
@@ -610,9 +610,13 @@ function normalizeAlertRuleCatalog(rawAlertCatalog) {
       entry?.rule?.for,
       `${alertId} rule duration`,
     );
+    const keepFiringFor = entry?.rule?.keepFiringFor;
     if (
       !/^[A-Za-z_][A-Za-z0-9_]*$/.test(alertId) ||
       !/^[1-9][0-9]*(?:ms|s|m|h)$/.test(pendingFor) ||
+      (keepFiringFor !== undefined &&
+        (typeof keepFiringFor !== "string" ||
+          !/^[1-9][0-9]*(?:ms|s|m|h)$/.test(keepFiringFor))) ||
       entries.has(alertId)
     ) {
       throw new DeploymentContractError(
@@ -620,7 +624,7 @@ function normalizeAlertRuleCatalog(rawAlertCatalog) {
         "Alert catalog contains an invalid or duplicate rule",
       );
     }
-    entries.set(alertId, { expression, pendingFor });
+    entries.set(alertId, { expression, pendingFor, keepFiringFor });
   }
   return { version: document.catalogVersion, entries };
 }
@@ -4515,10 +4519,17 @@ function requireCatalogRules(rawRules, catalog) {
       seen.has(rule.alert) ||
       normalizePromql(rule?.expr) !== normalizePromql(expected.expression) ||
       rule?.for !== expected.pendingFor ||
+      rule?.keep_firing_for !== expected.keepFiringFor ||
       !isDeepStrictEqual(rule?.labels, { severity: "warning" }) ||
       !isDeepStrictEqual(
         Object.keys(rule ?? {}).sort(),
-        ["alert", "expr", "for", "labels"],
+        [
+          "alert",
+          "expr",
+          "for",
+          ...(expected.keepFiringFor === undefined ? [] : ["keep_firing_for"]),
+          "labels",
+        ].sort(),
       )
     ) {
       throw new DeploymentContractError(

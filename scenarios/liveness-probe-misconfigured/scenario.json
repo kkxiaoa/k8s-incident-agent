@@ -21,6 +21,7 @@
     "manifests/healthy-control.yaml"
   ],
   "expected_root_causes": [
+    "liveness_probe_port_mismatch",
     "liveness_probe_targets_wrong_numeric_port",
     "liveness_probe_wrong_port"
   ],

@@ -23,7 +23,9 @@
     "manifests/wffc-control.yaml"
   ],
   "expected_root_causes": [
+    "persistent_binding_failure_pending_state",
     "persistent_volume_claim_unbound",
+    "static_provisioner_no_dynamic_provisioning",
     "*no_matching_provisioner*",
     "*no_provisioner*",
     "*no_volume_plugin*",
