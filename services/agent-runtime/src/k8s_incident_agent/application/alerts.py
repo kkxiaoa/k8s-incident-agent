@@ -6,6 +6,7 @@ from k8s_incident_agent.application.scheduling import (
     schedule_committed_run,
 )
 from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget
+from k8s_incident_agent.model.availability import DiagnosisUnavailableError
 from k8s_incident_agent.monitoring.alertmanager import parse_alertmanager_webhook
 from k8s_incident_agent.monitoring.auth import AlertmanagerWebhookAuthenticator
 from k8s_incident_agent.monitoring.catalog import AlertCatalog
@@ -20,7 +21,7 @@ class AlertmanagerApplicationService:
         authenticator: AlertmanagerWebhookAuthenticator,
         repository: IncidentRepository,
         supervisor: RunScheduler,
-        model: ModelSnapshot,
+        model: Callable[[], ModelSnapshot | None],
         budget: RunBudget,
         cluster_id: str,
         diagnostic_namespace: str,
@@ -48,9 +49,11 @@ class AlertmanagerApplicationService:
         )
         result = await self._repository.apply_alert_occurrences(
             parsed.occurrences,
-            self._model,
+            self._model(),
             self._budget,
             watchdog_received_at=(self._now() if parsed.watchdog_firing else None),
         )
         for run_id in result.created_run_ids:
             await schedule_committed_run(self._supervisor, run_id)
+        if result.blocked_new_firing:
+            raise DiagnosisUnavailableError

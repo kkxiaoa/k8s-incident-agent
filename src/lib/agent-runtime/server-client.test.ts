@@ -12,6 +12,7 @@ import {
   fetchRunEvents,
   fetchRuns,
   fetchScenarios,
+  fetchRuntimeHealth,
   streamIncidentEvents,
 } from "./server-client";
 
@@ -39,6 +40,30 @@ beforeEach(() => {
 });
 
 describe("fixed REST helpers", () => {
+  it("reads core and diagnostic health from the fixed no-store Runtime endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      status: "ok", diagnosis: { status: "unavailable", reason: "authentication_failed" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await fetchRuntimeHealth();
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.href).toBe(`${RUNTIME_URL}/healthz`);
+    expect(init).toMatchObject({ method: "GET", cache: "no-store", redirect: "error" });
+    expect(result.response.status).toBe(200);
+  });
+
+  it("preserves retryable diagnosis failures on both creation routes", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => jsonResponse({ error: {
+      code: "diagnosis_unavailable", message: "Model diagnosis is unavailable.", retryable: true,
+    } }, 503)));
+    for (const response of [await createIncident(new Request("http://console.test/api/runtime/incidents", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scenarioId: "image-pull-backoff" }),
+    })), await createRun(INCIDENT_ID)]) {
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error: { code: "diagnosis_unavailable", retryable: true } });
+    }
+  });
   it("preserves the base path and sends a no-store scenario GET", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
     vi.stubGlobal("fetch", fetchMock);

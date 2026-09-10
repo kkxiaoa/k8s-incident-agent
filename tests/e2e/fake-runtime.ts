@@ -16,7 +16,7 @@ type OutcomeMode =
   | "insufficient"
   | "running"
   | "waiting";
-type RuntimeMode = OutcomeMode | "unavailable";
+type RuntimeMode = OutcomeMode | "unavailable" | "diagnosis-unavailable";
 
 interface FakeIncident {
   detail: IncidentDetailResponse;
@@ -1019,6 +1019,7 @@ async function handleRequest(
         "running",
         "waiting",
         "unavailable",
+        "diagnosis-unavailable",
       ].includes(
         String(body.mode),
       )
@@ -1054,6 +1055,16 @@ async function handleRequest(
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/healthz") {
+    json(response, 200, {
+      status: "ok",
+      diagnosis: mode === "diagnosis-unavailable"
+        ? { status: "unavailable", reason: "provider_unavailable" }
+        : { status: "ready", reason: null },
+    });
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/v1/monitoring/health") {
     json(response, 200, {
       state: "healthy",
@@ -1083,6 +1094,10 @@ async function handleRequest(
   }
 
   if (request.method === "POST" && url.pathname === "/api/v1/incidents") {
+    if (mode === "diagnosis-unavailable") {
+      runtimeError(response, 503, "diagnosis_unavailable", "Model diagnosis is unavailable.", true);
+      return;
+    }
     const body = await requestBody(request);
     if (
       typeof body !== "object" ||

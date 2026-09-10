@@ -11,7 +11,7 @@ from langchain_core.language_models import BaseChatModel
 
 import k8s_incident_agent.runtime.reset as reset_module
 from k8s_incident_agent import api
-from k8s_incident_agent.config import ConfigurationInvalidError, Settings
+from k8s_incident_agent.config import Settings
 from k8s_incident_agent.kubernetes.credentials import (
     DiagnosticCredential,
     DiagnosticCredentialLease,
@@ -82,7 +82,7 @@ def _scenario() -> PublicScenario:
     )
 
 
-def _install_runtime_fakes(
+def install_runtime_fakes(
     monkeypatch: pytest.MonkeyPatch,
     events: list[str],
     *,
@@ -159,7 +159,8 @@ def _install_runtime_fakes(
         async def schedule(self, _run_id: UUID) -> None:
             pass
 
-    async def discover(_settings: Settings) -> tuple[str, ...]:
+    async def discover(_settings: Settings, **_kwargs: object) -> tuple[str, ...]:
+        _settings.require_deepseek_api_key()
         events.append("discovery")
         fail("discovery")
         return ("deepseek-flash",)
@@ -308,14 +309,13 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    _install_runtime_fakes(monkeypatch, events)
+    install_runtime_fakes(monkeypatch, events)
 
     async with api.build_runtime_container(_settings(tmp_path)) as container:
         assert container.incidents is not None
         assert container.events is not None
         assert events == [
             "lock.acquire",
-            "discovery",
             "database.open",
             "database.head",
             "checkpoint.open",
@@ -330,8 +330,9 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
             "model.sync.open",
             "model.async.open",
             "patch-validator.http.open",
-            "model.create",
             "prometheus.open",
+            "discovery",
+            "model.create",
             "supervisor.init",
             "supervisor.start",
         ]
@@ -355,7 +356,7 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    _install_runtime_fakes(monkeypatch, events)
+    install_runtime_fakes(monkeypatch, events)
     settings = _settings(tmp_path).model_copy(
         update={
             "incident_intake_mode": "online",
@@ -366,7 +367,6 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
     async with api.build_runtime_container(settings):
         assert events == [
             "lock.acquire",
-            "discovery",
             "database.open",
             "database.head",
             "checkpoint.open",
@@ -377,8 +377,9 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
             "model.sync.open",
             "model.async.open",
             "patch-validator.http.open",
-            "model.create",
             "prometheus.open",
+            "discovery",
+            "model.create",
             "supervisor.init",
             "supervisor.start",
         ]
@@ -394,7 +395,7 @@ async def test_configured_alertmanager_route_loads_catalog_and_mounted_authentic
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    _install_runtime_fakes(monkeypatch, events)
+    install_runtime_fakes(monkeypatch, events)
     settings = _settings(tmp_path).model_copy(
         update={
             "incident_intake_mode": "online",
@@ -456,7 +457,7 @@ async def test_runtime_rejects_database_published_before_reset_staging_cleanup(
         real_rmtree,
     )
     events: list[str] = []
-    _install_runtime_fakes(monkeypatch, events)
+    install_runtime_fakes(monkeypatch, events)
 
     with pytest.raises(RuntimeError, match="incomplete Runtime data cutover"):
         async with api.build_runtime_container(settings):
@@ -473,7 +474,7 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
     settings = _settings(tmp_path)
     (settings.runtime_paths.root / ".runtime-delete-interrupted").mkdir(mode=0o700)
     events: list[str] = []
-    _install_runtime_fakes(monkeypatch, events)
+    install_runtime_fakes(monkeypatch, events)
 
     with pytest.raises(RuntimeError, match="incomplete Runtime data cutover"):
         async with api.build_runtime_container(settings):
@@ -486,7 +487,19 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
 @pytest.mark.parametrize(
     ("fail_at", "cleanup"),
     [
-        ("discovery", ["lock.release"]),
+        (
+            "discovery",
+            [
+                "prometheus.close",
+                "patch-validator.http.close",
+                "model.async.close",
+                "model.sync.close",
+                "kubernetes.close",
+                "checkpoint.close",
+                "database.close",
+                "lock.release",
+            ],
+        ),
         ("database", ["lock.release"]),
         ("head", ["database.close", "lock.release"]),
         ("checkpoint", ["database.close", "lock.release"]),
@@ -529,6 +542,7 @@ async def test_runtime_rejects_incomplete_root_deletion_claim(
         (
             "model",
             [
+                "prometheus.close",
                 "patch-validator.http.close",
                 "model.async.close",
                 "model.sync.close",
@@ -573,7 +587,7 @@ async def test_startup_failure_closes_only_initialized_resources_in_reverse(
     cleanup: list[str],
 ) -> None:
     events: list[str] = []
-    _install_runtime_fakes(monkeypatch, events, fail_at=fail_at)
+    install_runtime_fakes(monkeypatch, events, fail_at=fail_at)
 
     with pytest.raises(RuntimeError, match=f"{fail_at} failed"):
         async with api.build_runtime_container(_settings(tmp_path)):
@@ -583,16 +597,22 @@ async def test_startup_failure_closes_only_initialized_resources_in_reverse(
 
 
 @pytest.mark.asyncio
-async def test_missing_model_key_releases_lock_before_any_outbound_step(
+async def test_missing_model_key_keeps_core_ready_without_model_calls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    _install_runtime_fakes(monkeypatch, events)
+    install_runtime_fakes(monkeypatch, events)
     settings = _settings(tmp_path).model_copy(update={"deepseek_api_key": None})
 
-    with pytest.raises(ConfigurationInvalidError):
-        async with api.build_runtime_container(settings):
-            pass
+    async with api.build_runtime_container(settings) as container:
+        assert container.diagnostic_model.get_model() is None
+        assert container.diagnostic_model.error is not None
+        assert container.diagnostic_model.error.value == "configuration_invalid"
+        assert "database.head" in events
+        assert "checkpoint.open" in events
+        assert "supervisor.start" in events
 
-    assert events == ["lock.acquire", "lock.release"]
+    assert "discovery" not in events
+    assert "model.create" not in events
+    assert events[-1] == "lock.release"

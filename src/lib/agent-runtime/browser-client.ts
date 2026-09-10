@@ -19,9 +19,11 @@ type BrowserRuntimeFailure =
   | "not_found"
   | "unavailable";
 
-type BrowserRuntimeResult<T> =
+type BrowserRuntimeResult<T, Failure = BrowserRuntimeFailure> =
   | { ok: true; data: T }
-  | { ok: false; failure: BrowserRuntimeFailure };
+  | { ok: false; failure: Failure };
+
+type CreateFailure = BrowserRuntimeFailure | "diagnosis_unavailable";
 
 async function jsonBody(response: Response): Promise<unknown | null> {
   if (
@@ -42,9 +44,22 @@ function failureForStatus(status: number): BrowserRuntimeFailure {
   return status === 404 ? "not_found" : "unavailable";
 }
 
+async function createFailure(response: Response): Promise<CreateFailure> {
+  const body = await jsonBody(response);
+  if (
+    response.status === 503 && body !== null && typeof body === "object" &&
+    "error" in body && body.error !== null && typeof body.error === "object" &&
+    "code" in body.error && body.error.code === "diagnosis_unavailable" &&
+    "retryable" in body.error && body.error.retryable === true
+  ) {
+    return "diagnosis_unavailable";
+  }
+  return failureForStatus(response.status);
+}
+
 export async function createIncidentFromBrowser(
   scenarioId: string,
-): Promise<BrowserRuntimeResult<CreateIncidentView>> {
+): Promise<BrowserRuntimeResult<CreateIncidentView, CreateFailure>> {
   let response: Response;
   try {
     response = await fetch("/api/runtime/incidents", {
@@ -58,7 +73,7 @@ export async function createIncidentFromBrowser(
   }
 
   if (!response.ok) {
-    return { ok: false, failure: failureForStatus(response.status) };
+    return { ok: false, failure: await createFailure(response) };
   }
 
   const body = await jsonBody(response);
@@ -124,7 +139,7 @@ export async function fetchMonitoringPanelFromBrowser(
 
 export async function createRunFromBrowser(
   incidentId: string,
-): Promise<BrowserRuntimeResult<CreateRunView>> {
+): Promise<BrowserRuntimeResult<CreateRunView, CreateFailure>> {
   let response: Response;
   try {
     response = await fetch(
@@ -136,7 +151,7 @@ export async function createRunFromBrowser(
   }
 
   if (!response.ok) {
-    return { ok: false, failure: failureForStatus(response.status) };
+    return { ok: false, failure: await createFailure(response) };
   }
 
   const data = parseCreateRunResponse(await jsonBody(response));

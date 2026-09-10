@@ -7,9 +7,13 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
-from k8s_incident_agent.api_contracts import HealthResponse, error_responses
+from k8s_incident_agent.api_contracts import (
+    DiagnosticAvailabilityResponse,
+    RuntimeHealthResponse,
+    error_responses,
+)
 from k8s_incident_agent.api_errors import install_exception_handlers
 from k8s_incident_agent.application.alerts import AlertmanagerApplicationService
 from k8s_incident_agent.application.events import (
@@ -17,7 +21,10 @@ from k8s_incident_agent.application.events import (
     IncidentEventService,
     RunEventNotifier,
 )
-from k8s_incident_agent.application.incidents import IncidentApplicationService
+from k8s_incident_agent.application.incidents import (
+    IncidentApplicationService,
+    RuntimeNotReadyError,
+)
 from k8s_incident_agent.application.monitoring import MonitoringApplicationService
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyCatalog
@@ -38,6 +45,7 @@ from k8s_incident_agent.kubernetes.credentials import (
     load_diagnostic_credential,
     require_credential_window,
 )
+from k8s_incident_agent.model.availability import DiagnosticModelAvailability
 from k8s_incident_agent.model.discovery import discover_models
 from k8s_incident_agent.model.factory import create_deepseek_model
 from k8s_incident_agent.monitoring.alertmanager import AlertmanagerWebhook
@@ -74,6 +82,7 @@ class RuntimeContainer:
     events: IncidentEventService
     alerts: AlertmanagerApplicationService | None
     monitoring: MonitoringApplicationService
+    diagnostic_model: DiagnosticModelAvailability
 
 
 type RuntimeContextFactory = Callable[
@@ -132,15 +141,24 @@ def create_app(
     app.state.ready = False
     install_exception_handlers(app)
 
-    async def healthz() -> HealthResponse:
-        return HealthResponse()
+    async def healthz(request: Request) -> RuntimeHealthResponse:
+        if not request.app.state.ready:
+            raise RuntimeNotReadyError
+        container: RuntimeContainer = request.app.state.container
+        reason = container.diagnostic_model.error
+        return RuntimeHealthResponse(
+            diagnosis=DiagnosticAvailabilityResponse(
+                status="ready" if reason is None else "unavailable",
+                reason=reason,
+            )
+        )
 
     app.add_api_route(
         "/healthz",
         healthz,
         methods=["GET"],
-        response_model=HealthResponse,
-        responses=error_responses(500),
+        response_model=RuntimeHealthResponse,
+        responses=error_responses(500, 503),
     )
     if route_intake_mode == "manual":
         app.include_router(scenarios_router)
@@ -172,9 +190,6 @@ async def build_runtime_container(
             require_runtime_cutover_complete(runtime_root_fd)
         finally:
             os.close(runtime_root_fd)
-
-        settings.require_deepseek_api_key()
-        await discover_models(settings)
 
         database = await create_business_database(settings.runtime_paths)
         resources.push_async_callback(database.dispose)
@@ -249,11 +264,6 @@ async def build_runtime_container(
             timeout_seconds=settings.patch_validator_timeout_seconds,
             now=now,
         )
-        model = create_deepseek_model(
-            settings,
-            http_client=sync_http_client,
-            http_async_client=async_http_client,
-        )
         event_notifier = RunEventNotifier()
         repository = IncidentRepository(
             database.session_factory,
@@ -273,10 +283,21 @@ async def build_runtime_container(
             thinking_mode=settings.model_thinking,
             prompt_version=DIAGNOSTIC_PROMPT_VERSION,
         )
+        diagnostic_model = DiagnosticModelAvailability(
+            probe=lambda: discover_models(settings, client=async_http_client),
+            create_model=lambda: create_deepseek_model(
+                settings,
+                http_client=sync_http_client,
+                http_async_client=async_http_client,
+            ),
+            snapshot=model_snapshot,
+        )
+        resources.push_async_callback(diagnostic_model.close)
+        await diagnostic_model.start()
         supervisor = RunSupervisor(
             repository=repository,
             checkpointer=checkpointer,
-            model=model,
+            model=diagnostic_model.get_model,
             model_snapshot=model_snapshot,
             credential=credential,
             adapter=adapter,
@@ -297,7 +318,7 @@ async def build_runtime_container(
                 repository=repository,
                 supervisor=supervisor,
                 credential=credential,
-                model=model_snapshot,
+                model=diagnostic_model.get_snapshot,
                 budget=budget,
                 now=now,
             ),
@@ -313,7 +334,7 @@ async def build_runtime_container(
                     authenticator=alert_authenticator,
                     repository=repository,
                     supervisor=supervisor,
-                    model=model_snapshot,
+                    model=diagnostic_model.get_snapshot,
                     budget=budget,
                     cluster_id=kubernetes_clients.cluster_id,
                     diagnostic_namespace=kubernetes_clients.diagnostic_namespace,
@@ -329,6 +350,7 @@ async def build_runtime_container(
                 repository=repository,
                 now=now,
             ),
+            diagnostic_model=diagnostic_model,
         )
 
 

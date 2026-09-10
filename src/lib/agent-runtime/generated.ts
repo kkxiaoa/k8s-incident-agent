@@ -501,6 +501,15 @@ export interface components {
             /** Summary */
             summary: string;
         };
+        /** DiagnosticAvailabilityResponse */
+        DiagnosticAvailabilityResponse: {
+            reason: components["schemas"]["ModelErrorCode"] | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "unavailable";
+        };
         /** ErrorDetail */
         ErrorDetail: {
             /** Code */
@@ -605,15 +614,6 @@ export interface components {
             toolName: string;
             /** Truncated */
             truncated: boolean;
-        };
-        /** HealthResponse */
-        HealthResponse: {
-            /**
-             * Status
-             * @default ok
-             * @constant
-             */
-            status: "ok";
         };
         /** IncidentCreatedEventPayload */
         IncidentCreatedEventPayload: {
@@ -856,6 +856,11 @@ export interface components {
          * @enum {string}
          */
         MetricWindow: "15m" | "1h" | "6h" | "7d" | "15d";
+        /**
+         * ModelErrorCode
+         * @enum {string}
+         */
+        ModelErrorCode: "configuration_invalid" | "authentication_failed" | "model_not_found" | "provider_rate_limited" | "provider_unavailable" | "provider_contract_invalid" | "tool_arguments_invalid" | "structured_output_invalid" | "reasoning_roundtrip_failed";
         /**
          * MonitoringComponentState
          * @enum {string}
@@ -1418,6 +1423,16 @@ export interface components {
             /** Startedat */
             startedAt: string | null;
             status: components["schemas"]["RunStatus"];
+        };
+        /** RuntimeHealthResponse */
+        RuntimeHealthResponse: {
+            diagnosis: components["schemas"]["DiagnosticAvailabilityResponse"];
+            /**
+             * Status
+             * @default ok
+             * @constant
+             */
+            status: "ok";
         };
         /** ScenarioListResponse */
         ScenarioListResponse: {
@@ -2348,11 +2363,20 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HealthResponse"];
+                    "application/json": components["schemas"]["RuntimeHealthResponse"];
                 };
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

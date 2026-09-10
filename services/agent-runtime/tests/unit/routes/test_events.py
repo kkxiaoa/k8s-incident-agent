@@ -11,7 +11,11 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from starlette.types import Message, Scope
-from tests.factories import monitoring_health_service_stub, normalized_trigger
+from tests.factories import (
+    diagnostic_model_stub,
+    monitoring_health_service_stub,
+    normalized_trigger,
+)
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -85,6 +89,7 @@ async def _client(
     @asynccontextmanager
     async def runtime_context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, service),
             alerts=None,
@@ -302,6 +307,7 @@ async def test_http_disconnect_cancels_stream_without_changing_run_state(
             _settings: Settings,
         ) -> AsyncGenerator[RuntimeContainer]:
             yield RuntimeContainer(
+                diagnostic_model=diagnostic_model_stub(),
                 incidents=cast(IncidentApplicationService, object()),
                 events=service,
                 alerts=None,

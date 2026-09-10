@@ -5,7 +5,7 @@ from typing import cast
 
 import httpx
 import pytest
-from tests.factories import monitoring_health_service_stub
+from tests.factories import diagnostic_model_stub, monitoring_health_service_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -61,6 +61,7 @@ async def _client(
         _settings: Settings,
     ) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),
             alerts=cast(AlertmanagerApplicationService, service),

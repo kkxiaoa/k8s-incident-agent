@@ -41,6 +41,29 @@ test.beforeEach(async () => {
   await control("/__test__/reset", {});
 });
 
+test("model outage preserves history while refusing new diagnosis", async ({ page }) => {
+  await control("/__test__/showcase", {});
+  await control("/__test__/mode", { mode: "diagnosis-unavailable" });
+  await page.goto("/");
+  await expect(page.getByText(/模型诊断暂不可用（模型服务暂不可用）/)).toBeVisible();
+  await expect(page.getByLabel("Runtime：正常")).toBeVisible();
+  await expect(page.locator(".incident-list__link")).toHaveCount(12);
+  await page.getByRole("button", { name: "创建 Incident" }).click();
+  await expect(page.getByText(/模型诊断暂不可用，未创建 Incident/)).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.locator(".incident-list__link")).toHaveCount(12);
+
+  await page.goto("/incidents/10000000-0000-4000-8000-000000000005");
+  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await page.reload();
+  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await page.goto("/");
+  await control("/__test__/mode", { mode: "diagnosed" });
+  await page.getByRole("button", { name: "刷新运行概览" }).click();
+  await expect(page.getByText(/模型诊断暂不可用/)).toHaveCount(0);
+  await expect(page.locator(".incident-list__link")).toHaveCount(12);
+});
+
 test("renders the tests-only chart showcase with drill-down data", async ({
   page,
 }) => {

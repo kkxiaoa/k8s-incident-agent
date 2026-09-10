@@ -548,6 +548,35 @@
         "title": "DiagnosisResponse",
         "type": "object"
       },
+      "DiagnosticAvailabilityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelErrorCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reason"
+        ],
+        "title": "DiagnosticAvailabilityResponse",
+        "type": "object"
+      },
       "ErrorDetail": {
         "additionalProperties": false,
         "properties": {
@@ -764,19 +793,6 @@
           "redacted"
         ],
         "title": "EvidenceResponse",
-        "type": "object"
-      },
-      "HealthResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "status": {
-            "const": "ok",
-            "default": "ok",
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "title": "HealthResponse",
         "type": "object"
       },
       "IncidentCreatedEventPayload": {
@@ -1373,6 +1389,21 @@
           "15d"
         ],
         "title": "MetricWindow",
+        "type": "string"
+      },
+      "ModelErrorCode": {
+        "enum": [
+          "configuration_invalid",
+          "authentication_failed",
+          "model_not_found",
+          "provider_rate_limited",
+          "provider_unavailable",
+          "provider_contract_invalid",
+          "tool_arguments_invalid",
+          "structured_output_invalid",
+          "reasoning_roundtrip_failed"
+        ],
+        "title": "ModelErrorCode",
         "type": "string"
       },
       "MonitoringComponentState": {
@@ -2612,6 +2643,25 @@
           "completedAt"
         ],
         "title": "RunSummaryResponse",
+        "type": "object"
+      },
+      "RuntimeHealthResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnosis": {
+            "$ref": "#/components/schemas/DiagnosticAvailabilityResponse"
+          },
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "diagnosis"
+        ],
+        "title": "RuntimeHealthResponse",
         "type": "object"
       },
       "ScenarioListResponse": {
@@ -3964,7 +4014,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HealthResponse"
+                  "$ref": "#/components/schemas/RuntimeHealthResponse"
                 }
               }
             },
@@ -3979,6 +4029,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Healthz"

@@ -64,6 +64,19 @@ beforeEach(() => {
 });
 
 describe("server view data", () => {
+  it("keeps persisted incidents visible when model discovery is unavailable", async () => {
+    const health = { status: "ok", diagnosis: { status: "unavailable", reason: "provider_unavailable" } };
+    vi.stubGlobal("fetch", vi.fn((url: URL) => Promise.resolve(jsonResponse(
+      url.pathname === "/healthz" ? health
+        : url.pathname.endsWith("/monitoring/health") ? monitoringHealth()
+        : url.pathname.endsWith("/monitoring/overview") ? monitoringOverview()
+        : { schemaVersion: 4, items: [], nextCursor: null },
+    ))));
+    const result = await loadIncidentConsoleOverview("online");
+    expect(result.runtimeHealth).toEqual(health);
+    expect(result.incidents).toEqual({ items: [], nextCursor: null });
+    expect(result.monitoringHealth).toEqual(monitoringHealth());
+  });
   it("rejects malformed items from successful list responses", async () => {
     vi.stubGlobal(
       "fetch",
@@ -87,6 +100,7 @@ describe("server view data", () => {
     const overview = await loadIncidentConsoleOverview("manual");
 
     expect(overview).toEqual({
+      runtimeHealth: null,
       scenarios: null,
       incidents: null,
       monitoringHealth: monitoringHealth(),
@@ -108,15 +122,17 @@ describe("server view data", () => {
 
     const overview = await loadIncidentConsoleOverview("online");
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(
       fetchMock.mock.calls.map((call) => (call[0] as URL).pathname).sort(),
     ).toEqual([
       "/api/v1/incidents",
       "/api/v1/monitoring/health",
       "/api/v1/monitoring/overview",
+      "/healthz",
     ]);
     expect(overview).toEqual({
+      runtimeHealth: null,
       scenarios: null,
       incidents: { items: [], nextCursor: null },
       monitoringHealth: monitoringHealth(),

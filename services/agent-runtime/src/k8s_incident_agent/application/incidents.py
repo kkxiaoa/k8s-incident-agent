@@ -54,6 +54,7 @@ from k8s_incident_agent.kubernetes.credentials import (
     require_credential_window,
 )
 from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
+from k8s_incident_agent.model.availability import DiagnosisUnavailableError
 from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
     IncidentDetailRecord,
@@ -99,7 +100,7 @@ class IncidentApplicationService:
         repository: IncidentRepository,
         supervisor: RunScheduler,
         credential: DiagnosticCredentialLease,
-        model: ModelSnapshot,
+        model: Callable[[], ModelSnapshot | None],
         budget: RunBudget,
         now: Callable[[], datetime],
     ) -> None:
@@ -126,21 +127,21 @@ class IncidentApplicationService:
         scenario = self._scenarios.get(request.scenario_id)
         if scenario is None:
             raise ScenarioNotFoundError
-        self._require_runtime_ready()
+        model = self._require_diagnostic_readiness()
         created = await self._repository.create_incident_and_run(
             _normalized_scenario_trigger(scenario),
-            self._model,
+            model,
             self._budget,
         )
         await schedule_committed_run(self._supervisor, created.run_id)
         return CreateIncidentResponse(incident_id=created.incident_id)
 
     async def create_run(self, incident_id: UUID) -> CreateRunResponse:
-        self._require_runtime_ready()
+        model = self._require_diagnostic_readiness()
         try:
             created = await self._repository.create_run(
                 incident_id,
-                self._model,
+                model,
                 self._budget,
             )
         except ActiveRunExistsError:
@@ -258,7 +259,7 @@ class IncidentApplicationService:
             next_cursor=next_cursor,
         )
 
-    def _require_runtime_ready(self) -> None:
+    def _require_diagnostic_readiness(self) -> ModelSnapshot:
         try:
             require_credential_window(
                 self._credential,
@@ -267,6 +268,10 @@ class IncidentApplicationService:
             )
         except KubernetesBoundaryError:
             raise RuntimeNotReadyError from None
+        model = self._model()
+        if model is None:
+            raise DiagnosisUnavailableError
+        return model
 
 
 def _normalized_scenario_trigger(scenario: PublicScenario) -> NormalizedIncidentTrigger:

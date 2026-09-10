@@ -12,7 +12,19 @@ import {
   parseMonitoringHealthResponse,
   parseMonitoringOverviewResponse,
   parseMonitoringPanelListResponse,
+  parseRuntimeHealthResponse,
 } from "./response-contracts";
+
+it("projects diagnostic availability and rejects contradictory or unknown health claims", () => {
+  const health = { status: "ok", diagnosis: { status: "unavailable", reason: "configuration_invalid" } };
+  expect(parseRuntimeHealthResponse({ ...health, privateMetadata: "discard" })).toEqual(health);
+  expect(parseRuntimeHealthResponse({ status: "ok", diagnosis: { status: "ready", reason: null } })).not.toBeNull();
+  for (const diagnosis of [
+    { status: "ready", reason: "authentication_failed" },
+    { status: "unavailable", reason: null },
+    { status: "unavailable", reason: "raw upstream response" },
+  ]) expect(parseRuntimeHealthResponse({ status: "ok", diagnosis })).toBeNull();
+});
 
 it("accepts every bounded metric window", () => {
   expect(["15m", "1h", "6h", "7d", "15d"].every(isMetricWindow)).toBe(true);

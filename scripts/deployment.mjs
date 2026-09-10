@@ -2712,10 +2712,28 @@ async function readInstallationStatus(
     requireMonitoringAccess(request, execute),
   ]);
 
+  const runtimeHealth = await readJsonResource(execute, request.context, [
+    "get", "--raw",
+    "/api/v1/namespaces/k8s-incident-agent/services/agent-runtime:http/proxy/healthz",
+  ], "Runtime health");
+  const diagnosis = requireObject(runtimeHealth.diagnosis, "Runtime diagnosis availability");
+  const unavailableReasons = [
+    "configuration_invalid", "authentication_failed", "model_not_found",
+    "provider_rate_limited", "provider_unavailable", "provider_contract_invalid",
+    "tool_arguments_invalid", "structured_output_invalid", "reasoning_roundtrip_failed",
+  ];
+  if (runtimeHealth.status !== "ok" || !(
+    (diagnosis.status === "ready" && diagnosis.reason === null) ||
+    (diagnosis.status === "unavailable" && unavailableReasons.includes(diagnosis.reason))
+  )) {
+    throw new DeploymentContractError("external_contract_invalid", "Runtime health response is invalid");
+  }
+
   return {
     ...(options.action === undefined ? {} : { action: options.action }),
     cluster: request.profile.platform,
     deployments: "ready",
+    runtime: { status: "ok", diagnosis: { status: diagnosis.status, reason: diagnosis.reason } },
     ingress:
       request.profile.platform === "k3s" ? "traefik-ready" : "not-installed",
     intakeMode: request.profile.intakeMode,

@@ -1611,6 +1611,14 @@ function response(key, args) {
   if (key === "get deployment agent-runtime --namespace k8s-incident-agent --output=json") {
     return deployment("agent-runtime");
   }
+  if (key === "get --raw /api/v1/namespaces/k8s-incident-agent/services/agent-runtime:http/proxy/healthz") {
+    return {
+      status: process.env.FAKE_RUNTIME_HEALTH_INVALID === "1" ? "failed" : "ok",
+      diagnosis: process.env.FAKE_DIAGNOSIS_UNAVAILABLE === "1"
+        ? { status: "unavailable", reason: "authentication_failed" }
+        : { status: "ready", reason: null },
+    };
+  }
   if (key === "get deployment incident-console --namespace k8s-incident-agent --output=json") {
     return deployment("incident-console");
   }
@@ -2621,6 +2629,7 @@ test("confirmed online install preflights, applies, waits, and reports the real 
     action: "install",
     cluster: "k3s",
     deployments: "ready",
+    runtime: { status: "ok", diagnosis: { status: "ready", reason: null } },
     ingress: "traefik-ready",
     intakeMode: "online",
     networkPolicies: "matched",
@@ -2870,6 +2879,7 @@ test("Kind status accepts the fixed ownership init and exact producer lists", (t
   assert.deepEqual(JSON.parse(result.stdout), {
     cluster: "kind",
     deployments: "ready",
+    runtime: { status: "ok", diagnosis: { status: "ready", reason: null } },
     ingress: "not-installed",
     intakeMode: "manual",
     networkPolicies: "matched",
@@ -2898,6 +2908,24 @@ test("Kind status accepts the fixed ownership init and exact producer lists", (t
       services: "cluster-ip-only",
     },
   });
+});
+
+test("status reports model degradation separately from ready core workloads", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_DIAGNOSIS_UNAVAILABLE: "1" });
+  const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const status = JSON.parse(result.stdout);
+  assert.equal(status.deployments, "ready");
+  assert.deepEqual(status.runtime, { status: "ok", diagnosis: {
+    status: "unavailable", reason: "authentication_failed",
+  } });
+});
+
+test("status rejects invalid core health without claiming a healthy installation", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_RUNTIME_HEALTH_INVALID: "1" });
+  const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL external_contract_invalid /);
 });
 
 test("status rejects an additive NetworkPolicy that broadens the fixed profile", (t) => {

@@ -260,6 +260,17 @@ describe("ScenarioLauncher", () => {
     );
   });
 
+  it("explains a diagnostic outage without creating or navigating away", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
+      code: "diagnosis_unavailable", message: "Model diagnosis is unavailable.", retryable: true,
+    } }), { status: 503, headers: { "content-type": "application/json" } })));
+    const user = userEvent.setup();
+    render(<ScenarioLauncher scenarios={[SCENARIO]} />);
+    await user.click(screen.getByRole("button", { name: "创建 Incident" }));
+    expect(await screen.findByText(/模型诊断暂不可用，未创建 Incident/)).toBeVisible();
+    expect(navigation.push).not.toHaveBeenCalled();
+  });
+
   it("keeps a safe retryable error in the launcher", async () => {
     vi.stubGlobal(
       "fetch",
@@ -384,6 +395,21 @@ describe("read-only incident presentation", () => {
       await screen.findByText("收到无法验证的运行事件，实时更新已停止。"),
     ).toBeVisible();
     expect(source?.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps saved history visible when a new diagnostic Run is unavailable", async () => {
+    const detail = makeIncidentDetail();
+    detail.selectedRun.status = "COMPLETED";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
+      code: "diagnosis_unavailable", message: "Model diagnosis is unavailable.", retryable: true,
+    } }), { status: 503, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const user = userEvent.setup();
+    renderIncidentStream(detail);
+    await user.click(screen.getByRole("button", { name: "重新诊断" }));
+    expect(await screen.findByText(/模型诊断暂不可用，未创建新 Run/)).toBeVisible();
+    expect(navigation.replace).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "重新诊断" })).toBeEnabled();
   });
 
   it("creates a later Run only through the manual latest-mode action", async () => {

@@ -8,6 +8,7 @@ from k8s_incident_agent.domain.contracts import (
     NormalizedIncidentTrigger,
 )
 from k8s_incident_agent.domain.models import AgentRunSnapshot
+from k8s_incident_agent.model.availability import DiagnosticModelAvailability
 from k8s_incident_agent.monitoring.service import PrometheusQueryService
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.scenarios.contracts import (
@@ -88,3 +89,11 @@ def prometheus_query_service_stub() -> PrometheusQueryService:
 
 def monitoring_health_service_stub() -> MonitoringApplicationService:
     return cast(MonitoringApplicationService, object())
+
+
+class _DiagnosticModelStub:
+    error = None
+
+
+def diagnostic_model_stub() -> DiagnosticModelAvailability:
+    return cast(DiagnosticModelAvailability, _DiagnosticModelStub())

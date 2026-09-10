@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Final, cast
 from uuid import UUID
@@ -63,7 +64,7 @@ class RunSupervisor:
         *,
         repository: IncidentRepository,
         checkpointer: AsyncSqliteSaver,
-        model: BaseChatModel,
+        model: Callable[[], BaseChatModel | None],
         model_snapshot: ModelSnapshot,
         credential: DiagnosticCredentialLease,
         adapter: KubernetesEvidenceAdapter,
@@ -75,7 +76,7 @@ class RunSupervisor:
         self._dependencies = GraphDependencies(
             repository=repository,
             checkpointer=checkpointer,
-            model=model,
+            model=None,
             model_snapshot=model_snapshot,
             credential=credential,
             adapter=adapter,
@@ -84,6 +85,7 @@ class RunSupervisor:
             patch_validator=patch_validator,
         )
         self._repository = repository
+        self._model = model
         self._policies = policies
         self._checkpointer = checkpointer
         self._now = now
@@ -157,7 +159,8 @@ class RunSupervisor:
                     False,
                 )
                 return
-            graph = build_incident_graph(self._dependencies, snapshot, policy)
+            dependencies = replace(self._dependencies, model=self._model())
+            graph = build_incident_graph(dependencies, snapshot, policy)
             context = self._context(snapshot)
             if snapshot.run_status is RunStatus.QUEUED:
                 if checkpoint is None:
@@ -202,6 +205,13 @@ class RunSupervisor:
                 and self._deadline_expired(snapshot)
             ):
                 await self._persist_failure(run_id, "agent_timeout", True)
+                return
+            if (
+                terminal_error is None
+                and next_node in _MODEL_BOUNDARY_NODES
+                and dependencies.model is None
+            ):
+                await self._persist_failure(run_id, "diagnosis_unavailable", True)
                 return
 
             await graph.ainvoke(  # pyright: ignore[reportUnknownMemberType]

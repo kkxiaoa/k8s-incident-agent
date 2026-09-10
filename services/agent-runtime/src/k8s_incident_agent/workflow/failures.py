@@ -11,6 +11,7 @@ _WORKFLOW_FAILURE_RETRYABILITY: Final = {
     "tool_call_limit_exceeded": False,
     "structured_output_invalid": False,
     "model_upstream_failed": True,
+    "diagnosis_unavailable": True,
     "repair_schema_invalid": False,
     "repair_policy_denied": False,
     "repair_diff_invalid": False,

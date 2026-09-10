@@ -64,6 +64,7 @@ from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.kubernetes.tools import (
     build_diagnostic_tools,
 )
+from k8s_incident_agent.model.availability import DiagnosisUnavailableError
 from k8s_incident_agent.monitoring.service import PrometheusQueryService
 from k8s_incident_agent.monitoring.tools import build_prometheus_tool
 from k8s_incident_agent.persistence.canonical import canonical_json
@@ -103,7 +104,7 @@ type IncidentGraph = CompiledStateGraph[
 class GraphDependencies:
     repository: IncidentRepository
     checkpointer: AsyncSqliteSaver
-    model: BaseChatModel
+    model: BaseChatModel | None
     model_snapshot: ModelSnapshot
     credential: DiagnosticCredentialLease
     adapter: KubernetesEvidenceAdapter
@@ -122,14 +123,18 @@ def build_incident_graph(
     registry = {
         tool.name: tool for tool in (*build_diagnostic_tools(), build_prometheus_tool())
     }
-    diagnostic_agent = build_diagnostic_agent(
-        dependencies.model,
-        tuple(registry[name] for name in policy.tool_names),
-        max_model_calls=run.budget.max_model_calls,
-        max_tool_calls=run.budget.max_tool_calls,
-        required_evidence=tuple(sorted(policy.required_evidence)),
-        prometheus_panel_ids=policy.prometheus_panel_ids,
-        repair_action=policy.repair_action,
+    diagnostic_agent = (
+        None
+        if dependencies.model is None
+        else build_diagnostic_agent(
+            dependencies.model,
+            tuple(registry[name] for name in policy.tool_names),
+            max_model_calls=run.budget.max_model_calls,
+            max_tool_calls=run.budget.max_tool_calls,
+            required_evidence=tuple(sorted(policy.required_evidence)),
+            prometheus_panel_ids=policy.prometheus_panel_ids,
+            repair_action=policy.repair_action,
+        )
     )
     builder = StateGraph(
         IncidentGraphState,
@@ -143,11 +148,18 @@ def build_incident_graph(
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
         "triage_target", _triage_target_node(dependencies, run)
     )
-    builder.add_node(  # pyright: ignore[reportUnknownMemberType]
-        "diagnose",
-        diagnostic_agent,
-        error_handler=_diagnosis_error_handler,  # pyright: ignore[reportArgumentType]
-    )
+    if diagnostic_agent is None:
+        builder.add_node(  # pyright: ignore[reportUnknownMemberType]
+            "diagnose",
+            _unavailable_diagnosis,
+            error_handler=_diagnosis_error_handler,  # pyright: ignore[reportArgumentType]
+        )
+    else:
+        builder.add_node(  # pyright: ignore[reportUnknownMemberType]
+            "diagnose",
+            diagnostic_agent,
+            error_handler=_diagnosis_error_handler,  # pyright: ignore[reportArgumentType]
+        )
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
         "validate_diagnosis",
         _validate_diagnosis_node(dependencies, run, policy),
@@ -628,6 +640,11 @@ def _persist_terminal_node(
     return persist_terminal_state
 
 
+def _unavailable_diagnosis(state: IncidentGraphState) -> dict[str, object]:
+    del state
+    raise DiagnosisUnavailableError
+
+
 def _diagnosis_error_handler(
     state: IncidentGraphState,
     error: NodeError,
@@ -643,6 +660,8 @@ def _diagnosis_error_handler(
 
 
 def classify_diagnosis_failure(error: BaseException) -> tuple[str, bool] | None:
+    if isinstance(error, DiagnosisUnavailableError):
+        return "diagnosis_unavailable", True
     if isinstance(error, DiagnosticDeadlineExceededError):
         return _AGENT_TIMEOUT, True
     if isinstance(error, ModelCallLimitExceededError):

@@ -36,6 +36,8 @@ export function ScenarioLauncher({
       setError(
         result.failure === "not_found"
           ? "所选诊断场景已不存在，请刷新页面。"
+          : result.failure === "diagnosis_unavailable"
+          ? "模型诊断暂不可用，未创建 Incident。请在模型服务恢复后重试。"
           : "暂时无法创建 Incident，请稍后重试。",
       );
       setSubmitting(false);

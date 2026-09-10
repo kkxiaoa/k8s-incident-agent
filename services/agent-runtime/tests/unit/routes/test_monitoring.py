@@ -6,6 +6,7 @@ from typing import cast
 
 import httpx
 import pytest
+from tests.factories import diagnostic_model_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -169,6 +170,7 @@ async def test_monitoring_health_route_returns_the_bounded_projection(
         _settings: Settings,
     ) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),
             alerts=None,
@@ -215,6 +217,7 @@ async def test_monitoring_overview_route_returns_fixed_24_hour_projection(
         _settings: Settings,
     ) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),
             alerts=None,
@@ -267,6 +270,7 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
         _settings: Settings,
     ) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),
             alerts=None,

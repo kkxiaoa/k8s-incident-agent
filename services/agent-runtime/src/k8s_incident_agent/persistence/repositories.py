@@ -1042,7 +1042,7 @@ class IncidentRepository:
     async def apply_alert_occurrences(
         self,
         occurrences: tuple[NormalizedAlertOccurrence, ...],
-        model: ModelSnapshot,
+        model: ModelSnapshot | None,
         budget: RunBudget,
         *,
         watchdog_received_at: datetime | None = None,
@@ -1073,12 +1073,13 @@ class IncidentRepository:
     async def _apply_alert_occurrences_once(
         self,
         occurrences: tuple[NormalizedAlertOccurrence, ...],
-        model: ModelSnapshot,
+        model: ModelSnapshot | None,
         budget: RunBudget,
         watchdog_received_at: datetime | None,
     ) -> PersistedAlertBatch:
         created_run_ids: list[UUID] = []
         committed_events: list[RunEvent] = []
+        blocked_new_firing = False
         async with self._session_factory() as session, session.begin():
             if watchdog_received_at is not None:
                 await _record_watchdog_arrival(session, watchdog_received_at)
@@ -1091,6 +1092,9 @@ class IncidentRepository:
                 )
                 if signal is None:
                     if occurrence.status is AlertSignalStatus.RESOLVED:
+                        continue
+                    if model is None:
+                        blocked_new_firing = True
                         continue
                     created = await _create_alert_incident(
                         session,
@@ -1113,6 +1117,7 @@ class IncidentRepository:
         return PersistedAlertBatch(
             created_run_ids=tuple(created_run_ids),
             events=tuple(committed_events),
+            blocked_new_firing=blocked_new_firing,
         )
 
     async def get_watchdog_last_received_at(self) -> datetime | None:

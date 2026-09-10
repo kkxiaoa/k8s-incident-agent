@@ -38,6 +38,7 @@ class _Repository:
         return PersistedAlertBatch(
             created_run_ids=((RUN_ID,) if occurrences else ()),
             events=(),
+            blocked_new_firing=False,
         )
 
 
@@ -50,7 +51,7 @@ class _FailingScheduler:
         raise RuntimeError("injected scheduling failure")
 
 
-def _payload() -> bytes:
+def alert_payload() -> bytes:
     return (
         b'{"version":"4","groupKey":"group","truncatedAlerts":0,'
         b'"status":"firing","receiver":"runtime","groupLabels":{},'
@@ -68,7 +69,7 @@ def _payload() -> bytes:
     )
 
 
-def _watchdog_payload() -> bytes:
+def watchdog_payload() -> bytes:
     return (
         b'{"version":"4","groupKey":"group","truncatedAlerts":0,'
         b'"status":"firing","receiver":"runtime","groupLabels":{},'
@@ -97,7 +98,7 @@ async def test_committed_run_survives_immediate_scheduler_failure(
         authenticator=AlertmanagerWebhookAuthenticator.from_file(credential),
         repository=cast(IncidentRepository, repository),
         supervisor=cast(RunScheduler, scheduler),
-        model=ModelSnapshot(
+        model=lambda: ModelSnapshot(
             provider="deepseek",
             model_id="deepseek-v4-flash",
             thinking_mode=False,
@@ -113,7 +114,7 @@ async def test_committed_run_survives_immediate_scheduler_failure(
         now=lambda: datetime(2026, 9, 2, 8, 1, tzinfo=UTC),
     )
 
-    await service.ingest(_payload())
+    await service.ingest(alert_payload())
 
     assert repository.occurrences is not None
     assert len(repository.occurrences) == 1
@@ -135,7 +136,7 @@ async def test_watchdog_refreshes_health_without_creating_or_scheduling_incident
         authenticator=AlertmanagerWebhookAuthenticator.from_file(credential),
         repository=cast(IncidentRepository, repository),
         supervisor=cast(RunScheduler, scheduler),
-        model=ModelSnapshot(
+        model=lambda: ModelSnapshot(
             provider="deepseek",
             model_id="deepseek-v4-flash",
             thinking_mode=False,
@@ -151,7 +152,7 @@ async def test_watchdog_refreshes_health_without_creating_or_scheduling_incident
         now=lambda: received_at,
     )
 
-    await service.ingest(_watchdog_payload())
+    await service.ingest(watchdog_payload())
 
     assert repository.occurrences == ()
     assert repository.watchdog_received_at == received_at

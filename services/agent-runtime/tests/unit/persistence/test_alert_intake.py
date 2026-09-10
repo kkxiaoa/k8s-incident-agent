@@ -79,6 +79,84 @@ def _budget() -> RunBudget:
     return RunBudget(max_model_calls=8, max_tool_calls=6, timeout_seconds=180)
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_model_outage_commits_existing_signals_and_watchdog_but_retries_new_firing(
+    tmp_path: Path,
+    reverse: bool,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        existing = await repository.apply_alert_occurrences(
+            (_occurrence(),), _model(), _budget()
+        )
+        resolved = _occurrence(status=AlertSignalStatus.RESOLVED, ends_at=_timestamp(1))
+        new_firing = _occurrence(fingerprint="fedcba9876543210")
+        mixed = (new_firing, resolved) if reverse else (resolved, new_firing)
+        received_at = START_TIME + timedelta(minutes=2)
+        for _ in range(2):
+            blocked = await repository.apply_alert_occurrences(
+                mixed,
+                None,
+                _budget(),
+                watchdog_received_at=received_at,
+            )
+            assert blocked.blocked_new_firing is True
+            assert blocked.created_run_ids == ()
+        assert await repository.get_watchdog_last_received_at() == received_at
+        async with database.session_factory() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(IncidentRow)) == 1
+            )
+            assert await session.scalar(select(func.count()).select_from(RunRow)) == 1
+            assert (
+                await session.scalar(select(func.count()).select_from(AlertSignalRow))
+                == 1
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(RunEventRow)
+                    .where(RunEventRow.event_type == "alert.resolved")
+                )
+                == 1
+            )
+        first_retry = await repository.apply_alert_occurrences(
+            mixed, _model(), _budget()
+        )
+        second_retry = await repository.apply_alert_occurrences(
+            mixed, _model(), _budget()
+        )
+        assert len(first_retry.created_run_ids) == 1
+        assert first_retry.blocked_new_firing is False
+        assert second_retry.created_run_ids == ()
+        assert set(first_retry.created_run_ids).isdisjoint(existing.created_run_ids)
+
+
+async def test_model_outage_does_not_block_repeat_firing_unknown_resolved_or_watchdog(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        await repository.apply_alert_occurrences((_occurrence(),), _model(), _budget())
+        result = await repository.apply_alert_occurrences(
+            (
+                _occurrence(),
+                _occurrence(
+                    fingerprint="fedcba9876543210",
+                    status=AlertSignalStatus.RESOLVED,
+                    ends_at=_timestamp(1),
+                ),
+            ),
+            None,
+            _budget(),
+            watchdog_received_at=START_TIME,
+        )
+        assert result.blocked_new_firing is False
+        assert result.created_run_ids == ()
+        assert result.events == ()
+        assert await repository.get_watchdog_last_received_at() == START_TIME
+
+
 def _occurrence(
     *,
     fingerprint: str = "0123456789abcdef",

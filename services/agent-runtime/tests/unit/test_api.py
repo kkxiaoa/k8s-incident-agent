@@ -7,7 +7,7 @@ from typing import cast
 import httpx
 import pytest
 from fastapi.responses import StreamingResponse
-from tests.factories import monitoring_health_service_stub
+from tests.factories import diagnostic_model_stub, monitoring_health_service_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -47,6 +47,7 @@ async def test_settings_and_runtime_context_are_entered_only_during_lifespan(
         events.append("runtime.open")
         try:
             yield RuntimeContainer(
+                diagnostic_model=diagnostic_model_stub(),
                 incidents=cast(IncidentApplicationService, _UnusedService()),
                 events=cast(IncidentEventService, _UnusedService()),
                 alerts=None,
@@ -74,7 +75,10 @@ async def test_settings_and_runtime_context_are_entered_only_during_lifespan(
         ) as client:
             response = await client.get("/healthz")
             assert response.status_code == 200
-            assert response.json() == {"status": "ok"}
+            assert response.json() == {
+                "status": "ok",
+                "diagnosis": {"status": "ready", "reason": None},
+            }
             for unavailable_path in ("/", "/docs", "/openapi.json", "/redoc"):
                 unavailable = await client.get(unavailable_path)
                 assert unavailable.status_code == 404

@@ -81,6 +81,11 @@ const RUNTIME_ERROR_CONTRACTS = {
     message: "Runtime is not ready.",
     retryable: true,
   },
+  diagnosis_unavailable: {
+    status: 503,
+    message: "Model diagnosis is unavailable.",
+    retryable: true,
+  },
   internal_error: {
     status: 500,
     message: "Internal server error.",
@@ -101,6 +106,7 @@ const INCIDENT_LIST_ERROR_CODES = [
   "internal_error",
 ] as const satisfies readonly RuntimeErrorCode[];
 const INCIDENT_CREATE_ERROR_CODES = [
+  "diagnosis_unavailable",
   "scenario_not_found",
   "invalid_request",
   "runtime_not_ready",
@@ -121,6 +127,7 @@ const RUN_HISTORY_ERROR_CODES = [
   "internal_error",
 ] as const satisfies readonly RuntimeErrorCode[];
 const RUN_CREATE_ERROR_CODES = [
+  "diagnosis_unavailable",
   "incident_not_found",
   "active_run_exists",
   "invalid_request",
@@ -382,6 +389,12 @@ async function normalizeJsonResponse(
   }
 
   return unavailableResult();
+}
+
+export async function fetchRuntimeHealth(): Promise<RuntimeJsonResult> {
+  return requestRest("/healthz" satisfies RuntimePath, 200, SCENARIO_ERROR_CODES, {
+    method: "GET",
+  });
 }
 
 async function requestRest(

@@ -22,6 +22,7 @@ async function RuntimeOverview({
   return (
     <>
       <HomeMonitoringDashboard
+        runtimeHealth={overview.runtimeHealth}
         initialHealth={overview.monitoringHealth}
         initialOverview={overview.monitoringOverview}
       />

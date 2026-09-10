@@ -298,3 +298,32 @@ async def test_invalid_json_body_is_not_exposed(
     assert error.value.code is ModelErrorCode.PROVIDER_CONTRACT_INVALID
     assert error.value.__context__ is None
     assert_sanitized(error.value, "sensitive invalid json response")
+
+
+async def test_invalid_encoded_body_is_not_retried_or_exposed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = make_settings(monkeypatch)
+    attempts = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(
+            200,
+            headers={"Content-Encoding": "gzip"},
+            stream=httpx.ByteStream(b"sensitive malformed upstream gzip"),
+        )
+
+    with pytest.raises(ModelError) as error:
+        await call_discovery(settings, handler)
+
+    assert attempts == 1
+    assert error.value.code is ModelErrorCode.PROVIDER_CONTRACT_INVALID
+    assert error.value.__context__ is None
+    assert_sanitized(
+        error.value,
+        "test-discovery-key",
+        "Bearer",
+        "sensitive malformed upstream gzip",
+    )

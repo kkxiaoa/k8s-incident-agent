@@ -1,4 +1,5 @@
 from contextlib import suppress
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -58,15 +59,21 @@ async def _request_models(
     settings: Settings,
     client: httpx.AsyncClient,
     url: httpx.URL,
-) -> httpx.Response | None:
-    response: httpx.Response | None = None
+) -> httpx.Response | Literal[ModelErrorCode.PROVIDER_CONTRACT_INVALID] | None:
+    response: (
+        httpx.Response | Literal[ModelErrorCode.PROVIDER_CONTRACT_INVALID] | None
+    ) = None
     api_key = settings.require_deepseek_api_key().get_secret_value()
     with suppress(httpx.TransportError):
-        response = await client.get(
-            url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=settings.model_timeout_seconds,
-        )
+        try:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=settings.model_timeout_seconds,
+            )
+        except httpx.DecodingError:
+            # Return before raising, keeping request credentials out of traceback.
+            response = ModelErrorCode.PROVIDER_CONTRACT_INVALID
     return response
 
 
@@ -80,6 +87,8 @@ async def _discover_models(
 
     while True:
         response = await _request_models(settings, client, url)
+        if response is ModelErrorCode.PROVIDER_CONTRACT_INVALID:
+            raise _error(ModelErrorCode.PROVIDER_CONTRACT_INVALID)
         if response is None:
             if attempt < settings.model_max_retries:
                 attempt += 1

@@ -65,9 +65,21 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
 }
 
 describe("HomeMonitoringDashboard", () => {
+  it("separates model availability from healthy monitoring and refreshes the displayed state", () => {
+    const { rerender } = render(<HomeMonitoringDashboard initialHealth={HEALTH}
+      initialOverview={overview()} runtimeHealth={{ status: "ok", diagnosis: {
+        status: "unavailable", reason: "authentication_failed",
+      } }} />);
+    expect(screen.getByText(/模型认证失败/)).toBeVisible();
+    expect(screen.getByRole("region", { name: "监控链路" })).toBeVisible();
+    rerender(<HomeMonitoringDashboard initialHealth={HEALTH} initialOverview={overview()}
+      runtimeHealth={{ status: "ok", diagnosis: { status: "ready", reason: null } }} />);
+    expect(screen.queryByText(/模型诊断暂不可用/)).toBeNull();
+  });
   it("renders real counts, family distribution, trend, and non-canvas summaries", () => {
     render(
       <HomeMonitoringDashboard
+        runtimeHealth={{ status: "ok", diagnosis: { status: "ready", reason: null } }}
         initialHealth={HEALTH}
         initialOverview={overview()}
       />,
@@ -105,6 +117,7 @@ describe("HomeMonitoringDashboard", () => {
   it("renders zero as an explicit empty distribution", () => {
     render(
       <HomeMonitoringDashboard
+        runtimeHealth={{ status: "ok", diagnosis: { status: "ready", reason: null } }}
         initialHealth={HEALTH}
         initialOverview={overview(0)}
       />,
@@ -119,6 +132,7 @@ describe("HomeMonitoringDashboard", () => {
   it("keeps the latest health check time visible when overview data is unavailable", () => {
     render(
       <HomeMonitoringDashboard
+        runtimeHealth={{ status: "ok", diagnosis: { status: "ready", reason: null } }}
         initialHealth={HEALTH}
         initialOverview={null}
       />,
@@ -134,6 +148,7 @@ describe("HomeMonitoringDashboard", () => {
 
     render(
       <HomeMonitoringDashboard
+        runtimeHealth={{ status: "ok", diagnosis: { status: "ready", reason: null } }}
         initialHealth={HEALTH}
         initialOverview={overview()}
       />,

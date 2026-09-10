@@ -17,6 +17,7 @@ from k8s_incident_agent.application.incidents import (
     ScenarioNotFoundError,
 )
 from k8s_incident_agent.application.monitoring import MonitoringPanelNotFoundError
+from k8s_incident_agent.model.availability import DiagnosisUnavailableError
 from k8s_incident_agent.monitoring.errors import (
     AlertAuthenticationError,
     AlertPayloadInvalidError,
@@ -74,6 +75,12 @@ _INTERNAL_ERROR = _ErrorContract(
     "internal_error",
     "Internal server error.",
 )
+_DIAGNOSIS_UNAVAILABLE = _ErrorContract(
+    503,
+    "diagnosis_unavailable",
+    "Model diagnosis is unavailable.",
+    True,
+)
 _ALERT_AUTHENTICATION_FAILED = _ErrorContract(
     401,
     "alert_authentication_failed",
@@ -102,6 +109,17 @@ _ALERT_TARGET_INVALID = _ErrorContract(
 
 
 def install_exception_handlers(app: FastAPI) -> None:
+    async def diagnosis_unavailable_handler(
+        _request: Request,
+        _error: DiagnosisUnavailableError,
+    ) -> JSONResponse:
+        return _response(_DIAGNOSIS_UNAVAILABLE)
+
+    app.add_exception_handler(
+        DiagnosisUnavailableError,
+        cast(ExceptionHandler, diagnosis_unavailable_handler),
+    )
+
     async def validation_handler(
         _request: Request,
         _error: RequestValidationError,

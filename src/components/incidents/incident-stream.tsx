@@ -273,7 +273,9 @@ export function IncidentStream({
       );
       router.refresh();
     } else {
-      setRerunError("暂时无法开始新的诊断运行，请稍后重试。");
+      setRerunError(result.failure === "diagnosis_unavailable"
+        ? "模型诊断暂不可用，未创建新 Run。已保存的诊断与历史记录不受影响。"
+        : "暂时无法开始新的诊断运行，请稍后重试。");
     }
     setRerunPending(false);
   };

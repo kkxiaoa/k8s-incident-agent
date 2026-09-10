@@ -8,6 +8,7 @@ import {
   parseMonitoringPanelListResponse,
   parseRunHistoryResponse,
   parseScenarioListResponse,
+  parseRuntimeHealthResponse,
   type IncidentDetailView,
   type IncidentListView,
   type MonitoringHealthView,
@@ -15,6 +16,7 @@ import {
   type MonitoringPanelListView,
   type RunHistoryView,
   type ScenarioListView,
+  type RuntimeHealthView,
 } from "./response-contracts";
 import {
   fetchIncident,
@@ -24,6 +26,7 @@ import {
   fetchMonitoringPanels,
   fetchRuns,
   fetchScenarios,
+  fetchRuntimeHealth,
 } from "./server-client";
 import type { IncidentIntakeMode } from "./server-config";
 
@@ -39,6 +42,7 @@ type IncidentPageData =
   | { state: "unavailable" };
 
 interface IncidentConsoleOverview {
+  runtimeHealth: RuntimeHealthView | null;
   scenarios: ScenarioListView | null;
   incidents: IncidentListView | null;
   monitoringHealth: MonitoringHealthView | null;
@@ -49,12 +53,16 @@ export async function loadIncidentConsoleOverview(
   intakeMode: IncidentIntakeMode,
 ): Promise<IncidentConsoleOverview> {
   if (intakeMode === "online") {
-    const [incidentResult, healthResult, overviewResult] = await Promise.all([
+    const [incidentResult, healthResult, overviewResult, runtimeResult] = await Promise.all([
       fetchIncidents(new URLSearchParams({ limit: "50" })),
       fetchMonitoringHealth(),
       fetchMonitoringOverview(),
+      fetchRuntimeHealth(),
     ]);
     return {
+      runtimeHealth: runtimeResult.response.ok
+        ? parseRuntimeHealthResponse(runtimeResult.value)
+        : null,
       scenarios: null,
       incidents: incidentResult.response.ok
         ? parseIncidentListResponse(incidentResult.value)
@@ -68,15 +76,19 @@ export async function loadIncidentConsoleOverview(
     };
   }
 
-  const [scenarioResult, incidentResult, healthResult, overviewResult] =
+  const [scenarioResult, incidentResult, healthResult, overviewResult, runtimeResult] =
     await Promise.all([
       fetchScenarios(),
       fetchIncidents(new URLSearchParams({ limit: "50" })),
       fetchMonitoringHealth(),
       fetchMonitoringOverview(),
+      fetchRuntimeHealth(),
     ]);
 
   return {
+    runtimeHealth: runtimeResult.response.ok
+      ? parseRuntimeHealthResponse(runtimeResult.value)
+      : null,
     scenarios: scenarioResult.response.ok
       ? parseScenarioListResponse(scenarioResult.value)
       : null,

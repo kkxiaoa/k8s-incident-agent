@@ -10,6 +10,7 @@ import { UiIcon } from "@/components/ui/ui-icon";
 import type {
   MonitoringHealthView,
   MonitoringOverviewView,
+  RuntimeHealthView,
 } from "@/lib/agent-runtime/response-contracts";
 
 import { MonitoringHealthOverview } from "./monitoring-health-overview";
@@ -29,9 +30,11 @@ const COUNT_CARDS = [
 export function HomeMonitoringDashboard({
   initialHealth,
   initialOverview,
+  runtimeHealth,
 }: {
   initialHealth: MonitoringHealthView | null;
   initialOverview: MonitoringOverviewView | null;
+  runtimeHealth: RuntimeHealthView | null;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -73,6 +76,14 @@ export function HomeMonitoringDashboard({
           暂时无法读取完整统计；监控链路和最近 Incident 仍可独立查看。
         </p>
       ) : null}
+
+      {runtimeHealth?.diagnosis.status === "ready" ? null : (
+        <p className="home-monitoring__error" role="status">
+          {runtimeHealth === null
+            ? "暂时无法读取模型诊断状态；已保存的 Incident 可独立查看。"
+            : `模型诊断暂不可用（${diagnosisReason(runtimeHealth.diagnosis.reason)}）。暂不创建新的诊断；历史记录与告警恢复信号仍可读取。`}
+        </p>
+      )}
 
       <div className="home-monitoring__status-grid">
         <MonitoringHealthOverview initialHealth={initialHealth} />
@@ -146,4 +157,15 @@ export function HomeMonitoringDashboard({
       </div>
     </section>
   );
+}
+
+function diagnosisReason(reason: RuntimeHealthView["diagnosis"]["reason"]): string {
+  switch (reason) {
+    case "configuration_invalid": return "模型配置缺失或无效";
+    case "authentication_failed": return "模型认证失败";
+    case "model_not_found": return "配置的模型不可用";
+    case "provider_rate_limited": return "模型服务限流";
+    case "provider_contract_invalid": return "模型服务响应无效";
+    default: return "模型服务暂不可用";
+  }
 }

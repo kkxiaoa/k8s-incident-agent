@@ -127,7 +127,7 @@ def _service(
             repository=repository,
             supervisor=resolved_scheduler,
             credential=credential,
-            model=ModelSnapshot(
+            model=lambda: ModelSnapshot(
                 provider="deepseek",
                 model_id="deepseek-v4-flash",
                 thinking_mode=False,

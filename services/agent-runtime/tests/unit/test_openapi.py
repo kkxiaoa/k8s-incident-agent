@@ -237,7 +237,7 @@ def test_operations_reference_their_success_and_error_models(
     schema = json.loads(_export(tmp_path / "openapi.json", monkeypatch))
 
     success_models = {
-        ("GET", "/healthz", "200"): "HealthResponse",
+        ("GET", "/healthz", "200"): "RuntimeHealthResponse",
         ("GET", "/api/v1/scenarios", "200"): "ScenarioListResponse",
         (
             "GET",

@@ -122,6 +122,7 @@ class AlertSignalRecord:
 class PersistedAlertBatch:
     created_run_ids: tuple[UUID, ...]
     events: tuple[RunEvent, ...]
+    blocked_new_firing: bool
 
 
 @dataclass(frozen=True, slots=True)

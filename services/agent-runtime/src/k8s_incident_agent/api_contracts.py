@@ -24,6 +24,7 @@ from k8s_incident_agent.domain.models import (
     JsonValue,
     RunStatus,
 )
+from k8s_incident_agent.model.errors import ModelErrorCode
 from k8s_incident_agent.repair.contracts import PatchValidationErrorCode
 
 
@@ -54,8 +55,17 @@ _CanonicalAlertTimestamp = Annotated[
 ]
 
 
+class DiagnosticAvailabilityResponse(_ApiContract):
+    status: Literal["ready", "unavailable"]
+    reason: ModelErrorCode | None
+
+
 class HealthResponse(_ApiContract):
     status: Literal["ok"] = "ok"
+
+
+class RuntimeHealthResponse(HealthResponse):
+    diagnosis: DiagnosticAvailabilityResponse
 
 
 class ScenarioTriggerResponse(_ApiContract):

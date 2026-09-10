@@ -7,6 +7,7 @@ import {
 } from "./event-contracts";
 
 type ApiDiagnosis = components["schemas"]["DiagnosisResponse"];
+export type RuntimeHealthView = components["schemas"]["RuntimeHealthResponse"];
 type ApiEvidence = components["schemas"]["EvidenceResponse"];
 type ApiAlertSignal = components["schemas"]["AlertSignalResponse"];
 type ApiRootCause = components["schemas"]["RootCauseResponse"];
@@ -890,6 +891,31 @@ export function parseIncidentDetailResponse(
     repair,
     alertSignal,
   };
+}
+
+export function parseRuntimeHealthResponse(value: unknown): RuntimeHealthView | null {
+  if (!isObject(value) || value.status !== "ok" || !isObject(value.diagnosis)) {
+    return null;
+  }
+  const { status, reason } = value.diagnosis;
+  if (status === "ready" && reason === null) {
+    return { status: "ok", diagnosis: { status, reason } };
+  }
+  if (status !== "unavailable") return null;
+  switch (reason) {
+    case "configuration_invalid":
+    case "authentication_failed":
+    case "model_not_found":
+    case "provider_rate_limited":
+    case "provider_unavailable":
+    case "provider_contract_invalid":
+    case "tool_arguments_invalid":
+    case "structured_output_invalid":
+    case "reasoning_roundtrip_failed":
+      return { status: "ok", diagnosis: { status, reason } };
+    default:
+      return null;
+  }
 }
 
 export function parseMonitoringHealthResponse(

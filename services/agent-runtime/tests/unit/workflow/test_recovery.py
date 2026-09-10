@@ -317,7 +317,7 @@ def _context(
 def _supervisor(
     repository: IncidentRepository,
     saver: object,
-    model: _ToolCallingModel,
+    model: _ToolCallingModel | None,
     *,
     adapter: object | None = None,
     credential: DiagnosticCredential | None = None,
@@ -327,7 +327,7 @@ def _supervisor(
     return RunSupervisor(
         repository=repository,
         checkpointer=cast(Any, saver),
-        model=model,
+        model=lambda: model,
         model_snapshot=ModelSnapshot(
             provider="deepseek",
             model_id=model_id,
@@ -884,9 +884,11 @@ async def test_running_checkpoint_rejects_changed_model_identity(
     "resume_node",
     ["validate_diagnosis", "persist_terminal_state"],
 )
-async def test_changed_model_does_not_block_post_model_checkpoint(
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_changed_or_unavailable_model_does_not_block_post_model_checkpoint(
     tmp_path: Path,
     resume_node: str,
+    unavailable: bool,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
     command.upgrade(_alembic_config(paths), "head")
@@ -925,7 +927,7 @@ async def test_changed_model_does_not_block_post_model_checkpoint(
             supervisor = _supervisor(
                 repository,
                 saver,
-                second_model,
+                None if unavailable else second_model,
                 model_id="deepseek-v5-flash",
             )
             await supervisor.start()
@@ -934,6 +936,37 @@ async def test_changed_model_does_not_block_post_model_checkpoint(
 
         assert terminal.run_status is RunStatus.COMPLETED
         assert second_model.calls == 0
+        assert await _event_count(database, created.run_id, "run:terminal") == 1
+
+
+@pytest.mark.parametrize("running", [False, True])
+async def test_model_outage_terminates_recoverable_diagnosis_once_without_waiting(
+    tmp_path: Path,
+    running: bool,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    command.upgrade(_alembic_config(paths), "head")
+    async with _open_database(paths) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await repository.create_incident_and_run(
+            _scenario(), _model_snapshot(), _budget()
+        )
+        async with open_checkpoint_store(paths.checkpoint_database) as saver:
+            if running:
+                run = await repository.get_workflow_run_snapshot(created.run_id)
+                await _checkpoint_before_diagnose(repository, saver, run)
+            supervisor = _supervisor(repository, saver, None)
+            await supervisor.start()
+            terminal = await _wait_for_terminal(repository, created.run_id)
+            await supervisor.close()
+            assert terminal.run_status is RunStatus.FAILED
+            await supervisor.start()
+            await supervisor.close()
+        async with database.session_factory() as session:
+            row = await session.get(RunRow, str(created.run_id))
+            assert row is not None
+            assert row.error_code == "diagnosis_unavailable"
+            assert row.error_retryable is True
         assert await _event_count(database, created.run_id, "run:terminal") == 1
 
 

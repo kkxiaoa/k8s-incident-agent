@@ -103,7 +103,7 @@ def _supervisor(
     return RunSupervisor(
         repository=cast(IncidentRepository, repository),
         checkpointer=cast(AsyncSqliteSaver, object()),
-        model=cast(BaseChatModel, object()),
+        model=lambda: cast(BaseChatModel, object()),
         model_snapshot=ModelSnapshot(
             provider="deepseek",
             model_id="deepseek-v4-flash",
