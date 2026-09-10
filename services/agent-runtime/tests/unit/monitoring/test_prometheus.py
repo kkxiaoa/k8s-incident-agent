@@ -78,6 +78,64 @@ def _service(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("panel_id", "target", "values", "expected_title"),
+    [
+        (
+            "pvc-pending-state",
+            PVC_TARGET,
+            [[1788339300 + offset * 60, "1"] for offset in range(6)],
+            "PVC Pending 状态",
+        ),
+        (
+            "liveness-probe-restarts",
+            TARGET,
+            [[1788339600, "5.2099824440543125"]],
+            "Liveness 近 5 分钟重启估算",
+        ),
+    ],
+)
+async def test_sparse_hour_query_preserves_actual_points_and_metric_semantics(
+    panel_id: str,
+    target: KubernetesTarget,
+    values: list[list[int | str]],
+    expected_title: str,
+) -> None:
+    service, requests = _service(
+        _response(
+            json.dumps(
+                {
+                    "status": "success",
+                    "data": {
+                        "resultType": "matrix",
+                        "result": [{"metric": {}, "values": values}],
+                    },
+                }
+            )
+        )
+    )
+    observation = await service.observe_panel(
+        target=target,
+        panel_id=panel_id,
+        window=MetricWindow.ONE_HOUR,
+    )
+    await service.close()
+
+    result = observation.payload.result
+    assert result.window is MetricWindow.ONE_HOUR
+    assert result.state is MetricQueryState.OK
+    assert result.title == expected_title
+    assert [
+        (sample.timestamp.timestamp(), sample.value) for sample in result.samples
+    ] == [(timestamp, float(value)) for timestamp, value in values]
+    assert result.current_value == float(values[-1][1])
+    form = dict(httpx.QueryParams(requests[0].content.decode()))
+    assert float(form["end"]) - float(form["start"]) == 3600
+    if panel_id == "liveness-probe-restarts":
+        assert "increase(" in form["query"] and "[5m]" in form["query"]
+
+
+@pytest.mark.asyncio
 async def test_range_query_keeps_zero_and_escapes_target_labels() -> None:
     service, requests = _service(
         _response(

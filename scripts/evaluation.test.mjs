@@ -105,9 +105,7 @@ test("the committed scenario catalog exposes seven entries across five families"
   );
   assert.equal(
     scenarios.every(
-      (scenario) =>
-        scenario.expectedRootCauses.length > 0 &&
-        scenario.requiredEvidence.length > 0,
+      (scenario) => scenario.requiredEvidence.length > 0,
     ),
     true,
   );
@@ -127,7 +125,7 @@ test("the committed scenario catalog exposes seven entries across five families"
   });
 });
 
-test("catalog evaluation records independent passing results and redacted evidence", async () => {
+test("catalog checks complete with exact Run references but require manual diagnosis review", async () => {
   const harness = createHarness();
   const fetch = harness.dependencies.fetch;
   const alertQueries = [];
@@ -147,13 +145,13 @@ test("catalog evaluation records independent passing results and redacted eviden
 
   assert.equal(
     result.artifact.status,
-    "passed",
+    "pending_manual_review",
     JSON.stringify(result.artifact),
   );
   assert.equal(result.artifact.scenarios.length, 7);
   assert.equal(result.artifact.families.length, 5);
   assert.equal(
-    result.artifact.scenarios.every((scenario) => scenario.status === "passed"),
+    result.artifact.scenarios.every((scenario) => scenario.status === "pending_manual_review"),
     true,
   );
   assert.equal(result.artifact.monitoring.infrastructure.status, "passed");
@@ -167,6 +165,14 @@ test("catalog evaluation records independent passing results and redacted eviden
   assert.equal(harness.calls.alertmanagerRestarts, 1);
   assert.equal(harness.calls.tunnelClose, 1);
   assert.equal(harness.calls.artifacts.length, 1);
+  assert.equal(result.artifact.schemaVersion, 2);
+  assert.equal(result.artifact.scope, "full");
+  assert.equal(result.artifact.selectedScenarioIds.length, 7);
+  for (const scenario of result.artifact.scenarios) {
+    assert.match(scenario.incidentId, /^[0-9a-f-]{36}$/);
+    assert.match(scenario.runId, /^[0-9a-f-]{36}$/);
+    assert.ok(Number.isInteger(scenario.scenarioVersion));
+  }
   assert.equal(alertQueries.length > 0, true);
   assert.equal(alertQueries.every((query) => !query.includes("cluster=")), true);
   assert.deepEqual(
@@ -207,7 +213,7 @@ test("one failed scenario does not prevent the remaining catalog entries", async
   assert.equal(result.artifact.status, "failed");
   assert.equal(result.artifact.scenarios.length, 7);
   assert.equal(
-    result.artifact.scenarios.filter((scenario) => scenario.status === "passed")
+    result.artifact.scenarios.filter((scenario) => scenario.status === "pending_manual_review")
       .length,
     6,
   );
@@ -215,8 +221,8 @@ test("one failed scenario does not prevent the remaining catalog entries", async
     (scenario) => scenario.scenarioId === "image-pull-backoff",
   );
   assert.deepEqual(failed.failure, {
-    code: "diagnosis_root_cause_mismatch",
-    message: "Diagnosis did not identify an expected root cause",
+    code: "diagnosis_invalid",
+    message: "The alert-driven diagnosis did not complete successfully",
   });
   assert.equal(harness.calls.scenarioApply, 8);
   assert.equal(harness.calls.scenarioVerify, 8);
@@ -238,7 +244,7 @@ test("infrastructure probe ignores another alert for the same Deployment", async
     result.artifact.scenarios.find(
       (scenario) => scenario.scenarioId === "readiness-probe-misconfigured",
     )?.status,
-    "passed",
+    "pending_manual_review",
   );
   assert.equal(
     result.artifact.scenarios.find(
@@ -388,7 +394,7 @@ test("a healthy control Incident fails only its owning scenario", async () => {
   });
   assert.equal(failed.checks.healthyControls, false);
   assert.equal(
-    result.artifact.scenarios.filter((scenario) => scenario.status === "passed")
+    result.artifact.scenarios.filter((scenario) => scenario.status === "pending_manual_review")
       .length,
     6,
   );
@@ -509,7 +515,7 @@ test("scenario commands receive their external command options unchanged", async
   );
 
   assert.equal(inspected, true);
-  assert.equal(result.artifact.status, "passed");
+  assert.equal(result.artifact.status, "pending_manual_review");
 });
 
 test("invalid CLI arguments fail before any evaluation side effect", () => {
@@ -521,6 +527,87 @@ test("invalid CLI arguments fail before any evaluation side effect", () => {
   assert.match(result.stderr, /^FAIL invalid_arguments /);
 });
 
+test("focused evaluation runs only selected fixtures and never claims omitted coverage", async () => {
+  const harness = createHarness();
+  const selected = ["crash-loop-backoff", "liveness-probe-misconfigured", "pvc-binding-pending"];
+  const touched = new Set();
+  const runScenario = harness.dependencies.runScenarioCommand;
+  harness.dependencies.runScenarioCommand = async (action, id, options) => {
+    touched.add(id);
+    return runScenario(action, id, options);
+  };
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", scenarioIds: selected },
+    harness.dependencies,
+  );
+  assert.deepEqual(touched, new Set(selected));
+  assert.equal(harness.calls.scenarioApply, 3);
+  assert.equal(harness.calls.alertmanagerRestarts, 0);
+  assert.equal(result.artifact.status, "pending_manual_review");
+  assert.equal(result.artifact.scope, "focused");
+  assert.deepEqual(result.artifact.selectedScenarioIds, selected);
+  assert.deepEqual(result.artifact.monitoring.infrastructure, {
+    status: "not_run", reason: "focused_evaluation",
+  });
+  assert.equal(result.artifact.scenarios.length, 7);
+  assert.equal(result.artifact.families.length, 5);
+  for (const scenario of result.artifact.scenarios) {
+    assert.equal(scenario.status,
+      selected.includes(scenario.scenarioId) ? "pending_manual_review" : "not_run");
+  }
+  for (const family of result.artifact.families) {
+    assert.equal(family.status,
+      family.familyId === "crash-loop-backoff" ? "pending_manual_review" : "not_run");
+  }
+});
+
+test("invalid selections fail before deployment, tunnels, or scenario commands", async (t) => {
+  for (const scenarioIds of [[], ["unknown"], ["../outside"], ["pvc-binding-pending", "pvc-binding-pending"]]) {
+    await t.test(JSON.stringify(scenarioIds), async () => {
+      const harness = createHarness();
+      harness.dependencies.verifyDeploymentStatus = async () => assert.fail("deployment preflight reached");
+      harness.dependencies.openTunnels = async () => assert.fail("tunnel opened");
+      await assert.rejects(runEvaluationCommand(
+        { action: "run", profile: "kind-evaluation", scenarioIds },
+        harness.dependencies,
+      ), { code: "invalid_arguments" });
+      assert.equal(harness.calls.scenarioApply, 0);
+    });
+  }
+});
+
+test("focused evaluation still requires the full catalog and matching release", async () => {
+  const request = { action: "run", profile: "kind-evaluation", scenarioIds: ["pvc-binding-pending"] };
+  const partial = createHarness();
+  partial.dependencies.scenarios = partial.dependencies.scenarios.slice(0, 1);
+  await assert.rejects(runEvaluationCommand(request, partial.dependencies), {
+    code: "evaluation_catalog_invalid",
+  });
+  const dirty = createHarness({ dirtyWorktree: true });
+  await assert.rejects(runEvaluationCommand(request, dirty.dependencies), {
+    code: "release_worktree_dirty",
+  });
+  const drift = createHarness({ releaseSourceDrift: true, headRevision: "b".repeat(40) });
+  await assert.rejects(runEvaluationCommand(request, drift.dependencies), {
+    code: "release_revision_mismatch",
+  });
+  assert.equal(partial.calls.scenarioApply + dirty.calls.scenarioApply + drift.calls.scenarioApply, 0);
+});
+
+test("CLI rejects missing selection values and online selections", () => {
+  for (const args of [
+    ["run", "kind-evaluation", "--scenario"],
+    ["run", "kind-evaluation", "--scenario", "--context"],
+    ["online", "k3s-online", "--context", "k3s", "--scenario", "pvc-binding-pending"],
+  ]) {
+    const result = spawnSync(process.execPath, [
+      path.join(REPOSITORY_ROOT, "scripts/evaluation.mjs"), ...args,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^FAIL invalid_arguments /);
+  }
+});
+
 test("catalog evaluation consumes retained Incident history through pagination", async () => {
   const harness = createHarness({ paginatedIncidents: true });
 
@@ -529,7 +616,7 @@ test("catalog evaluation consumes retained Incident history through pagination",
     harness.dependencies,
   );
 
-  assert.equal(result.artifact.status, "passed");
+  assert.equal(result.artifact.status, "pending_manual_review");
 });
 
 test("evaluation rejects a dirty worktree before live side effects", async () => {
@@ -590,7 +677,7 @@ test("evaluation rejects source drift after the image revision", async () => {
   assert.equal(harness.calls.scenarioApply, 0);
 });
 
-test("diagnosis requires expected root causes to link all required Evidence", async () => {
+test("diagnosis requires root causes to link all required Evidence regardless of code", async () => {
   const harness = createHarness({ omitDiagnosisEvidenceLinks: true });
 
   const result = await runEvaluationCommand(
@@ -605,31 +692,23 @@ test("diagnosis requires expected root causes to link all required Evidence", as
   );
 });
 
-test("diagnosis accepts Evidence-backed PVC codes while preserving the fixed repair code", async (t) => {
-  for (const pvcCode of [
-    "persistent_binding_failure_pending_state",
-    "static_provisioner_no_dynamic_provisioning",
-    "no_provisioner_storageclass_no_matching_pv",
-    "unmatched_no_provisioner_plugin",
-    "no_matching_provisioner_plugin",
-    "invalid_provisioner_no_volume_plugin",
-    "provisioner_not_available",
-  ]) {
-    await t.test(pvcCode, async () => {
-      const harness = createHarness({
-        diagnosisCodeByScenario: {
-          "image-pull-backoff": "image_invalid_registry",
-          "pvc-binding-pending": pvcCode,
-        },
-      });
-
-      const result = await runEvaluationCommand(
-        { action: "run", profile: "kind-evaluation" },
-        harness.dependencies,
-      );
-
-      assert.equal(result.artifact.status, "passed");
-    });
+test("ordinary code naming does not block lifecycle checks or prove diagnosis correctness", async () => {
+  const harness = createHarness({
+    diagnosisCodeByScenario: {
+      "liveness-probe-misconfigured": "liveness_probe_port_mismatch",
+      "pvc-binding-pending": "a_different_model_generated_label",
+    },
+  });
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+  assert.equal(result.artifact.status, "pending_manual_review");
+  for (const scenario of result.artifact.scenarios) {
+    assert.equal(scenario.status, "pending_manual_review");
+    assert.equal(scenario.checks.repeatDeliveryDeduplicated, true);
+    assert.equal(scenario.checks.alertResolved, true);
+    assert.ok(scenario.checks.panels.length > 0);
   }
 });
 
@@ -652,31 +731,33 @@ test("ImagePull diagnosis alone cannot satisfy the repair evaluation slice", asy
   assert.equal(imagePull.failure.code, "repair_validation_invalid");
 });
 
-test("diagnosis rejects codes outside approved root cause namespaces", async (t) => {
-  for (const [scenarioId, diagnosisCode] of [
-    ["image-pull-backoff", "image_pull_registry_credentials_failure"],
-    ["image-pull-backoff", "image_reference_unavailable_or_unauthenticated"],
-    [
-      "image-pull-backoff",
-      "image_reference_unavailable_due_to_registry_credentials_failure",
-    ],
-    ["pvc-binding-pending", "pvc_storageclass_not_found"],
-  ]) {
-    await t.test(scenarioId, async () => {
-      const harness = createHarness({
-        diagnosisCodeByScenario: { [scenarioId]: diagnosisCode },
-      });
+test("an old expected code with an unsupported statement remains pending manual review", async () => {
+  const harness = createHarness({
+    diagnosisCodeByScenario: { "pvc-binding-pending": "persistent_volume_claim_unbound" },
+    diagnosisStatement: "The claim was continuously Pending throughout a full hour despite only five minutes of samples.",
+  });
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", scenarioIds: ["pvc-binding-pending"] },
+    harness.dependencies,
+  );
+  assert.equal(result.artifact.status, "pending_manual_review");
+  assert.equal(result.artifact.scenarios.find(
+    (scenario) => scenario.scenarioId === "pvc-binding-pending",
+  ).status, "pending_manual_review");
+});
 
+test("diagnosis rejects malformed or unknown placeholder codes", async (t) => {
+  for (const code of ["unknown", "Not a code", "a".repeat(65)]) {
+    await t.test(code, async () => {
+      const harness = createHarness({ diagnosisCodeByScenario: { "pvc-binding-pending": code } });
       const result = await runEvaluationCommand(
-        { action: "run", profile: "kind-evaluation" },
+        { action: "run", profile: "kind-evaluation", scenarioIds: ["pvc-binding-pending"] },
         harness.dependencies,
       );
-
-      const scenario = result.artifact.scenarios.find(
-        (candidate) => candidate.scenarioId === scenarioId,
-      );
-      assert.equal(scenario.status, "failed");
-      assert.equal(scenario.failure.code, "diagnosis_root_cause_mismatch");
+      assert.equal(result.artifact.status, "failed");
+      assert.equal(result.artifact.scenarios.find(
+        (scenario) => scenario.scenarioId === "pvc-binding-pending",
+      ).failure.code, "diagnosis_evidence_links_invalid");
     });
   }
 });
@@ -1209,10 +1290,13 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     },
     evidence,
     diagnosis: {
-      outcome: "diagnosed",
+      outcome: options.failingScenarioId === scenario.scenarioId ? "insufficient_evidence" : "diagnosed",
+      summary: "A diagnostic explanation requiring independent semantic review.",
       rootCauses: [
         {
           code: diagnosisCode,
+          statement: options.diagnosisStatement ?? "A diagnostic explanation requiring independent semantic review.",
+          confidence: "high",
           evidenceIds:
             options.omitDiagnosisEvidenceLinks === true ? [] : evidence.map((item) => item.id),
         },
@@ -1228,11 +1312,9 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
 
 function diagnosisCodeFor(scenario, options) {
   return options.diagnosisCodeByScenario?.[scenario.scenarioId] ??
-    (options.failingScenarioId === scenario.scenarioId
-      ? "unexpected_root_cause"
-      : scenario.expectedPatchConstraints === undefined
-        ? representativeRootCauseCode(scenario.expectedRootCauses[0])
-        : "image_invalid_registry");
+    (scenario.expectedPatchConstraints === undefined
+      ? "observed_cause"
+      : "image_invalid_registry");
 }
 
 function repairProjection(scenario, diagnosisCode, options, evidence) {
@@ -1295,12 +1377,6 @@ function repairProjection(scenario, diagnosisCode, options, evidence) {
       error: null,
     },
   };
-}
-
-function representativeRootCauseCode(expected) {
-  return expected.includes("*")
-    ? expected.replaceAll("*", "observed_") + "failure"
-    : expected;
 }
 
 function prometheusVector(value, metric = {}) {

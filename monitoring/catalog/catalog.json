@@ -1,6 +1,6 @@
 {
   "schemaVersion": 8,
-  "catalogVersion": "2026-09-10.1",
+  "catalogVersion": "2026-09-10.2",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -262,7 +262,7 @@
       "panels": [
         {
           "panelId": "liveness-probe-restarts",
-          "title": "Liveness 关联重启",
+          "title": "Liveness 近 5 分钟重启估算",
           "unit": "restarts",
           "threshold": 1,
           "riskDirection": "higher_is_worse",

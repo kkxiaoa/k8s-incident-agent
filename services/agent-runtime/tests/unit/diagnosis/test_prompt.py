@@ -15,7 +15,8 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
         prometheus_panel_ids=("image-pull-affected-pods",),
         repair_action="set_container_image",
     )
-    lowered = prompt.lower()
+    normalized = " ".join(prompt.split())
+    lowered = normalized.lower()
 
     assert "evidenceid" in lowered
     assert "untrusted" in lowered
@@ -26,6 +27,17 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     assert "image-pull-affected-pods" in prompt
     assert "single panel and window" in prompt
     assert "do not query another panel or window" in prompt
+    assert "requested query range" in prompt
+    assert "actual samples' timestamps" in prompt
+    assert "absent points are unknown" in prompt
+    assert "not a total over window" in prompt
+    assert "summary as well as every root-cause statement" in normalized
+    assert "distinct causal mechanism" in normalized
+    assert "Do not split a cause and its consequences" in normalized
+    assert "evidence-supported inference" in normalized
+    assert "continuing causal impact" in normalized
+    assert "not every unperformed check" in normalized
+    assert "Missing observations do not prove absence" in normalized
     assert "Do not call the same Kubernetes" in prompt
     assert "tool again after it succeeds" in prompt
     assert "read-only" in lowered

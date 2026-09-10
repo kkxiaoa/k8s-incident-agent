@@ -22,12 +22,7 @@
     "manifests/slow-start-control.yaml"
   ],
   "expected_root_causes": [
-    "readiness_probe_targets_undeclared_named_port",
-    "readiness_probe_invalid_port_ref",
-    "readiness_probe_invalid_port",
-    "readiness_probe_misconfigured_named_port",
-    "readiness_probe_invalid_named_port",
-    "readiness_probe_named_port_missing"
+    "The readiness probe references an undeclared named port, causing the observed Kubelet probe error and NotReady state; distinguish this configuration error from ordinary startup delay or a liveness restart."
   ],
   "required_evidence": [
     "workload",

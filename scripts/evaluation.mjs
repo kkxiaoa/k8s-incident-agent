@@ -25,7 +25,7 @@ import {
 const KIND_CONTEXT = "kind-k8s-incident-agent";
 const APPLICATION_NAMESPACE = "k8s-incident-agent";
 const MONITORING_NAMESPACE = "k8s-incident-monitoring";
-const ARTIFACT_SCHEMA_VERSION = 1;
+const ARTIFACT_SCHEMA_VERSION = 2;
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_INCIDENT_PAGES = 10;
 const HTTP_TIMEOUT_MILLISECONDS = 15_000;
@@ -42,7 +42,6 @@ const TERMINAL_RUN_STATUSES = new Set(["COMPLETED", "FAILED"]);
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ROOT_CAUSE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-const ROOT_CAUSE_GLOB_PATTERN = /^(?:\*)?[a-z][a-z0-9_]*(?:\*[a-z0-9_]*)+$/;
 const RELEASE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const RELEASE_REVISION_PATTERN = /^[a-f0-9]{40}$/;
 const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";
@@ -124,6 +123,27 @@ export async function runEvaluationCommand(request, dependencies = {}) {
     dependencies.scenarios ??
     loadEvaluationScenarioCatalog(repositoryRoot, dependencies.environment);
   const scenarioRunner = dependencies.runScenarioCommand ?? runScenarioCommand;
+  if (!new Set(["run", "online"]).has(request.action)) throw invalidArguments();
+  if ((request.action === "online") !== (profile === "k3s-online")) {
+    throw invalidArguments();
+  }
+  const focused = request.scenarioIds !== undefined;
+  if (request.action === "online" && focused) throw invalidArguments();
+  if (request.action === "run") requireEvaluationCatalog(scenarios);
+  if (
+    focused &&
+    (!Array.isArray(request.scenarioIds) ||
+      request.scenarioIds.length === 0 ||
+      new Set(request.scenarioIds).size !== request.scenarioIds.length ||
+      request.scenarioIds.some(
+        (id) => !scenarios.some((scenario) => scenario.scenarioId === id),
+      ))
+  ) {
+    throw invalidArguments();
+  }
+  const selectedScenarioIds = focused
+    ? request.scenarioIds
+    : scenarios.map((scenario) => scenario.scenarioId);
   const release = await loadReleaseIdentity(
     repositoryRoot,
     dependencies.readFile ?? readFile,
@@ -144,7 +164,6 @@ export async function runEvaluationCommand(request, dependencies = {}) {
   try {
     try {
       if (request.action === "online") {
-        if (profile !== "k3s-online") throw invalidArguments();
         artifact = await evaluateOnlineBoundary({
           profile,
           release,
@@ -153,7 +172,6 @@ export async function runEvaluationCommand(request, dependencies = {}) {
           fetchImpl,
         });
       } else {
-        if (profile === "k3s-online") throw invalidArguments();
         artifact = await evaluateCatalog({
           profile,
           context,
@@ -161,6 +179,8 @@ export async function runEvaluationCommand(request, dependencies = {}) {
           startedAt,
           completedAt: () => requireDate(now()).toISOString(),
           scenarios,
+          focused,
+          selectedScenarioIds,
           scenarioRunner,
           repositoryRoot,
           execute,
@@ -182,6 +202,9 @@ export async function runEvaluationCommand(request, dependencies = {}) {
         startedAt,
         completedAt: requireDate(now()).toISOString(),
         status: "failed",
+        ...(request.action === "run"
+          ? { scope: focused ? "focused" : "full", selectedScenarioIds }
+          : {}),
         failure: safeFailure(error),
       };
     }
@@ -196,19 +219,26 @@ export async function runEvaluationCommand(request, dependencies = {}) {
 }
 
 async function evaluateCatalog(options) {
-  requireEvaluationCatalog(options.scenarios);
   const initialHealth = await waitForHealthyMonitoring(
     options.fetchImpl,
     options.sleep,
   );
   const results = [];
   for (const scenario of options.scenarios) {
-    results.push(await evaluateScenario(scenario, options));
+    results.push(
+      options.selectedScenarioIds.includes(scenario.scenarioId)
+        ? await evaluateScenario(scenario, options)
+        : { ...emptyScenarioResult(scenario), status: "not_run", cleanup: "not_run" },
+    );
   }
 
-  const passedScenarios = results.filter((result) => result.status === "passed");
+  const passedScenarios = results.filter(
+    (result) => result.status === "pending_manual_review",
+  );
   let infrastructure;
-  if (passedScenarios.length === 0) {
+  if (options.focused) {
+    infrastructure = { status: "not_run", reason: "focused_evaluation" };
+  } else if (passedScenarios.length === 0) {
     infrastructure = {
       status: "not_run",
       reason: "no_scenario_passed",
@@ -229,10 +259,8 @@ async function evaluateCatalog(options) {
 
   const families = summarizeFamilies(results);
   const passed =
-    results.every((result) => result.status === "passed") &&
-    families.length === 5 &&
-    families.every((family) => family.status === "passed") &&
-    infrastructure.status === "passed";
+    passedScenarios.length === options.selectedScenarioIds.length &&
+    (options.focused || infrastructure.status === "passed");
   return {
     schemaVersion: ARTIFACT_SCHEMA_VERSION,
     kind: "catalog-evaluation",
@@ -240,7 +268,9 @@ async function evaluateCatalog(options) {
     release: options.release,
     startedAt: options.startedAt,
     completedAt: options.completedAt(),
-    status: passed ? "passed" : "failed",
+    status: passed ? "pending_manual_review" : "failed",
+    scope: options.focused ? "focused" : "full",
+    selectedScenarioIds: options.selectedScenarioIds,
     monitoring: {
       initialState: initialHealth.state,
       infrastructure,
@@ -293,6 +323,7 @@ async function evaluateScenario(scenario, options) {
       options.sleep,
     );
     incidentId = detail.incident.id;
+    result.incidentId = incidentId;
     result.checks.uniqueIncident = true;
 
     const terminal = await waitForTerminalIncident(
@@ -300,6 +331,7 @@ async function evaluateScenario(scenario, options) {
       options.fetchImpl,
       options.sleep,
     );
+    result.runId = terminal.selectedRun.id;
     const diagnosisSummary = validateTerminalDiagnosis(scenario, terminal);
     result.checks.run = diagnosisSummary.run;
     result.checks.evidenceKinds = diagnosisSummary.evidenceKinds;
@@ -373,7 +405,7 @@ async function evaluateScenario(scenario, options) {
         "Alert resolution must not resolve the Incident",
       );
     }
-    result.status = "passed";
+    result.status = "pending_manual_review";
   } catch (error) {
     result.failure = safeFailure(error);
   } finally {
@@ -635,6 +667,7 @@ async function evaluateOnlineBoundary(options) {
 function emptyScenarioResult(scenario) {
   return {
     scenarioId: scenario.scenarioId,
+    scenarioVersion: scenario.scenarioVersion,
     familyId: scenarioFamily(scenario.verifierKind),
     alertId: scenario.alertId,
     status: "failed",
@@ -677,16 +710,6 @@ function requireEvaluationCatalog(scenarios) {
       scenario.scenarioVersion !== supportedScenarioVersion(scenario.scenarioId) ||
       !isNormalizedString(scenario.alertId) ||
       !isPlainObject(scenario.target) ||
-      !Array.isArray(scenario.expectedRootCauses) ||
-      scenario.expectedRootCauses.length === 0 ||
-      scenario.expectedRootCauses.some(
-        (value) =>
-          typeof value !== "string" ||
-          (!ROOT_CAUSE_CODE_PATTERN.test(value) &&
-            (value.length > 64 ||
-              value.includes("**") ||
-              !ROOT_CAUSE_GLOB_PATTERN.test(value))),
-      ) ||
       !Array.isArray(scenario.requiredEvidence) ||
       scenario.requiredEvidence.length === 0 ||
       !Array.isArray(scenario.allowedTools) ||
@@ -759,9 +782,9 @@ function summarizeFamilies(results) {
     .map(([familyId, statuses]) => ({
       familyId,
       scenarios: statuses.length,
-      status: statuses.every((status) => status === "passed")
-        ? "passed"
-        : "failed",
+      status: statuses.includes("failed")
+        ? "failed"
+        : statuses.includes("not_run") ? "not_run" : "pending_manual_review",
     }));
 }
 
@@ -977,7 +1000,11 @@ function validateTerminalDiagnosis(scenario, detail) {
     !Array.isArray(detail.evidence) ||
     !isPlainObject(detail.diagnosis) ||
     detail.diagnosis.outcome !== "diagnosed" ||
-    !Array.isArray(detail.diagnosis.rootCauses)
+    typeof detail.diagnosis.summary !== "string" ||
+    detail.diagnosis.summary.length === 0 ||
+    !Array.isArray(detail.diagnosis.rootCauses) ||
+    detail.diagnosis.rootCauses.length === 0 ||
+    detail.diagnosis.rootCauses.length > 5
   ) {
     throw contractError(
       "diagnosis_invalid",
@@ -1014,10 +1041,21 @@ function validateTerminalDiagnosis(scenario, detail) {
     );
   }
   const diagnosisCodes = [];
-  const expectedEvidenceKinds = new Set();
+  const citedEvidenceKinds = new Set();
   for (const rootCause of detail.diagnosis.rootCauses) {
     if (
+      typeof rootCause?.statement !== "string" ||
+      rootCause.statement.length === 0 ||
+      !new Set(["low", "medium", "high"]).has(rootCause.confidence)
+    ) {
+      throw contractError(
+        "diagnosis_invalid",
+        "Diagnosis statement or confidence is invalid",
+      );
+    }
+    if (
       !ROOT_CAUSE_CODE_PATTERN.test(rootCause?.code ?? "") ||
+      rootCause.code === "unknown" ||
       !Array.isArray(rootCause.evidenceIds) ||
       rootCause.evidenceIds.length === 0 ||
       new Set(rootCause.evidenceIds).size !== rootCause.evidenceIds.length ||
@@ -1032,33 +1070,17 @@ function validateTerminalDiagnosis(scenario, detail) {
       );
     }
     diagnosisCodes.push(rootCause.code);
-    if (
-      scenario.expectedRootCauses.some((expected) =>
-        matchesExpectedRootCause(expected, rootCause.code),
-      )
-    ) {
-      for (const evidenceId of rootCause.evidenceIds) {
-        expectedEvidenceKinds.add(evidenceById.get(evidenceId).evidenceKind);
-      }
+    for (const evidenceId of rootCause.evidenceIds) {
+      citedEvidenceKinds.add(evidenceById.get(evidenceId).evidenceKind);
     }
   }
   diagnosisCodes.sort();
   if (
-    !scenario.expectedRootCauses.some((expected) =>
-      diagnosisCodes.some((code) => matchesExpectedRootCause(expected, code)),
-    )
-  ) {
-    throw contractError(
-      "diagnosis_root_cause_mismatch",
-      "Diagnosis did not identify an expected root cause",
-    );
-  }
-  if (
-    scenario.requiredEvidence.some((kind) => !expectedEvidenceKinds.has(kind))
+    scenario.requiredEvidence.some((kind) => !citedEvidenceKinds.has(kind))
   ) {
     throw contractError(
       "diagnosis_evidence_links_invalid",
-      "Expected diagnosis does not reference every required Evidence kind",
+      "Diagnosis does not reference every required Evidence kind",
     );
   }
   const repair = validateTerminalRepair(scenario, detail, evidenceById);
@@ -1235,13 +1257,6 @@ function expectedRepairDigest(runId, repair) {
     change,
     patch: repair.patch,
   })).digest("hex")}`;
-}
-
-function matchesExpectedRootCause(expected, actual) {
-  if (!expected.includes("*")) return actual === expected;
-  return new RegExp(
-    `^${expected.split("*").join("[a-z0-9_]*")}$`,
-  ).test(actual);
 }
 
 async function validateFiringPanels(incidentId, fetchImpl) {
@@ -2359,7 +2374,8 @@ async function writeEvaluationArtifact(repositoryRoot, profile, artifact) {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await requireDirectoryNotSymlink(directory);
   await chmod(directory, 0o700);
-  const output = path.join(directory, `${profile}.json`);
+  const suffix = artifact.scope === "focused" ? "-focused" : "";
+  const output = path.join(directory, `${profile}${suffix}.json`);
   const temporary = path.join(
     directory,
     `.${profile}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
@@ -2417,9 +2433,20 @@ function parseArguments(argv) {
   const [action, profile, ...rest] = argv;
   if (!new Set(["run", "online"]).has(action)) throw invalidArguments();
   let context;
-  if (rest.length === 2 && rest[0] === "--context") context = rest[1];
-  else if (rest.length !== 0) throw invalidArguments();
-  return { action, profile, context };
+  const scenarioIds = [];
+  for (let index = 0; index < rest.length; index += 2) {
+    const value = rest[index + 1];
+    if (!isNormalizedString(value) || value.startsWith("-")) throw invalidArguments();
+    if (rest[index] === "--context" && context === undefined) context = value;
+    else if (rest[index] === "--scenario" && action === "run") scenarioIds.push(value);
+    else throw invalidArguments();
+  }
+  return {
+    action,
+    profile,
+    context,
+    ...(scenarioIds.length > 0 ? { scenarioIds } : {}),
+  };
 }
 
 function adaptDeploymentExecutor(execute) {
@@ -2528,7 +2555,7 @@ function responseTooLarge() {
 function invalidArguments() {
   return contractError(
     "invalid_arguments",
-    "Usage: evaluation.mjs run kind-evaluation, evaluation.mjs run k3s-evaluation --context <context>, or evaluation.mjs online k3s-online --context <context>",
+    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> [--context <context>] [--scenario <id> ...], or evaluation.mjs online k3s-online --context <context>",
   );
 }
 
@@ -2605,7 +2632,8 @@ if (isMainModule) {
         artifact: result.artifactPath,
       })}\n`,
     );
-    if (result.artifact.status !== "passed") process.exitCode = 1;
+    if (result.artifact.status === "pending_manual_review") process.exitCode = 2;
+    else if (result.artifact.status !== "passed") process.exitCode = 1;
   } catch (error) {
     const failure = safeFailure(error);
     console.error(`FAIL ${failure.code} ${failure.message}`);

@@ -154,7 +154,14 @@ async def _get_service_network(
 async def _get_pvc_storage(
     runtime: ToolRuntime[DiagnosticToolContext, object],
 ) -> dict[str, JsonValue]:
-    """Observe the exact PVC, its Events, and only its referenced StorageClass."""
+    """Observe the exact PVC, its Events, and only its referenced StorageClass.
+
+    The StorageClass lookup is current; Events describe reported conditions.
+    kubernetes.io/no-provisioner means no automatic provisioning, not that a
+    suitable pre-provisioned PersistentVolume cannot bind. volumeBindingMode
+    controls binding/provisioning timing, not whether a suitable volume exists.
+    This tool does not read PersistentVolume inventory.
+    """
     return await _execute_tool(
         runtime,
         tool_name="get_pvc_storage",

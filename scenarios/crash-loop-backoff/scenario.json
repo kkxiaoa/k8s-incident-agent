@@ -21,10 +21,7 @@
     "manifests/healthy-control.yaml"
   ],
   "expected_root_causes": [
-    "invalid_startup_arguments",
-    "invalid_container_args",
-    "invalid_container_command",
-    "invalid_container_command_or_args"
+    "Invalid startup command or arguments make the observed container exit and restart; connect the workload configuration, termination or restart observations, and log or Event error rather than naming CrashLoopBackOff alone."
   ],
   "required_evidence": [
     "workload",

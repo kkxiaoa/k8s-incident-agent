@@ -21,9 +21,7 @@
     "manifests/healthy-control.yaml"
   ],
   "expected_root_causes": [
-    "liveness_probe_port_mismatch",
-    "liveness_probe_targets_wrong_numeric_port",
-    "liveness_probe_wrong_port"
+    "The liveness probe targets a numeric port different from the application's observed serving port; connect that mismatch to Kubelet probe failures and restarts rather than treating every restart as a probe configuration error."
   ],
   "required_evidence": [
     "workload",

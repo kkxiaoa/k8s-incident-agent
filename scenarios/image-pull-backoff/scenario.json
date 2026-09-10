@@ -21,9 +21,7 @@
     "manifests/deployment.yaml"
   ],
   "expected_root_causes": [
-    "*image_*dns*",
-    "*image_*invalid_registry*",
-    "*image_*unreachable_registry*"
+    "The container image references the reserved invalid registry and the observed pull failure prevents startup; support that cause with workload, Pod and Event Evidence rather than assuming credentials, rate limiting or a missing tag."
   ],
   "required_evidence": [
     "workload",

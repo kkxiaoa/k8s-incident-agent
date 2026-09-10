@@ -23,13 +23,7 @@
     "manifests/wffc-control.yaml"
   ],
   "expected_root_causes": [
-    "persistent_binding_failure_pending_state",
-    "persistent_volume_claim_unbound",
-    "static_provisioner_no_dynamic_provisioning",
-    "*no_matching_provisioner*",
-    "*no_provisioner*",
-    "*no_volume_plugin*",
-    "*provisioner_not_available*"
+    "The PVC remains unbound while referencing an existing Immediate StorageClass using kubernetes.io/no-provisioner; explain the observed provisioning failure and need for a suitable pre-provisioned volume. Do not mistake a historical not-found Event for the current class state, call every static class invalid, or claim an exhaustive PV inventory that no tool read."
   ],
   "required_evidence": [
     "pvc_storage"

@@ -23,10 +23,7 @@
     "manifests/healthy-control-service.yaml"
   ],
   "expected_root_causes": [
-    "service_selector_mismatch",
-    "service_selector_label_mismatch",
-    "selector_mismatch",
-    "selector_label_mismatch"
+    "The Service selector does not match the labels of its explicitly associated candidate Pods, leaving no ready endpoint; distinguish selector mismatch from absent candidates or matching but unready Pods."
   ],
   "required_evidence": [
     "service_network"

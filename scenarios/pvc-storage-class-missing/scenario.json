@@ -22,9 +22,7 @@
     "manifests/wffc-control.yaml"
   ],
   "expected_root_causes": [
-    "storage_class_not_found",
-    "referenced_storage_class_not_found",
-    "pvc_storage_class_not_found"
+    "The PVC explicitly references a StorageClass that the current lookup cannot find, preventing provisioning or binding; support this with the exact PVC and its associated Events, not Pending alone."
   ],
   "required_evidence": [
     "pvc_storage"

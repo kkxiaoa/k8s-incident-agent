@@ -1822,8 +1822,8 @@ test("catalog rejects incompatible versions, extra fields, and target drift", as
         (tool) => tool !== "get_events",
       );
     }],
-    ["invalid root cause namespace", (scenario) => {
-      scenario.expected_root_causes = ["image_**failure"];
+    ["empty root cause criterion", (scenario) => {
+      scenario.expected_root_causes = [" "];
     }],
     ["cluster", (scenario) => { scenario.target.cluster = "production"; }],
     ["namespace", (scenario) => { scenario.target.namespace = "default"; }],
