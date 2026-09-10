@@ -162,7 +162,7 @@ def _install_runtime_fakes(
     async def discover(_settings: Settings) -> tuple[str, ...]:
         events.append("discovery")
         fail("discovery")
-        return ("deepseek-v4-flash",)
+        return ("deepseek-flash",)
 
     async def create_database(_paths: RuntimePaths) -> FakeDatabase:
         events.append("database.open")

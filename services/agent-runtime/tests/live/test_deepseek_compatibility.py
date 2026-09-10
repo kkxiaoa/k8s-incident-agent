@@ -12,7 +12,7 @@ from k8s_incident_agent.model.compatibility import (
 async def test_deepseek_flash_non_thinking_capability_gate() -> None:
     settings = Settings(
         model_provider="deepseek",
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
         model_thinking=False,
     )
     try:
@@ -23,7 +23,7 @@ async def test_deepseek_flash_non_thinking_capability_gate() -> None:
     report = await run_compatibility_probe(
         settings,
         ProbeConfig(
-            model_name="deepseek-v4-flash",
+            model_name="deepseek-flash",
             thinking=ThinkingMode.DISABLED,
         ),
     )

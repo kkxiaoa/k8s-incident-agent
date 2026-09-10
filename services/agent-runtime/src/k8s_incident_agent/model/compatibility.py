@@ -47,7 +47,7 @@ class ProbeStatus(StrEnum):
 class ProbeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    model_name: Literal["deepseek-v4-flash", "deepseek-v4-pro"]
+    model_name: Literal["deepseek-flash", "deepseek-v4-pro"]
     thinking: ThinkingMode
 
 
@@ -511,7 +511,7 @@ def _parse_args(argv: Sequence[str] | None) -> ProbeConfig:
     parser.add_argument(
         "--model",
         required=True,
-        choices=("deepseek-v4-flash", "deepseek-v4-pro"),
+        choices=("deepseek-flash", "deepseek-v4-pro"),
     )
     parser.add_argument(
         "--thinking",
@@ -531,7 +531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = Settings(
             model_provider="deepseek",
-            model_name="deepseek-v4-flash",
+            model_name="deepseek-flash",
             model_thinking=False,
         )
         settings.require_deepseek_api_key()

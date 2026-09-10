@@ -38,7 +38,7 @@ npm run build
 
 - Web 与 BFF：Next.js 16、React 19、TypeScript 5、Tailwind CSS 4、REST / SSE；
 - Agent Runtime：Python 3.13、FastAPI、Pydantic 2、LangChain、LangGraph；
-- 模型基线：`deepseek-v4-flash` non-thinking，`deepseek-v4-pro` 作为评估候选；
+- 模型基线：`deepseek-flash` non-thinking，`deepseek-v4-pro` 作为评估候选；
 - 基础设施：Kind（开发/CI）、K3s（首个演示部署）、Kubernetes Python Client，以及 digest 锁定的 Prometheus、Alertmanager、kube-state-metrics managed profile；
 - 数据与状态：SQLite、SQLAlchemy、Alembic、独立 LangGraph checkpointer；
 - Agent 工具：类型化 Function Tools；MCP、多 Agent 与无人审批的生产自动修复不在当前范围。

@@ -59,7 +59,7 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     settings = settings_without_dotenv()
 
     assert settings.model_provider == "deepseek"
-    assert settings.model_name == "deepseek-v4-flash"
+    assert settings.model_name == "deepseek-flash"
     assert settings.model_thinking is False
     assert settings.model_timeout_seconds == 60
     assert settings.model_max_retries == 2
@@ -130,10 +130,12 @@ def test_invalid_thinking_boolean_is_rejected(
     assert "not certified" not in str(error.value)
 
 
-def test_uncertified_pro_model_is_rejected(
+@pytest.mark.parametrize("model_name", ["deepseek-v4-flash", "deepseek-v4-pro"])
+def test_uncertified_model_id_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
+    model_name: str,
 ) -> None:
-    monkeypatch.setenv("MODEL_NAME", "deepseek-v4-pro")
+    monkeypatch.setenv("MODEL_NAME", model_name)
 
     with pytest.raises(ValidationError, match="not certified"):
         settings_without_dotenv()

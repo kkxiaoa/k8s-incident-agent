@@ -14,12 +14,12 @@ INVALID_MODEL_PAYLOADS: list[object] = [
     {"data": None},
     {"data": {}},
     {"data": []},
-    {"data": ["deepseek-v4-flash"]},
+    {"data": ["deepseek-flash"]},
     {"data": [{}]},
     {"data": [{"id": 1}]},
     {"data": [{"id": ""}]},
     {"data": [{"id": "   "}]},
-    {"data": [{"id": " deepseek-v4-flash"}]},
+    {"data": [{"id": " deepseek-flash"}]},
 ]
 
 
@@ -71,7 +71,7 @@ async def test_discover_models_projects_official_ids_and_request_contract(
                 "object": "list",
                 "data": [
                     {
-                        "id": "deepseek-v4-flash",
+                        "id": "deepseek-flash",
                         "object": "model",
                         "owned_by": "deepseek",
                         "ignored": "upstream metadata",
@@ -88,7 +88,7 @@ async def test_discover_models_projects_official_ids_and_request_contract(
 
     model_ids = await call_discovery(settings, handler)
 
-    assert model_ids == ("deepseek-v4-flash", "deepseek-v4-pro")
+    assert model_ids == ("deepseek-flash", "deepseek-v4-pro")
     assert len(requests) == 1
     request = requests[0]
     assert request.method == "GET"
@@ -149,7 +149,7 @@ async def test_explicit_probe_model_can_be_checked_without_changing_runtime_sett
         )
 
     assert model_ids == ("deepseek-v4-pro",)
-    assert settings.model_name == "deepseek-v4-flash"
+    assert settings.model_name == "deepseek-flash"
 
 
 @pytest.mark.parametrize(

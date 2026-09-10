@@ -108,7 +108,7 @@ async def test_fixed_kind_tools_persist_four_fresh_observations(
                 normalized_trigger(),
                 ModelSnapshot(
                     provider="deepseek",
-                    model_id="deepseek-v4-flash",
+                    model_id=settings.model_name,
                     thinking_mode=False,
                     prompt_version="stage1-v1",
                 ),

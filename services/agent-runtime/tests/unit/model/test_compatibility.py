@@ -96,7 +96,7 @@ def chat_response(
             "id": f"chatcmpl-{tool_call_id}",
             "object": "chat.completion",
             "created": 0,
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-flash",
             "choices": [
                 {
                     "index": 0,
@@ -149,7 +149,7 @@ def test_capability_probe_result_is_strict(payload: object) -> None:
 
 def test_report_schema_contains_only_sanitized_gate_fields() -> None:
     config = ProbeConfig(
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
         thinking=ThinkingMode.DISABLED,
     )
     report = passing_report(config)
@@ -192,7 +192,7 @@ async def test_non_thinking_probe_uses_real_agent_tool_and_structured_output_pat
 ) -> None:
     settings = make_settings(monkeypatch)
     config = ProbeConfig(
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
         thinking=ThinkingMode.DISABLED,
     )
     chat_requests: list[dict[str, object]] = []
@@ -201,7 +201,7 @@ async def test_non_thinking_probe_uses_real_agent_tool_and_structured_output_pat
         if request.url.path.endswith("/models"):
             return httpx.Response(
                 200,
-                json={"data": [{"id": "deepseek-v4-flash"}]},
+                json={"data": [{"id": "deepseek-flash"}]},
             )
 
         chat_requests.append(request_json(request))
@@ -272,7 +272,7 @@ async def test_chat_provider_errors_keep_their_failure_category(
 ) -> None:
     settings = make_settings(monkeypatch)
     config = ProbeConfig(
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
         thinking=ThinkingMode.DISABLED,
     )
 
@@ -280,7 +280,7 @@ async def test_chat_provider_errors_keep_their_failure_category(
         if request.url.path.endswith("/models"):
             return httpx.Response(
                 200,
-                json={"data": [{"id": "deepseek-v4-flash"}]},
+                json={"data": [{"id": "deepseek-flash"}]},
             )
         return httpx.Response(
             status_code,
@@ -314,7 +314,7 @@ async def test_missing_reasoning_replay_uses_distinct_failure_code(
 ) -> None:
     settings = make_settings(monkeypatch)
     config = ProbeConfig(
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
         thinking=ThinkingMode.ENABLED,
     )
     reasoning_marker = "synthetic-reasoning-marker"
@@ -324,7 +324,7 @@ async def test_missing_reasoning_replay_uses_distinct_failure_code(
         if request.url.path.endswith("/models"):
             return httpx.Response(
                 200,
-                json={"data": [{"id": "deepseek-v4-flash"}]},
+                json={"data": [{"id": "deepseek-flash"}]},
             )
 
         payload = request_json(request)
@@ -392,7 +392,7 @@ def test_failed_hard_probe_makes_cli_exit_nonzero(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-compatibility-key")
     config = ProbeConfig(
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
         thinking=ThinkingMode.DISABLED,
     )
     failed_report = passing_report(config).model_copy(
@@ -420,7 +420,7 @@ def test_failed_hard_probe_makes_cli_exit_nonzero(
     monkeypatch.setattr(compatibility, "run_compatibility_probe", runner)
 
     exit_code = compatibility.main(
-        ["--model", "deepseek-v4-flash", "--thinking", "disabled"]
+        ["--model", "deepseek-flash", "--thinking", "disabled"]
     )
 
     output_lines = capsys.readouterr().out.splitlines()
@@ -449,7 +449,7 @@ def test_cli_without_key_reports_precondition_failure(
         monkeypatch.delenv(variable, raising=False)
 
     exit_code = compatibility.main(
-        ["--model", "deepseek-v4-flash", "--thinking", "disabled"]
+        ["--model", "deepseek-flash", "--thinking", "disabled"]
     )
 
     output_lines = capsys.readouterr().out.splitlines()

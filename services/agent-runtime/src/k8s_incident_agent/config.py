@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     )
 
     model_provider: Literal["deepseek"] = "deepseek"
-    model_name: str = "deepseek-v4-flash"
+    model_name: str = "deepseek-flash"
     model_thinking: bool = False
     model_timeout_seconds: float = Field(default=60, gt=0)
     model_max_retries: int = Field(default=2, ge=0)
@@ -204,7 +204,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_certified_runtime_configuration(self) -> Self:
-        if self.model_name != "deepseek-v4-flash":
+        if self.model_name != "deepseek-flash":
             raise ValueError("configured model is not certified for the Runtime")
         if self.model_thinking:
             raise ValueError("thinking mode is not certified for the Runtime")

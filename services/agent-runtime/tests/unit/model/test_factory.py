@@ -31,7 +31,7 @@ def completion_response() -> httpx.Response:
             "id": "chatcmpl-test",
             "object": "chat.completion",
             "created": 0,
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-flash",
             "choices": [
                 {
                     "index": 0,
@@ -77,7 +77,7 @@ async def test_default_factory_projects_runtime_settings_once_and_disables_think
 
     assert isinstance(model, ChatDeepSeek)
     assert result.text == "ok"
-    assert model.model_name == "deepseek-v4-flash"
+    assert model.model_name == "deepseek-flash"
     assert model.api_base == "https://provider.example/api"
     assert model.request_timeout == 60
     assert model.max_retries == 2
@@ -93,7 +93,7 @@ async def test_default_factory_projects_runtime_settings_once_and_disables_think
         "pool": 60.0,
     }
     payload = request_json(request)
-    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["model"] == "deepseek-flash"
     assert payload["thinking"] == {"type": "disabled"}
     assert "base_url" not in payload
     assert "timeout" not in payload
@@ -106,7 +106,7 @@ async def test_explicit_selection_enables_thinking_in_actual_async_request(
     settings = make_settings(monkeypatch)
     requests: list[httpx.Request] = []
     selection = DeepSeekModelSelection(
-        model_name="deepseek-v4-flash",
+        model_name="deepseek-flash",
         thinking=True,
     )
 
