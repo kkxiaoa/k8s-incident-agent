@@ -435,6 +435,8 @@ test("Patch Validator render isolates identity and enforces dry-run admission", 
   assert.equal(policy.spec.failurePolicy, "Fail");
   assert.deepEqual(policy.spec.matchConstraints, {
     matchPolicy: "Exact",
+    namespaceSelector: {},
+    objectSelector: {},
     resourceRules: [
       {
         apiGroups: ["apps"],
@@ -465,6 +467,7 @@ test("Patch Validator render isolates identity and enforces dry-run admission", 
           "kubernetes.io/metadata.name": "k8s-incident-scenarios",
         },
       },
+      objectSelector: {},
     },
   });
 });
