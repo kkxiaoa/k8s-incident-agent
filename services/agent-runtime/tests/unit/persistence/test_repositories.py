@@ -15,6 +15,7 @@ from tests.factories import normalized_trigger
 
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
+    DiagnosisWorkflowRunSnapshot,
     EvidenceRecord,
     ModelSnapshot,
     RootCauseRecord,
@@ -132,7 +133,8 @@ async def test_create_incident_run_and_event_are_one_transaction(
             "occurredAt": created.event.occurred_at.isoformat().replace("+00:00", "Z"),
             "runId": str(created.run_id),
             "runStatus": "QUEUED",
-            "schemaVersion": 4,
+            "schemaVersion": 5,
+            "runKind": "diagnosis",
         }
         assert await _row_count(database, IncidentRow) == 1
         assert await _row_count(database, RunRow) == 1
@@ -479,6 +481,7 @@ async def test_workflow_snapshot_and_recoverable_scan_use_persisted_run_state(
         assert queued_snapshot.started_at is None
         assert queued_snapshot.trigger_summary == _scenario().trigger_summary
         assert queued_snapshot.target == _scenario().target
+        assert isinstance(queued_snapshot, DiagnosisWorkflowRunSnapshot)
         assert queued_snapshot.model == _model()
         assert queued_snapshot.budget == _budget()
         assert running_snapshot.run_status is RunStatus.RUNNING

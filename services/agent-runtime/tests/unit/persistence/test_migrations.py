@@ -62,6 +62,8 @@ EXPECTED_COLUMNS = {
         "started_at",
         "completed_at",
         "updated_at",
+        "kind",
+        "operation",
     ),
     "alert_signals": (
         "incident_id",
@@ -203,7 +205,7 @@ def _schema_snapshot(database: Path) -> dict[str, Any]:
         }
 
 
-def test_migration_round_trip_produces_the_exact_stage_two_intake_schema(
+def test_migration_round_trip_produces_the_exact_typed_run_schema(
     tmp_path: Path,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
@@ -285,7 +287,7 @@ def test_repair_migration_canonicalizes_retained_public_events(
             "'2026-09-07T00:00:00Z')"
         )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260907_0005")
 
     with sqlite3.connect(paths.business_database) as connection:
         row = connection.execute(
@@ -375,7 +377,7 @@ def test_repair_migration_downgrade_rejects_nonterminal_diagnosis_event(
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
     config = _alembic_config(paths)
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260907_0005")
     with sqlite3.connect(paths.business_database) as connection:
         connection.execute(
             "INSERT INTO incidents "
@@ -421,7 +423,7 @@ def test_repair_migration_downgrade_rejects_local_gate_failure(
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
     config = _alembic_config(paths)
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260907_0005")
     with sqlite3.connect(paths.business_database) as connection:
         connection.execute(
             "INSERT INTO incidents "
@@ -514,7 +516,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260902_0003",)
+        ).fetchone() == ("20260911_0006",)
 
 
 def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(

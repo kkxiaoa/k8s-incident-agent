@@ -18,7 +18,12 @@ from tests.unit.test_lifespan import install_runtime_fakes
 from k8s_incident_agent import api
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
-from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget, TerminalRecord
+from k8s_incident_agent.domain.models import (
+    DiagnosisWorkflowRunSnapshot,
+    ModelSnapshot,
+    RunBudget,
+    TerminalRecord,
+)
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
 from k8s_incident_agent.model import availability
 from k8s_incident_agent.model.discovery import discover_models
@@ -239,6 +244,7 @@ async def test_degraded_startup_keeps_persisted_history_sse_and_watchdog_availab
                         persisted = await repository.get_workflow_run_snapshot(
                             UUID(new_run.id)
                         )
+                        assert isinstance(persisted, DiagnosisWorkflowRunSnapshot)
                         assert persisted.model == snapshot
             finally:
                 await database.dispose()

@@ -61,12 +61,15 @@ def run_migrations_online() -> None:
         )
         configure_sqlite_engine(engine, paths)
         try:
-            with engine.connect() as connection:
+            with engine.connect() as connection, connection.begin():
+                # SQLite's legacy driver does not BEGIN for DDL or SAVEPOINT.
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
                 context.configure(
-                    connection=connection, target_metadata=target_metadata
+                    connection=connection,
+                    target_metadata=target_metadata,
+                    transactional_ddl=True,
                 )
-                with context.begin_transaction():
-                    context.run_migrations()
+                context.run_migrations()
         finally:
             engine.dispose()
     finally:

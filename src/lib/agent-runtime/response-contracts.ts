@@ -81,6 +81,8 @@ export type RunErrorView = Pick<ApiRunError, "code" | "retryable">;
 
 export interface SelectedRunView {
   id: string;
+  kind: components["schemas"]["RunKind"];
+  operation: components["schemas"]["RepairOperation"] | null;
   attempt: number;
   status: components["schemas"]["RunStatus"];
   createdAt: string;
@@ -290,6 +292,7 @@ function isRunStatus(
   return (
     value === "QUEUED" ||
     value === "RUNNING" ||
+    value === "WAITING_APPROVAL" ||
     value === "COMPLETED" ||
     value === "FAILED"
   );
@@ -439,6 +442,9 @@ function parseRunBase(value: unknown): RunSummaryView | null {
     !isUuid(value.id) ||
     !isPositiveInteger(value.attempt) ||
     !isRunStatus(value.status) ||
+    !(value.kind === "diagnosis"
+      ? value.operation === null && value.status !== "WAITING_APPROVAL"
+      : value.kind === "repair" && (value.operation === "apply" || value.operation === "rollback")) ||
     !isTimestamp(value.createdAt) ||
     (value.startedAt !== null && !isTimestamp(value.startedAt)) ||
     (value.completedAt !== null && !isTimestamp(value.completedAt))
@@ -448,6 +454,8 @@ function parseRunBase(value: unknown): RunSummaryView | null {
 
   return {
     id: value.id,
+    kind: value.kind as SelectedRunView["kind"],
+    operation: value.operation as SelectedRunView["operation"],
     attempt: value.attempt,
     status: value.status,
     createdAt: value.createdAt,
@@ -741,13 +749,13 @@ function parseRepairProposal(value: unknown): RepairProposalView | null {
 export function parseCreateIncidentResponse(
   value: unknown,
 ): CreateIncidentView | null {
-  return isObject(value) && value.schemaVersion === 4 && isUuid(value.incidentId)
+  return isObject(value) && value.schemaVersion === 5 && isUuid(value.incidentId)
     ? { incidentId: value.incidentId }
     : null;
 }
 
 export function parseCreateRunResponse(value: unknown): CreateRunView | null {
-  return isObject(value) && value.schemaVersion === 4 && isUuid(value.runId)
+  return isObject(value) && value.schemaVersion === 5 && isUuid(value.runId)
     ? { runId: value.runId }
     : null;
 }
@@ -770,7 +778,7 @@ export function parseIncidentListResponse(
 ): IncidentListView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 4 ||
+    value.schemaVersion !== 5 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -786,7 +794,7 @@ export function parseIncidentListResponse(
 export function parseRunHistoryResponse(value: unknown): RunHistoryView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 4 ||
+    value.schemaVersion !== 5 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -804,7 +812,7 @@ export function parseRunEventHistoryResponse(
   expectedIncidentId: string,
   expectedRunId: string,
 ): EventPageView | null {
-  if (!isObject(value) || value.schemaVersion !== 4) {
+  if (!isObject(value) || value.schemaVersion !== 5) {
     return null;
   }
   const page = parseEventPage(value);
@@ -823,7 +831,7 @@ export function parseIncidentDetailResponse(
 ): IncidentDetailView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 4 ||
+    value.schemaVersion !== 5 ||
     !isValidEventId(value.eventCursor) ||
     !Array.isArray(value.evidence)
   ) {
@@ -846,10 +854,12 @@ export function parseIncidentDetailResponse(
     eventPage.items.some(
       (event) =>
         event.data.incidentId !== incident.id ||
-        event.data.runId !== selectedRun.id,
+        event.data.runId !== selectedRun.id ||
+        event.data.runKind !== selectedRun.kind,
     ) ||
     evidence.some((item) => item === null) ||
     (value.diagnosis !== null && diagnosis === null) ||
+    (selectedRun.kind === "repair" && diagnosis !== null) ||
     (value.repair !== null && repair === null) ||
     (value.alertSignal !== null && alertSignal === null) ||
     (incident.source.type === "scenario" && value.alertSignal !== null) ||
@@ -863,12 +873,12 @@ export function parseIncidentDetailResponse(
     );
     const passed = repair.validation.outcome === "passed";
     if (
-      diagnosis?.outcome !== "diagnosed" ||
+      (selectedRun.kind === "diagnosis" && diagnosis?.outcome !== "diagnosed") ||
       repair.target.kind !== incident.target.kind ||
       repair.target.namespace !== incident.target.namespace ||
       repair.target.name !== incident.target.name ||
       repair.evidenceIds.some((evidenceId) => !evidenceIds.has(evidenceId)) ||
-      (passed &&
+      (passed && selectedRun.kind === "diagnosis" &&
         (selectedRun.status !== "COMPLETED" ||
           selectedRun.error !== null)) ||
       (!passed &&

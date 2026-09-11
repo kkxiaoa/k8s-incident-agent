@@ -25,13 +25,13 @@ function eventCopy(event: RunEventStreamItem): {
       };
     case "run.queued":
       return {
-        title: "诊断运行已排队",
-        detail: `第 ${event.data.attempt} 次诊断`,
+        title: event.data.runKind === "diagnosis" ? "诊断运行已排队" : "修复运行已排队",
+        detail: `第 ${event.data.attempt} 次运行`,
         tone: "neutral",
       };
     case "run.started":
       return {
-        title: "诊断运行已启动",
+        title: event.data.runKind === "diagnosis" ? "诊断运行已启动" : "修复运行已启动",
         detail: "只读调查开始",
         tone: "active",
       };
@@ -81,7 +81,7 @@ function eventCopy(event: RunEventStreamItem): {
       return { title: "诊断已结束", detail: "现有证据不足", tone: "warning" };
     case "run.failed":
       return {
-        title: "诊断运行失败",
+        title: event.data.runKind === "diagnosis" ? "诊断运行失败" : "修复运行失败",
         detail: event.data.errorCode,
         tone: "danger",
       };

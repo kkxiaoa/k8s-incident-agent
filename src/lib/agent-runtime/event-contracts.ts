@@ -116,12 +116,14 @@ function literalField<const T extends string>(
 }
 
 function commonFields(value: JsonObject) {
-  if (value.schemaVersion !== 4) {
+  if (value.schemaVersion !== 5) {
     return invalidEvent();
   }
 
   return {
-    schemaVersion: 4 as const,
+    schemaVersion: 5 as const,
+    runKind: value.runKind === "diagnosis" || value.runKind === "repair"
+      ? value.runKind as "diagnosis" | "repair" : invalidEvent(),
     incidentId: uuidField(value, "incidentId"),
     runId: uuidField(value, "runId"),
     occurredAt: timestampField(value, "occurredAt"),
@@ -138,6 +140,7 @@ function parseEventData(
     case "incident.created":
       return {
         ...common,
+        runKind: literalField(value, "runKind", "diagnosis"),
         attempt: positiveIntegerField(value, "attempt"),
         incidentStatus: literalField(value, "incidentStatus", "RECEIVED"),
         runStatus: literalField(value, "runStatus", "QUEUED"),
@@ -183,6 +186,7 @@ function parseEventData(
     case "diagnosis.completed":
       return {
         ...common,
+        runKind: literalField(value, "runKind", "diagnosis"),
         diagnosisId: uuidField(value, "diagnosisId"),
         incidentStatus: literalField(value, "incidentStatus", "DIAGNOSED"),
         outcome: literalField(value, "outcome", "diagnosed"),
@@ -221,11 +225,14 @@ function parseEventData(
           "incidentStatus",
           "WAITING_APPROVAL",
         ),
-        runStatus: literalField(value, "runStatus", "COMPLETED"),
+        runStatus: common.runKind === "diagnosis"
+          ? literalField(value, "runStatus", "COMPLETED")
+          : literalField(value, "runStatus", "WAITING_APPROVAL"),
       };
     case "diagnosis.insufficient":
       return {
         ...common,
+        runKind: literalField(value, "runKind", "diagnosis"),
         diagnosisId: uuidField(value, "diagnosisId"),
         incidentStatus: literalField(
           value,

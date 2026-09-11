@@ -48,7 +48,7 @@ export function RepairPanel({
   const { repair, selectedRun, evidence } = detail;
   const error = repair?.validation.error ?? selectedRun.error;
   const failure = error === null ? undefined : FAILURE_LABELS[error.code];
-  const active = selectedRun.status === "QUEUED" || selectedRun.status === "RUNNING";
+  const active = selectedRun.status === "QUEUED" || selectedRun.status === "RUNNING" || selectedRun.status === "WAITING_APPROVAL";
   // A persisted proposal exists only after Schema, Policy and Diff have passed.
   const outcomes: GateOutcomes | undefined = repair !== null
     ? { schema: "passed", policy: "passed", diff: "passed", dryRun: repair.validation.outcome }
@@ -82,7 +82,7 @@ export function RepairPanel({
           <span className="eyebrow">Repair validation</span>
           <h2 id="repair-heading">修复验证</h2>
         </div>
-        <span className="repair-run-label">第 {selectedRun.attempt} 次运行 · 只读建议</span>
+        <span className="repair-run-label">第 {selectedRun.attempt} 次运行 · {selectedRun.kind === "diagnosis" ? "只读建议" : selectedRun.operation === "rollback" ? "回滚提案" : "修复提案"}</span>
       </div>
 
       {refreshError !== null ? (

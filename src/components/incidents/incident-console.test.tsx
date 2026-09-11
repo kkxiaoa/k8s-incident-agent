@@ -11,6 +11,7 @@ import {
   RUN_ID,
   makeIncidentDetail,
   makeWaitingApprovalIncidentDetail,
+  makeRepairRunWaitingDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import { DiagnosisPanel } from "./diagnosis-panel";
@@ -111,6 +112,8 @@ function renderIncidentStream(detail = makeIncidentDetail()) {
         items: [
           {
             id: detail.selectedRun.id,
+            kind: detail.selectedRun.kind,
+            operation: detail.selectedRun.operation,
             attempt: detail.selectedRun.attempt,
             status: detail.selectedRun.status,
             createdAt: detail.selectedRun.createdAt,
@@ -125,6 +128,18 @@ function renderIncidentStream(detail = makeIncidentDetail()) {
     />,
   );
 }
+
+it.each(["apply", "rollback"] as const)("labels a waiting %s Run without a diagnostic placeholder or rerun action", (operation) => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const detail = makeRepairRunWaitingDetail();
+  detail.selectedRun.operation = operation;
+  renderIncidentStream(detail);
+  const label = operation === "apply" ? "修复" : "回滚";
+  expect(screen.getByRole("link", { name: `第 2 次 · ${label} · 等待审批` })).toBeVisible();
+  expect(screen.getByRole("button", { name: "重新诊断" })).toBeDisabled();
+  expect(screen.queryByRole("heading", { name: "诊断结论" })).toBeNull();
+  expect(screen.getByText(`第 2 次运行 · ${label}提案`)).toBeVisible();
+});
 
 afterEach(() => {
   navigation.push.mockReset();
@@ -149,13 +164,14 @@ describe("repair detail refresh", () => {
     initial.eventCursor = "1";
     renderIncidentStream(initial);
     act(() => FakeEventSource.current!.emit("repair.waiting_approval", "20", {
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       proposalId: terminal.repair!.id,
       proposalDigest: terminal.repair!.digest,
       incidentStatus: "WAITING_APPROVAL",
       runStatus: "COMPLETED",
+      runKind: "diagnosis",
       occurredAt: "2026-08-29T01:00:08Z",
     }));
     expect(screen.getByText("正在读取持久化的修复验证结果…")).toBeInTheDocument();
@@ -209,7 +225,7 @@ describe("ScenarioLauncher", () => {
     resolveRequest?.(
       new Response(
         JSON.stringify({
-          schemaVersion: 4,
+          schemaVersion: 5,
           incidentId: INCIDENT_ID,
         }),
         { status: 202, headers: { "content-type": "application/json" } },
@@ -225,7 +241,7 @@ describe("ScenarioLauncher", () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          schemaVersion: 4,
+          schemaVersion: 5,
           incidentId: INCIDENT_ID,
         }),
         { status: 202, headers: { "content-type": "application/json" } },
@@ -336,12 +352,13 @@ describe("read-only incident presentation", () => {
         "incident.created",
         "1",
         JSON.stringify({
-          schemaVersion: 4,
+          schemaVersion: 5,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           attempt: 1,
           incidentStatus: "RECEIVED",
           runStatus: "QUEUED",
+          runKind: "diagnosis",
           occurredAt: "2026-08-29T01:00:00Z",
         }),
         INCIDENT_ID,
@@ -359,13 +376,14 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("diagnosis.completed", "2", {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         diagnosisId: DIAGNOSIS_ID,
         incidentStatus: "DIAGNOSED",
         outcome: "diagnosed",
         runStatus: "COMPLETED",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:04Z",
       });
     });
@@ -381,12 +399,13 @@ describe("read-only incident presentation", () => {
     const source = FakeEventSource.current;
     act(() => {
       source?.emit("run.started", "2", {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: "66666666-6666-4666-8666-666666666666",
         runId: RUN_ID,
         attempt: 1,
         incidentStatus: "TRIAGING",
         runStatus: "RUNNING",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:02Z",
       });
     });
@@ -420,7 +439,7 @@ describe("read-only incident presentation", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schemaVersion: 4,
+            schemaVersion: 5,
             runId: "55555555-5555-4555-8555-555555555555",
           }),
           { status: 202, headers: { "content-type": "application/json" } },
@@ -496,29 +515,32 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("incident.created", "1", {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         attempt: 1,
         incidentStatus: "RECEIVED",
         runStatus: "QUEUED",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:00Z",
       });
       source?.emit("run.started", "2", {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         attempt: 1,
         incidentStatus: "TRIAGING",
         runStatus: "RUNNING",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:01Z",
       });
       source?.emit("tool.started", "3", {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
         toolName: "get_pod",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:02Z",
       });
     });
@@ -527,7 +549,7 @@ describe("read-only incident presentation", () => {
     act(() => {
       for (const id of ["4", "5", "6"]) {
         source?.emit("evidence.recorded", id, {
-          schemaVersion: 4,
+          schemaVersion: 5,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           evidenceId: EVIDENCE_ID,
@@ -537,6 +559,7 @@ describe("read-only incident presentation", () => {
           toolCallId: `tool-call-${id}`,
           toolName: "get_pod",
           truncated: false,
+          runKind: "diagnosis",
           occurredAt: "2026-08-29T01:00:03Z",
         });
       }
@@ -565,7 +588,7 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("evidence.recorded", "4", {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         evidenceId: EVIDENCE_ID,
@@ -575,14 +598,16 @@ describe("read-only incident presentation", () => {
         toolCallId: "tool-call-1",
         toolName: "get_pod",
         truncated: false,
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:03Z",
       });
       source?.emit("tool.started", "5", {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-2",
         toolName: "get_events",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:04Z",
       });
     });
@@ -795,11 +820,12 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "1",
       JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
         toolName: "get_pods",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:01Z",
       }),
       INCIDENT_ID,
@@ -808,7 +834,7 @@ describe("read-only incident presentation", () => {
       "evidence.recorded",
       "2",
       JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         evidenceId: EVIDENCE_ID,
@@ -818,6 +844,7 @@ describe("read-only incident presentation", () => {
         toolCallId: "tool-call-1",
         toolName: "get_pods",
         truncated: false,
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:02Z",
       }),
       INCIDENT_ID,
@@ -826,11 +853,12 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "3",
       JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-2",
         toolName: "get_events",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:03Z",
       }),
       INCIDENT_ID,
@@ -947,11 +975,12 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "7",
       JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
         toolName: "get_events",
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:02Z",
       }),
       INCIDENT_ID,
@@ -960,13 +989,14 @@ describe("read-only incident presentation", () => {
       "tool.failed",
       "8",
       JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
         toolName: "get_events",
         errorCode: "kubernetes_forbidden",
         retryable: false,
+        runKind: "diagnosis",
         occurredAt: "2026-08-29T01:00:03Z",
       }),
       INCIDENT_ID,
@@ -1000,11 +1030,12 @@ describe("read-only incident presentation", () => {
       "alert.resolved",
       "9",
       JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         alertStatus: "RESOLVED",
         endsAt: "2026-09-02T08:05:00.000000000Z",
+        runKind: "diagnosis",
         occurredAt: "2026-09-02T08:05:01Z",
       }),
       INCIDENT_ID,

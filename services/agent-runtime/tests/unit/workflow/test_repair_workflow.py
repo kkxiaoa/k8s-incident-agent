@@ -22,6 +22,7 @@ from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     DiagnosisValidationSnapshot,
+    DiagnosisWorkflowRunSnapshot,
     IncidentStatus,
     ModelSnapshot,
     PersistedEvidence,
@@ -30,7 +31,6 @@ from k8s_incident_agent.domain.models import (
     RunRecord,
     RunStatus,
     TerminalRecord,
-    WorkflowRunSnapshot,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
@@ -90,7 +90,7 @@ class _ToolCallingModel(FakeMessagesListChatModel):
 class _Repository:
     def __init__(
         self,
-        snapshot: WorkflowRunSnapshot,
+        snapshot: DiagnosisWorkflowRunSnapshot,
         validation_snapshot: DiagnosisValidationSnapshot,
     ) -> None:
         self.snapshot = snapshot
@@ -98,7 +98,9 @@ class _Repository:
         self.terminals: list[TerminalRecord] = []
         self.repair_terminals: list[RepairTerminalRecord] = []
 
-    async def get_workflow_run_snapshot(self, run_id: UUID) -> WorkflowRunSnapshot:
+    async def get_workflow_run_snapshot(
+        self, run_id: UUID
+    ) -> DiagnosisWorkflowRunSnapshot:
         assert run_id == self.snapshot.id
         return self.snapshot
 
@@ -181,8 +183,8 @@ class _Validator:
         )
 
 
-def _run() -> WorkflowRunSnapshot:
-    return WorkflowRunSnapshot(
+def _run() -> DiagnosisWorkflowRunSnapshot:
+    return DiagnosisWorkflowRunSnapshot(
         id=uuid4(),
         incident_id=uuid4(),
         source=IncidentSource(
@@ -228,7 +230,7 @@ def _credential() -> DiagnosticCredential:
     )
 
 
-def _context(run: WorkflowRunSnapshot) -> DiagnosticToolContext:
+def _context(run: DiagnosisWorkflowRunSnapshot) -> DiagnosticToolContext:
     return DiagnosticToolContext(
         run=AgentRunSnapshot(
             id=run.id,
@@ -265,7 +267,7 @@ def _dependencies(
 
 def _evidence(
     *,
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
     evidence_id: UUID,
     kind: str,
     payload: dict[str, Any],
@@ -301,7 +303,7 @@ def _evidence(
 
 
 def _validation_snapshot(
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
     *,
     rollout_uid: str = "deployment-uid",
 ) -> tuple[DiagnosisValidationSnapshot, dict[str, UUID]]:
@@ -461,7 +463,7 @@ def _validation_snapshot(
 
 
 def _diagnosis_response(
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
     evidence_ids: dict[str, UUID],
     *,
     include_repair: bool = True,
@@ -503,7 +505,7 @@ def _diagnosis_response(
     )
 
 
-def _config(run: WorkflowRunSnapshot) -> RunnableConfig:
+def _config(run: DiagnosisWorkflowRunSnapshot) -> RunnableConfig:
     return {"configurable": {"thread_id": str(run.id)}}
 
 

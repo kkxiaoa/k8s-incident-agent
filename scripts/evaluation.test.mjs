@@ -1105,13 +1105,13 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       const items = [...scenarioItems, ...retainedItems];
       const cursor = url.searchParams.get("cursor");
       return jsonResponse({
-        schemaVersion: 4,
+        schemaVersion: 5,
         items: cursor === null ? items.slice(0, 100) : items.slice(100),
         nextCursor: cursor === null ? "next-page" : null,
       });
     }
     return jsonResponse({
-      schemaVersion: 4,
+      schemaVersion: 5,
       items: scenarioItems,
       nextCursor: null,
     });
@@ -1131,8 +1131,8 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   const suffix = match[2];
   if (suffix === "/runs") {
     return jsonResponse({
-      schemaVersion: 4,
-      items: [{ id: scenario.runId, attempt: 1, status: "COMPLETED" }],
+      schemaVersion: 5,
+      items: [{ id: scenario.runId, kind: "diagnosis", operation: null, attempt: 1, status: "COMPLETED" }],
       nextCursor: null,
     });
   }
@@ -1183,9 +1183,10 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       ? "90000000-0000-4000-8000-000000000001"
       : scenario.incidentId;
     const eventData = (fields) => JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId,
       runId: scenario.runId,
+      runKind: "diagnosis",
       occurredAt: "2026-09-05T00:00:00.000Z",
       ...fields,
     });
@@ -1258,7 +1259,7 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   const diagnosisCode = diagnosisCodeFor(scenario, options);
   const repair = repairProjection(scenario, diagnosisCode, options, evidence);
   return jsonResponse({
-    schemaVersion: 4,
+    schemaVersion: 5,
     incident: {
       id: isControlIncident
         ? scenario.controlIncidentId
@@ -1279,6 +1280,8 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       displayName: scenario.displayName,
     },
     selectedRun: {
+      kind: "diagnosis",
+      operation: null,
       id: scenario.runId,
       attempt: 1,
       status: "COMPLETED",

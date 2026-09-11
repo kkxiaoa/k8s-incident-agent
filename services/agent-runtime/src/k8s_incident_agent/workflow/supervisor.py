@@ -18,10 +18,10 @@ from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyResolver
 from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
+    DiagnosisWorkflowRunSnapshot,
     ModelSnapshot,
     RunStatus,
     TerminalRecord,
-    WorkflowRunSnapshot,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredentialLease
@@ -141,7 +141,10 @@ class RunSupervisor:
     async def _execute(self, run_id: UUID) -> None:
         try:
             snapshot = await self._repository.get_workflow_run_snapshot(run_id)
-            if snapshot.run_status not in _ACTIVE_RUN_STATUSES:
+            if (
+                not isinstance(snapshot, DiagnosisWorkflowRunSnapshot)
+                or snapshot.run_status not in _ACTIVE_RUN_STATUSES
+            ):
                 return
             config: RunnableConfig = {"configurable": {"thread_id": str(run_id)}}
             checkpoint = await self._checkpointer.aget_tuple(config)
@@ -228,7 +231,7 @@ class RunSupervisor:
         except Exception as error:
             await self._handle_failure(run_id, error)
 
-    def _context(self, run: WorkflowRunSnapshot) -> DiagnosticToolContext:
+    def _context(self, run: DiagnosisWorkflowRunSnapshot) -> DiagnosticToolContext:
         started_at = run.started_at or self._now()
         return DiagnosticToolContext(
             run=AgentRunSnapshot(
@@ -248,7 +251,7 @@ class RunSupervisor:
         self,
         graph: IncidentGraph,
         config: RunnableConfig,
-        run: WorkflowRunSnapshot,
+        run: DiagnosisWorkflowRunSnapshot,
     ) -> tuple[str, tuple[str, bool] | None]:
         state = await graph.aget_state(  # pyright: ignore[reportUnknownMemberType]
             config
@@ -278,7 +281,7 @@ class RunSupervisor:
         self,
         graph: IncidentGraph,
         config: RunnableConfig,
-        run: WorkflowRunSnapshot,
+        run: DiagnosisWorkflowRunSnapshot,
     ) -> tuple[str, tuple[str, bool] | None]:
         state = await graph.aget_state(  # pyright: ignore[reportUnknownMemberType]
             config
@@ -313,7 +316,7 @@ class RunSupervisor:
         _require_checkpoint_identity(values, run)
         return next_node, terminal_error
 
-    def _deadline_expired(self, run: WorkflowRunSnapshot) -> bool:
+    def _deadline_expired(self, run: DiagnosisWorkflowRunSnapshot) -> bool:
         if run.started_at is None:
             raise RuntimeError("Running run is missing its persisted start time")
         return (
@@ -326,7 +329,10 @@ class RunSupervisor:
             current = await self._repository.get_workflow_run_snapshot(run_id)
         except Exception:
             return
-        if current.run_status not in _ACTIVE_RUN_STATUSES:
+        if (
+            not isinstance(current, DiagnosisWorkflowRunSnapshot)
+            or current.run_status not in _ACTIVE_RUN_STATUSES
+        ):
             return
         contract = classify_diagnosis_failure(error)
         code, retryable = contract or ("recovery_consistency_error", False)
@@ -424,7 +430,7 @@ def _checkpoint_terminal_error(
 
 def _require_checkpoint_identity(
     values: dict[str, object],
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
 ) -> None:
     try:
         target = KubernetesTarget.model_validate(values.get("target"))

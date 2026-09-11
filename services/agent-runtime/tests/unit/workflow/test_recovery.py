@@ -31,13 +31,13 @@ from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
 from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
+    DiagnosisWorkflowRunSnapshot,
     EvidenceRecord,
     ModelSnapshot,
     PersistedEvidence,
     RunBudget,
     RunStatus,
     TerminalRecord,
-    WorkflowRunSnapshot,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.contracts import WorkloadObservation
@@ -286,13 +286,13 @@ def _dependencies(
 
 def build_incident_graph(
     dependencies: GraphDependencies,
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
 ) -> IncidentGraph:
     return _build_incident_graph(dependencies, run, TEST_POLICY)
 
 
 def _context(
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
     repository: IncidentRepository,
     *,
     adapter: object | None = None,
@@ -349,10 +349,11 @@ def _thread_config(run_id: object) -> RunnableConfig:
 async def _wait_for_terminal(
     repository: IncidentRepository,
     run_id: object,
-) -> WorkflowRunSnapshot:
+) -> DiagnosisWorkflowRunSnapshot:
     async with asyncio.timeout(2):
         while True:
             snapshot = await repository.get_workflow_run_snapshot(cast(Any, run_id))
+            assert isinstance(snapshot, DiagnosisWorkflowRunSnapshot)
             if snapshot.run_status not in {RunStatus.QUEUED, RunStatus.RUNNING}:
                 return snapshot
             await asyncio.sleep(0)
@@ -485,7 +486,7 @@ def _checkpoint_namespace(config: RunnableConfig) -> object:
 async def _checkpoint_before_diagnose(
     repository: IncidentRepository,
     saver: AsyncSqliteSaver,
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
 ) -> IncidentGraph:
     graph = build_incident_graph(
         _dependencies(
@@ -515,6 +516,7 @@ async def test_input_checkpoint_barrier_precedes_business_start(tmp_path: Path) 
             _scenario(), _model_snapshot(), _budget()
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         model = _FailingToolCallingModel(responses=[])
         config = _thread_config(run.id)
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
@@ -529,6 +531,7 @@ async def test_input_checkpoint_barrier_precedes_business_start(tmp_path: Path) 
             )
 
             queued = await repository.get_workflow_run_snapshot(run.id)
+            assert isinstance(queued, DiagnosisWorkflowRunSnapshot)
             barrier = await graph.aget_state(config)
             assert queued.run_status is RunStatus.QUEUED
             assert queued.started_at is None
@@ -545,6 +548,7 @@ async def test_input_checkpoint_barrier_precedes_business_start(tmp_path: Path) 
             )
 
         running = await repository.get_workflow_run_snapshot(run.id)
+        assert isinstance(running, DiagnosisWorkflowRunSnapshot)
         assert running.run_status is RunStatus.RUNNING
         assert running.started_at == NOW
         assert await _event_count(database, run.id, "run.started") == 1
@@ -562,6 +566,7 @@ async def test_queued_input_checkpoint_recovers_with_rebuilt_supervisor(
             _scenario(), _model_snapshot(), _budget()
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             graph = build_incident_graph(
                 _dependencies(
@@ -611,6 +616,7 @@ async def test_partial_input_checkpoint_recovers_after_barrier_write_failure(
             _scenario(), _model_snapshot(), _budget()
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             graph = build_incident_graph(
                 _dependencies(
@@ -639,6 +645,7 @@ async def test_partial_input_checkpoint_recovers_after_barrier_write_failure(
                 )
 
             queued = await repository.get_workflow_run_snapshot(run.id)
+            assert isinstance(queued, DiagnosisWorkflowRunSnapshot)
             partial = await graph.aget_state(_thread_config(run.id))
             assert did_fail()
             assert queued.run_status is RunStatus.QUEUED
@@ -685,6 +692,7 @@ async def test_queued_terminal_checkpoint_preserves_original_error_on_restart(
             _scenario(), _model_snapshot(), _budget()
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         first_model = _FailingToolCallingModel(responses=[])
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             graph = build_incident_graph(
@@ -710,6 +718,7 @@ async def test_queued_terminal_checkpoint_preserves_original_error_on_restart(
             checkpoint = await graph.aget_state(_thread_config(run.id))
 
         queued = await repository.get_workflow_run_snapshot(run.id)
+        assert isinstance(queued, DiagnosisWorkflowRunSnapshot)
         assert queued.run_status is RunStatus.QUEUED
         assert checkpoint.next == ("persist_terminal_state",)
         assert checkpoint.values["terminal_error_code"] == "authentication_failed"
@@ -750,6 +759,7 @@ async def test_expired_running_checkpoint_stops_before_diagnose(
             _scenario(), _model_snapshot(), _budget()
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             await _checkpoint_before_diagnose(repository, saver, run)
 
@@ -792,6 +802,7 @@ async def test_model_call_uses_remaining_absolute_deadline_after_barrier_delay(
             _scenario(), _model_snapshot(), budget
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         model = _BlockingToolCallingModel(responses=[])
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             graph = build_incident_graph(
@@ -821,6 +832,7 @@ async def test_model_call_uses_remaining_absolute_deadline_after_barrier_delay(
                 )
 
         terminal = await repository.get_workflow_run_snapshot(run.id)
+        assert isinstance(terminal, DiagnosisWorkflowRunSnapshot)
         assert terminal.run_status is RunStatus.FAILED
         assert model.calls == 1
         assert model.entered.is_set()
@@ -846,6 +858,7 @@ async def test_running_checkpoint_rejects_changed_model_identity(
             _scenario(), _model_snapshot(), _budget()
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             await _checkpoint_before_diagnose(repository, saver, run)
         if mismatch == "prompt":
@@ -900,6 +913,7 @@ async def test_changed_or_unavailable_model_does_not_block_post_model_checkpoint
         await repository.start_run(created.run_id, NOW)
         await _record_workload_evidence(repository, created.run_id)
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         first_model = _ScriptedToolCallingModel(
             responses=[_diagnosed_response(created.run_id)]
         )
@@ -954,6 +968,7 @@ async def test_model_outage_terminates_recoverable_diagnosis_once_without_waitin
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             if running:
                 run = await repository.get_workflow_run_snapshot(created.run_id)
+                assert isinstance(run, DiagnosisWorkflowRunSnapshot)
                 await _checkpoint_before_diagnose(repository, saver, run)
             supervisor = _supervisor(repository, saver, None)
             await supervisor.start()
@@ -984,6 +999,7 @@ async def test_expired_post_model_checkpoint_preserves_projected_usage(
         await repository.start_run(created.run_id, NOW)
         await _record_workload_evidence(repository, created.run_id)
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         first_model = _ScriptedToolCallingModel(
             responses=[_diagnosed_response(created.run_id)]
         )
@@ -1062,6 +1078,7 @@ async def test_running_checkpoint_rejects_mismatched_business_identity(
             _scenario(), _model_snapshot(), _budget()
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             graph = await _checkpoint_before_diagnose(repository, saver, run)
             await graph.aupdate_state(  # pyright: ignore[reportUnknownMemberType]
@@ -1099,6 +1116,7 @@ async def test_running_pre_start_checkpoint_replays_original_started_at_once(
             _scenario(), _model_snapshot(), _budget()
         )
         queued = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(queued, DiagnosisWorkflowRunSnapshot)
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
             graph = build_incident_graph(
                 _dependencies(
@@ -1221,6 +1239,7 @@ async def test_evidence_commit_replays_after_checkpoint_lag_with_rebuilt_runtime
             _scenario(), _model_snapshot(), _budget()
         )
         run = await repository.get_workflow_run_snapshot(created.run_id)
+        assert isinstance(run, DiagnosisWorkflowRunSnapshot)
         first_model = _ScriptedToolCallingModel(responses=[_tool_call_response()])
         paused_repository = _PauseAfterEvidenceRepository(repository)
         async with open_checkpoint_store(paths.checkpoint_database) as saver:
@@ -1251,6 +1270,7 @@ async def test_evidence_commit_replays_after_checkpoint_lag_with_rebuilt_runtime
                 await invocation
 
         interrupted = await repository.get_workflow_run_snapshot(run.id)
+        assert isinstance(interrupted, DiagnosisWorkflowRunSnapshot)
         assert interrupted.run_status is RunStatus.RUNNING
         assert first_model.calls == 1
         assert first_adapter.calls == 1

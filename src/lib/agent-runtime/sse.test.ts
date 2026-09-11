@@ -8,11 +8,13 @@ import {
   RUN_ID,
   makeIncidentDetail,
   makeWaitingApprovalIncidentDetail,
+  makeRepairRunWaitingDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import { parseRunEventHistoryResponse } from "./response-contracts";
 import {
   createIncidentStreamState,
+  isTerminalRunEvent,
   parseRunEvent,
   reduceIncidentStream,
 } from "./sse";
@@ -25,12 +27,13 @@ function incidentCreated(id: string) {
     "incident.created",
     id,
     JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       attempt: 1,
       incidentStatus: "RECEIVED",
       runStatus: "QUEUED",
+      runKind: "diagnosis",
       occurredAt: "2026-08-29T01:00:00Z",
     }),
     INCIDENT_ID,
@@ -42,11 +45,12 @@ function runQueued(id: string, runId = OTHER_RUN_ID) {
     "run.queued",
     id,
     JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: INCIDENT_ID,
       runId,
       attempt: 2,
       runStatus: "QUEUED",
+      runKind: "diagnosis",
       occurredAt: "2026-08-29T01:00:01Z",
     }),
     INCIDENT_ID,
@@ -58,12 +62,13 @@ function runStarted(id: string, runId = RUN_ID) {
     "run.started",
     id,
     JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: INCIDENT_ID,
       runId,
       attempt: runId === RUN_ID ? 1 : 2,
       incidentStatus: "TRIAGING",
       runStatus: "RUNNING",
+      runKind: "diagnosis",
       occurredAt: "2026-08-29T01:00:02Z",
     }),
     INCIDENT_ID,
@@ -75,13 +80,14 @@ function diagnosisCompleted(id: string, runId = RUN_ID) {
     "diagnosis.completed",
     id,
     JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: INCIDENT_ID,
       runId,
       diagnosisId: DIAGNOSIS_ID,
       incidentStatus: "DIAGNOSED",
       runStatus: "COMPLETED",
       outcome: "diagnosed",
+      runKind: "diagnosis",
       occurredAt: "2026-08-29T01:00:04Z",
     }),
     INCIDENT_ID,
@@ -93,13 +99,14 @@ function repairDiagnosisCompleted(id: string) {
     "diagnosis.completed",
     id,
     JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       diagnosisId: DIAGNOSIS_ID,
       incidentStatus: "DIAGNOSED",
       runStatus: "RUNNING",
       outcome: "diagnosed",
+      runKind: "diagnosis",
       occurredAt: "2026-08-29T01:00:04Z",
     }),
     INCIDENT_ID,
@@ -123,13 +130,14 @@ function repairEvent(
     name,
     id,
     JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       proposalId: REPAIR_PROPOSAL_ID,
       proposalDigest: REPAIR_PROPOSAL_DIGEST,
       incidentStatus,
       runStatus,
+      runKind: "diagnosis",
       occurredAt: "2026-08-29T01:00:05Z",
     }),
     INCIDENT_ID,
@@ -141,11 +149,12 @@ function alertResolved(id: string, runId = RUN_ID) {
     "alert.resolved",
     id,
     JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: INCIDENT_ID,
       runId,
       alertStatus: "RESOLVED",
       endsAt: "2026-08-29T01:05:00.000000001Z",
+      runKind: "diagnosis",
       occurredAt: "2026-08-29T01:05:01Z",
     }),
     INCIDENT_ID,
@@ -153,7 +162,35 @@ function alertResolved(id: string, runId = RUN_ID) {
 }
 
 describe("parseRunEvent", () => {
-  it("accepts the v4 run.queued contract and preserves int64 ids", () => {
+  it("refreshes a new repair waiting proposal without turning it into a terminal Run", () => {
+    const detail = makeRepairRunWaitingDetail();
+    detail.selectedRun.status = "RUNNING";
+    const payload = {
+      ...repairEvent("repair.waiting_approval", "2").data,
+      runId: detail.selectedRun.id,
+      runKind: "repair",
+      runStatus: "WAITING_APPROVAL",
+    };
+    const waiting = parseRunEvent("repair.waiting_approval", "2", JSON.stringify(payload), INCIDENT_ID);
+    expect(isTerminalRunEvent(waiting)).toBe(false);
+    expect(isTerminalRunEvent(repairEvent("repair.waiting_approval", "2"))).toBe(true);
+    const state = reduceIncidentStream(
+      reduceIncidentStream(createIncidentStreamState(detail), { type: "connected" }),
+      { type: "event", event: waiting },
+    );
+    expect(state.connection).toBe("live");
+    expect(state.detail.selectedRun.status).toBe("WAITING_APPROVAL");
+    expect(state.detail.selectedRun.completedAt).toBeNull();
+    expect(state.detailRefreshEventId).toBe("2");
+    for (const fields of [
+      { runKind: "repair", runStatus: "COMPLETED" },
+      { runKind: "diagnosis", runStatus: "WAITING_APPROVAL" },
+      { runKind: undefined },
+    ]) {
+      expect(() => parseRunEvent("repair.waiting_approval", "2", JSON.stringify({ ...payload, ...fields }), INCIDENT_ID)).toThrow();
+    }
+  });
+  it("accepts the v5 run.queued contract and preserves int64 ids", () => {
     const event = runQueued("9007199254740993");
     expect(event.id).toBe("9007199254740993");
     expect(event.event).toBe("run.queued");
@@ -161,12 +198,12 @@ describe("parseRunEvent", () => {
 
   it.each([
     ["v1 payload", { schemaVersion: 1 }],
-    ["missing attempt", { schemaVersion: 4 }],
-    ["zero attempt", { schemaVersion: 4, attempt: 0 }],
-    ["first attempt", { schemaVersion: 4, attempt: 1 }],
+    ["missing attempt", { schemaVersion: 5 }],
+    ["zero attempt", { schemaVersion: 5, attempt: 0 }],
+    ["first attempt", { schemaVersion: 5, attempt: 1 }],
     [
       "another Incident owner",
-      { schemaVersion: 4, attempt: 2, incidentId: OTHER_INCIDENT_ID },
+      { schemaVersion: 5, attempt: 2, incidentId: OTHER_INCIDENT_ID },
     ],
   ])("rejects %s", (_label, override) => {
     expect(() =>
@@ -177,6 +214,7 @@ describe("parseRunEvent", () => {
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           runStatus: "QUEUED",
+          runKind: "diagnosis",
           occurredAt: "2026-08-29T01:00:01Z",
           ...override,
         }),
@@ -187,7 +225,7 @@ describe("parseRunEvent", () => {
 
   it("binds REST event history to its Incident and Run owners", () => {
     const response = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       items: [runStarted("2")],
       nextCursor: null,
     };
@@ -217,11 +255,12 @@ describe("parseRunEvent", () => {
         "alert.resolved",
         "3",
         JSON.stringify({
-          schemaVersion: 4,
+          schemaVersion: 5,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           alertStatus: "RESOLVED",
           endsAt: "2026-08-29T01:05:00Z",
+          runKind: "diagnosis",
           occurredAt: "2026-08-29T01:05:01Z",
         }),
         INCIDENT_ID,
@@ -245,13 +284,14 @@ describe("parseRunEvent", () => {
         "repair.patch_ready",
         "4",
         JSON.stringify({
-          schemaVersion: 4,
+          schemaVersion: 5,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           proposalId: REPAIR_PROPOSAL_ID,
           proposalDigest: "sha256:ABC",
           incidentStatus: "PATCH_READY",
           runStatus: "RUNNING",
+          runKind: "diagnosis",
           occurredAt: "2026-08-29T01:00:05Z",
         }),
         INCIDENT_ID,

@@ -922,7 +922,7 @@ async function listIncidentSummaries(fetchImpl) {
       query,
     );
     if (
-      document?.schemaVersion !== 4 ||
+      document?.schemaVersion !== 5 ||
       !Array.isArray(document.items) ||
       document.items.some((item) => !UUID_PATTERN.test(item?.id ?? "")) ||
       !(document.nextCursor === null ||
@@ -993,7 +993,9 @@ async function waitForTerminalIncident(incidentId, fetchImpl, sleep) {
 
 function validateTerminalDiagnosis(scenario, detail) {
   if (
-    detail.schemaVersion !== 4 ||
+    detail.schemaVersion !== 5 ||
+    detail.selectedRun?.kind !== "diagnosis" ||
+    detail.selectedRun?.operation !== null ||
     detail.selectedRun?.attempt !== 1 ||
     detail.selectedRun?.status !== "COMPLETED" ||
     detail.selectedRun?.error !== null ||
@@ -1400,7 +1402,8 @@ async function validateSseReplay(incidentId, cursor, runId, repair, fetchImpl) {
         if (
           !/^[1-9][0-9]*$/.test(id) ||
           !isNormalizedString(event) ||
-          data?.schemaVersion !== 4 ||
+          data?.schemaVersion !== 5 ||
+          data.runKind !== "diagnosis" ||
           data.incidentId !== incidentId ||
           data.runId !== runId ||
           (events.length > 0 && BigInt(id) <= BigInt(events.at(-1).id))
@@ -1581,10 +1584,12 @@ async function requireSingleIncidentAndRun(
   if (
     targetIncidents.length !== 1 ||
     targetIncidents[0] !== incidentId ||
-    runs?.schemaVersion !== 4 ||
+    runs?.schemaVersion !== 5 ||
     !Array.isArray(runs?.items) ||
     runs.items.length !== 1 ||
-    runs.items[0]?.attempt !== 1
+    runs.items[0]?.attempt !== 1 ||
+    runs.items[0]?.kind !== "diagnosis" ||
+    runs.items[0]?.operation !== null
   ) {
     throw contractError(
       "alert_repeat_not_deduplicated",
@@ -1690,7 +1695,7 @@ async function getIncident(incidentId, fetchImpl) {
     { transientStatuses: new Set([502, 503, 504]) },
   );
   if (
-    document?.schemaVersion !== 4 ||
+    document?.schemaVersion !== 5 ||
     document.incident?.id !== incidentId ||
     !UUID_PATTERN.test(document.selectedRun?.id ?? "")
   ) {

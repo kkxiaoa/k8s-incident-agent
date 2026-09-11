@@ -22,6 +22,8 @@ from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
     IncidentStatus,
     JsonValue,
+    RepairOperation,
+    RunKind,
     RunStatus,
 )
 from k8s_incident_agent.model.errors import ModelErrorCode
@@ -123,12 +125,12 @@ class CreateIncidentRequest(_ApiContract):
 
 
 class CreateIncidentResponse(_ApiContract):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     incident_id: UUID
 
 
 class CreateRunResponse(_ApiContract):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     run_id: UUID
 
 
@@ -141,7 +143,7 @@ class IncidentListItem(_ApiContract):
 
 
 class IncidentListResponse(_ApiContract):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     items: tuple[IncidentListItem, ...]
     next_cursor: str | None
 
@@ -163,11 +165,21 @@ class RunErrorResponse(_ApiContract):
 
 class RunSummaryResponse(_ApiContract):
     id: UUID
+    kind: RunKind
+    operation: RepairOperation | None
     attempt: int = Field(ge=1)
     status: RunStatus
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+
+    @model_validator(mode="after")
+    def require_run_kind_fields(self) -> "RunSummaryResponse":
+        if (self.kind is RunKind.REPAIR) != (self.operation is not None):
+            raise ValueError("Run operation must match its kind")
+        if self.kind is RunKind.DIAGNOSIS and self.status is RunStatus.WAITING_APPROVAL:
+            raise ValueError("Diagnosis cannot wait for approval")
+        return self
 
 
 class SelectedRunResponse(RunSummaryResponse):
@@ -175,7 +187,7 @@ class SelectedRunResponse(RunSummaryResponse):
 
 
 class RunHistoryResponse(_ApiContract):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     items: tuple[RunSummaryResponse, ...]
     next_cursor: str | None
 
@@ -263,7 +275,7 @@ class AlertSignalResponse(_ApiContract):
 
 
 class RunEventPayload(_ApiContract):
-    schema_version: Literal[4]
+    schema_version: Literal[5]
     incident_id: UUID
     run_id: UUID
     occurred_at: datetime
@@ -274,18 +286,26 @@ class RunEventPayload(_ApiContract):
         return _require_utc_datetime(value, "occurredAt")
 
 
-class IncidentCreatedEventPayload(RunEventPayload):
+class _DiagnosisRunEventPayload(RunEventPayload):
+    run_kind: Literal[RunKind.DIAGNOSIS]
+
+
+class _TypedRunEventPayload(RunEventPayload):
+    run_kind: RunKind
+
+
+class IncidentCreatedEventPayload(_DiagnosisRunEventPayload):
     attempt: int = Field(ge=1)
     incident_status: Literal["RECEIVED"]
     run_status: Literal["QUEUED"]
 
 
-class RunQueuedEventPayload(RunEventPayload):
+class RunQueuedEventPayload(_TypedRunEventPayload):
     attempt: int = Field(ge=2)
     run_status: Literal["QUEUED"]
 
 
-class RunStartedEventPayload(RunEventPayload):
+class RunStartedEventPayload(_TypedRunEventPayload):
     attempt: int = Field(ge=1)
     incident_status: Literal["TRIAGING"]
     run_status: Literal["RUNNING"]
@@ -296,7 +316,7 @@ class PrometheusToolCallIdentity(_ApiContract):
     window: Literal["15m", "1h", "6h", "7d", "15d"]
 
 
-class ToolStartedEventPayload(RunEventPayload):
+class ToolStartedEventPayload(_TypedRunEventPayload):
     tool_call_id: str
     tool_name: str
     call_identity: PrometheusToolCallIdentity | None = None
@@ -317,7 +337,7 @@ class ToolStartedEventPayload(RunEventPayload):
         return self
 
 
-class EvidenceRecordedEventPayload(RunEventPayload):
+class EvidenceRecordedEventPayload(_TypedRunEventPayload):
     evidence_id: UUID
     tool_call_id: str
     tool_name: str
@@ -332,56 +352,65 @@ class EvidenceRecordedEventPayload(RunEventPayload):
         return _require_utc_datetime(value, "observedAt")
 
 
-class ToolFailedEventPayload(RunEventPayload):
+class ToolFailedEventPayload(_TypedRunEventPayload):
     tool_call_id: str
     tool_name: str
     error_code: str
     retryable: bool
 
 
-class DiagnosisCompletedEventPayload(RunEventPayload):
+class DiagnosisCompletedEventPayload(_DiagnosisRunEventPayload):
     diagnosis_id: UUID
     outcome: Literal["diagnosed"]
     incident_status: Literal["DIAGNOSED"]
     run_status: Literal["RUNNING", "COMPLETED"]
 
 
-class DiagnosisInsufficientEventPayload(RunEventPayload):
+class DiagnosisInsufficientEventPayload(_DiagnosisRunEventPayload):
     diagnosis_id: UUID
     outcome: Literal["insufficient_evidence"]
     incident_status: Literal["INSUFFICIENT_EVIDENCE"]
     run_status: Literal["COMPLETED"]
 
 
-class RunFailedEventPayload(RunEventPayload):
+class RunFailedEventPayload(_TypedRunEventPayload):
     error_code: str
     retryable: bool
     incident_status: Literal["FAILED", "STALE_RESOURCE"]
     run_status: Literal["FAILED"]
 
 
-class RepairPatchReadyEventPayload(RunEventPayload):
+class RepairPatchReadyEventPayload(_TypedRunEventPayload):
     proposal_id: UUID
     proposal_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     incident_status: Literal["PATCH_READY"]
     run_status: Literal["RUNNING"]
 
 
-class RepairDryRunPassedEventPayload(RunEventPayload):
+class RepairDryRunPassedEventPayload(_TypedRunEventPayload):
     proposal_id: UUID
     proposal_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     incident_status: Literal["DRY_RUN_PASSED"]
     run_status: Literal["RUNNING"]
 
 
-class RepairWaitingApprovalEventPayload(RunEventPayload):
+class RepairWaitingApprovalEventPayload(_TypedRunEventPayload):
     proposal_id: UUID
     proposal_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     incident_status: Literal["WAITING_APPROVAL"]
-    run_status: Literal["COMPLETED"]
+    run_status: Literal["COMPLETED", "WAITING_APPROVAL"]
+
+    @model_validator(mode="after")
+    def require_waiting_semantics(self) -> "RepairWaitingApprovalEventPayload":
+        expected = (
+            "COMPLETED" if self.run_kind is RunKind.DIAGNOSIS else "WAITING_APPROVAL"
+        )
+        if self.run_status != expected:
+            raise ValueError("Waiting status must match the Run kind")
+        return self
 
 
-class AlertResolvedEventPayload(RunEventPayload):
+class AlertResolvedEventPayload(_TypedRunEventPayload):
     alert_status: Literal["RESOLVED"]
     ends_at: _CanonicalAlertTimestamp
 
@@ -493,13 +522,13 @@ class EventPageResponse(_ApiContract):
 
 
 class RunEventHistoryResponse(_ApiContract):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     items: tuple[RunEventStreamItem, ...]
     next_cursor: str | None
 
 
 class IncidentDetailResponse(_ApiContract):
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     incident: IncidentResponse
     selected_run: SelectedRunResponse
     event_page: EventPageResponse

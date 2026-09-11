@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   makeIncidentDetail,
   makeWaitingApprovalIncidentDetail,
+  makeRepairRunWaitingDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import {
@@ -67,6 +68,31 @@ function metricPanel() {
 }
 
 describe("parseIncidentDetailResponse", () => {
+  it("separates a completed diagnostic suggestion from a waiting repair without a diagnosis", () => {
+    const legacy = parseIncidentDetailResponse(makeWaitingApprovalIncidentDetail());
+    const repair = parseIncidentDetailResponse(makeRepairRunWaitingDetail());
+    expect(legacy?.selectedRun).toMatchObject({ kind: "diagnosis", operation: null, status: "COMPLETED" });
+    expect(repair?.selectedRun).toMatchObject({ kind: "repair", operation: "apply", status: "WAITING_APPROVAL", completedAt: null });
+    expect(repair?.diagnosis).toBeNull();
+    expect(repair?.repair).not.toBeNull();
+  });
+
+  it.each([
+    { kind: undefined, operation: null },
+    { kind: "diagnosis", operation: "apply" },
+    { kind: "diagnosis", operation: null, status: "WAITING_APPROVAL" },
+    { kind: "repair", operation: null },
+    { kind: "repair", operation: "restart" },
+  ])("rejects inconsistent Run kind fields %j", (fields) => {
+    const detail = makeIncidentDetail();
+    expect(parseIncidentDetailResponse({ ...detail, selectedRun: { ...detail.selectedRun, ...fields } })).toBeNull();
+  });
+
+  it("does not attach a diagnosis to a repair Run", () => {
+    const detail = makeRepairRunWaitingDetail();
+    detail.diagnosis = makeWaitingApprovalIncidentDetail().diagnosis;
+    expect(parseIncidentDetailResponse(detail)).toBeNull();
+  });
   it("accepts a Scenario detail without an alert signal", () => {
     expect(parseIncidentDetailResponse(makeIncidentDetail())).not.toBeNull();
   });

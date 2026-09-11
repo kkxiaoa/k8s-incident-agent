@@ -879,6 +879,9 @@ function k3sStatusResponse(args, options, fixtures) {
   }
   const commandArgs = args.slice(contextIndex + 2);
   const key = commandArgs.join(" ");
+  if (key === "get --raw /api/v1/namespaces/k8s-incident-agent/services/agent-runtime:http/proxy/healthz") {
+    return { status: "ok", diagnosis: { status: "ready", reason: null } };
+  }
   if (key === "version --output=json") {
     return { serverVersion: { gitVersion: "v1.36.2+k3s1" } };
   }

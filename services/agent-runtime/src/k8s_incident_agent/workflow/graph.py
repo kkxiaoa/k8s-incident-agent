@@ -48,12 +48,12 @@ from k8s_incident_agent.diagnosis.validation import (
 from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
+    DiagnosisWorkflowRunSnapshot,
     JsonValue,
     ModelSnapshot,
     RootCauseRecord,
     RunStatus,
     TerminalRecord,
-    WorkflowRunSnapshot,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import (
@@ -115,7 +115,7 @@ class GraphDependencies:
 
 def build_incident_graph(
     dependencies: GraphDependencies,
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
     policy: DiagnosticPolicy,
 ) -> IncidentGraph:
     if policy.repair_action is not None and dependencies.patch_validator is None:
@@ -202,7 +202,7 @@ def build_incident_graph(
 
 def _start_run_node(
     dependencies: GraphDependencies,
-    scheduled: WorkflowRunSnapshot,
+    scheduled: DiagnosisWorkflowRunSnapshot,
 ) -> Callable[..., object]:
     async def start_run(
         state: IncidentGraphState,
@@ -211,6 +211,8 @@ def _start_run_node(
         try:
             run_id = _state_run_id(state)
             current = await dependencies.repository.get_workflow_run_snapshot(run_id)
+            if not isinstance(current, DiagnosisWorkflowRunSnapshot):
+                raise RecoveryConsistencyError
             _require_same_run_identity(scheduled, current)
             if current.model != dependencies.model_snapshot:
                 raise RecoveryConsistencyError
@@ -268,7 +270,7 @@ def _start_run_node(
 
 def _triage_target_node(
     dependencies: GraphDependencies,
-    scheduled: WorkflowRunSnapshot,
+    scheduled: DiagnosisWorkflowRunSnapshot,
 ) -> Callable[..., object]:
     def triage_target(
         state: IncidentGraphState,
@@ -323,7 +325,7 @@ def _triage_target_node(
 
 def _validate_diagnosis_node(
     dependencies: GraphDependencies,
-    scheduled: WorkflowRunSnapshot,
+    scheduled: DiagnosisWorkflowRunSnapshot,
     policy: DiagnosticPolicy,
 ) -> Callable[..., object]:
     async def validate(
@@ -400,7 +402,7 @@ def _validate_repair_schema_node(
 
 def _validate_repair_policy_node(
     dependencies: GraphDependencies,
-    scheduled: WorkflowRunSnapshot,
+    scheduled: DiagnosisWorkflowRunSnapshot,
     policy: DiagnosticPolicy,
 ) -> Callable[..., object]:
     async def validate_policy(state: IncidentGraphState) -> dict[str, object]:
@@ -695,8 +697,8 @@ def _state_run_id(state: IncidentGraphState) -> UUID:
 
 
 def _require_same_run_identity(
-    scheduled: WorkflowRunSnapshot,
-    current: WorkflowRunSnapshot,
+    scheduled: DiagnosisWorkflowRunSnapshot,
+    current: DiagnosisWorkflowRunSnapshot,
 ) -> None:
     if (
         current.id != scheduled.id
@@ -712,7 +714,7 @@ def _require_same_run_identity(
 
 def _require_context_identity(
     context: DiagnosticToolContext,
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
 ) -> None:
     if (
         context.run.id != run.id

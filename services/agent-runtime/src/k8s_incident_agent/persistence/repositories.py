@@ -35,6 +35,7 @@ from k8s_incident_agent.domain.models import (
     CreatedRun,
     DiagnosisOutcome,
     DiagnosisValidationSnapshot,
+    DiagnosisWorkflowRunSnapshot,
     EvidenceRecord,
     IncidentStatus,
     JsonValue,
@@ -43,9 +44,12 @@ from k8s_incident_agent.domain.models import (
     PersistedAlertBatch,
     PersistedEvidence,
     PersistedTerminal,
+    RepairOperation,
+    RepairWorkflowRunSnapshot,
     RootCauseRecord,
     RunBudget,
     RunEvent,
+    RunKind,
     RunRecord,
     RunStatus,
     TerminalRecord,
@@ -72,7 +76,12 @@ from k8s_incident_agent.repair.contracts import (
 from k8s_incident_agent.repair.records import RepairTerminalRecord
 
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
-_SCHEMA_VERSION: Final = 4
+_SCHEMA_VERSION: Final = 5
+_ACTIVE_RUN_STATUSES: Final = (
+    RunStatus.QUEUED,
+    RunStatus.RUNNING,
+    RunStatus.WAITING_APPROVAL,
+)
 _CANONICAL_ALERT_TIMESTAMP = re.compile(CANONICAL_ALERT_TIMESTAMP_PATTERN)
 _OVERVIEW_HOUR = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
 
@@ -111,6 +120,8 @@ class IncidentListPage:
 @dataclass(frozen=True, slots=True)
 class IncidentRunDetail:
     id: UUID
+    kind: RunKind
+    operation: RepairOperation | None
     attempt: int
     status: RunStatus
     error_code: str | None
@@ -809,7 +820,10 @@ class IncidentRepository:
             async with self._session_factory() as session:
                 values = await session.scalars(
                     select(RunRow.id)
-                    .where(RunRow.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)))
+                    .where(
+                        RunRow.kind == RunKind.DIAGNOSIS,
+                        RunRow.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+                    )
                     .order_by(RunRow.created_at, RunRow.id)
                 )
                 try:
@@ -831,7 +845,7 @@ class IncidentRepository:
             async with self._session_factory() as session:
                 active_run = exists().where(
                     RunRow.incident_id == IncidentRow.id,
-                    RunRow.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+                    RunRow.status.in_(_ACTIVE_RUN_STATUSES),
                 )
                 incidents = list(
                     await session.scalars(
@@ -1149,7 +1163,7 @@ class IncidentRepository:
                     select(
                         exists().where(
                             RunRow.incident_id == incident.id,
-                            RunRow.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+                            RunRow.status.in_(_ACTIVE_RUN_STATUSES),
                         )
                     )
                 )
@@ -1203,9 +1217,7 @@ class IncidentRepository:
                         select(
                             exists().where(
                                 RunRow.incident_id == str(incident_id),
-                                RunRow.status.in_(
-                                    (RunStatus.QUEUED, RunStatus.RUNNING)
-                                ),
+                                RunRow.status.in_(_ACTIVE_RUN_STATUSES),
                             )
                         )
                     )
@@ -1235,6 +1247,8 @@ class IncidentRepository:
     async def _start_run_once(self, run_id: UUID, started_at: datetime) -> RunRecord:
         async with self._session_factory() as session, session.begin():
             run, incident = await _load_run_context(session, run_id)
+            if run.kind is not RunKind.DIAGNOSIS:
+                raise RecoveryConsistencyError
             incident_id = UUID(incident.id)
             existing = await _event_by_key(session, run_id, "run.started")
             if existing is not None:
@@ -2286,7 +2300,9 @@ def _incident_detail_record(
             if run.completed_at is not None
             else None
         )
-        if terminal is None:
+        if isinstance(workflow, RepairWorkflowRunSnapshot):
+            diagnosis_detail = None
+        elif terminal is None:
             if (
                 diagnosis is not None
                 or completed_at is not None
@@ -2378,6 +2394,10 @@ def _incident_run_detail(
         raise RecoveryConsistencyError
     return IncidentRunDetail(
         id=workflow.id,
+        kind=workflow.kind,
+        operation=workflow.operation
+        if isinstance(workflow, RepairWorkflowRunSnapshot)
+        else None,
         attempt=run.attempt,
         status=run.status,
         error_code=run.error_code,
@@ -2506,9 +2526,14 @@ def _workflow_run_projection(
             raise ValueError
     except (AttributeError, TypeError, ValueError):
         raise RecoveryConsistencyError from None
+    if run.kind is RunKind.REPAIR:
+        return _repair_workflow_snapshot(run, incident, diagnosis, target), None
     if (
         run.incident_id != incident.id
         or not _is_positive_integer(run.attempt)
+        or run.kind is not RunKind.DIAGNOSIS
+        or run.operation is not None
+        or run.status is RunStatus.WAITING_APPROVAL
         or not _valid_workflow_snapshot_values(run, incident)
     ):
         raise RecoveryConsistencyError
@@ -2596,7 +2621,7 @@ def _workflow_run_projection(
         if run.status is RunStatus.COMPLETED and started_at is None:
             raise RecoveryConsistencyError
 
-    snapshot = WorkflowRunSnapshot(
+    snapshot = DiagnosisWorkflowRunSnapshot(
         id=run_id,
         incident_id=incident_id,
         source=IncidentSource(
@@ -2608,19 +2633,83 @@ def _workflow_run_projection(
         trigger_summary=incident.trigger_summary,
         target=target,
         model=ModelSnapshot(
-            provider=run.model_provider,
-            model_id=run.model_id,
-            thinking_mode=run.thinking_mode,
-            prompt_version=run.prompt_version,
+            provider=cast(str, run.model_provider),
+            model_id=cast(str, run.model_id),
+            thinking_mode=cast(bool, run.thinking_mode),
+            prompt_version=cast(str, run.prompt_version),
         ),
         budget=RunBudget(
-            max_model_calls=run.max_model_calls,
-            max_tool_calls=run.max_tool_calls,
+            max_model_calls=cast(int, run.max_model_calls),
+            max_tool_calls=cast(int, run.max_tool_calls),
             timeout_seconds=run.timeout_seconds,
         ),
         started_at=started_at,
     )
     return snapshot, terminal
+
+
+def _repair_workflow_snapshot(
+    run: RunRow,
+    incident: IncidentRow,
+    diagnosis: DiagnosisRow | None,
+    target: KubernetesTarget,
+) -> RepairWorkflowRunSnapshot:
+    """Read business state without replaying a diagnostic graph or model checkpoint."""
+    started_at = (
+        _database_datetime(run.started_at) if run.started_at is not None else None
+    )
+    completed_at = (
+        _database_datetime(run.completed_at) if run.completed_at is not None else None
+    )
+    terminal = run.status in (RunStatus.COMPLETED, RunStatus.FAILED)
+    if (
+        run.incident_id != incident.id
+        or not _is_positive_integer(run.attempt)
+        or not _is_positive_integer(run.timeout_seconds)
+        or not _is_non_empty_string(incident.trigger_summary)
+        or run.operation not in (RepairOperation.APPLY, RepairOperation.ROLLBACK)
+        or diagnosis is not None
+        or any(
+            value is not None
+            for value in (
+                run.model_provider,
+                run.model_id,
+                run.thinking_mode,
+                run.prompt_version,
+                run.max_model_calls,
+                run.max_tool_calls,
+                run.model_calls,
+                run.tool_calls,
+                run.input_tokens,
+                run.output_tokens,
+            )
+        )
+        or terminal != (completed_at is not None)
+        or (run.status is RunStatus.QUEUED and started_at is not None)
+        or (
+            run.status
+            in (RunStatus.RUNNING, RunStatus.WAITING_APPROVAL, RunStatus.COMPLETED)
+            and started_at is None
+        )
+        or (run.status is RunStatus.FAILED) != (run.error_code is not None)
+        or (run.error_code is None) != (run.error_retryable is None)
+    ):
+        raise RecoveryConsistencyError
+    return RepairWorkflowRunSnapshot(
+        id=UUID(run.id),
+        incident_id=UUID(incident.id),
+        source=IncidentSource(
+            type=cast(Literal["scenario", "alertmanager"], incident.trigger_source),
+            ref=incident.trigger_ref,
+            revision=incident.trigger_revision,
+        ),
+        run_status=run.status,
+        trigger_summary=incident.trigger_summary,
+        target=target,
+        started_at=started_at,
+        operation=cast(RepairOperation, run.operation),
+        timeout_seconds=run.timeout_seconds,
+    )
 
 
 def _require_start_event_consistency(
@@ -2937,6 +3026,8 @@ def _new_run_row(
         incident_id=str(incident_id),
         attempt=attempt,
         status=RunStatus.QUEUED,
+        kind=RunKind.DIAGNOSIS,
+        operation=None,
         model_provider=model.provider,
         model_id=model.model_id,
         thinking_mode=model.thinking_mode,
@@ -3019,6 +3110,7 @@ def _base_payload(
         "schemaVersion": _SCHEMA_VERSION,
         "incidentId": str(incident_id),
         "runId": str(run_id),
+        "runKind": RunKind.DIAGNOSIS.value,
         "occurredAt": _rfc3339(occurred_at),
     }
 
@@ -3574,7 +3666,8 @@ def _resolve_failure_replay(
 
 def _require_active_run(run: RunRow, incident: IncidentRow) -> None:
     if (
-        run.status is not RunStatus.RUNNING
+        run.kind is not RunKind.DIAGNOSIS
+        or run.status is not RunStatus.RUNNING
         or incident.status is not IncidentStatus.TRIAGING
     ):
         raise RecoveryConsistencyError

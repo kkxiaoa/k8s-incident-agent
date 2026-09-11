@@ -27,6 +27,7 @@ from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     DiagnosisValidationSnapshot,
+    DiagnosisWorkflowRunSnapshot,
     IncidentStatus,
     ModelSnapshot,
     RunBudget,
@@ -35,7 +36,6 @@ from k8s_incident_agent.domain.models import (
     RunStatus,
     TerminalRecord,
     ToolFailureRecord,
-    WorkflowRunSnapshot,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
@@ -92,7 +92,7 @@ class _ToolCallingFakeModel(FakeMessagesListChatModel):
 
 
 class _WorkflowRepository:
-    def __init__(self, snapshot: WorkflowRunSnapshot) -> None:
+    def __init__(self, snapshot: DiagnosisWorkflowRunSnapshot) -> None:
         self.snapshot = snapshot
         self.started_at: datetime | None = None
         self.terminals: list[TerminalRecord] = []
@@ -105,7 +105,7 @@ class _WorkflowRepository:
     async def get_workflow_run_snapshot(
         self,
         run_id: object,
-    ) -> WorkflowRunSnapshot:
+    ) -> DiagnosisWorkflowRunSnapshot:
         assert run_id == self.snapshot.id
         return self.snapshot
 
@@ -141,8 +141,8 @@ class _WorkflowRepository:
         return self.validation_snapshot
 
 
-def _snapshot(*, model_id: str = "deepseek-v4-flash") -> WorkflowRunSnapshot:
-    return WorkflowRunSnapshot(
+def _snapshot(*, model_id: str = "deepseek-v4-flash") -> DiagnosisWorkflowRunSnapshot:
+    return DiagnosisWorkflowRunSnapshot(
         id=uuid4(),
         incident_id=uuid4(),
         source=IncidentSource(
@@ -176,7 +176,7 @@ def _snapshot(*, model_id: str = "deepseek-v4-flash") -> WorkflowRunSnapshot:
 
 def build_incident_graph(
     dependencies: GraphDependencies,
-    run: WorkflowRunSnapshot,
+    run: DiagnosisWorkflowRunSnapshot,
 ) -> IncidentGraph:
     return _build_incident_graph(dependencies, run, TEST_POLICY)
 
@@ -191,7 +191,7 @@ def _credential() -> DiagnosticCredential:
     )
 
 
-def _context(run: WorkflowRunSnapshot) -> DiagnosticToolContext:
+def _context(run: DiagnosisWorkflowRunSnapshot) -> DiagnosticToolContext:
     return DiagnosticToolContext(
         run=AgentRunSnapshot(
             id=run.id,

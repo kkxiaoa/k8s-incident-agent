@@ -24,6 +24,8 @@ from k8s_incident_agent.domain.models import (
     AlertSignalStatus,
     DiagnosisOutcome,
     IncidentStatus,
+    RepairOperation,
+    RunKind,
     RunStatus,
 )
 
@@ -148,8 +150,24 @@ class RunRow(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED')",
+            "status IN ('QUEUED', 'RUNNING', 'WAITING_APPROVAL', 'COMPLETED', 'FAILED')",
             name="status",
+        ),
+        CheckConstraint("kind IN ('diagnosis', 'repair')", name="kind"),
+        CheckConstraint(
+            "(kind = 'diagnosis' AND operation IS NULL "
+            "AND status != 'WAITING_APPROVAL' "
+            "AND model_provider IS NOT NULL AND model_id IS NOT NULL "
+            "AND thinking_mode IS NOT NULL AND prompt_version IS NOT NULL "
+            "AND max_model_calls IS NOT NULL AND max_tool_calls IS NOT NULL) OR "
+            "(kind = 'repair' AND operation IS NOT NULL "
+            "AND operation IN ('apply', 'rollback') "
+            "AND model_provider IS NULL AND model_id IS NULL "
+            "AND thinking_mode IS NULL AND prompt_version IS NULL "
+            "AND max_model_calls IS NULL AND max_tool_calls IS NULL "
+            "AND model_calls IS NULL AND tool_calls IS NULL "
+            "AND input_tokens IS NULL AND output_tokens IS NULL)",
+            name="kind_fields",
         ),
         CheckConstraint("attempt >= 1", name="attempt"),
         UniqueConstraint(
@@ -161,7 +179,7 @@ class RunRow(Base):
             "uq_agent_runs_active_incident_id",
             "incident_id",
             unique=True,
-            sqlite_where=text("status IN ('QUEUED', 'RUNNING')"),
+            sqlite_where=text("status IN ('QUEUED', 'RUNNING', 'WAITING_APPROVAL')"),
         ),
         Index("ix_agent_runs_status", "status"),
     )
@@ -180,12 +198,30 @@ class RunRow(Base):
         ),
         nullable=False,
     )
-    model_provider: Mapped[str] = mapped_column(String, nullable=False)
-    model_id: Mapped[str] = mapped_column(String, nullable=False)
-    thinking_mode: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    prompt_version: Mapped[str] = mapped_column(String, nullable=False)
-    max_model_calls: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[RunKind] = mapped_column(
+        SqlEnum(
+            RunKind,
+            native_enum=False,
+            validate_strings=True,
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+        server_default="diagnosis",
+    )
+    operation: Mapped[RepairOperation | None] = mapped_column(
+        SqlEnum(
+            RepairOperation,
+            native_enum=False,
+            validate_strings=True,
+            values_callable=_enum_values,
+        ),
+    )
+    model_provider: Mapped[str | None] = mapped_column(String)
+    model_id: Mapped[str | None] = mapped_column(String)
+    thinking_mode: Mapped[bool | None] = mapped_column(Boolean)
+    prompt_version: Mapped[str | None] = mapped_column(String)
+    max_model_calls: Mapped[int | None] = mapped_column(Integer)
+    max_tool_calls: Mapped[int | None] = mapped_column(Integer)
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     model_calls: Mapped[int | None] = mapped_column(Integer)
     tool_calls: Mapped[int | None] = mapped_column(Integer)

@@ -344,6 +344,8 @@ def _incident_list_item(item: IncidentListRecord) -> IncidentListItem:
 def _run_summary(run: IncidentRunDetail) -> RunSummaryResponse:
     return RunSummaryResponse(
         id=run.id,
+        kind=run.kind,
+        operation=run.operation,
         attempt=run.attempt,
         status=run.status,
         created_at=run.created_at,

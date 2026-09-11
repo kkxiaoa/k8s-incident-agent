@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Final, Literal, NewType
@@ -39,11 +39,22 @@ class IncidentStatus(StrEnum):
 class RunStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
     def can_transition_to(self, target: RunStatus) -> bool:
         return target in _RUN_TRANSITIONS[self]
+
+
+class RunKind(StrEnum):
+    DIAGNOSIS = "diagnosis"
+    REPAIR = "repair"
+
+
+class RepairOperation(StrEnum):
+    APPLY = "apply"
+    ROLLBACK = "rollback"
 
 
 class AlertSignalStatus(StrEnum):
@@ -143,16 +154,31 @@ class AgentRunSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkflowRunSnapshot:
+class _WorkflowRunSnapshot:
     id: UUID
     incident_id: UUID
     source: IncidentSource
     run_status: RunStatus
     trigger_summary: str
     target: KubernetesTarget
+    started_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosisWorkflowRunSnapshot(_WorkflowRunSnapshot):
     model: ModelSnapshot
     budget: RunBudget
-    started_at: datetime | None
+    kind: Literal[RunKind.DIAGNOSIS] = field(default=RunKind.DIAGNOSIS, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class RepairWorkflowRunSnapshot(_WorkflowRunSnapshot):
+    operation: RepairOperation
+    timeout_seconds: int
+    kind: Literal[RunKind.REPAIR] = field(default=RunKind.REPAIR, init=False)
+
+
+type WorkflowRunSnapshot = DiagnosisWorkflowRunSnapshot | RepairWorkflowRunSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +321,12 @@ _INCIDENT_TRANSITIONS: Final[dict[IncidentStatus, frozenset[IncidentStatus]]] = 
 
 _RUN_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
     RunStatus.QUEUED: frozenset({RunStatus.RUNNING, RunStatus.FAILED}),
-    RunStatus.RUNNING: frozenset({RunStatus.COMPLETED, RunStatus.FAILED}),
+    RunStatus.RUNNING: frozenset(
+        {RunStatus.WAITING_APPROVAL, RunStatus.COMPLETED, RunStatus.FAILED}
+    ),
+    RunStatus.WAITING_APPROVAL: frozenset(
+        {RunStatus.RUNNING, RunStatus.COMPLETED, RunStatus.FAILED}
+    ),
     RunStatus.COMPLETED: frozenset(),
     RunStatus.FAILED: frozenset(),
 }

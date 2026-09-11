@@ -12,10 +12,10 @@ from tests.factories import prometheus_query_service_stub
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
 from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
+    DiagnosisWorkflowRunSnapshot,
     ModelSnapshot,
     RunBudget,
     RunStatus,
-    WorkflowRunSnapshot,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
@@ -39,7 +39,7 @@ class _PolicyResolver:
 
 
 class _BlockingTerminalRepository:
-    def __init__(self, run: WorkflowRunSnapshot) -> None:
+    def __init__(self, run: DiagnosisWorkflowRunSnapshot) -> None:
         self.run = run
         self.release = asyncio.Event()
         self.entered = asyncio.Event()
@@ -52,7 +52,7 @@ class _BlockingTerminalRepository:
     async def get_workflow_run_snapshot(
         self,
         run_id: UUID,
-    ) -> WorkflowRunSnapshot:
+    ) -> DiagnosisWorkflowRunSnapshot:
         assert run_id == self.run.id
         self.snapshot_calls += 1
         self.entered.set()
@@ -64,8 +64,8 @@ class _BlockingTerminalRepository:
         return self.run
 
 
-def _terminal_snapshot() -> WorkflowRunSnapshot:
-    return WorkflowRunSnapshot(
+def _terminal_snapshot() -> DiagnosisWorkflowRunSnapshot:
+    return DiagnosisWorkflowRunSnapshot(
         id=uuid4(),
         incident_id=uuid4(),
         source=IncidentSource(

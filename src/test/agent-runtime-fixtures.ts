@@ -113,7 +113,7 @@ export function makeWaitingApprovalIncidentDetail(): IncidentDetailResponse {
 
 export function makeIncidentDetail(): IncidentDetailResponse {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     incident: {
       id: INCIDENT_ID,
       source: {
@@ -135,6 +135,8 @@ export function makeIncidentDetail(): IncidentDetailResponse {
     },
     selectedRun: {
       id: RUN_ID,
+      kind: "diagnosis",
+      operation: null,
       attempt: 1,
       status: "QUEUED",
       createdAt: "2026-08-29T01:00:00Z",
@@ -149,4 +151,19 @@ export function makeIncidentDetail(): IncidentDetailResponse {
     repair: null,
     alertSignal: null,
   };
+}
+
+export function makeRepairRunWaitingDetail(): IncidentDetailResponse {
+  const detail = makeWaitingApprovalIncidentDetail();
+  detail.selectedRun = {
+    ...detail.selectedRun,
+    id: "99999999-9999-4999-8999-999999999999",
+    attempt: 2,
+    kind: "repair",
+    operation: "apply",
+    status: "WAITING_APPROVAL",
+    completedAt: null,
+  };
+  detail.diagnosis = null;
+  return detail;
 }

@@ -30,7 +30,7 @@ from k8s_incident_agent.api_contracts import (
 from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import Settings
-from k8s_incident_agent.domain.models import IncidentStatus, RunStatus
+from k8s_incident_agent.domain.models import IncidentStatus, RunKind, RunStatus
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
 INCIDENT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -104,6 +104,8 @@ class _IncidentService:
             ),
             selected_run=SelectedRunResponse(
                 id=RUN_ID,
+                kind=RunKind.DIAGNOSIS,
+                operation=None,
                 attempt=1,
                 status=RunStatus.QUEUED,
                 error=None,
@@ -132,6 +134,8 @@ class _IncidentService:
             items=(
                 RunSummaryResponse(
                     id=RUN_ID,
+                    kind=RunKind.DIAGNOSIS,
+                    operation=None,
                     attempt=1,
                     status=RunStatus.QUEUED,
                     created_at=NOW,
@@ -206,7 +210,7 @@ async def test_create_returns_202_and_exact_versioned_projection(
 
     assert response.status_code == 202
     assert response.json() == {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "incidentId": str(INCIDENT_ID),
     }
 
@@ -235,7 +239,7 @@ async def test_detail_preserves_nullable_run_and_diagnosis_fields(
 
     assert response.status_code == 200
     document = response.json()
-    assert document["schemaVersion"] == 4
+    assert document["schemaVersion"] == 5
     assert document["selectedRun"]["startedAt"] is None
     assert document["selectedRun"]["completedAt"] is None
     assert document["selectedRun"]["error"] is None
@@ -273,8 +277,8 @@ async def test_run_routes_use_v4_minimal_contracts(tmp_path: Path) -> None:
         )
 
     assert created.status_code == 202
-    assert created.json() == {"schemaVersion": 4, "runId": str(RUN_ID)}
+    assert created.json() == {"schemaVersion": 5, "runId": str(RUN_ID)}
     assert history.status_code == 200
     assert history.json()["items"][0]["attempt"] == 1
     assert events.status_code == 200
-    assert events.json() == {"schemaVersion": 4, "items": [], "nextCursor": None}
+    assert events.json() == {"schemaVersion": 5, "items": [], "nextCursor": None}

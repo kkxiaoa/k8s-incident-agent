@@ -54,6 +54,10 @@ def test_domain_statuses_define_only_the_multi_run_transitions() -> None:
         (RunStatus.QUEUED, RunStatus.FAILED),
         (RunStatus.RUNNING, RunStatus.COMPLETED),
         (RunStatus.RUNNING, RunStatus.FAILED),
+        (RunStatus.RUNNING, RunStatus.WAITING_APPROVAL),
+        (RunStatus.WAITING_APPROVAL, RunStatus.RUNNING),
+        (RunStatus.WAITING_APPROVAL, RunStatus.COMPLETED),
+        (RunStatus.WAITING_APPROVAL, RunStatus.FAILED),
     }
 
 

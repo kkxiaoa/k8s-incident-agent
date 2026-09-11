@@ -42,12 +42,12 @@ from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
 from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
+    DiagnosisWorkflowRunSnapshot,
     ModelSnapshot,
     RunBudget,
     RunRecord,
     RunStatus,
     TerminalRecord,
-    WorkflowRunSnapshot,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
@@ -330,12 +330,14 @@ async def test_tool_call_counter_survives_checkpoint_reopen(tmp_path: Path) -> N
 
 
 class _ExpiredRunRepository:
-    def __init__(self, run: WorkflowRunSnapshot) -> None:
+    def __init__(self, run: DiagnosisWorkflowRunSnapshot) -> None:
         self.run = run
         self.terminals: list[TerminalRecord] = []
         self.start_calls = 0
 
-    async def get_workflow_run_snapshot(self, run_id: object) -> WorkflowRunSnapshot:
+    async def get_workflow_run_snapshot(
+        self, run_id: object
+    ) -> DiagnosisWorkflowRunSnapshot:
         assert run_id == self.run.id
         return self.run
 
@@ -354,7 +356,7 @@ async def test_absolute_deadline_comes_from_persisted_started_at(
     tmp_path: Path,
 ) -> None:
     started_at = NOW - timedelta(seconds=181)
-    run = WorkflowRunSnapshot(
+    run = DiagnosisWorkflowRunSnapshot(
         id=uuid4(),
         incident_id=uuid4(),
         source=IncidentSource(

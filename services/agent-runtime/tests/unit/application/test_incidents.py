@@ -21,6 +21,7 @@ from k8s_incident_agent.application.incidents import (
 )
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
+    DiagnosisWorkflowRunSnapshot,
     EvidenceRecord,
     ModelSnapshot,
     PersistedEvidence,
@@ -159,6 +160,7 @@ async def test_create_commits_before_schedule_and_returns_persisted_identity(
         assert len(scheduler.scheduled) == 1
         run_id = scheduler.scheduled[0]
         snapshot = await repository.get_workflow_run_snapshot(run_id)
+        assert isinstance(snapshot, DiagnosisWorkflowRunSnapshot)
         assert snapshot.incident_id == response.incident_id
         assert snapshot.model.model_id == "deepseek-v4-flash"
         assert snapshot.budget == RunBudget(8, 6, 180)

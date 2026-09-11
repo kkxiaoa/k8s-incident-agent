@@ -40,6 +40,8 @@ function runSummary(detail: IncidentDetailResponse): RunSummaryView {
   const run = detail.selectedRun;
   return {
     id: run.id,
+    kind: run.kind,
+    operation: run.operation,
     attempt: run.attempt,
     status: run.status,
     createdAt: run.createdAt,
@@ -231,7 +233,7 @@ export function IncidentStream({
       setRuns((current) => mergeRuns(current, result.data.items));
       setRunCursor(result.data.nextCursor);
     } else {
-      setHistoryError("暂时无法读取更早的诊断记录。");
+      setHistoryError("暂时无法读取更早的运行记录。");
     }
     setHistoryLoading(false);
   };
@@ -284,7 +286,8 @@ export function IncidentStream({
   const visibleRuns = mergeRuns(runs, [runSummary(detail)]);
   const activeRun =
     detail.selectedRun.status === "QUEUED" ||
-    detail.selectedRun.status === "RUNNING";
+    detail.selectedRun.status === "RUNNING" ||
+    detail.selectedRun.status === "WAITING_APPROVAL";
   const monitoringRefreshKey = [
     detail.selectedRun.status,
     detail.selectedRun.startedAt,
@@ -370,10 +373,10 @@ export function IncidentStream({
 
       <section className="run-controls" aria-labelledby="run-controls-heading">
         <div>
-          <span className="eyebrow">Diagnosis history</span>
-          <h2 id="run-controls-heading">诊断运行</h2>
+          <span className="eyebrow">Run history</span>
+          <h2 id="run-controls-heading">运行记录</h2>
         </div>
-        <nav className="run-selector" aria-label="诊断运行选择">
+        <nav className="run-selector" aria-label="运行选择">
           <Link
             href={`/incidents/${detail.incident.id}`}
             className={latestMode ? "run-selector__item is-selected" : "run-selector__item"}
@@ -390,7 +393,7 @@ export function IncidentStream({
                   : "run-selector__item"
               }
             >
-              第 {run.attempt} 次 · {runStatusLabel(run.status)}
+              第 {run.attempt} 次 · {run.kind === "diagnosis" ? "诊断" : run.operation === "rollback" ? "回滚" : "修复"} · {runStatusLabel(run.status)}
             </Link>
           ))}
         </nav>
@@ -421,7 +424,7 @@ export function IncidentStream({
         <p className="page-alert page-alert--danger" role="alert">{rerunError}</p>
       )}
 
-      <div className="console-grid">
+      <div className={detail.selectedRun.kind === "diagnosis" ? "console-grid" : undefined}>
         <div>
           {state.eventPageCursor === null ? null : (
             <button className="timeline-history-button" type="button" onClick={loadOlderEvents} disabled={historyLoading}>
@@ -430,12 +433,12 @@ export function IncidentStream({
           )}
           <RunTimeline events={state.events} connection={state.connection} />
         </div>
-        <DiagnosisPanel
+        {detail.selectedRun.kind === "diagnosis" ? <DiagnosisPanel
           diagnosis={detail.diagnosis}
           evidence={detail.evidence}
           runStatus={detail.selectedRun.status}
           runError={detail.selectedRun.error}
-        />
+        /> : null}
       </div>
 
       <RepairPanel

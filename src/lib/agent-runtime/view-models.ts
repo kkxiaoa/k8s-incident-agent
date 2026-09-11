@@ -30,6 +30,7 @@ const INCIDENT_STATUS_LABELS: Record<IncidentStatus, string> = {
 const RUN_STATUS_LABELS: Record<RunStatus, string> = {
   QUEUED: "等待运行",
   RUNNING: "运行中",
+  WAITING_APPROVAL: "等待审批",
   COMPLETED: "已完成",
   FAILED: "运行失败",
 };

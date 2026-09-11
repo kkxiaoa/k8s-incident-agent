@@ -70,7 +70,7 @@ async def _database(tmp_path: Path) -> AsyncGenerator[BusinessDatabase]:
         await database.dispose()
 
 
-async def _prepared_record(
+async def prepared_repair_record(
     repository: IncidentRepository,
     *,
     outcome: str = "passed",
@@ -181,7 +181,7 @@ async def test_repair_success_is_atomic_replayable_and_projected(
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
-        incident_id, run_id, terminal = await _prepared_record(repository)
+        incident_id, run_id, terminal = await prepared_repair_record(repository)
 
         first = await repository.persist_repair_terminal(terminal)
         replay = await repository.persist_repair_terminal(terminal)
@@ -226,7 +226,7 @@ async def test_historical_repair_run_remains_readable_after_rerun_starts(
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
-        incident_id, run_id, terminal = await _prepared_record(repository)
+        incident_id, run_id, terminal = await prepared_repair_record(repository)
         await repository.persist_repair_terminal(terminal)
         rerun = await repository.create_run(incident_id, MODEL, BUDGET)
         assert rerun is not None
@@ -262,7 +262,7 @@ async def test_stale_dry_run_keeps_diagnosis_and_failed_validation(
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
-        incident_id, run_id, terminal = await _prepared_record(
+        incident_id, run_id, terminal = await prepared_repair_record(
             repository,
             outcome="failed",
             error_code="stale_resource",
@@ -292,7 +292,7 @@ async def test_policy_failure_persists_diagnosis_without_a_proposal(
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
-        incident_id, run_id, terminal = await _prepared_record(
+        incident_id, run_id, terminal = await prepared_repair_record(
             repository,
             error_code="repair_policy_denied",
             error_retryable=False,
@@ -326,7 +326,7 @@ async def test_repair_projection_insert_failure_rolls_back_everything(
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
-        incident_id, run_id, terminal = await _prepared_record(repository)
+        incident_id, run_id, terminal = await prepared_repair_record(repository)
 
         def fail_insert(_mapper: object, _connection: object, _target: object) -> None:
             raise OperationalError("insert", {}, RuntimeError("sensitive"))

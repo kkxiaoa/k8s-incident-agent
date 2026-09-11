@@ -238,11 +238,12 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** AlertResolvedStreamEvent */
         AlertResolvedStreamEvent: {
@@ -347,10 +348,10 @@ export interface components {
             incidentId: string;
             /**
              * Schemaversion
-             * @default 4
+             * @default 5
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** CreateRunResponse */
         CreateRunResponse: {
@@ -361,10 +362,10 @@ export interface components {
             runId: string;
             /**
              * Schemaversion
-             * @default 4
+             * @default 5
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** DiagnosisCompletedEventPayload */
         DiagnosisCompletedEventPayload: {
@@ -399,6 +400,11 @@ export interface components {
              */
             runId: string;
             /**
+             * Runkind
+             * @constant
+             */
+            runKind: "diagnosis";
+            /**
              * Runstatus
              * @enum {string}
              */
@@ -407,7 +413,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** DiagnosisCompletedStreamEvent */
         DiagnosisCompletedStreamEvent: {
@@ -453,6 +459,11 @@ export interface components {
              */
             runId: string;
             /**
+             * Runkind
+             * @constant
+             */
+            runKind: "diagnosis";
+            /**
              * Runstatus
              * @constant
              */
@@ -461,7 +472,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** DiagnosisInsufficientStreamEvent */
         DiagnosisInsufficientStreamEvent: {
@@ -561,11 +572,12 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -640,6 +652,11 @@ export interface components {
              */
             runId: string;
             /**
+             * Runkind
+             * @constant
+             */
+            runKind: "diagnosis";
+            /**
              * Runstatus
              * @constant
              */
@@ -648,7 +665,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** IncidentCreatedStreamEvent */
         IncidentCreatedStreamEvent: {
@@ -674,10 +691,10 @@ export interface components {
             repair: components["schemas"]["RepairProposalResponse"] | null;
             /**
              * Schemaversion
-             * @default 4
+             * @default 5
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
             selectedRun: components["schemas"]["SelectedRunResponse"];
         };
         /** IncidentListItem */
@@ -705,10 +722,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 4
+             * @default 5
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** IncidentMetricPanel */
         IncidentMetricPanel: {
@@ -1004,6 +1021,7 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Runstatus
              * @constant
@@ -1013,7 +1031,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** RepairDryRunPassedStreamEvent */
         RepairDryRunPassedStreamEvent: {
@@ -1026,6 +1044,11 @@ export interface components {
             /** Id */
             id: string;
         };
+        /**
+         * RepairOperation
+         * @enum {string}
+         */
+        RepairOperation: "apply" | "rollback";
         /** RepairPatchOperationResponse */
         RepairPatchOperationResponse: {
             /**
@@ -1067,6 +1090,7 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Runstatus
              * @constant
@@ -1076,7 +1100,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** RepairPatchReadyStreamEvent */
         RepairPatchReadyStreamEvent: {
@@ -1193,16 +1217,17 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Runstatus
-             * @constant
+             * @enum {string}
              */
-            runStatus: "COMPLETED";
+            runStatus: "COMPLETED" | "WAITING_APPROVAL";
             /**
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** RepairWaitingApprovalStreamEvent */
         RepairWaitingApprovalStreamEvent: {
@@ -1244,10 +1269,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 4
+             * @default 5
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** RunEventStreamItem */
         RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
@@ -1277,6 +1302,7 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Runstatus
              * @constant
@@ -1286,7 +1312,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** RunFailedStreamEvent */
         RunFailedStreamEvent: {
@@ -1307,11 +1333,16 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 4
+             * @default 5
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
+        /**
+         * RunKind
+         * @enum {string}
+         */
+        RunKind: "diagnosis" | "repair";
         /** RunQueuedEventPayload */
         RunQueuedEventPayload: {
             /** Attempt */
@@ -1331,6 +1362,7 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Runstatus
              * @constant
@@ -1340,7 +1372,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** RunQueuedStreamEvent */
         RunQueuedStreamEvent: {
@@ -1377,6 +1409,7 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Runstatus
              * @constant
@@ -1386,7 +1419,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
         };
         /** RunStartedStreamEvent */
         RunStartedStreamEvent: {
@@ -1403,7 +1436,7 @@ export interface components {
          * RunStatus
          * @enum {string}
          */
-        RunStatus: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+        RunStatus: "QUEUED" | "RUNNING" | "WAITING_APPROVAL" | "COMPLETED" | "FAILED";
         /** RunSummaryResponse */
         RunSummaryResponse: {
             /** Attempt */
@@ -1420,6 +1453,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            kind: components["schemas"]["RunKind"];
+            operation: components["schemas"]["RepairOperation"] | null;
             /** Startedat */
             startedAt: string | null;
             status: components["schemas"]["RunStatus"];
@@ -1498,6 +1533,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            kind: components["schemas"]["RunKind"];
+            operation: components["schemas"]["RepairOperation"] | null;
             /** Startedat */
             startedAt: string | null;
             status: components["schemas"]["RunStatus"];
@@ -1523,11 +1560,12 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -1562,11 +1600,12 @@ export interface components {
              * Format: uuid
              */
             runId: string;
+            runKind: components["schemas"]["RunKind"];
             /**
              * Schemaversion
              * @constant
              */
-            schemaVersion: 4;
+            schemaVersion: 5;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */

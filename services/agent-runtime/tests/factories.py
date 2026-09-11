@@ -7,7 +7,10 @@ from k8s_incident_agent.domain.contracts import (
     KubernetesTarget,
     NormalizedIncidentTrigger,
 )
-from k8s_incident_agent.domain.models import AgentRunSnapshot
+from k8s_incident_agent.domain.models import (
+    AgentRunSnapshot,
+    DiagnosisWorkflowRunSnapshot,
+)
 from k8s_incident_agent.model.availability import DiagnosticModelAvailability
 from k8s_incident_agent.monitoring.service import PrometheusQueryService
 from k8s_incident_agent.persistence.repositories import IncidentRepository
@@ -70,6 +73,7 @@ async def agent_run_snapshot(
     run_id: UUID,
 ) -> AgentRunSnapshot:
     workflow = await repository.get_workflow_run_snapshot(run_id)
+    assert isinstance(workflow, DiagnosisWorkflowRunSnapshot)
     if workflow.started_at is None:
         raise AssertionError("Test Run must be started")
     return AgentRunSnapshot(

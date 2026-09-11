@@ -32,11 +32,49 @@ NOW = datetime(2026, 8, 26, 9, 0, tzinfo=UTC)
 
 def _base_payload() -> dict[str, JsonValue]:
     return {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
+        "runKind": "diagnosis",
         "incidentId": str(INCIDENT_ID),
         "runId": str(RUN_ID),
         "occurredAt": "2026-08-26T09:00:00Z",
     }
+
+
+@pytest.mark.parametrize(
+    ("kind", "status", "key", "valid"),
+    [
+        ("diagnosis", "COMPLETED", "run:terminal", True),
+        ("repair", "WAITING_APPROVAL", "repair.waiting_approval", True),
+        ("repair", "WAITING_APPROVAL", "run:terminal", False),
+        ("repair", "COMPLETED", "run:terminal", False),
+        ("diagnosis", "WAITING_APPROVAL", "repair.waiting_approval", False),
+    ],
+)
+def test_waiting_event_preserves_kind_and_terminal_key(
+    kind: str, status: str, key: str, valid: bool
+) -> None:
+    from k8s_incident_agent.application.event_projection import validated_stream_item
+
+    event = _event(
+        20,
+        "repair.waiting_approval",
+        key,
+        {
+            "runKind": kind,
+            "runStatus": status,
+            "incidentStatus": "WAITING_APPROVAL",
+            "proposalId": str(PROPOSAL_ID),
+            "proposalDigest": PROPOSAL_DIGEST,
+        },
+    )
+    if valid:
+        assert (
+            validated_stream_item(event).root.data.model_dump(mode="json")["runKind"]
+            == kind
+        )
+    else:
+        with pytest.raises(RecoveryConsistencyError):
+            validated_stream_item(event)
 
 
 def _event(

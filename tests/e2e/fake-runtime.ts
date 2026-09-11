@@ -205,12 +205,13 @@ function buildEvents(
       id: eventId(),
       event: "incident.created",
       data: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId,
         runId,
         attempt: 1,
         incidentStatus: "RECEIVED",
         runStatus: "QUEUED",
+        runKind: "diagnosis",
         occurredAt: CREATED_AT,
       },
     },
@@ -218,12 +219,13 @@ function buildEvents(
       id: eventId(),
       event: "run.started",
       data: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId,
         runId,
         attempt: 1,
         incidentStatus: "TRIAGING",
         runStatus: "RUNNING",
+        runKind: "diagnosis",
         occurredAt: STARTED_AT,
       },
     },
@@ -231,11 +233,12 @@ function buildEvents(
       id: eventId(),
       event: "tool.started",
       data: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId,
         runId,
         toolCallId: "tool-call-1",
         toolName: "get_workload",
+        runKind: "diagnosis",
         occurredAt: TOOL_AT,
       },
     },
@@ -255,13 +258,14 @@ function buildEvents(
         id: eventId(),
         event: "tool.failed",
         data: {
-          schemaVersion: 4,
+          schemaVersion: 5,
           incidentId,
           runId,
           toolCallId: "tool-call-1",
           toolName: "get_workload",
           errorCode: "kubernetes_forbidden",
           retryable: false,
+          runKind: "diagnosis",
           occurredAt: EVIDENCE_AT,
         },
       },
@@ -269,13 +273,14 @@ function buildEvents(
         id: eventId(),
         event: "run.failed",
         data: {
-          schemaVersion: 4,
+          schemaVersion: 5,
           incidentId,
           runId,
           errorCode: "workflow_failed",
           incidentStatus: "FAILED",
           retryable: false,
           runStatus: "FAILED",
+          runKind: "diagnosis",
           occurredAt: TERMINAL_AT,
         },
       },
@@ -288,7 +293,7 @@ function buildEvents(
       id: eventId(),
       event: "evidence.recorded",
       data: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId,
         runId,
         evidenceId: workloadEvidenceId,
@@ -298,6 +303,7 @@ function buildEvents(
         toolCallId: "tool-call-1",
         toolName: "get_workload",
         truncated: false,
+        runKind: "diagnosis",
         occurredAt: EVIDENCE_AT,
       },
     },
@@ -305,11 +311,12 @@ function buildEvents(
       id: eventId(),
       event: "tool.started",
       data: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId,
         runId,
         toolCallId: "tool-call-2",
         toolName: "get_pods",
+        runKind: "diagnosis",
         occurredAt: EVIDENCE_AT,
       },
     },
@@ -317,7 +324,7 @@ function buildEvents(
       id: eventId(),
       event: "evidence.recorded",
       data: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId,
         runId,
         evidenceId: podsEvidenceId,
@@ -327,6 +334,7 @@ function buildEvents(
         toolCallId: "tool-call-2",
         toolName: "get_pods",
         truncated: false,
+        runKind: "diagnosis",
         occurredAt: EVIDENCE_AT,
       },
     },
@@ -337,13 +345,14 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.completed",
       data: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId,
         runId,
         diagnosisId,
         incidentStatus: "DIAGNOSED",
         outcome: "diagnosed",
         runStatus: "COMPLETED",
+        runKind: "diagnosis",
         occurredAt: TERMINAL_AT,
       },
     });
@@ -352,13 +361,14 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.insufficient",
       data: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         incidentId,
         runId,
         diagnosisId,
         incidentStatus: "INSUFFICIENT_EVIDENCE",
         outcome: "insufficient_evidence",
         runStatus: "COMPLETED",
+        runKind: "diagnosis",
         occurredAt: TERMINAL_AT,
       },
     });
@@ -391,7 +401,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
     finished: false,
     events,
     detail: {
-      schemaVersion: 4,
+      schemaVersion: 5,
       incident: {
         id: incidentId,
         source: {
@@ -406,6 +416,8 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
         createdAt: CREATED_AT,
       },
       selectedRun: {
+        kind: "diagnosis",
+        operation: null,
         id: runId,
         attempt: 1,
         status: "QUEUED",
@@ -969,7 +981,7 @@ async function handleRequest(
       { revision: 2, containers: [{ name: repair.containerName, image: repair.currentImage }] },
       { revision: 1, containers: [{ name: repair.containerName, image: repair.replacementImage }] },
     ] };
-    const base = { schemaVersion: 4 as const, incidentId: detail.incident.id, runId: detail.selectedRun.id };
+    const base = { schemaVersion: 5 as const, runKind: "diagnosis" as const, incidentId: detail.incident.id, runId: detail.selectedRun.id };
     const events: RunEventStreamItem[] = [{
       id: eventId(), event: "diagnosis.completed", data: { ...base, diagnosisId: detail.diagnosis!.id, outcome: "diagnosed", incidentStatus: "DIAGNOSED", runStatus: "RUNNING", occurredAt: repair.schemaCheckedAt },
     }, {
@@ -1086,7 +1098,7 @@ async function handleRequest(
 
   if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
     json(response, 200, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       items: [...incidents.values()].reverse().map(listItem),
       nextCursor: null,
     });
@@ -1118,7 +1130,7 @@ async function handleRequest(
     const record = createIncident(mode);
     incidents.set(record.detail.incident.id, record);
     json(response, 202, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       incidentId: record.detail.incident.id,
     });
     return;
@@ -1189,9 +1201,11 @@ async function handleRequest(
     }
     const run = record.detail.selectedRun;
     json(response, 200, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       items: [{
         id: run.id,
+        kind: run.kind,
+        operation: run.operation,
         attempt: run.attempt,
         status: run.status,
         createdAt: run.createdAt,
@@ -1213,7 +1227,7 @@ async function handleRequest(
       return;
     }
     json(response, 200, {
-      schemaVersion: 4,
+      schemaVersion: 5,
       items: [...record.detail.eventPage.items],
       nextCursor: null,
     });

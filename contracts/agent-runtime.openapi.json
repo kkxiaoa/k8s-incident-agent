@@ -29,8 +29,11 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -40,6 +43,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "alertStatus",
           "endsAt"
         ],
@@ -291,8 +295,8 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
-            "default": 4,
+            "const": 5,
+            "default": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -312,8 +316,8 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
-            "default": 4,
+            "const": 5,
+            "default": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -357,6 +361,11 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "const": "diagnosis",
+            "title": "Runkind",
+            "type": "string"
+          },
           "runStatus": {
             "enum": [
               "RUNNING",
@@ -366,7 +375,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -376,6 +385,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "diagnosisId",
           "outcome",
           "incidentStatus",
@@ -441,13 +451,18 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "const": "diagnosis",
+            "title": "Runkind",
+            "type": "string"
+          },
           "runStatus": {
             "const": "COMPLETED",
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -457,6 +472,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "diagnosisId",
           "outcome",
           "incidentStatus",
@@ -679,8 +695,11 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -702,6 +721,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "evidenceId",
           "toolCallId",
           "toolName",
@@ -823,13 +843,18 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "const": "diagnosis",
+            "title": "Runkind",
+            "type": "string"
+          },
           "runStatus": {
             "const": "QUEUED",
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -839,6 +864,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "attempt",
           "incidentStatus",
           "runStatus"
@@ -922,8 +948,8 @@
             ]
           },
           "schemaVersion": {
-            "const": 4,
-            "default": 4,
+            "const": 5,
+            "default": 5,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -1000,8 +1026,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 4,
-            "default": 4,
+            "const": 5,
+            "default": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1756,13 +1782,16 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "runStatus": {
             "const": "RUNNING",
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1772,6 +1801,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "proposalId",
           "proposalDigest",
           "incidentStatus",
@@ -1803,6 +1833,14 @@
         ],
         "title": "RepairDryRunPassedStreamEvent",
         "type": "object"
+      },
+      "RepairOperation": {
+        "enum": [
+          "apply",
+          "rollback"
+        ],
+        "title": "RepairOperation",
+        "type": "string"
       },
       "RepairPatchOperationResponse": {
         "additionalProperties": false,
@@ -1865,13 +1903,16 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "runStatus": {
             "const": "RUNNING",
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1881,6 +1922,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "proposalId",
           "proposalDigest",
           "incidentStatus",
@@ -2115,13 +2157,19 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "runStatus": {
-            "const": "COMPLETED",
+            "enum": [
+              "COMPLETED",
+              "WAITING_APPROVAL"
+            ],
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2131,6 +2179,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "proposalId",
           "proposalDigest",
           "incidentStatus",
@@ -2242,8 +2291,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 4,
-            "default": 4,
+            "const": 5,
+            "default": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2351,13 +2400,16 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "runStatus": {
             "const": "FAILED",
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2367,6 +2419,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "errorCode",
           "retryable",
           "incidentStatus",
@@ -2421,8 +2474,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 4,
-            "default": 4,
+            "const": 5,
+            "default": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2433,6 +2486,14 @@
         ],
         "title": "RunHistoryResponse",
         "type": "object"
+      },
+      "RunKind": {
+        "enum": [
+          "diagnosis",
+          "repair"
+        ],
+        "title": "RunKind",
+        "type": "string"
       },
       "RunQueuedEventPayload": {
         "additionalProperties": false,
@@ -2457,13 +2518,16 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "runStatus": {
             "const": "QUEUED",
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2473,6 +2537,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "attempt",
           "runStatus"
         ],
@@ -2531,13 +2596,16 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "runStatus": {
             "const": "RUNNING",
             "title": "Runstatus",
             "type": "string"
           },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2547,6 +2615,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "attempt",
           "incidentStatus",
           "runStatus"
@@ -2582,6 +2651,7 @@
         "enum": [
           "QUEUED",
           "RUNNING",
+          "WAITING_APPROVAL",
           "COMPLETED",
           "FAILED"
         ],
@@ -2618,6 +2688,19 @@
             "title": "Id",
             "type": "string"
           },
+          "kind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepairOperation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "startedAt": {
             "anyOf": [
               {
@@ -2636,6 +2719,8 @@
         },
         "required": [
           "id",
+          "kind",
+          "operation",
           "attempt",
           "status",
           "createdAt",
@@ -2818,6 +2903,19 @@
             "title": "Id",
             "type": "string"
           },
+          "kind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepairOperation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "startedAt": {
             "anyOf": [
               {
@@ -2836,6 +2934,8 @@
         },
         "required": [
           "id",
+          "kind",
+          "operation",
           "attempt",
           "status",
           "createdAt",
@@ -2872,8 +2972,11 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -2891,6 +2994,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "toolCallId",
           "toolName",
           "errorCode",
@@ -2951,8 +3055,11 @@
             "title": "Runid",
             "type": "string"
           },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
           "schemaVersion": {
-            "const": 4,
+            "const": 5,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -2970,6 +3077,7 @@
           "incidentId",
           "runId",
           "occurredAt",
+          "runKind",
           "toolCallId",
           "toolName"
         ],

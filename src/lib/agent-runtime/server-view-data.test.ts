@@ -70,7 +70,7 @@ describe("server view data", () => {
       url.pathname === "/healthz" ? health
         : url.pathname.endsWith("/monitoring/health") ? monitoringHealth()
         : url.pathname.endsWith("/monitoring/overview") ? monitoringOverview()
-        : { schemaVersion: 4, items: [], nextCursor: null },
+        : { schemaVersion: 5, items: [], nextCursor: null },
     ))));
     const result = await loadIncidentConsoleOverview("online");
     expect(result.runtimeHealth).toEqual(health);
@@ -89,7 +89,7 @@ describe("server view data", () => {
             : url.pathname.endsWith("/scenarios")
             ? jsonResponse({ schemaVersion: 1, items: [null] })
             : jsonResponse({
-                schemaVersion: 4,
+                schemaVersion: 5,
                 items: [null],
                 nextCursor: null,
               }),
@@ -115,7 +115,7 @@ describe("server view data", () => {
           ? jsonResponse(monitoringHealth())
           : url.pathname.endsWith("/monitoring/overview")
           ? jsonResponse(monitoringOverview())
-          : jsonResponse({ schemaVersion: 4, items: [], nextCursor: null }),
+          : jsonResponse({ schemaVersion: 5, items: [], nextCursor: null }),
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -168,10 +168,12 @@ describe("server view data", () => {
             })
           : url.pathname.endsWith("/runs")
             ? jsonResponse({
-                schemaVersion: 4,
+                schemaVersion: 5,
                 items: [
                   {
                     id: makeIncidentDetail().selectedRun.id,
+                    kind: "diagnosis",
+                    operation: null,
                     attempt: 1,
                     status: "QUEUED",
                     createdAt: "2026-08-29T01:00:00Z",
