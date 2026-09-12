@@ -30,14 +30,14 @@ function monitoringHealth() {
 function monitoringOverview() {
   const start = Date.parse("2026-09-02T03:00:00.000Z");
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     window: "24h",
     generatedAt: "2026-09-03T02:15:00.000Z",
     counts: {
       totalIncidents: 0,
       firingAlerts: 0,
       triagingIncidents: 0,
-      diagnosedIncidents: 0,
+      waitingApprovalIncidents: 0,
     },
     families: [],
     samples: Array.from({ length: 24 }, (_, index) => ({

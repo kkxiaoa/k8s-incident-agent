@@ -14,12 +14,12 @@ export async function GET(
 ): Promise<Response> {
   const { incidentId } = await context.params;
   return (
-    await fetchRuns(incidentId, new URL(request.url).searchParams)
+    await fetchRuns(incidentId, new URL(request.url).searchParams, request.headers)
   ).response;
 }
 
 export async function POST(
-  _request: Request,
+  request: Request,
   context: IncidentRunRouteContext,
 ): Promise<Response> {
   if (getIncidentIntakeMode() === "online") {
@@ -27,5 +27,5 @@ export async function POST(
   }
 
   const { incidentId } = await context.params;
-  return createRun(incidentId);
+  return createRun(incidentId, request.headers);
 }

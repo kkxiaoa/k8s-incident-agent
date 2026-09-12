@@ -273,7 +273,7 @@ class MonitoringOverviewCounts(_MonitoringContract):
     total_incidents: int = Field(ge=0)
     firing_alerts: int = Field(ge=0)
     triaging_incidents: int = Field(ge=0)
-    diagnosed_incidents: int = Field(ge=0)
+    waiting_approval_incidents: int = Field(ge=0)
 
 
 class MonitoringOverviewFamily(_MonitoringContract):
@@ -299,7 +299,7 @@ class MonitoringOverviewSample(_MonitoringContract):
 
 
 class MonitoringOverviewSnapshot(_MonitoringContract):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     window: Literal["24h"] = "24h"
     generated_at: datetime
     counts: MonitoringOverviewCounts

@@ -44,7 +44,7 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
       totalIncidents: 8,
       firingAlerts,
       triagingIncidents: 3,
-      diagnosedIncidents: 4,
+      waitingApprovalIncidents: 4,
     },
     families:
       firingAlerts === 0
@@ -88,7 +88,7 @@ describe("HomeMonitoringDashboard", () => {
     expect(screen.getByRole("region", { name: "监控链路" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "监控链路" })).toBeNull();
     expect(screen.getByLabelText("Incident 状态统计")).toHaveTextContent(
-      /活跃 Incident.*8告警中2诊断中3已诊断4/,
+      /活跃 Incident.*8告警中2诊断中3待审批4/,
     );
     expect(
       screen.getByLabelText("说明活跃 Incident 的统计口径"),

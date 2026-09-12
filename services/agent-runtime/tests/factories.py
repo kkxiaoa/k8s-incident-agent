@@ -1,7 +1,9 @@
+from collections.abc import AsyncGenerator
 from typing import cast
 from uuid import UUID
 
 from k8s_incident_agent.application.monitoring import MonitoringApplicationService
+from k8s_incident_agent.auth.sessions import OperatorSession, OperatorSessions
 from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
@@ -101,3 +103,24 @@ class _DiagnosticModelStub:
 
 def diagnostic_model_stub() -> DiagnosticModelAvailability:
     return cast(DiagnosticModelAvailability, _DiagnosticModelStub())
+
+
+class _OperatorSessionsStub:
+    async def authenticate(self, _cookies: list[str]) -> OperatorSession:
+        return OperatorSession("sandbox-operator", 2**31, "", "", "")
+
+    def require_origin(self, _origins: list[str]) -> None:
+        pass
+
+    def require_csrf(self, _session: OperatorSession, _candidates: list[str]) -> None:
+        pass
+
+    def stream(
+        self, _session: OperatorSession, source: AsyncGenerator[bytes]
+    ) -> AsyncGenerator[bytes]:
+        return source
+
+
+def operator_sessions_stub() -> OperatorSessions:
+    """Isolate business-route tests; test_operator exercises real session gates."""
+    return cast(OperatorSessions, _OperatorSessionsStub())

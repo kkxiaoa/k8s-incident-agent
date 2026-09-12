@@ -1,5 +1,16 @@
+import getpass
 import json
+import os
+import pty
+import secrets
+import select
+import stat
+import subprocess
+import sys
+import termios
+import time
 import tomllib
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -9,6 +20,8 @@ import pytest
 from pydantic_settings import SettingsError
 
 import k8s_incident_agent.runtime.cli as cli_module
+import k8s_incident_agent.runtime.operator as operator_module
+from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.persistence.repositories import PruneTarget
 from k8s_incident_agent.runtime.reset import (
@@ -294,3 +307,144 @@ def test_runtime_console_script_uses_guarded_cli() -> None:
     assert pyproject["project"]["scripts"]["runtime"] == (
         "k8s_incident_agent.runtime.cli:main"
     )
+
+
+def test_operator_init_creates_private_verifier_without_settings(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    password = secrets.token_urlsafe(32)
+
+    def read_password(_prompt: str) -> str:
+        return password
+
+    monkeypatch.setattr(operator_module.getpass, "getpass", read_password)
+    monkeypatch.setattr(
+        cli_module, "Settings", lambda: pytest.fail("init must not load Settings")
+    )
+    target = tmp_path / "verifier"
+    actual_write = os.write
+
+    def short_write(fd: int, data: memoryview) -> int:
+        return actual_write(fd, data[:7])
+
+    monkeypatch.setattr(operator_module.os, "write", short_write)
+    assert cli_module.main(["operator", "init", "--output", str(target)]) == 0
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert PasswordVerifier.from_file(target).matches(password.encode())
+    captured = capsys.readouterr()
+    assert password not in captured.out + captured.err
+    assert target.read_text() not in captured.out + captured.err
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["verifier"]
+    assert cli_module.main(["operator", "init", "--output", str(target)]) == 1
+    assert PasswordVerifier.from_file(target).matches(password.encode())
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["mismatch", "empty", "oversize", "echo", "eof", "interrupt", "link", "write"],
+)
+def test_operator_init_rejects_unsafe_input_without_leaking_or_overwriting(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    case: str,
+) -> None:
+    password = secrets.token_urlsafe(32)
+    entries = iter(
+        [password, "different"] if case == "mismatch" else [password, password]
+    )
+
+    def read_password(_: str) -> str:
+        if case == "echo":
+            warnings.warn("echo unavailable", getpass.GetPassWarning, stacklevel=2)
+            pytest.fail("must not reach echo fallback")
+        if case == "eof":
+            raise EOFError
+        if case == "interrupt":
+            raise KeyboardInterrupt
+        if case == "empty":
+            return ""
+        if case == "oversize":
+            return "密" * 342
+        return next(entries)
+
+    monkeypatch.setattr(operator_module.getpass, "getpass", read_password)
+    target = tmp_path / "verifier"
+    if case == "link":
+        target.symlink_to(tmp_path / "untouched")
+    if case == "write":
+
+        def no_progress(_fd: int, _data: memoryview) -> int:
+            return 0
+
+        monkeypatch.setattr(operator_module.os, "write", no_progress)
+    assert cli_module.main(["operator", "init", "--output", str(target)]) == 1
+    captured = capsys.readouterr()
+    assert password not in captured.out + captured.err
+    if case == "write":
+        assert target.read_bytes() == b""
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert "partial output" in captured.err
+    else:
+        assert not target.exists()
+    if case == "link":
+        assert target.is_symlink()
+        assert not (tmp_path / "untouched").exists()
+
+
+def test_operator_init_does_not_echo_mistaken_password_arguments(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    password = secrets.token_urlsafe(32)
+    with pytest.raises(SystemExit) as error:
+        cli_module.main(
+            ["operator", "init", "--output", "/unused", "--password", password]
+        )
+    assert error.value.code == 2
+    assert password not in capsys.readouterr().err
+
+
+def test_operator_init_real_terminal_disables_echo(tmp_path: Path) -> None:
+    password = secrets.token_urlsafe(32).encode()
+    target = tmp_path / "verifier"
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from k8s_incident_agent.runtime.cli import main; raise SystemExit(main())",
+            "operator",
+            "init",
+            "--output",
+            str(target),
+        ],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        start_new_session=True,
+    )
+    transcript = bytearray()
+    try:
+        for prompt in (
+            b"Set login password (hidden): ",
+            b"Confirm login password (hidden): ",
+        ):
+            deadline = time.monotonic() + 10
+            while prompt not in transcript:
+                assert time.monotonic() < deadline, "CLI did not prompt in time"
+                if select.select([master], [], [], 0.1)[0]:
+                    transcript.extend(os.read(master, 8192))
+            assert not (termios.tcgetattr(slave)[3] & termios.ECHO)
+            os.write(master, password + b"\n")
+        assert process.wait(timeout=10) == 0
+        while select.select([master], [], [], 0)[0]:
+            transcript.extend(os.read(master, 8192))
+        assert password not in transcript
+        assert b"$argon2" not in transcript
+        assert PasswordVerifier.from_file(target).matches(password)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        os.close(master)
+        os.close(slave)

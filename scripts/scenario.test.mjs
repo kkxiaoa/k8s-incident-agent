@@ -14,7 +14,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { load, loadAll } from "js-yaml";
+import { dump, load, loadAll } from "js-yaml";
 
 import { runScenarioCommand } from "./scenario.mjs";
 
@@ -824,12 +824,15 @@ function k3sStatusFixtures() {
   const resources = new Map();
   loadAll(renderedYaml, (resource) => {
     if (resource === undefined || resource === null) return;
+    if (resource.kind === "ConfigMap" && resource.metadata?.name === "agent-runtime-config") {
+      resource.data.OPERATOR_ORIGIN = "https://console.example.test";
+    }
     resources.set(
       `${resource.kind}/${resource.metadata?.namespace ?? ""}/${resource.metadata?.name}`,
       resource,
     );
   });
-  cachedK3sStatusFixtures = { renderedYaml, resources };
+  cachedK3sStatusFixtures = { renderedYaml: [...resources.values()].map(resource => dump(resource)).join("---\n"), resources };
   return cachedK3sStatusFixtures;
 }
 
@@ -929,7 +932,8 @@ function k3sStatusResponse(args, options, fixtures) {
   }
   if (
     key ===
-    'get secret agent-runtime-model --namespace k8s-incident-agent --output=go-template={{if index .data "api-key"}}present{{else}}missing{{end}}'
+    'get secret agent-runtime-model --namespace k8s-incident-agent --output=go-template={{if index .data "api-key"}}present{{else}}missing{{end}}' ||
+    key === 'get secret operator-auth --namespace k8s-incident-agent --output=go-template={{if index .data "password-verifier"}}present{{else}}missing{{end}}'
   ) {
     return "present\n";
   }

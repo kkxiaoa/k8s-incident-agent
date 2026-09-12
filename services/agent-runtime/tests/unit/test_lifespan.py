@@ -45,6 +45,8 @@ def _settings(tmp_path: Path) -> Settings:
     settings = Settings.model_validate(
         {
             "deepseek_api_key": "test-key",
+            "operator_verifier_file": tmp_path / "operator-verifier",
+            "operator_origin": "http://127.0.0.1:13000",
             "RUNTIME_DATA_DIR": tmp_path / "runtime",
             "scenario_catalog_dir": REPOSITORY_ROOT / "scenarios",
         }
@@ -91,6 +93,24 @@ def install_runtime_fakes(
     def fail(stage: str) -> None:
         if fail_at == stage:
             raise RuntimeError(f"{stage} failed")
+
+    class FakeVerifier:
+        @classmethod
+        def from_file(cls, _path: Path) -> object:
+            return object()
+
+    class FakeOperatorSessions:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(api, "PasswordVerifier", FakeVerifier)
+    monkeypatch.setattr(api, "OperatorSessions", FakeOperatorSessions)
 
     class FakeLock:
         def __init__(self, _path: Path) -> None:

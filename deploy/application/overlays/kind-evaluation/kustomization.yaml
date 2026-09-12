@@ -5,6 +5,14 @@ resources:
   - ../../platform/kind-storage
   - ../../../monitoring/overlays/kind
 patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: agent-runtime-config
+        namespace: k8s-incident-agent
+      data:
+        OPERATOR_ORIGIN: http://127.0.0.1:13000
   - path: runtime-data.yaml
     target:
       version: v1

@@ -5,7 +5,11 @@ from typing import cast
 
 import httpx
 import pytest
-from tests.factories import diagnostic_model_stub, monitoring_health_service_stub
+from tests.factories import (
+    diagnostic_model_stub,
+    monitoring_health_service_stub,
+    operator_sessions_stub,
+)
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -59,6 +63,7 @@ async def test_scenario_route_returns_only_versioned_public_projection(
     @asynccontextmanager
     async def runtime_context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            operator=operator_sessions_stub(),
             diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, _ScenarioService()),
             events=cast(IncidentEventService, object()),

@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     model_max_retries: int = Field(default=2, ge=0)
     runtime_retention_days: int = Field(default=7, ge=1, le=30)
     incident_intake_mode: Literal["manual", "online"] = "manual"
+    operator_verifier_file: Path | None = Field(default=None, repr=False)
+    operator_origin: str | None = None
     kubernetes_credential_mode: Literal["kind_kubeconfig", "in_cluster"] = (
         "kind_kubeconfig"
     )
@@ -89,6 +91,34 @@ class Settings(BaseSettings):
         if isinstance(value, RuntimePaths):
             return value
         return RuntimePaths.prepare(Path(value))
+
+    @field_validator("operator_verifier_file", mode="before")
+    @classmethod
+    def validate_operator_verifier_file(cls, value: Path | str | None) -> Path | None:
+        if value is None:
+            return None
+        return _dedicated_absolute_path(value, "OPERATOR_VERIFIER_FILE")
+
+    @field_validator("operator_origin")
+    @classmethod
+    def validate_operator_origin(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = HttpUrl(value)
+        if (
+            parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path != "/"
+            or value != str(parsed).removesuffix("/")
+            or (
+                parsed.scheme != "https"
+                and parsed.host not in {"localhost", "127.0.0.1", "[::1]"}
+            )
+        ):
+            raise ValueError("OPERATOR_ORIGIN must be a fixed HTTPS or loopback origin")
+        return value
 
     @field_validator("scenario_catalog_dir", "alert_catalog_dir", mode="before")
     @classmethod

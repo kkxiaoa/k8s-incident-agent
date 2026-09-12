@@ -37,7 +37,8 @@
     display: none;
   }
 
-  .product-link {
+  .product-link,
+  .operator-logout {
     padding: 8px 10px;
     font-size: 0.68rem;
   }

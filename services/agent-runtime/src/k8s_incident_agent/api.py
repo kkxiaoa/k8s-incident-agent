@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 
 from k8s_incident_agent.api_contracts import (
     DiagnosticAvailabilityResponse,
@@ -26,6 +26,9 @@ from k8s_incident_agent.application.incidents import (
     RuntimeNotReadyError,
 )
 from k8s_incident_agent.application.monitoring import MonitoringApplicationService
+from k8s_incident_agent.auth.http import PublicApiNoStore, require_operator
+from k8s_incident_agent.auth.sessions import OperatorSessions
+from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyCatalog
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
@@ -67,6 +70,7 @@ from k8s_incident_agent.routes.incidents import (
 )
 from k8s_incident_agent.routes.incidents import router as incidents_router
 from k8s_incident_agent.routes.monitoring import router as monitoring_router
+from k8s_incident_agent.routes.operator import router as operator_router
 from k8s_incident_agent.routes.scenarios import router as scenarios_router
 from k8s_incident_agent.runtime.artifacts import open_private_directory
 from k8s_incident_agent.runtime.cutover import require_runtime_cutover_complete
@@ -83,6 +87,7 @@ class RuntimeContainer:
     alerts: AlertmanagerApplicationService | None
     monitoring: MonitoringApplicationService
     diagnostic_model: DiagnosticModelAvailability
+    operator: OperatorSessions
 
 
 type RuntimeContextFactory = Callable[
@@ -139,6 +144,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.ready = False
+    app.add_middleware(PublicApiNoStore)
     install_exception_handlers(app)
 
     async def healthz(request: Request) -> RuntimeHealthResponse:
@@ -161,13 +167,34 @@ def create_app(
         responses=error_responses(500, 503),
     )
     if route_intake_mode == "manual":
-        app.include_router(scenarios_router)
-        app.include_router(manual_incidents_router)
+        app.include_router(
+            scenarios_router,
+            dependencies=[Depends(require_operator)],
+            responses=error_responses(401, 403),
+        )
+        app.include_router(
+            manual_incidents_router,
+            dependencies=[Depends(require_operator)],
+            responses=error_responses(401, 403),
+        )
     if route_alertmanager_enabled:
         app.include_router(alertmanager_router)
-    app.include_router(incidents_router)
-    app.include_router(events_router)
-    app.include_router(monitoring_router)
+    app.include_router(
+        incidents_router,
+        dependencies=[Depends(require_operator)],
+        responses=error_responses(401, 403),
+    )
+    app.include_router(
+        events_router,
+        dependencies=[Depends(require_operator)],
+        responses=error_responses(401, 403),
+    )
+    app.include_router(
+        monitoring_router,
+        dependencies=[Depends(require_operator)],
+        responses=error_responses(401, 403),
+    )
+    app.include_router(operator_router)
     if route_alertmanager_enabled:
         _install_alertmanager_openapi_contract(app)
     return app
@@ -194,6 +221,18 @@ async def build_runtime_container(
         database = await create_business_database(settings.runtime_paths)
         resources.push_async_callback(database.dispose)
         await require_alembic_head(database)
+
+        if settings.operator_verifier_file is None or settings.operator_origin is None:
+            raise ConfigurationInvalidError(
+                "Operator authentication must be configured"
+            )
+        operator = OperatorSessions(
+            sessions=database.session_factory,
+            verifier=PasswordVerifier.from_file(settings.operator_verifier_file),
+            origin=settings.operator_origin,
+        )
+        await operator.start()
+        resources.push_async_callback(operator.close)
 
         checkpointer = await resources.enter_async_context(
             open_checkpoint_store(settings.runtime_paths.checkpoint_database)
@@ -351,6 +390,7 @@ async def build_runtime_container(
                 now=now,
             ),
             diagnostic_model=diagnostic_model,
+            operator=operator,
         )
 
 

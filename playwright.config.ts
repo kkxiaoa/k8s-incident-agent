@@ -18,7 +18,7 @@ export default defineConfig({
     channel: "chrome",
     headless: true,
     timezoneId: "America/Los_Angeles",
-    trace: "retain-on-failure",
+    trace: "off",
     screenshot: "only-on-failure",
     video: "off",
   },

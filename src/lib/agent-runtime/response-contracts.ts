@@ -964,7 +964,7 @@ export function parseMonitoringOverviewResponse(
 ): MonitoringOverviewView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
     value.window !== "24h" ||
     !isTimestamp(value.generatedAt) ||
     !isObject(value.counts) ||
@@ -980,7 +980,7 @@ export function parseMonitoringOverviewResponse(
     !isNonNegativeInteger(counts.totalIncidents) ||
     !isNonNegativeInteger(counts.firingAlerts) ||
     !isNonNegativeInteger(counts.triagingIncidents) ||
-    !isNonNegativeInteger(counts.diagnosedIncidents)
+    !isNonNegativeInteger(counts.waitingApprovalIncidents)
   ) {
     return null;
   }
@@ -1051,7 +1051,7 @@ export function parseMonitoringOverviewResponse(
       totalIncidents: counts.totalIncidents,
       firingAlerts: counts.firingAlerts,
       triagingIncidents: counts.triagingIncidents,
-      diagnosedIncidents: counts.diagnosedIncidents,
+      waitingApprovalIncidents: counts.waitingApprovalIncidents,
     },
     families,
     samples,

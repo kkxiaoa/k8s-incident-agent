@@ -14,7 +14,7 @@ describe("GET /api/runtime/incidents/[incidentId]/events", () => {
       new Response(new ReadableStream(), {
         headers: {
           "content-type": "text/event-stream",
-          "cache-control": "no-cache",
+          "cache-control": "no-store",
         },
       }),
     );
@@ -47,7 +47,7 @@ describe("GET /api/runtime/incidents/[incidentId]/events", () => {
       new Response(new ReadableStream(), {
         headers: {
           "content-type": "text/event-stream",
-          "cache-control": "no-cache",
+          "cache-control": "no-store",
         },
       }),
     );

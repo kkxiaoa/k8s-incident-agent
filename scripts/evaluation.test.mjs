@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { test } from "node:test";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { test, after } from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,6 +18,11 @@ const REPOSITORY_ROOT = path.resolve(
   "..",
 );
 const REVISION = "a".repeat(40);
+const AUTH_DIRECTORY = mkdtempSync(path.join(tmpdir(), "evaluation-operator-test-"));
+const AUTH_PASSWORD = randomBytes(32).toString("base64url");
+const AUTH_FILE = path.join(AUTH_DIRECTORY, "password");
+writeFileSync(AUTH_FILE, AUTH_PASSWORD, { mode: 0o600 });
+after(() => rmSync(AUTH_DIRECTORY, { recursive: true, force: true }));
 const RELEASE_FIXTURE = createReleaseFixture(REVISION);
 const releaseLock = (digest) => `
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -123,6 +130,56 @@ test("the committed scenario catalog exposes seven entries across five families"
     replacementImage:
       "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85",
   });
+});
+
+test("authentication failures stop before scenarios and never enter artifacts", async () => {
+  for (const missingCredential of [true, false]) {
+    const harness = createHarness();
+    if (missingCredential) harness.dependencies.environment.OPERATOR_PASSWORD_FILE = undefined;
+    else harness.dependencies.fetch = async () => new Response("sensitive upstream detail", { status: 401 });
+    const result = await runEvaluationCommand({ action: "run", profile: "kind-evaluation" }, harness.dependencies);
+    assert.equal(result.artifact.status, "failed");
+    assert.equal(result.artifact.failure.code, "operator_authentication_failed");
+    assert.equal(harness.calls.scenarioApply, 0);
+    assert.equal(harness.calls.tunnelClose, 1);
+    const artifact = JSON.stringify(result.artifact);
+    assert.equal(artifact.includes(AUTH_PASSWORD), false);
+    assert.equal(artifact.includes("sensitive upstream detail"), false);
+    assert.equal(artifact.includes(AUTH_FILE), false);
+  }
+});
+
+test("Runtime restart renews read sessions without exposing credentials to monitoring or artifacts", async () => {
+  const harness = createHarness();
+  const result = await runEvaluationCommand({ action: "run", profile: "kind-evaluation" }, harness.dependencies);
+  assert.equal(result.artifact.status, "pending_manual_review");
+  assert.equal(harness.state.logins, 2);
+  const artifact = JSON.stringify(result.artifact);
+  for (const value of [AUTH_PASSWORD, harness.state.cookie, harness.state.csrf]) assert.equal(artifact.includes(value), false);
+});
+
+test("rejected renewal preserves authentication failure and stops without polling", async () => {
+  const harness = createHarness();
+  const originalFetch = harness.dependencies.fetch;
+  let loginAttempts = 0;
+  harness.dependencies.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/v1/operator/login") {
+      loginAttempts += 1;
+      if (loginAttempts > 1) return new Response("private authentication failure", { status: 401 });
+    } else if (url.port === "18080" && url.pathname.startsWith("/api/v1/")) {
+      harness.state.cookie = undefined;
+    }
+    return originalFetch(input, init);
+  };
+  harness.dependencies.sleep = async () => { throw new Error("Authentication failure must not poll"); };
+  const result = await runEvaluationCommand({ action: "run", profile: "kind-evaluation" }, harness.dependencies);
+  assert.equal(result.artifact.status, "failed");
+  assert.equal(result.artifact.failure.code, "operator_authentication_failed");
+  assert.equal(loginAttempts, 2);
+  assert.equal(harness.calls.scenarioApply, 0);
+  assert.equal(harness.calls.tunnelClose, 1);
+  assert.equal(JSON.stringify(result.artifact).includes("private authentication failure"), false);
 });
 
 test("catalog checks complete with exact Run references but require manual diagnosis review", async () => {
@@ -852,6 +909,9 @@ function createHarness(options = {}) {
     alertmanagerRestarts: 0,
   };
   const state = {
+    cookie: undefined,
+    csrf: undefined,
+    logins: 0,
     online: false,
     prometheus: true,
     kubeStateMetrics: true,
@@ -859,6 +919,10 @@ function createHarness(options = {}) {
   };
 
   const dependencies = {
+    environment: {
+      get OPERATOR_ORIGIN() { return state.online ? "https://console.example.test" : "http://127.0.0.1:13000"; },
+      OPERATOR_PASSWORD_FILE: AUTH_FILE,
+    },
     repositoryRoot: REPOSITORY_ROOT,
     scenarios,
     now: () => new Date("2026-09-05T00:00:00.000Z"),
@@ -955,6 +1019,7 @@ function createHarness(options = {}) {
           state.watchdogLastReceivedAt = "2026-09-05T00:01:00.000Z";
         }
       }
+      if (args.includes("delete") && args.includes("agent-runtime-pod")) state.cookie = undefined;
       return "";
     },
     fetch: async (input, init) =>
@@ -969,6 +1034,30 @@ function createHarness(options = {}) {
 
 function fakeFetch(rawUrl, init, scenarioById, state, options) {
   const url = new URL(rawUrl);
+  const headers = new Headers(init?.headers);
+  const origin = state.online ? "https://console.example.test" : "http://127.0.0.1:13000";
+  if (url.port === "18080" && url.pathname === "/api/v1/operator/login") {
+    assert.equal(init?.method, "POST");
+    assert.equal(headers.get("origin"), origin);
+    assert.equal(JSON.parse(init.body).password === AUTH_PASSWORD, true);
+    state.logins += 1;
+    state.cookie = "__Host-k8s-incident-session=" + randomBytes(32).toString("base64url");
+    state.csrf = randomBytes(32).toString("hex");
+    return new Response(JSON.stringify({ operatorRef: "sandbox-operator", expiresAt: Math.floor(Date.now() / 1000) + 1800, csrfToken: state.csrf }), {
+      headers: { "content-type": "application/json", "set-cookie": state.cookie + "; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=1800" },
+    });
+  }
+  if ((url.port === "18080" && url.pathname.startsWith("/api/v1/")) ||
+      (url.port === "13000" && url.pathname !== "/api/healthz")) {
+    if (!state.cookie || headers.get("cookie") !== state.cookie) return jsonResponse({ error: { code: "operator_unauthenticated" } }, 401);
+    if (![undefined, "GET", "HEAD"].includes(init?.method)) {
+      assert.equal(headers.get("origin"), origin);
+      assert.equal(headers.get("x-csrf-token") === state.csrf, true);
+    }
+  } else {
+    assert.equal(headers.has("cookie"), false);
+    assert.equal(headers.has("x-csrf-token"), false);
+  }
   const active = [...scenarioById.values()].find((scenario) => scenario.applied);
 
   if (url.port === "13000") {
@@ -1176,7 +1265,7 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       markersTruncated: false,
     });
   }
-  if (suffix === "/events" && init?.headers?.["Last-Event-ID"] === "0") {
+  if (suffix === "/events" && headers.get("Last-Event-ID") === "0") {
     const diagnosisCode = diagnosisCodeFor(scenario, options);
     const repair = repairProjection(scenario, diagnosisCode, options);
     const incidentId = options.invalidSseContract === true
@@ -1403,9 +1492,9 @@ function targetLabel(kind) {
   }[kind];
 }
 
-function jsonResponse(value) {
+function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
-    status: 200,
+    status,
     headers: { "content-type": "application/json" },
   });
 }

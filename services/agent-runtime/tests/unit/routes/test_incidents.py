@@ -7,7 +7,11 @@ from uuid import UUID
 
 import httpx
 import pytest
-from tests.factories import diagnostic_model_stub, monitoring_health_service_stub
+from tests.factories import (
+    diagnostic_model_stub,
+    monitoring_health_service_stub,
+    operator_sessions_stub,
+)
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -177,6 +181,7 @@ async def _client(
     @asynccontextmanager
     async def runtime_context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            operator=operator_sessions_stub(),
             diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, service),
             events=cast(IncidentEventService, object()),

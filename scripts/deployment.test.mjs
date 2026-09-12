@@ -118,7 +118,7 @@ test("all deployment profiles render byte-stably from the shared base", () => {
   }
 });
 
-test("profile overlays change only platform storage, ingress, and intake behavior", () => {
+test("profile overlays change platform storage, ingress, intake and operator origin", () => {
   const kind = indexDocuments(render("overlays/kind-evaluation"));
   const evaluation = indexDocuments(render("overlays/k3s-evaluation"));
   const online = indexDocuments(render("overlays/k3s-online"));
@@ -1137,6 +1137,7 @@ function createFakeKubectl(t, overrides = {}) {
     `#!/usr/bin/env node
 const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
+const { loadAll, dump } = require(${JSON.stringify(path.join(REPOSITORY_ROOT, "node_modules/js-yaml"))});
 const args = process.argv.slice(2);
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -1304,7 +1305,14 @@ function response(key, args) {
   if (key.startsWith("kustomize ")) {
     const result = spawnSync(process.env.REAL_KUBECTL, args, { encoding: "utf8" });
     if (result.status !== 0) process.exitCode = result.status;
-    return result.stdout;
+    const resources = loadAll(result.stdout);
+    for (const item of resources) {
+      if (item?.kind === "ConfigMap" && item.metadata?.name === "agent-runtime-config" &&
+          process.env.FAKE_PROFILE !== "kind-evaluation" && process.env.FAKE_OPERATOR_ORIGIN_MISSING !== "1") {
+        item.data.OPERATOR_ORIGIN = "https://console.example.test";
+      }
+    }
+    return resources.map((item) => dump(item)).join("---\\n");
   }
   if (key === "version --client --output=json") {
     return { clientVersion: { gitVersion: process.env.FAKE_CLIENT_VERSION || "v1.36.2" } };
@@ -1334,6 +1342,9 @@ function response(key, args) {
   }
   if (key === 'get secret agent-runtime-model --namespace k8s-incident-agent --output=go-template={{if index .data "api-key"}}present{{else}}missing{{end}}') {
     return process.env.FAKE_SECRET_MISSING === "1" ? "missing\\n" : "present\\n";
+  }
+  if (key === 'get secret operator-auth --namespace k8s-incident-agent --output=go-template={{if index .data "password-verifier"}}present{{else}}missing{{end}}') {
+    return process.env.FAKE_OPERATOR_SECRET_MISSING === "1" ? "missing" : "present";
   }
   if (key === 'get secret patch-validator-auth --namespace k8s-incident-agent --output=go-template={{if index .data "hmac-key"}}{{if eq (len (base64decode (index .data "hmac-key"))) 32}}present{{else}}missing{{end}}{{else}}missing{{end}}') {
     return process.env.FAKE_PATCH_VALIDATOR_SECRET_INVALID === "1"
@@ -1790,6 +1801,8 @@ function response(key, args) {
           ALERTMANAGER_WEBHOOK_TOKEN_FILE: "/var/run/secrets/k8s-incident-agent/alertmanager/token",
           PATCH_VALIDATOR_BASE_URL: "http://patch-validator.k8s-incident-agent.svc.cluster.local:8081",
           PATCH_VALIDATOR_HMAC_KEY_FILE: "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key",
+          OPERATOR_VERIFIER_FILE: "/var/run/secrets/k8s-incident-agent/operator/password-verifier",
+          OPERATOR_ORIGIN: process.env.FAKE_OPERATOR_ORIGIN_DRIFT === "1" ? "https://other.example.test" : process.env.FAKE_PROFILE === "kind-evaluation" ? "http://127.0.0.1:13000" : "https://console.example.test",
         }
         : {
           AGENT_RUNTIME_URL: "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000",
@@ -3034,6 +3047,26 @@ test("confirmed install rejects a missing namespaced webhook credential before a
     fake.calls().some((call) => call.args.includes("apply")),
     false,
   );
+});
+
+test("operator prerequisites fail before apply without projecting credential material", (t) => {
+  for (const overrides of [{ FAKE_OPERATOR_SECRET_MISSING: "1" }, { FAKE_OPERATOR_ORIGIN_MISSING: "1" }]) {
+    const fake = createFakeKubectl(t, overrides);
+    const result = runDeployment(["install", "k3s-online", "--context", "demo-k3s", "--confirm"], fake.environment);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^FAIL (?:secret_contract_invalid|installation_not_ready) /);
+    assert.equal(fake.calls().some(call => call.args.includes("apply")), false);
+    const credentialCalls = fake.calls().filter(call => call.args.includes("operator-auth"));
+    assert.equal(credentialCalls.length, 1);
+    assert.equal(credentialCalls[0].args.at(-1), '--output=go-template={{if index .data "password-verifier"}}present{{else}}missing{{end}}');
+  }
+});
+
+test("operator status rejects a valid HTTPS origin that drifts from the profile", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_OPERATOR_ORIGIN_DRIFT: "1" });
+  const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^FAIL installation_not_ready /);
 });
 
 test("confirmed install rejects invalid Patch Validator HMAC key material", (t) => {

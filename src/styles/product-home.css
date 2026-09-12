@@ -201,8 +201,8 @@
   color: var(--teal);
 }
 
-.overview-count--success strong {
-  color: var(--green);
+.overview-count--waiting strong {
+  color: var(--amber);
 }
 
 .home-monitoring__charts {

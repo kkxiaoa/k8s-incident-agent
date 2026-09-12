@@ -5,13 +5,15 @@ import re
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Literal
+from pathlib import Path
+from typing import Literal, NoReturn
 
 from pydantic import ValidationError
 from pydantic_settings import SettingsError
 
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.persistence.repositories import PruneTarget
+from k8s_incident_agent.runtime.operator import initialize_operator
 from k8s_incident_agent.runtime.reset import (
     ResetPlan,
     ResetResult,
@@ -26,10 +28,25 @@ type _ExecutionMode = Literal["preview", "confirm"]
 type _RuntimeCommand = Literal["prune", "reset-stage-one-data"]
 
 
+class _OperatorArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        # Mistaken password arguments must not be echoed by argparse.
+        self.exit(
+            2,
+            "Use runtime operator init --output ABSOLUTE_PATH; password input is interactive only.\n",
+        )
+
+
 def _parse_args(
     argv: Sequence[str] | None,
-) -> tuple[_RuntimeCommand, _ExecutionMode, str | None]:
-    parser = argparse.ArgumentParser(prog="runtime", allow_abbrev=False)
+) -> tuple[_RuntimeCommand, _ExecutionMode, str | None] | Path:
+    arguments_list = list(sys.argv[1:] if argv is None else argv)
+    parser_type = (
+        _OperatorArgumentParser
+        if arguments_list[:1] == ["operator"]
+        else argparse.ArgumentParser
+    )
+    parser = parser_type(prog="runtime", allow_abbrev=False)
     subparsers = parser.add_subparsers(dest="command", required=True)
     prune_parser = subparsers.add_parser("prune", allow_abbrev=False)
     _add_prune_mode_arguments(prune_parser)
@@ -38,8 +55,16 @@ def _parse_args(
         allow_abbrev=False,
     )
     _add_reset_mode_arguments(reset_parser)
-    arguments = parser.parse_args(argv)
+    operator_parser = subparsers.add_parser("operator", allow_abbrev=False)
+    operator_commands = operator_parser.add_subparsers(required=True)
+    initializer = operator_commands.add_parser("init", allow_abbrev=False)
+    initializer.add_argument(
+        "--output", required=True, type=Path, metavar="ABSOLUTE_PATH"
+    )
+    arguments = parser.parse_args(arguments_list)
     command_name = arguments.command
+    if command_name == "operator":
+        return arguments.output
     if command_name not in ("prune", "reset-stage-one-data"):
         raise RuntimeError("Unknown Runtime command")
     mode: _ExecutionMode = "preview" if arguments.preview else "confirm"
@@ -148,7 +173,10 @@ def _emit_reset_error(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    command_name, mode, expected_plan_digest = _parse_args(argv)
+    parsed = _parse_args(argv)
+    if isinstance(parsed, Path):
+        return initialize_operator(parsed)
+    command_name, mode, expected_plan_digest = parsed
     if command_name == "reset-stage-one-data":
         try:
             settings = Settings()

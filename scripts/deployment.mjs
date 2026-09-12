@@ -2108,6 +2108,10 @@ async function confirmApply(contract, request, execute) {
   );
   const desiredResources = indexRenderedManifest(desiredManifest);
   requireRenderedMonitoringContract(desiredResources, contract.monitoring.catalog);
+  requireRuntimeConfig(
+    desiredResources.get(`ConfigMap/${APPLICATION_NAMESPACE}/agent-runtime-config`),
+    request.profile,
+  );
   await runKubectl(
     execute,
     request.context,
@@ -2594,7 +2598,11 @@ async function readInstallationStatus(
   requireClusterIpService(consoleService, "incident-console", 80);
   requireClusterIpService(patchValidatorService, "patch-validator", 8081);
   const volumeName = requireBoundPvc(runtimePvc, request.profile);
-  requireRuntimeConfig(runtimeConfig);
+  requireRuntimeConfig(runtimeConfig, request.profile);
+  const desiredRuntimeConfig = requireRenderedResource(desiredResources, "ConfigMap", "agent-runtime-config", APPLICATION_NAMESPACE);
+  if (runtimeConfig.data.OPERATOR_ORIGIN !== desiredRuntimeConfig.data.OPERATOR_ORIGIN) {
+    throw stateError("Operator origin differs from the rendered profile");
+  }
   requireConsoleConfig(consoleConfig);
   requireNetworkPolicies(
     applicationNetworkPolicies,
@@ -2901,6 +2909,7 @@ async function requireK3sComponents(contract, context, execute) {
 
 async function requireRequiredSecrets(context, execute) {
   for (const [namespace, name, key, label, expectedLength] of [
+    [APPLICATION_NAMESPACE, "operator-auth", "password-verifier", "Operator verifier", undefined],
     [
       APPLICATION_NAMESPACE,
       RUNTIME_SECRET,
@@ -3608,7 +3617,22 @@ function requireReadyDeployment(document, name, images, profile) {
       `${name} Deployment`,
     );
   }
+  for (const container of [...initContainers, ...containers]) {
+    const mounts = container.volumeMounts ?? [];
+    if (!(isRuntime && container.name === "runtime") && mounts.some((mount) =>
+      findVolume(pod, mount.name)?.secret?.secretName === "operator-auth")) {
+      throw stateError("Operator verifier must only be mounted into Runtime");
+    }
+  }
   if (isRuntime) {
+    const operator = findVolume(pod, "operator-auth")?.secret;
+    if (!isDeepStrictEqual(operator, {
+      secretName: "operator-auth", defaultMode: 0o440,
+      items: [{ key: "password-verifier", path: "password-verifier" }],
+    }) || !containers[0].volumeMounts?.some((mount) =>
+      mount.name === "operator-auth" && mount.mountPath === "/var/run/secrets/k8s-incident-agent/operator" && mount.readOnly === true)) {
+      throw stateError("Runtime operator verifier projection is invalid");
+    }
     const migration = initContainers.find(
       (container) => container?.name === "migrate",
     );
@@ -4126,7 +4150,7 @@ function requireBoundPrometheusPvc(document, profile) {
   return volumeName;
 }
 
-function requireRuntimeConfig(document) {
+function requireRuntimeConfig(document, profile) {
   const expected = {
     KUBERNETES_CLUSTER_ID: "k8s-incident-agent",
     KUBERNETES_CREDENTIAL_MODE: "in_cluster",
@@ -4140,7 +4164,19 @@ function requireRuntimeConfig(document) {
       "http://patch-validator.k8s-incident-agent.svc.cluster.local:8081",
     PATCH_VALIDATOR_HMAC_KEY_FILE:
       "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key",
+    OPERATOR_VERIFIER_FILE:
+      "/var/run/secrets/k8s-incident-agent/operator/password-verifier",
   };
+  let origin;
+  try { origin = new URL(document?.data?.OPERATOR_ORIGIN); } catch {
+    throw stateError("Operator origin must be explicitly configured before installation");
+  }
+  if (origin.origin !== document.data.OPERATOR_ORIGIN ||
+      (profile.platform === "kind"
+        ? origin.origin !== "http://127.0.0.1:13000"
+        : origin.protocol !== "https:")) {
+    throw stateError("Operator origin does not match the selected profile transport");
+  }
   if (
     document.kind !== "ConfigMap" ||
     document.metadata?.name !== "agent-runtime-config" ||

@@ -6,7 +6,7 @@ from typing import cast
 
 import httpx
 import pytest
-from tests.factories import diagnostic_model_stub
+from tests.factories import diagnostic_model_stub, operator_sessions_stub
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -49,7 +49,7 @@ def test_monitoring_overview_rejects_a_stale_24_hour_window() -> None:
                 total_incidents=0,
                 firing_alerts=0,
                 triaging_incidents=0,
-                diagnosed_incidents=0,
+                waiting_approval_incidents=0,
             ),
             families=(),
             samples=tuple(
@@ -84,7 +84,7 @@ class _MonitoringService:
                 total_incidents=8,
                 firing_alerts=2,
                 triaging_incidents=1,
-                diagnosed_incidents=5,
+                waiting_approval_incidents=5,
             ),
             families=(
                 MonitoringOverviewFamily(
@@ -170,6 +170,7 @@ async def test_monitoring_health_route_returns_the_bounded_projection(
         _settings: Settings,
     ) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            operator=operator_sessions_stub(),
             diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),
@@ -217,6 +218,7 @@ async def test_monitoring_overview_route_returns_fixed_24_hour_projection(
         _settings: Settings,
     ) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            operator=operator_sessions_stub(),
             diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),
@@ -235,13 +237,13 @@ async def test_monitoring_overview_route_returns_fixed_24_hour_projection(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["schemaVersion"] == 1
+    assert payload["schemaVersion"] == 2
     assert payload["window"] == "24h"
     assert payload["counts"] == {
         "totalIncidents": 8,
         "firingAlerts": 2,
         "triagingIncidents": 1,
-        "diagnosedIncidents": 5,
+        "waitingApprovalIncidents": 5,
     }
     assert payload["families"] == [
         {
@@ -270,6 +272,7 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
         _settings: Settings,
     ) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            operator=operator_sessions_stub(),
             diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, object()),

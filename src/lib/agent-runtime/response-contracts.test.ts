@@ -258,14 +258,14 @@ describe("monitoring response contracts", () => {
   it("accepts a complete 24-hour overview and rejects inconsistent totals", () => {
     const start = Date.parse("2026-09-02T03:00:00.000Z");
     const overview = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       window: "24h",
       generatedAt: "2026-09-03T02:15:00.000Z",
       counts: {
         totalIncidents: 8,
         firingAlerts: 2,
         triagingIncidents: 1,
-        diagnosedIncidents: 5,
+        waitingApprovalIncidents: 5,
       },
       families: [
         {
@@ -288,6 +288,13 @@ describe("monitoring response contracts", () => {
       families: overview.families,
       samples: overview.samples,
     });
+    expect(parseMonitoringOverviewResponse({ ...overview, schemaVersion: 1 })).toBeNull();
+    for (const waitingApprovalIncidents of [undefined, -1, 0.5]) {
+      expect(parseMonitoringOverviewResponse({
+        ...overview,
+        counts: { ...overview.counts, waitingApprovalIncidents },
+      })).toBeNull();
+    }
     expect(
       parseMonitoringOverviewResponse({
         ...overview,

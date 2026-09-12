@@ -9,6 +9,10 @@ from k8s_incident_agent import api
 from k8s_incident_agent import openapi as openapi_exporter
 
 EXPECTED_OPERATIONS = {
+    ("POST", "/api/v1/operator/login"),
+    ("POST", "/api/v1/operator/logout"),
+    ("GET", "/api/v1/operator/session"),
+    ("POST", "/api/v1/operator/session"),
     ("POST", "/api/v1/alerts/alertmanager"),
     ("GET", "/healthz"),
     ("GET", "/api/v1/scenarios"),
@@ -200,13 +204,18 @@ def test_schema_exposes_only_the_current_runtime_contract(
     assert schema["info"]["title"] == "K8s Incident Agent Runtime"
     assert schema["info"]["version"] == "0.1.0"
     assert schema["components"]["securitySchemes"] == {
+        "APIKeyCookie": {
+            "type": "apiKey",
+            "in": "cookie",
+            "name": "__Host-k8s-incident-session",
+        },
         "AlertmanagerBearer": {
             "description": (
                 "Shared bearer credential mounted in Alertmanager and Runtime."
             ),
             "scheme": "bearer",
             "type": "http",
-        }
+        },
     }
     components = schema["components"]["schemas"]
     assert "JsonScalar" not in components

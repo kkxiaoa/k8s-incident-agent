@@ -1,9 +1,11 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { constants } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
+  open,
   readFile,
   rename,
   unlink,
@@ -163,13 +165,14 @@ export async function runEvaluationCommand(request, dependencies = {}) {
   let artifact;
   try {
     try {
+      const authenticatedFetch = await operatorFetch(fetchImpl, profile, dependencies.environment ?? process.env);
       if (request.action === "online") {
         artifact = await evaluateOnlineBoundary({
           profile,
           release,
           startedAt,
           completedAt: () => requireDate(now()).toISOString(),
-          fetchImpl,
+          fetchImpl: authenticatedFetch,
         });
       } else {
         artifact = await evaluateCatalog({
@@ -184,7 +187,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
           scenarioRunner,
           repositoryRoot,
           execute,
-          fetchImpl,
+          fetchImpl: authenticatedFetch,
           sleep,
           tunnels,
           now,
@@ -216,6 +219,88 @@ export async function runEvaluationCommand(request, dependencies = {}) {
     dependencies.writeArtifact ?? writeEvaluationArtifact
   )(repositoryRoot, profile, artifact);
   return { artifact, artifactPath };
+}
+
+async function operatorFetch(fetchImpl, profile, environment) {
+  const failure = () => contractError("operator_authentication_failed", "Evaluation operator authentication failed");
+  let origin;
+  let password;
+  try {
+    const configured = environment.OPERATOR_ORIGIN;
+    origin = new URL(configured);
+    if (origin.origin !== configured || origin.username || origin.password ||
+        (profile === "kind-evaluation" ? configured !== endpointOrigin("console") : origin.protocol !== "https:")) throw failure();
+    const filename = environment.OPERATOR_PASSWORD_FILE;
+    if (typeof filename !== "string" || !path.isAbsolute(filename)) throw failure();
+    const file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || (stat.mode & 0o077) !== 0 || stat.size < 1 || stat.size > 1024) throw failure();
+      const bytes = Buffer.alloc(1025);
+      const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+      if (bytesRead < 1 || bytesRead > 1024) throw failure();
+      password = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, bytesRead));
+    } finally { await file.close(); }
+  } catch { throw failure(); }
+  let cookie;
+  let csrf;
+  let expiresAt = 0;
+  let pendingLogin;
+  async function login() {
+    if (pendingLogin) return pendingLogin;
+    pendingLogin = (async () => {
+      try {
+        const response = await fetchImpl(`${endpointOrigin("runtime")}/api/v1/operator/login`, {
+          method: "POST", headers: { "content-type": "application/json", Origin: origin.origin },
+          body: JSON.stringify({ password }), redirect: "error", signal: AbortSignal.timeout(HTTP_TIMEOUT_MILLISECONDS),
+        });
+        if (response.status !== 200) throw failure();
+        const bytes = await readResponseBytes(response, 8192);
+        const session = JSON.parse(new TextDecoder().decode(bytes));
+        const cookies = response.headers.getSetCookie();
+        if (cookies.length !== 1 || cookies[0].length > 512 ||
+            !/^__Host-k8s-incident-session=[A-Za-z0-9_-]{43};/.test(cookies[0]) ||
+            !/(?:^|;\s*)HttpOnly(?:;|$)/i.test(cookies[0]) ||
+            !/(?:^|;\s*)Secure(?:;|$)/i.test(cookies[0]) ||
+            !/(?:^|;\s*)SameSite=strict(?:;|$)/i.test(cookies[0]) ||
+            !/(?:^|;\s*)Path=\/(?:;|$)/i.test(cookies[0]) ||
+            /(?:^|;\s*)Domain=/i.test(cookies[0]) ||
+            session.operatorRef !== "sandbox-operator" || !Number.isSafeInteger(session.expiresAt) || session.expiresAt <= Date.now() / 1000 ||
+            typeof session.csrfToken !== "string" || !/^[a-f0-9]{64}$/.test(session.csrfToken)) throw failure();
+        cookie = cookies[0].split(";")[0];
+        csrf = session.csrfToken;
+        expiresAt = session.expiresAt;
+      } catch { throw failure(); }
+    })();
+    try { await pendingLogin; } finally { pendingLogin = undefined; }
+  }
+  await login();
+  return async (input, init = {}) => {
+    const url = new URL(String(input));
+    const runtime = url.origin === endpointOrigin("runtime");
+    const console = url.origin === endpointOrigin("console");
+    if ((!runtime && !console) || url.pathname === "/healthz" || url.pathname === "/api/healthz") return fetchImpl(input, { ...init, redirect: "error" });
+    if (expiresAt <= Date.now() / 1000) await login();
+    const method = init.method ?? "GET";
+    const send = () => {
+      const headers = new Headers(init.headers);
+      headers.set("Cookie", cookie);
+      if (!["GET", "HEAD"].includes(method)) {
+        headers.set("Origin", origin.origin);
+        headers.set("X-CSRF-Token", csrf);
+      }
+      return fetchImpl(input, { ...init, headers, redirect: "error" });
+    };
+    let response = await send();
+    // Only reads can be retried after Runtime restart/revocation. Mutations keep
+    // their original failure; a lost response is never permission to replay.
+    if (response.status === 401 && ["GET", "HEAD"].includes(method)) {
+      await response.body?.cancel();
+      await login();
+      response = await send();
+    }
+    return response;
+  };
 }
 
 async function evaluateCatalog(options) {
@@ -2062,23 +2147,36 @@ async function request(fetchImpl, origin, pathname, options = {}) {
       method: options.method ?? "GET",
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MILLISECONDS),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof EvaluationError) throw error;
     throw new TransientEvaluationError(
       "http_unavailable",
       "An evaluation endpoint is temporarily unavailable",
     );
   }
-  const length = Number(response.headers.get("content-length"));
-  if (Number.isFinite(length) && length > MAX_HTTP_BODY_BYTES) {
-    throw responseTooLarge();
-  }
-  const body = await response.arrayBuffer();
-  if (body.byteLength > MAX_HTTP_BODY_BYTES) throw responseTooLarge();
+  const body = await readResponseBytes(response, MAX_HTTP_BODY_BYTES);
   return {
     body: new TextDecoder("utf-8", { fatal: true }).decode(body),
     ok: response.ok,
     status: response.status,
   };
+}
+
+async function readResponseBytes(response, limit) {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) throw responseTooLarge();
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks, size);
+  } finally { await reader.cancel(); }
 }
 
 async function waitUntil(code, operation, timeoutMilliseconds, sleep) {

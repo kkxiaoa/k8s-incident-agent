@@ -1,22 +1,26 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { login } from "./operator-session";
 
 const runtimeUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_RUNTIME_PORT ?? "18080"}`;
 
-async function seed(outcome: string) {
+async function seed(outcome: string, page: Page) {
   await fetch(`${runtimeUrl}/__test__/reset`, { method: "POST" });
   const response = await fetch(`${runtimeUrl}/__test__/repair`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ outcome }),
   });
   expect(response.ok).toBe(true);
+  await login(page);
   return (await response.json()) as { incidentId: string };
 }
 
 test("repair validation stays read-only across keyboard navigation, mobile and reload", async ({ page, baseURL }) => {
-  const { incidentId } = await seed("passed");
+  const { incidentId } = await seed("passed", page);
+  await expect(page.getByLabel("Incident 状态统计")).toContainText(/待审批1/);
   const writes: string[] = [];
   const external: string[] = [];
   page.on("request", (request) => {
-    if (!["GET", "HEAD"].includes(request.method())) writes.push(request.url());
+    const sessionRenewal = request.method() === "POST" && new URL(request.url()).pathname === "/api/runtime/operator/session";
+    if (!["GET", "HEAD"].includes(request.method()) && !sessionRenewal) writes.push(request.url());
     if (new URL(request.url()).origin !== new URL(baseURL!).origin) external.push(request.url());
   });
   await page.goto(`/incidents/${incidentId}`);
@@ -79,7 +83,7 @@ test("repair validation stays read-only across keyboard navigation, mobile and r
 });
 
 test("stale repair remains a failed historical validation", async ({ page }) => {
-  const { incidentId } = await seed("stale");
+  const { incidentId } = await seed("stale", page);
   await page.goto(`/incidents/${incidentId}`);
   const panel = page.getByRole("region", { name: "修复验证" });
   await expect(panel).toContainText("目标版本已变化");
@@ -89,7 +93,7 @@ test("stale repair remains a failed historical validation", async ({ page }) => 
 });
 
 test("invalid persisted repair fails closed at the page boundary", async ({ page }) => {
-  const { incidentId } = await seed("invalid");
+  const { incidentId } = await seed("invalid", page);
   await page.goto(`/incidents/${incidentId}`);
   await expect(page.getByRole("heading", { name: "详情数据校验失败" })).toBeVisible();
   await expect(page.getByRole("region", { name: "修复验证" })).toHaveCount(0);
@@ -101,7 +105,7 @@ for (const failure of [
   { code: "repair_diff_invalid", label: "Diff", unrecorded: 2, notRun: 1 },
 ]) {
   test(`${failure.label} failure shows stopped gates without a proposal`, async ({ page }) => {
-    const { incidentId } = await seed(failure.code);
+    const { incidentId } = await seed(failure.code, page);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/incidents/${incidentId}`);
     const panel = page.getByRole("region", { name: "修复验证" });

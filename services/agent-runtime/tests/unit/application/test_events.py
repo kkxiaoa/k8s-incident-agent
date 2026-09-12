@@ -1,5 +1,4 @@
 import asyncio
-from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
@@ -343,7 +342,7 @@ async def test_missing_cursor_tails_after_current_latest_event() -> None:
 
     assert await anext(stream) == b": heartbeat\n\n"
     assert repository.list_calls == [(INCIDENT_ID, EVENT_CASES[-1].id, 100)]
-    await cast(AsyncGenerator[bytes], stream).aclose()
+    await stream.aclose()
 
 
 @pytest.mark.asyncio
@@ -538,7 +537,7 @@ async def test_serializer_emits_exact_persisted_payload_for_all_event_types(
             f"data: {canonical_json(event.payload)}\n\n"
         ).encode()
     )
-    await cast(AsyncGenerator[bytes], stream).aclose()
+    await stream.aclose()
 
 
 @pytest.mark.asyncio
@@ -566,7 +565,7 @@ async def test_replay_uses_batches_of_100_and_allows_global_id_gaps() -> None:
         (INCIDENT_ID, 0, 100),
         (INCIDENT_ID, 200, 100),
     ]
-    await cast(AsyncGenerator[bytes], stream).aclose()
+    await stream.aclose()
 
 
 @pytest.mark.asyncio
@@ -587,7 +586,7 @@ async def test_reconnect_starts_after_cursor_without_duplicate_and_keeps_stream_
     assert replayed[1].startswith(f"id: {terminal.id}\n".encode())
     assert await anext(stream) == b": heartbeat\n\n"
     assert queued.id not in {created.id, started.id, terminal.id}
-    await cast(AsyncGenerator[bytes], stream).aclose()
+    await stream.aclose()
 
 
 @pytest.mark.asyncio
@@ -600,7 +599,7 @@ async def test_reconnect_after_already_received_terminal_keeps_stream_open() -> 
     stream = await service.open_stream(INCIDENT_ID, str(terminal.id))
 
     assert await anext(stream) == b": heartbeat\n\n"
-    await cast(AsyncGenerator[bytes], stream).aclose()
+    await stream.aclose()
 
 
 class _RecoveredRepository(_Repository):
@@ -655,7 +654,7 @@ async def test_lost_notification_recovers_from_database_after_heartbeat() -> Non
         ).encode()
     )
     assert await anext(stream) == b": heartbeat\n\n"
-    await cast(AsyncGenerator[bytes], stream).aclose()
+    await stream.aclose()
 
 
 @pytest.mark.asyncio

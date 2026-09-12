@@ -209,7 +209,7 @@ class MonitoringOverviewRecord:
     total_incidents: int
     firing_alerts: int
     triaging_incidents: int
-    diagnosed_incidents: int
+    waiting_approval_incidents: int
     families: tuple[MonitoringOverviewFamilyRecord, ...]
     samples: tuple[MonitoringOverviewSampleRecord, ...]
 
@@ -367,11 +367,11 @@ class IncidentRepository:
                         .where(IncidentRow.status == IncidentStatus.TRIAGING)
                     )
                 )
-                diagnosed_incidents = _overview_count(
+                waiting_approval_incidents = _overview_count(
                     await session.scalar(
                         select(func.count())
                         .select_from(IncidentRow)
-                        .where(IncidentRow.status == IncidentStatus.DIAGNOSED)
+                        .where(IncidentRow.status == IncidentStatus.WAITING_APPROVAL)
                     )
                 )
 
@@ -459,7 +459,7 @@ class IncidentRepository:
                     total_incidents=total_incidents,
                     firing_alerts=firing_alerts,
                     triaging_incidents=triaging_incidents,
-                    diagnosed_incidents=diagnosed_incidents,
+                    waiting_approval_incidents=waiting_approval_incidents,
                     families=families,
                     samples=samples,
                 )

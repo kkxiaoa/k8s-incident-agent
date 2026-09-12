@@ -15,5 +15,6 @@ export async function GET(
     incidentId,
     headerCursor ?? (queryCursors.length === 1 ? queryCursors[0] : queryCursors.length === 0 ? null : "invalid"),
     request.signal,
+    request.headers,
   );
 }

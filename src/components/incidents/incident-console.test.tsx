@@ -153,7 +153,7 @@ describe("repair detail refresh", () => {
     vi.stubGlobal("EventSource", FakeEventSource);
     let resolveRequest!: (response: Response) => void;
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => { resolveRequest = resolve; }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubSessionFetch("fetch", fetchMock);
     const terminal = makeWaitingApprovalIncidentDetail();
     terminal.eventCursor = "20";
     const initial = structuredClone(terminal);
@@ -189,7 +189,7 @@ describe("repair detail refresh", () => {
       expect(screen.queryByText("已通过验证，尚未批准或执行")).not.toBeInTheDocument();
       if (outcome === "invalid") expect(screen.getByText("持久化详情不符合数据契约，未采用该响应。")).toBeInTheDocument();
     }
-    expect(fetchMock).toHaveBeenCalledWith(`/api/runtime/incidents/${INCIDENT_ID}`, { method: "GET", cache: "no-store" });
+    expect(fetchMock).toHaveBeenCalledWith(`/api/runtime/incidents/${INCIDENT_ID}`, expect.objectContaining({ method: "GET", cache: "no-store" }));
   });
 });
 
@@ -207,7 +207,7 @@ describe("ScenarioLauncher", () => {
       resolveRequest = resolve;
     });
     const fetchMock = vi.fn(() => request);
-    vi.stubGlobal("fetch", fetchMock);
+    stubSessionFetch("fetch", fetchMock);
     const user = userEvent.setup();
 
     render(<ScenarioLauncher scenarios={[SCENARIO]} />);
@@ -247,7 +247,7 @@ describe("ScenarioLauncher", () => {
         { status: 202, headers: { "content-type": "application/json" } },
       ),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubSessionFetch("fetch", fetchMock);
     const user = userEvent.setup();
 
     render(<ScenarioLauncher scenarios={[SCENARIO, SECOND_SCENARIO]} />);
@@ -277,7 +277,7 @@ describe("ScenarioLauncher", () => {
   });
 
   it("explains a diagnostic outage without creating or navigating away", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
+    stubSessionFetch("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
       code: "diagnosis_unavailable", message: "Model diagnosis is unavailable.", retryable: true,
     } }), { status: 503, headers: { "content-type": "application/json" } })));
     const user = userEvent.setup();
@@ -364,7 +364,7 @@ describe("read-only incident presentation", () => {
         INCIDENT_ID,
       ),
     ];
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(detailResponse(detail)));
+    stubSessionFetch("fetch", vi.fn().mockResolvedValue(detailResponse(detail)));
     vi.stubGlobal("EventSource", FakeEventSource);
 
     renderIncidentStream(detail);
@@ -419,7 +419,7 @@ describe("read-only incident presentation", () => {
   it("keeps saved history visible when a new diagnostic Run is unavailable", async () => {
     const detail = makeIncidentDetail();
     detail.selectedRun.status = "COMPLETED";
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
+    stubSessionFetch("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
       code: "diagnosis_unavailable", message: "Model diagnosis is unavailable.", retryable: true,
     } }), { status: 503, headers: { "content-type": "application/json" } })));
     vi.stubGlobal("EventSource", FakeEventSource);
@@ -434,7 +434,7 @@ describe("read-only incident presentation", () => {
   it("creates a later Run only through the manual latest-mode action", async () => {
     const detail = makeIncidentDetail();
     detail.selectedRun.status = "COMPLETED";
-    vi.stubGlobal(
+    stubSessionFetch(
       "fetch",
       vi.fn().mockResolvedValue(
         new Response(
@@ -506,7 +506,7 @@ describe("read-only incident presentation", () => {
       .fn()
       .mockImplementationOnce(() => firstRequest)
       .mockImplementation(() => Promise.resolve(detailResponse()));
-    vi.stubGlobal("fetch", fetchMock);
+    stubSessionFetch("fetch", fetchMock);
     vi.stubGlobal("EventSource", FakeEventSource);
 
     renderIncidentStream();
@@ -578,7 +578,7 @@ describe("read-only incident presentation", () => {
       resolveRequest = resolve;
     });
     const fetchMock = vi.fn(() => request);
-    vi.stubGlobal("fetch", fetchMock);
+    stubSessionFetch("fetch", fetchMock);
     vi.stubGlobal("EventSource", FakeEventSource);
     const initialDetail = makeIncidentDetail();
     initialDetail.evidence = [];
@@ -1052,3 +1052,10 @@ describe("read-only incident presentation", () => {
     expect(screen.queryByText("Incident 已恢复")).toBeNull();
   });
 });
+
+function stubSessionFetch(name: string, handler: typeof fetch) {
+  vi.stubGlobal(name, vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+    input === "/api/runtime/operator/session"
+      ? Promise.resolve(Response.json({ operatorRef: "sandbox-operator", expiresAt: 2000000000, csrfToken: "a".repeat(64) }))
+      : handler(input, init)));
+}

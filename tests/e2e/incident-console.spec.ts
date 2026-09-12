@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { login } from "./operator-session";
 import type { components } from "../../src/lib/agent-runtime/generated";
 
 type IncidentMetricPanel = components["schemas"]["IncidentMetricPanel"];
@@ -7,9 +8,20 @@ type IncidentMetricPanel = components["schemas"]["IncidentMetricPanel"];
 const FAKE_RUNTIME_URL = `http://127.0.0.1:${process.env.PLAYWRIGHT_RUNTIME_PORT ?? "18080"}`;
 
 async function control(path: string, body?: unknown): Promise<Response> {
+  let cookie: string | undefined;
+  let csrfToken: string | undefined;
+  const origin = `http://127.0.0.1:${process.env.PLAYWRIGHT_WEB_PORT ?? "3100"}`;
+  if (path.startsWith("/api/v1/")) {
+    const session = await fetch(`${FAKE_RUNTIME_URL}/api/v1/operator/login`, {
+      method: "POST", headers: { "content-type": "application/json", Origin: origin },
+      body: JSON.stringify({ password: process.env.PLAYWRIGHT_OPERATOR_PASSWORD }),
+    });
+    cookie = session.headers.getSetCookie()[0]?.split(";")[0];
+    csrfToken = (await session.json()).csrfToken;
+  }
   const response = await fetch(`${FAKE_RUNTIME_URL}${path}`, {
     method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? undefined : { "content-type": "application/json" },
+    headers: { ...(body === undefined ? {} : { "content-type": "application/json" }), ...(cookie ? { cookie, Origin: origin, "X-CSRF-Token": csrfToken! } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   expect(response.ok).toBe(true);
@@ -37,8 +49,9 @@ async function createFromHome(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/incidents\/[0-9a-f-]+$/);
 }
 
-test.beforeEach(async () => {
+test.beforeEach(async ({ page }) => {
   await control("/__test__/reset", {});
+  await login(page);
 });
 
 test("model outage preserves history while refusing new diagnosis", async ({ page }) => {
@@ -108,7 +121,7 @@ test("renders the tests-only chart showcase with drill-down data", async ({
 
   await page.goto("/");
   await expect(page.getByLabel("Incident 状态统计")).toContainText(
-    /活跃 Incident.*12告警中9诊断中4已诊断6/,
+    /活跃 Incident.*12告警中9诊断中4待审批0/,
   );
   await expect(
     page.getByRole("img", {

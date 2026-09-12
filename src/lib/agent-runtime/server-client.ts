@@ -1,6 +1,11 @@
 import "server-only";
 
 import type { components, paths } from "./generated";
+import {
+  OPERATOR_COOKIE,
+  OPERATOR_CSRF_HEADER,
+  parseOperatorSession,
+} from "./operator-contracts";
 import { getAgentRuntimeBaseUrl } from "./server-config";
 
 type ErrorResponse = components["schemas"]["ErrorResponse"];
@@ -11,6 +16,7 @@ interface RuntimeJsonResult {
   value: unknown | null;
 }
 
+const OPERATOR_PATH = "/api/v1/operator" as const;
 const SCENARIOS_PATH = "/api/v1/scenarios" satisfies RuntimePath;
 const INCIDENTS_PATH = "/api/v1/incidents" satisfies RuntimePath;
 const INCIDENT_PATH = "/api/v1/incidents/{incident_id}" satisfies RuntimePath;
@@ -36,6 +42,31 @@ const UUID_PATTERN =
 const PANEL_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 const RUNTIME_ERROR_CONTRACTS = {
+  operator_authentication_required: {
+    status: 401,
+    message: "Operator authentication is required.",
+    retryable: false,
+  },
+  operator_origin_rejected: {
+    status: 403,
+    message: "Request origin is not permitted.",
+    retryable: false,
+  },
+  operator_csrf_rejected: {
+    status: 403,
+    message: "Request verification failed.",
+    retryable: false,
+  },
+  operator_login_limited: {
+    status: 429,
+    message: "Operator login is temporarily limited.",
+    retryable: true,
+  },
+  operator_authentication_unavailable: {
+    status: 503,
+    message: "Operator authentication is unavailable.",
+    retryable: true,
+  },
   invalid_request: {
     status: 422,
     message: "Request is invalid.",
@@ -276,7 +307,7 @@ function isEventStreamContentType(
 }
 
 function isNoCachePolicy(cacheControl: string | null): cacheControl is string {
-  return cacheControl?.trim().toLowerCase() === "no-cache";
+  return cacheControl?.trim().toLowerCase() === "no-store";
 }
 
 function hasExactKeys(value: object, expected: readonly string[]): boolean {
@@ -324,9 +355,9 @@ function runtimeErrorResponse(
   const code = detail.code as RuntimeErrorCode;
   const contract = RUNTIME_ERROR_CONTRACTS[code];
   if (
-    !allowedCodes.includes(code) ||
+    (!allowedCodes.includes(code) && !code.startsWith("operator_")) ||
     status !== contract.status ||
-    detail.message !== contract.message ||
+    (!code.startsWith("operator_") && detail.message !== contract.message) ||
     detail.retryable !== contract.retryable
   ) {
     return null;
@@ -347,6 +378,7 @@ async function normalizeJsonResponse(
   upstream: Response,
   expectedSuccessStatus: number,
   allowedErrorCodes: readonly RuntimeErrorCode[],
+  maxBytes?: number,
 ): Promise<RuntimeJsonResult> {
   const contentType = upstream.headers.get("content-type");
   if (!isJsonContentType(contentType)) {
@@ -357,7 +389,29 @@ async function normalizeJsonResponse(
   let bytes: ArrayBuffer;
   let parsed: unknown;
   try {
-    bytes = await upstream.arrayBuffer();
+    if (maxBytes !== undefined && upstream.body !== null) {
+      const reader = upstream.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > maxBytes) throw new Error("Response exceeds limit");
+          chunks.push(value);
+        }
+        const buffer = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          buffer.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        bytes = buffer.buffer;
+      } finally {
+        await reader.cancel();
+      }
+    } else bytes = await upstream.arrayBuffer();
     parsed = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return unavailableResult();
@@ -392,9 +446,14 @@ async function normalizeJsonResponse(
 }
 
 export async function fetchRuntimeHealth(): Promise<RuntimeJsonResult> {
-  return requestRest("/healthz" satisfies RuntimePath, 200, SCENARIO_ERROR_CODES, {
-    method: "GET",
-  });
+  return requestRest(
+    "/healthz" satisfies RuntimePath,
+    200,
+    SCENARIO_ERROR_CODES,
+    {
+      method: "GET",
+    },
+  );
 }
 
 async function requestRest(
@@ -403,6 +462,7 @@ async function requestRest(
   allowedErrorCodes: readonly RuntimeErrorCode[],
   init: RequestInit,
   searchParams?: URLSearchParams,
+  incoming?: Headers,
 ): Promise<RuntimeJsonResult> {
   const controller = new AbortController();
   const timeout = setTimeout(
@@ -418,30 +478,68 @@ async function requestRest(
     }
     const upstream = await fetch(url, {
       ...init,
+      headers: operatorHeaders(incoming, init.headers),
       cache: "no-store",
       redirect: "error",
       signal: controller.signal,
     });
-    return await normalizeJsonResponse(
+    if (path === `${OPERATOR_PATH}/logout` && upstream.status === 204) {
+      return {
+        response: operatorCookieResponse(upstream, null, true),
+        value: null,
+      };
+    }
+    const result = await normalizeJsonResponse(
       upstream,
       expectedSuccessStatus,
       allowedErrorCodes,
+      path.startsWith(`${OPERATOR_PATH}/`) ? 8192 : undefined,
     );
-  } catch {
+    if (path.startsWith(`${OPERATOR_PATH}/`) && result.response.ok) {
+      const session = parseOperatorSession(result.value);
+      if (session === null) return unavailableResult();
+      return {
+        response:
+          init.method === "POST"
+            ? operatorCookieResponse(upstream, session, false)
+            : Response.json(session, {
+                headers: { "cache-control": "no-store" },
+              }),
+        value: session,
+      };
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof InvalidOperatorCookie)
+      return {
+        response: errorResponse(
+          401,
+          runtimeErrorBody("operator_authentication_required"),
+        ),
+        value: null,
+      };
     return unavailableResult();
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export function fetchScenarios(): Promise<RuntimeJsonResult> {
-  return requestRest(SCENARIOS_PATH, 200, SCENARIO_ERROR_CODES, {
-    method: "GET",
-  });
+export function fetchScenarios(incoming?: Headers): Promise<RuntimeJsonResult> {
+  return requestRest(
+    SCENARIOS_PATH,
+    200,
+    SCENARIO_ERROR_CODES,
+    {
+      method: "GET",
+    },
+    undefined,
+    incoming,
+  );
 }
 
 export function fetchIncidents(
   searchParams: URLSearchParams,
+  incoming?: Headers,
 ): Promise<RuntimeJsonResult> {
   return requestRest(
     INCIDENTS_PATH,
@@ -449,29 +547,39 @@ export function fetchIncidents(
     INCIDENT_LIST_ERROR_CODES,
     { method: "GET" },
     forwardQuery(searchParams, ["limit", "cursor"]),
+    incoming,
   );
 }
 
-export function fetchMonitoringHealth(): Promise<RuntimeJsonResult> {
+export function fetchMonitoringHealth(
+  incoming?: Headers,
+): Promise<RuntimeJsonResult> {
   return requestRest(
     MONITORING_HEALTH_PATH,
     200,
     MONITORING_HEALTH_ERROR_CODES,
     { method: "GET" },
+    undefined,
+    incoming,
   );
 }
 
-export function fetchMonitoringOverview(): Promise<RuntimeJsonResult> {
+export function fetchMonitoringOverview(
+  incoming?: Headers,
+): Promise<RuntimeJsonResult> {
   return requestRest(
     MONITORING_OVERVIEW_PATH,
     200,
     MONITORING_HEALTH_ERROR_CODES,
     { method: "GET" },
+    undefined,
+    incoming,
   );
 }
 
 export function fetchMonitoringPanels(
   incidentId: string,
+  incoming?: Headers,
 ): Promise<RuntimeJsonResult> {
   const path = incidentPath(MONITORING_PANELS_PATH, incidentId);
   if (path === null) {
@@ -480,15 +588,23 @@ export function fetchMonitoringPanels(
       value: null,
     });
   }
-  return requestRest(path, 200, MONITORING_PANELS_ERROR_CODES, {
-    method: "GET",
-  });
+  return requestRest(
+    path,
+    200,
+    MONITORING_PANELS_ERROR_CODES,
+    {
+      method: "GET",
+    },
+    undefined,
+    incoming,
+  );
 }
 
 export function fetchMonitoringPanel(
   incidentId: string,
   panelId: string,
   searchParams: URLSearchParams,
+  incoming?: Headers,
 ): Promise<RuntimeJsonResult> {
   const path = monitoringPanelPath(incidentId, panelId);
   const windows = searchParams.getAll("window");
@@ -512,6 +628,7 @@ export function fetchMonitoringPanel(
     MONITORING_PANEL_ERROR_CODES,
     { method: "GET" },
     new URLSearchParams({ window: windows[0] }),
+    incoming,
   );
 }
 
@@ -527,17 +644,25 @@ export async function createIncident(request: Request): Promise<Response> {
     return errorResponse(422, INVALID_REQUEST);
   }
 
-  const result = await requestRest(INCIDENTS_PATH, 202, INCIDENT_CREATE_ERROR_CODES, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body,
-  });
+  const result = await requestRest(
+    INCIDENTS_PATH,
+    202,
+    INCIDENT_CREATE_ERROR_CODES,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    },
+    undefined,
+    request.headers,
+  );
   return result.response;
 }
 
 export function fetchIncident(
   incidentId: string,
   runId?: string,
+  incoming?: Headers,
 ): Promise<RuntimeJsonResult> {
   const path = incidentPath(INCIDENT_PATH, incidentId);
   if (path === null || (runId !== undefined && !UUID_PATTERN.test(runId))) {
@@ -557,12 +682,14 @@ export function fetchIncident(
     INCIDENT_DETAIL_ERROR_CODES,
     { method: "GET" },
     searchParams,
+    incoming,
   );
 }
 
 export function fetchRuns(
   incidentId: string,
   searchParams: URLSearchParams,
+  incoming?: Headers,
 ): Promise<RuntimeJsonResult> {
   const path = incidentPath(INCIDENT_RUNS_PATH, incidentId);
   if (path === null) {
@@ -578,17 +705,28 @@ export function fetchRuns(
     RUN_HISTORY_ERROR_CODES,
     { method: "GET" },
     forwardQuery(searchParams, ["limit", "cursor"]),
+    incoming,
   );
 }
 
-export async function createRun(incidentId: string): Promise<Response> {
+export async function createRun(
+  incidentId: string,
+  incoming?: Headers,
+): Promise<Response> {
   const path = incidentPath(INCIDENT_RUNS_PATH, incidentId);
   if (path === null) {
     return errorResponse(422, INVALID_REQUEST);
   }
 
   return (
-    await requestRest(path, 202, RUN_CREATE_ERROR_CODES, { method: "POST" })
+    await requestRest(
+      path,
+      202,
+      RUN_CREATE_ERROR_CODES,
+      { method: "POST" },
+      undefined,
+      incoming,
+    )
   ).response;
 }
 
@@ -596,6 +734,7 @@ export function fetchRunEvents(
   incidentId: string,
   runId: string,
   searchParams: URLSearchParams,
+  incoming?: Headers,
 ): Promise<RuntimeJsonResult> {
   const path = runPath(RUN_EVENTS_PATH, incidentId, runId);
   if (path === null) {
@@ -611,6 +750,7 @@ export function fetchRunEvents(
     RUN_EVENT_HISTORY_ERROR_CODES,
     { method: "GET" },
     forwardQuery(searchParams, ["limit", "cursor"]),
+    incoming,
   );
 }
 
@@ -618,6 +758,7 @@ export async function streamIncidentEvents(
   incidentId: string,
   lastEventId: string | null,
   browserSignal: AbortSignal,
+  incoming?: Headers,
 ): Promise<Response> {
   const path = incidentPath(INCIDENT_EVENTS_PATH, incidentId);
   if (path === null) {
@@ -635,7 +776,7 @@ export async function streamIncidentEvents(
   const timeout = setTimeout(abortUpstream, SSE_CONNECT_TIMEOUT_MILLISECONDS);
 
   try {
-    const headers = new Headers({ accept: "text/event-stream" });
+    const headers = operatorHeaders(incoming, { accept: "text/event-stream" });
     if (lastEventId !== null) {
       headers.set("last-event-id", lastEventId);
     }
@@ -680,10 +821,182 @@ export async function streamIncidentEvents(
     } finally {
       browserSignal.removeEventListener("abort", abortUpstream);
     }
-  } catch {
+  } catch (error) {
     browserSignal.removeEventListener("abort", abortUpstream);
+    if (error instanceof InvalidOperatorCookie)
+      return errorResponse(
+        401,
+        runtimeErrorBody("operator_authentication_required"),
+      );
     return unavailableResponse();
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+class InvalidOperatorCookie extends Error {}
+
+function operatorHeaders(incoming?: Headers, initial?: HeadersInit): Headers {
+  const headers = new Headers(initial);
+  const cookie = incoming?.get("cookie");
+  if (cookie !== undefined && cookie !== null) {
+    if (cookie.length > 8192) throw new InvalidOperatorCookie();
+    const candidates = cookie
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => part.split("=", 1)[0] === OPERATOR_COOKIE);
+    if (
+      candidates.length > 1 ||
+      (candidates.length === 1 &&
+        !new RegExp("^" + OPERATOR_COOKIE + "=[A-Za-z0-9_-]{43}$").test(
+          candidates[0],
+        ))
+    )
+      throw new InvalidOperatorCookie();
+    if (candidates.length === 1) headers.set("cookie", candidates[0]);
+  }
+  for (const name of ["origin", OPERATOR_CSRF_HEADER]) {
+    const value = incoming?.get(name);
+    if (value !== undefined && value !== null) headers.set(name, value);
+  }
+  return headers;
+}
+
+function operatorCookieResponse(
+  upstream: Response,
+  value: unknown,
+  logout: boolean,
+): Response {
+  const cookies = upstream.headers.getSetCookie();
+  if (cookies.length !== 1 || cookies[0].length > 512)
+    throw new Error("Invalid operator response");
+  const [pair, ...attributes] = cookies[0]
+    .split(";")
+    .map((part) => part.trim());
+  const expected = logout
+    ? new RegExp("^" + OPERATOR_COOKIE + '=(?:"")?$')
+    : new RegExp("^" + OPERATOR_COOKIE + "=[A-Za-z0-9_-]{43}$");
+  const attributesByName = new Map(
+    attributes.map((part) => {
+      const index = part.indexOf("=");
+      return index < 0
+        ? [part.toLowerCase(), ""]
+        : [part.slice(0, index).toLowerCase(), part.slice(index + 1)];
+    }),
+  );
+  if (
+    !expected.test(pair) ||
+    attributesByName.size !== attributes.length ||
+    [...attributesByName.keys()].some(
+      (name) =>
+        ![
+          "path",
+          "httponly",
+          "secure",
+          "samesite",
+          "max-age",
+          "expires",
+        ].includes(name),
+    ) ||
+    attributesByName.get("path") !== "/" ||
+    attributesByName.get("httponly") !== "" ||
+    attributesByName.get("secure") !== "" ||
+    attributesByName.get("samesite")?.toLowerCase() !== "strict" ||
+    attributesByName.get("max-age") !== (logout ? "0" : "1800")
+  )
+    throw new Error("Invalid operator response");
+  const headers = { "set-cookie": cookies[0], "cache-control": "no-store" };
+  return logout
+    ? new Response(null, { status: 204, headers })
+    : Response.json(value, { headers });
+}
+
+export function fetchOperatorSession(
+  incoming: Headers,
+): Promise<RuntimeJsonResult> {
+  return requestRest(
+    `${OPERATOR_PATH}/session` satisfies RuntimePath,
+    200,
+    SCENARIO_ERROR_CODES,
+    { method: "GET" },
+    undefined,
+    incoming,
+  );
+}
+
+export async function logoutOperator(request: Request): Promise<Response> {
+  return (
+    await requestRest(
+      `${OPERATOR_PATH}/logout` satisfies RuntimePath,
+      204,
+      SCENARIO_ERROR_CODES,
+      { method: "POST" },
+      undefined,
+      request.headers,
+    )
+  ).response;
+}
+
+export async function renewOperatorSession(
+  request: Request,
+): Promise<Response> {
+  return (
+    await requestRest(
+      `${OPERATOR_PATH}/session` satisfies RuntimePath,
+      200,
+      SCENARIO_ERROR_CODES,
+      { method: "POST" },
+      undefined,
+      request.headers,
+    )
+  ).response;
+}
+
+export async function loginOperator(request: Request): Promise<Response> {
+  if (
+    !isJsonContentType(request.headers.get("content-type")) ||
+    request.body === null
+  )
+    return errorResponse(422, INVALID_REQUEST);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Request deadline")), 5000);
+  });
+  try {
+    while (true) {
+      const item = await Promise.race([reader.read(), deadline]);
+      if (item.done) break;
+      length += item.value.byteLength;
+      if (length > 8192) return errorResponse(422, INVALID_REQUEST);
+      chunks.push(item.value);
+    }
+    const body = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return (
+      await requestRest(
+        `${OPERATOR_PATH}/login` satisfies RuntimePath,
+        200,
+        ["invalid_request", "internal_error", "runtime_not_ready"],
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body,
+        },
+        undefined,
+        request.headers,
+      )
+    ).response;
+  } catch {
+    return errorResponse(422, INVALID_REQUEST);
+  } finally {
+    clearTimeout(timer);
+    await reader.cancel().catch(() => {});
   }
 }

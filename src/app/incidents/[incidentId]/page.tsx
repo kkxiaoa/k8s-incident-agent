@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { headers } from "next/headers";
 
 import { IncidentStream } from "@/components/incidents/incident-stream";
 import { getIncidentIntakeMode } from "@/lib/agent-runtime/server-config";
@@ -23,7 +24,8 @@ export default async function IncidentPage({ params, searchParams }: IncidentPag
       : requestedRunId === undefined
         ? undefined
         : "invalid";
-  const pageData = await loadIncidentPage(incidentId, runId);
+  const incoming = new Headers({ cookie: (await headers()).get("cookie") ?? "" });
+  const pageData = await loadIncidentPage(incidentId, runId, incoming);
   const missing = pageData.state === "missing";
 
   return (

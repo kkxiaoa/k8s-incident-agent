@@ -14,6 +14,7 @@ export async function GET(
       incidentId,
       panelId,
       new URL(request.url).searchParams,
+      request.headers,
     )
   ).response;
 }

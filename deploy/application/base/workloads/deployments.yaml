@@ -163,10 +163,20 @@ spec:
             - name: patch-validator-auth
               mountPath: /var/run/secrets/k8s-incident-agent/patch-validator
               readOnly: true
+            - name: operator-auth
+              mountPath: /var/run/secrets/k8s-incident-agent/operator
+              readOnly: true
       volumes:
         - name: runtime-data
           persistentVolumeClaim:
             claimName: runtime-data
+        - name: operator-auth
+          secret:
+            secretName: operator-auth
+            defaultMode: 0440
+            items:
+              - key: password-verifier
+                path: password-verifier
         - name: kubernetes-api-access
           projected:
             defaultMode: 0440

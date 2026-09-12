@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { randomBytes } from "node:crypto";
 
 import {
   createIncident,
@@ -13,6 +14,10 @@ import {
   fetchRuns,
   fetchScenarios,
   fetchRuntimeHealth,
+  fetchOperatorSession,
+  loginOperator,
+  logoutOperator,
+  renewOperatorSession,
   streamIncidentEvents,
 } from "./server-client";
 
@@ -40,6 +45,85 @@ beforeEach(() => {
 });
 
 describe("fixed REST helpers", () => {
+  it("projects each request's operator credential without forwarding sibling or identity headers", async () => {
+    const cookies = Array.from({ length: 2 }, () => `__Host-k8s-incident-session=${randomBytes(32).toString("base64url")}`);
+    const received: string[] = [];
+    const fetchMock = vi.fn(async (_url: URL, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      received.push(headers.get("cookie") ?? "");
+      expect(headers.has("authorization")).toBe(false);
+      expect(headers.has("x-operator-ref")).toBe(false);
+      expect(init.cache).toBe("no-store");
+      expect(init.redirect).toBe("error");
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await Promise.all(cookies.map(async cookie => {
+      const incoming = new Headers({ cookie: `sibling=discard; ${cookie}`, authorization: "discard", "x-operator-ref": "forged" });
+      await Promise.all([
+        fetchScenarios(incoming), fetchIncidents(new URLSearchParams(), incoming),
+        fetchMonitoringHealth(incoming), fetchMonitoringOverview(incoming),
+        fetchMonitoringPanels(INCIDENT_ID, incoming), fetchIncident(INCIDENT_ID, undefined, incoming),
+        fetchRuns(INCIDENT_ID, new URLSearchParams(), incoming), fetchRunEvents(INCIDENT_ID, RUN_ID, new URLSearchParams(), incoming),
+      ]);
+    }));
+    for (const cookie of cookies) expect(received.filter(value => value === cookie).length).toBe(8);
+    const duplicate = new Headers({ cookie: `${cookies[0]}; ${cookies[0]}` });
+    expect((await fetchOperatorSession(duplicate)).response.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledTimes(16);
+  });
+
+  it("forwards only validated Runtime login/logout cookies and bounds auth responses", async () => {
+    const token = randomBytes(32).toString("base64url");
+    const cookie = `__Host-k8s-incident-session=${token}; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=1800`;
+    const session = { operatorRef: "sandbox-operator", expiresAt: 1800000000, csrfToken: randomBytes(32).toString("hex") };
+    const request = () => new Request("https://console.example.test/api/runtime/operator/login", { method: "POST", headers: { "content-type": "application/json", Origin: "https://console.example.test" }, body: JSON.stringify({ password: randomBytes(32).toString("hex") }) });
+    const upstream = (setCookie = cookie) => new Response(JSON.stringify(session), { headers: { "content-type": "application/json", "set-cookie": setCookie } });
+    vi.stubGlobal("fetch", vi.fn(async () => upstream()));
+    const response = await loginOperator(request());
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie") === cookie).toBe(true);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    for (const invalid of [cookie + "; Domain=example.test", cookie.replace("Secure; ", ""), cookie + ", sibling=secret"]) {
+      vi.stubGlobal("fetch", vi.fn(async () => upstream(invalid)));
+      const denied = await loginOperator(request());
+      expect(denied.status).toBe(502);
+      expect(denied.headers.has("set-cookie")).toBe(false);
+    }
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("x".repeat(8193), { headers: { "content-type": "application/json" } })));
+    expect((await loginOperator(request())).status).toBe(502);
+    const cleared = '__Host-k8s-incident-session=""; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=0';
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204, headers: { "set-cookie": cleared } })));
+    expect((await logoutOperator(new Request("https://console.example.test/api/runtime/operator/logout", { method: "POST" }))).status).toBe(204);
+  });
+
+  it("forwards authenticated renewal with original Origin/CSRF and a validated cookie only", async () => {
+    const token = randomBytes(32).toString("base64url");
+    const cookie = `__Host-k8s-incident-session=${token}`;
+    const setCookie = `${cookie}; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=1800`;
+    const session = { operatorRef: "sandbox-operator", expiresAt: 1800000000, csrfToken: randomBytes(32).toString("hex") };
+    const origin = "https://console.example.test";
+    const request = () => new Request(`${origin}/api/runtime/operator/session`, { method: "POST", headers: { cookie, Origin: origin, "X-CSRF-Token": session.csrfToken } });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(session), { headers: { "content-type": "application/json", "set-cookie": setCookie } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await renewOperatorSession(request());
+    expect(result.status).toBe(200);
+    expect(result.headers.get("set-cookie") === setCookie).toBe(true);
+    expect(result.headers.get("cache-control")).toBe("no-store");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe("/runtime/api/v1/operator/session");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get("origin")).toBe(origin);
+    expect(new Headers(init.headers).get("x-csrf-token") === session.csrfToken).toBe(true);
+    expect(new Headers(init.headers).get("cookie") === cookie).toBe(true);
+    for (const invalid of [setCookie.replace("Secure; ", ""), `${setCookie}; Domain=example.test`]) {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(session), { headers: { "content-type": "application/json", "set-cookie": invalid } })));
+      const rejected = await renewOperatorSession(request());
+      expect(rejected.status).toBe(502);
+      expect(rejected.headers.has("set-cookie")).toBe(false);
+    }
+  });
+
   it("reads core and diagnostic health from the fixed no-store Runtime endpoint", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
       status: "ok", diagnosis: { status: "unavailable", reason: "authentication_failed" },
@@ -514,7 +598,7 @@ describe("fixed SSE helper", () => {
           status: 200,
           headers: {
             "content-type": "text/event-stream",
-            "cache-control": "no-cache",
+            "cache-control": "no-store",
           },
         }),
       );
@@ -541,7 +625,7 @@ describe("fixed SSE helper", () => {
     expect(response.status).toBe(200);
     expect(response.body).toBe(body);
     expect(response.headers.get("content-type")).toBe("text/event-stream");
-    expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
   it("aborts when response headers are not available after 10 seconds", async () => {
@@ -578,7 +662,7 @@ describe("fixed SSE helper", () => {
           new Response(new ReadableStream(), {
             headers: {
               "content-type": "text/event-stream",
-              "cache-control": "no-cache",
+              "cache-control": "no-store",
             },
           }),
         );

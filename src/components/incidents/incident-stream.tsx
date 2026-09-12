@@ -1,5 +1,7 @@
 "use client";
 
+import { checkOperatorSession } from "@/lib/agent-runtime/operator-client";
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useReducer, useRef, useState } from "react";
@@ -133,7 +135,10 @@ export function IncidentStream({
     );
 
     source.onopen = () => dispatch({ type: "connected" });
-    source.onerror = () => dispatch({ type: "disconnected" });
+    source.onerror = () => {
+      dispatch({ type: "disconnected" });
+      if (active) void checkOperatorSession();
+    };
 
     const refreshLatestDetail = async () => {
       if (refreshInFlight) {

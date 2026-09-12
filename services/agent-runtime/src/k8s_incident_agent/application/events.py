@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
@@ -57,7 +57,7 @@ class IncidentEventService:
         self,
         incident_id: UUID,
         last_event_id_header: str | None,
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes]:
         last_event_id = _parse_last_event_id(last_event_id_header)
         repository = self._dependencies.repository
         if not await repository.incident_exists(incident_id):
@@ -73,7 +73,7 @@ class IncidentEventService:
                 raise InvalidLastEventIdError
             validated_event_json(cursor_event)
 
-        async def stream() -> AsyncIterator[bytes]:
+        async def stream() -> AsyncGenerator[bytes]:
             async for data in stream_incident_events(
                 incident_id,
                 last_event_id,
@@ -88,7 +88,7 @@ async def stream_incident_events(
     incident_id: UUID,
     last_event_id: int,
     dependencies: EventDependencies,
-) -> AsyncIterator[bytes]:
+) -> AsyncGenerator[bytes]:
     cursor = last_event_id
     while True:
         events = await dependencies.repository.list_incident_events(

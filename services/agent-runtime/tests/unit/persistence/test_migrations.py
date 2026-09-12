@@ -24,6 +24,13 @@ from k8s_incident_agent.runtime.paths import FilesystemIdentity, RuntimePaths
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 
 EXPECTED_COLUMNS = {
+    "operator_sessions": (
+        "token_hash",
+        "operator_ref",
+        "created_at",
+        "expires_at",
+        "revoked",
+    ),
     "incidents": (
         "id",
         "trigger_source",
@@ -118,6 +125,7 @@ EXPECTED_COLUMNS = {
 }
 
 EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
+    "operator_sessions": set(),
     "incidents": set(),
     "agent_runs": {("incident_id", "incidents", "id")},
     "run_events": {("run_id", "agent_runs", "id")},
@@ -129,6 +137,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
 }
 
 EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
+    "operator_sessions": set(),
     "incidents": set(),
     "agent_runs": {("incident_id",), ("incident_id", "attempt")},
     "run_events": {("run_id", "event_key")},
@@ -140,6 +149,7 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
 }
 
 EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
+    "operator_sessions": set(),
     "incidents": {("created_at", "id")},
     "agent_runs": {("status",)},
     "run_events": {("run_id", "id")},
@@ -516,7 +526,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260911_0006",)
+        ).fetchone() == ("20260911_0007",)
 
 
 def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(

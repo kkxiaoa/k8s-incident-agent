@@ -24,7 +24,7 @@ const COUNT_CARDS = [
   },
   { key: "firingAlerts", label: "告警中", tone: "danger", info: null },
   { key: "triagingIncidents", label: "诊断中", tone: "active", info: null },
-  { key: "diagnosedIncidents", label: "已诊断", tone: "success", info: null },
+  { key: "waitingApprovalIncidents", label: "待审批", tone: "waiting", info: null },
 ] as const;
 
 export function HomeMonitoringDashboard({

@@ -5,7 +5,7 @@ import {
 import { getIncidentIntakeMode } from "@/lib/agent-runtime/server-config";
 
 export async function GET(request: Request): Promise<Response> {
-  return (await fetchIncidents(new URL(request.url).searchParams)).response;
+  return (await fetchIncidents(new URL(request.url).searchParams, request.headers)).response;
 }
 
 export async function POST(request: Request): Promise<Response> {

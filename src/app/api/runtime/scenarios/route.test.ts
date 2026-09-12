@@ -14,7 +14,7 @@ describe("GET /api/runtime/scenarios", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/runtime"));
 
     const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
     expect(url.href).toBe("http://127.0.0.1:8000/api/v1/scenarios");
@@ -27,7 +27,7 @@ describe("GET /api/runtime/scenarios", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await GET();
+    const response = await GET(new Request("http://localhost/api/runtime"));
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(response.status).toBe(404);

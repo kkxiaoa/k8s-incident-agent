@@ -141,7 +141,7 @@ async def test_overview_aggregates_all_incidents_and_fixed_utc_hour_buckets(
     assert result.total_incidents == 4
     assert result.firing_alerts == 2
     assert result.triaging_incidents == 1
-    assert result.diagnosed_incidents == 2
+    assert result.waiting_approval_incidents == 0
     assert [(family.source_ref, family.count) for family in result.families] == [
         ("K8sIncidentCrashLoopBackOff", 1),
         ("K8sIncidentImagePullBackOff", 1),
@@ -156,3 +156,40 @@ async def test_overview_aggregates_all_incidents_and_fixed_utc_hour_buckets(
     assert sum(sample.alert_conditions_resolved for sample in result.samples) == 1
     assert result.samples[-1].incidents_created == 1
     assert result.samples[-2].alert_conditions_resolved == 1
+
+
+@pytest.mark.asyncio
+async def test_overview_counts_only_incidents_currently_waiting_approval(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        incidents = [
+            _incident(
+                source_ref=f"status-{status.value}",
+                status=status,
+                created_at=NOW - timedelta(days=2),
+                source_type="scenario",
+            )
+            for status in IncidentStatus
+        ]
+        waiting = next(
+            incident
+            for incident in incidents
+            if incident.status == IncidentStatus.WAITING_APPROVAL
+        )
+        async with database.session_factory() as session, session.begin():
+            session.add_all(incidents)
+
+        repository = IncidentRepository(database.session_factory)
+        assert (
+            await repository.get_monitoring_overview(NOW)
+        ).waiting_approval_incidents == 1
+
+        async with database.session_factory() as session, session.begin():
+            row = await session.get(IncidentRow, waiting.id)
+            assert row is not None
+            row.status = IncidentStatus.TRIAGING
+
+        assert (
+            await repository.get_monitoring_overview(NOW)
+        ).waiting_approval_incidents == 0

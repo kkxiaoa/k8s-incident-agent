@@ -7,7 +7,11 @@ from typing import cast
 import httpx
 import pytest
 from fastapi.responses import StreamingResponse
-from tests.factories import diagnostic_model_stub, monitoring_health_service_stub
+from tests.factories import (
+    diagnostic_model_stub,
+    monitoring_health_service_stub,
+    operator_sessions_stub,
+)
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -47,6 +51,7 @@ async def test_settings_and_runtime_context_are_entered_only_during_lifespan(
         events.append("runtime.open")
         try:
             yield RuntimeContainer(
+                operator=operator_sessions_stub(),
                 diagnostic_model=diagnostic_model_stub(),
                 incidents=cast(IncidentApplicationService, _UnusedService()),
                 events=cast(IncidentEventService, _UnusedService()),
@@ -126,6 +131,10 @@ def test_manual_route_table_contains_read_and_create_endpoints() -> None:
     routes = _route_table(api.create_app())
 
     assert routes == {
+        ("POST", "/api/v1/operator/login"),
+        ("POST", "/api/v1/operator/logout"),
+        ("GET", "/api/v1/operator/session"),
+        ("POST", "/api/v1/operator/session"),
         ("GET", "/healthz"),
         ("GET", "/api/v1/scenarios"),
         ("POST", "/api/v1/incidents"),
@@ -152,6 +161,10 @@ def test_online_route_table_omits_manual_entrypoints(tmp_path: Path) -> None:
     routes = _route_table(api.create_app(settings=settings))
 
     assert routes == {
+        ("POST", "/api/v1/operator/login"),
+        ("POST", "/api/v1/operator/logout"),
+        ("GET", "/api/v1/operator/session"),
+        ("POST", "/api/v1/operator/session"),
         ("GET", "/healthz"),
         ("GET", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents/{incident_id}"),

@@ -227,7 +227,7 @@ async def test_overview_maps_current_catalog_families_and_preserves_hourly_count
             total_incidents=7,
             firing_alerts=2,
             triaging_incidents=1,
-            diagnosed_incidents=4,
+            waiting_approval_incidents=4,
             families=(
                 MonitoringOverviewFamilyRecord(
                     source_ref="K8sIncidentImagePullBackOff",
@@ -254,6 +254,7 @@ async def test_overview_maps_current_catalog_families_and_preserves_hourly_count
     assert repository.generated_at == NOW
     assert result.counts.total_incidents == 7
     assert result.counts.firing_alerts == 2
+    assert result.counts.waiting_approval_incidents == 4
     assert [family.display_name for family in result.families] == [
         "Image pull failure",
         "retired-alert",

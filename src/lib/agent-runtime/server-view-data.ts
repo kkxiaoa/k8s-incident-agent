@@ -1,4 +1,5 @@
 import "server-only";
+import { redirect } from "next/navigation";
 
 import {
   parseIncidentDetailResponse,
@@ -51,14 +52,16 @@ interface IncidentConsoleOverview {
 
 export async function loadIncidentConsoleOverview(
   intakeMode: IncidentIntakeMode,
+  incoming?: Headers,
 ): Promise<IncidentConsoleOverview> {
   if (intakeMode === "online") {
     const [incidentResult, healthResult, overviewResult, runtimeResult] = await Promise.all([
-      fetchIncidents(new URLSearchParams({ limit: "50" })),
-      fetchMonitoringHealth(),
-      fetchMonitoringOverview(),
+      fetchIncidents(new URLSearchParams({ limit: "50" }), incoming),
+      fetchMonitoringHealth(incoming),
+      fetchMonitoringOverview(incoming),
       fetchRuntimeHealth(),
     ]);
+    if ([incidentResult, healthResult, overviewResult].some(result => result.response.status === 401)) redirect('/login');
     return {
       runtimeHealth: runtimeResult.response.ok
         ? parseRuntimeHealthResponse(runtimeResult.value)
@@ -78,13 +81,14 @@ export async function loadIncidentConsoleOverview(
 
   const [scenarioResult, incidentResult, healthResult, overviewResult, runtimeResult] =
     await Promise.all([
-      fetchScenarios(),
-      fetchIncidents(new URLSearchParams({ limit: "50" })),
-      fetchMonitoringHealth(),
-      fetchMonitoringOverview(),
+      fetchScenarios(incoming),
+      fetchIncidents(new URLSearchParams({ limit: "50" }), incoming),
+      fetchMonitoringHealth(incoming),
+      fetchMonitoringOverview(incoming),
       fetchRuntimeHealth(),
     ]);
 
+  if ([scenarioResult, incidentResult, healthResult, overviewResult].some(result => result.response.status === 401)) redirect('/login');
   return {
     runtimeHealth: runtimeResult.response.ok
       ? parseRuntimeHealthResponse(runtimeResult.value)
@@ -107,13 +111,15 @@ export async function loadIncidentConsoleOverview(
 export async function loadIncidentPage(
   incidentId: string,
   runId?: string,
+  incoming?: Headers,
 ): Promise<IncidentPageData> {
   const [detailResult, runsResult, monitoringPanelsResult] =
     await Promise.all([
-      fetchIncident(incidentId, runId),
-      fetchRuns(incidentId, new URLSearchParams({ limit: "20" })),
-      fetchMonitoringPanels(incidentId),
+      fetchIncident(incidentId, runId, incoming),
+      fetchRuns(incidentId, new URLSearchParams({ limit: "20" }), incoming),
+      fetchMonitoringPanels(incidentId, incoming),
     ]);
+  if ([detailResult, runsResult, monitoringPanelsResult].some(result => result.response.status === 401)) redirect("/login");
   if (
     detailResult.response.status === 404 ||
     detailResult.response.status === 422

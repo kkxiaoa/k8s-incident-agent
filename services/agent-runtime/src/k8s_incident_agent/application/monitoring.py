@@ -171,7 +171,7 @@ class MonitoringApplicationService:
                 total_incidents=overview.total_incidents,
                 firing_alerts=overview.firing_alerts,
                 triaging_incidents=overview.triaging_incidents,
-                diagnosed_incidents=overview.diagnosed_incidents,
+                waiting_approval_incidents=overview.waiting_approval_incidents,
             ),
             families=tuple(families),
             samples=tuple(

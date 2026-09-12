@@ -46,6 +46,20 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=_NAMING_CONVENTION)
 
 
+class OperatorSessionRow(Base):
+    __tablename__ = "operator_sessions"
+    __table_args__ = (
+        CheckConstraint("length(token_hash) = 64", name="token_hash"),
+        CheckConstraint("expires_at > created_at", name="expiry"),
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operator_ref: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+
 class IncidentRow(Base):
     __tablename__ = "incidents"
     __table_args__ = (

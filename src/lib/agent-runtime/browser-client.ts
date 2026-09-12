@@ -1,3 +1,4 @@
+import { authenticatedFetch } from "./operator-client";
 import {
   parseCreateIncidentResponse,
   parseCreateRunResponse,
@@ -62,7 +63,7 @@ export async function createIncidentFromBrowser(
 ): Promise<BrowserRuntimeResult<CreateIncidentView, CreateFailure>> {
   let response: Response;
   try {
-    response = await fetch("/api/runtime/incidents", {
+    response = await authenticatedFetch("/api/runtime/incidents", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ scenarioId }),
@@ -90,7 +91,7 @@ export async function fetchIncidentFromBrowser(
   const query = runId === undefined ? "" : `?runId=${encodeURIComponent(runId)}`;
   let response: Response;
   try {
-    response = await fetch(
+    response = await authenticatedFetch(
       `/api/runtime/incidents/${encodeURIComponent(incidentId)}${query}`,
       { method: "GET", cache: "no-store" },
     );
@@ -117,7 +118,7 @@ export async function fetchMonitoringPanelFromBrowser(
   const query = new URLSearchParams({ window });
   let response: Response;
   try {
-    response = await fetch(
+    response = await authenticatedFetch(
       `/api/runtime/incidents/${encodeURIComponent(incidentId)}/monitoring/${encodeURIComponent(panelId)}?${query}`,
       { method: "GET", cache: "no-store" },
     );
@@ -142,7 +143,7 @@ export async function createRunFromBrowser(
 ): Promise<BrowserRuntimeResult<CreateRunView, CreateFailure>> {
   let response: Response;
   try {
-    response = await fetch(
+    response = await authenticatedFetch(
       `/api/runtime/incidents/${encodeURIComponent(incidentId)}/runs`,
       { method: "POST", cache: "no-store" },
     );
@@ -171,7 +172,7 @@ export async function fetchRunHistoryFromBrowser(
 
   let response: Response;
   try {
-    response = await fetch(
+    response = await authenticatedFetch(
       `/api/runtime/incidents/${encodeURIComponent(incidentId)}/runs?${query}`,
       { method: "GET", cache: "no-store" },
     );
@@ -197,7 +198,7 @@ export async function fetchRunEventsFromBrowser(
   const query = new URLSearchParams({ limit: "100", cursor });
   let response: Response;
   try {
-    response = await fetch(
+    response = await authenticatedFetch(
       `/api/runtime/incidents/${encodeURIComponent(incidentId)}/runs/${encodeURIComponent(runId)}/events?${query}`,
       { method: "GET", cache: "no-store" },
     );

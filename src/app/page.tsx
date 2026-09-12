@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { headers } from "next/headers";
 
 import { IncidentList } from "@/components/incidents/incident-list";
 import { ScenarioLauncher } from "@/components/incidents/scenario-launcher";
@@ -16,7 +17,8 @@ async function RuntimeOverview({
 }: {
   intakeMode: IncidentIntakeMode;
 }) {
-  const overview = await loadIncidentConsoleOverview(intakeMode);
+  const incoming = new Headers({ cookie: (await headers()).get("cookie") ?? "" });
+  const overview = await loadIncidentConsoleOverview(intakeMode, incoming);
   const manualIntake = intakeMode === "manual";
 
   return (

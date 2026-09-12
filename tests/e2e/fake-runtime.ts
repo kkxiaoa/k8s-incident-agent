@@ -1,3 +1,6 @@
+import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
+import { OPERATOR_COOKIE, OPERATOR_CSRF_HEADER } from "../../src/lib/agent-runtime/operator-contracts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import type { components } from "../../src/lib/agent-runtime/generated";
@@ -53,6 +56,10 @@ const ALERT_PENDING_AT = "2026-08-29T01:59:30Z";
 const ALERT_STARTS_AT = "2026-08-29T02:00:00.000000000Z";
 const ALERT_ENDS_AT = "2026-08-29T02:00:15.000000000Z";
 const RESOLVED_QUERY_AT = "2026-08-29T02:00:16Z";
+
+let checkOperatorPassword: ((password: string) => Promise<boolean>) | undefined;
+let operatorOrigin = "";
+const operatorSessions = new Map<string, components["schemas"]["OperatorSessionResponse"]>();
 
 let mode: RuntimeMode = "diagnosed";
 let nextIncident = 1;
@@ -664,7 +671,7 @@ function streamEvents(
   const replay = record.finished;
 
   response.writeHead(200, {
-    "cache-control": "no-cache",
+    "cache-control": "no-store",
     connection: "keep-alive",
     "content-type": "text/event-stream",
   });
@@ -744,7 +751,7 @@ function monitoringOverview() {
     });
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     window: "24h",
     generatedAt: generatedAt.toISOString(),
     counts: {
@@ -753,8 +760,8 @@ function monitoringOverview() {
       triagingIncidents: records.filter(
         (record) => record.detail.incident.status === "TRIAGING",
       ).length,
-      diagnosedIncidents: records.filter(
-        (record) => record.detail.incident.status === "DIAGNOSED",
+      waitingApprovalIncidents: records.filter(
+        (record) => record.detail.incident.status === "WAITING_APPROVAL",
       ).length,
     },
     families: [...families].map(([sourceRef, family]) => ({
@@ -954,6 +961,7 @@ async function handleRequest(
     nextIncident = 1;
     nextEventId = 1;
     showcaseEnabled = false;
+    operatorSessions.clear();
     incidents.clear();
     eventConnections.clear();
     json(response, 200, { ok: true });
@@ -1049,6 +1057,57 @@ async function handleRequest(
       eventConnections: Object.fromEntries(eventConnections),
     });
     return;
+  }
+
+  if (url.pathname === "/api/v1/operator/login" && request.method === "POST") {
+    if (request.headers.origin !== operatorOrigin) {
+      runtimeError(response, 403, "operator_origin_rejected", "Request origin is not permitted.", false); return;
+    }
+    const payload = await requestBody(request) as { password?: unknown };
+    if (typeof payload.password !== "string" || Buffer.byteLength(payload.password, "utf8") > 1024 || !checkOperatorPassword || !await checkOperatorPassword(payload.password)) {
+      runtimeError(response, 401, "operator_authentication_required", "Operator authentication is required.", false); return;
+    }
+    const token = randomBytes(32).toString("base64url");
+    const session = { operatorRef: "sandbox-operator", csrfToken: randomBytes(32).toString("hex"), expiresAt: Math.floor(Date.now() / 1000) + 1800 };
+    operatorSessions.set(token, session);
+    response.setHeader("set-cookie", `${OPERATOR_COOKIE}=${token}; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=1800`);
+    json(response, 200, session); return;
+  }
+
+  if (url.pathname.startsWith("/api/v1/")) {
+    const cookies = (request.headers.cookie ?? "").split(";").map(part => part.trim()).filter(part => part.split("=", 1)[0] === OPERATOR_COOKIE);
+    const token = cookies.length === 1 ? cookies[0].slice(OPERATOR_COOKIE.length + 1) : "";
+    const session = operatorSessions.get(token);
+    if (!session || session.expiresAt <= Date.now() / 1000) {
+      runtimeError(response, 401, "operator_authentication_required", "Operator authentication is required.", false); return;
+    }
+    if (!["GET", "HEAD"].includes(request.method ?? "")) {
+      if (request.headers.origin !== operatorOrigin) {
+        runtimeError(response, 403, "operator_origin_rejected", "Request origin is not permitted.", false); return;
+      }
+      if (request.headers[OPERATOR_CSRF_HEADER.toLowerCase()] !== session.csrfToken) {
+        runtimeError(response, 403, "operator_csrf_rejected", "Request verification failed.", false); return;
+      }
+    }
+    if (url.pathname === "/api/v1/operator/session" && request.method === "GET") {
+      json(response, 200, session); return;
+    }
+    if (url.pathname === "/api/v1/operator/session" && request.method === "POST") {
+      session.expiresAt = Math.max(session.expiresAt, Math.floor(Date.now() / 1000) + 1800);
+      response.setHeader("set-cookie", `${OPERATOR_COOKIE}=${token}; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=1800`);
+      json(response, 200, session); return;
+    }
+    if (url.pathname === "/api/v1/operator/logout" && request.method === "POST") {
+      operatorSessions.delete(token);
+      response.setHeader("set-cookie", `${OPERATOR_COOKIE}=""; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=0`);
+      response.writeHead(204, { "cache-control": "no-store" }); response.end(); return;
+    }
+    if (request.headers.accept === "text/event-stream") {
+      const expiry = setInterval(() => {
+        if (!operatorSessions.has(token) || session.expiresAt <= Date.now() / 1000) response.end();
+      }, 100);
+      response.once("close", () => clearInterval(expiry));
+    }
   }
 
   if (mode === "unavailable") {
@@ -1285,7 +1344,33 @@ async function handleRequest(
   );
 }
 
-export async function startFakeRuntime(port: number) {
+export async function startFakeRuntime(port: number, auth: { origin: string } & ({ password: string } | { verifierFile: string; pythonExecutable: string })) {
+  if ("password" in auth) {
+    checkOperatorPassword = async password => auth.password.length > 0 && password === auth.password;
+  } else {
+    const verifierFile = auth.verifierFile;
+    checkOperatorPassword = password => new Promise<boolean>((resolve, reject) => {
+      const child = execFile(auth.pythonExecutable, ["-c", `
+import sys
+from pathlib import Path
+from k8s_incident_agent.auth.verifier import PasswordVerifier
+try:
+    verifier = PasswordVerifier.from_file(Path(sys.argv[1]))
+    password = sys.stdin.buffer.read(1025)
+    print("1" if len(password) <= 1024 and verifier.matches(password) else "0")
+except Exception:
+    raise SystemExit(2) from None
+`, verifierFile], { timeout: 5000, maxBuffer: 1024 }, (error, stdout) => {
+        if (error || !["0", "1"].includes(stdout.trim())) reject(new Error("Fake Runtime password verification unavailable"));
+        else resolve(stdout.trim() === "1");
+      });
+      // Passwords travel only through stdin, never argv, environment or logs.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(password);
+    });
+    await checkOperatorPassword("");
+  }
+  operatorOrigin = auth.origin;
   const server = createServer((request, response) => {
     void handleRequest(request, response).catch(() => {
       if (!response.headersSent) {

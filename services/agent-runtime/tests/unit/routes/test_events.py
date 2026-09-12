@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,6 +15,7 @@ from tests.factories import (
     diagnostic_model_stub,
     monitoring_health_service_stub,
     normalized_trigger,
+    operator_sessions_stub,
 )
 
 from k8s_incident_agent import api
@@ -60,12 +61,12 @@ class _EventService:
         self,
         incident_id: UUID,
         last_event_id: str | None,
-    ) -> AsyncIterator[bytes]:
+    ) -> AsyncGenerator[bytes]:
         self.arguments = (incident_id, last_event_id)
         if last_event_id == "bad":
             raise InvalidLastEventIdError
 
-        async def stream() -> AsyncIterator[bytes]:
+        async def stream() -> AsyncGenerator[bytes]:
             if last_event_id == "explode-after-start":
                 raise RuntimeError("sensitive stream failure")
             yield b'id: 1\nevent: incident.created\ndata: {"schemaVersion":1}\n\n'
@@ -89,6 +90,7 @@ async def _client(
     @asynccontextmanager
     async def runtime_context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
         yield RuntimeContainer(
+            operator=operator_sessions_stub(),
             diagnostic_model=diagnostic_model_stub(),
             incidents=cast(IncidentApplicationService, object()),
             events=cast(IncidentEventService, service),
@@ -122,7 +124,7 @@ async def test_route_sets_sse_content_type_cache_header_and_forwards_cursor(
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
-    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["cache-control"] == "no-store"
     assert service.arguments == (INCIDENT_ID, "0")
     assert response.content.startswith(b"id: 1\nevent: incident.created\n")
 
@@ -222,18 +224,18 @@ async def test_new_asgi_client_replays_from_real_sqlite_without_duplicates(
                     self,
                     incident_id: UUID,
                     last_event_id_header: str | None,
-                ) -> AsyncIterator[bytes]:
+                ) -> AsyncGenerator[bytes]:
                     stream = await super().open_stream(
                         incident_id,
                         last_event_id_header,
                     )
 
-                    async def finite() -> AsyncIterator[bytes]:
+                    async def finite() -> AsyncGenerator[bytes]:
                         try:
                             for _ in range(event_count):
                                 yield await anext(stream)
                         finally:
-                            await cast(AsyncGenerator[bytes], stream).aclose()
+                            await stream.aclose()
 
                     return finite()
 
@@ -307,6 +309,7 @@ async def test_http_disconnect_cancels_stream_without_changing_run_state(
             _settings: Settings,
         ) -> AsyncGenerator[RuntimeContainer]:
             yield RuntimeContainer(
+                operator=operator_sessions_stub(),
                 diagnostic_model=diagnostic_model_stub(),
                 incidents=cast(IncidentApplicationService, object()),
                 events=service,

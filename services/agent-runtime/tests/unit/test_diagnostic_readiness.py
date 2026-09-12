@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator
+import secrets
 from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,12 +10,16 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from argon2 import PasswordHasher
+from argon2.profiles import RFC_9106_LOW_MEMORY
 from sqlalchemy import func, select
 from tests.factories import normalized_trigger
 from tests.unit.application.test_alerts import alert_payload, watchdog_payload
 from tests.unit.test_lifespan import install_runtime_fakes
 
 from k8s_incident_agent import api
+from k8s_incident_agent.auth.sessions import OperatorSessions
+from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
 from k8s_incident_agent.domain.models import (
@@ -94,6 +98,8 @@ async def test_degraded_startup_keeps_persisted_history_sse_and_watchdog_availab
     client_class = httpx.AsyncClient
     events: list[str] = []
     install_runtime_fakes(monkeypatch, events)
+    monkeypatch.setattr(api, "PasswordVerifier", PasswordVerifier)
+    monkeypatch.setattr(api, "OperatorSessions", OperatorSessions)
     monkeypatch.setattr(api, "RuntimeLock", RuntimeLock)
     monkeypatch.setattr(api, "create_business_database", create_business_database)
     monkeypatch.setattr(api, "require_alembic_head", require_alembic_head)
@@ -135,22 +141,41 @@ async def test_degraded_startup_keeps_persisted_history_sse_and_watchdog_availab
         monkeypatch.setattr(api, "discover_models", discovery)
         credential_file = tmp_path / "test-webhook-token"
         credential_file.write_bytes(b"a" * 32)
+        password = secrets.token_urlsafe(32)
+        verifier_file = tmp_path / "operator-verifier"
+        verifier_file.write_text(
+            PasswordHasher.from_parameters(RFC_9106_LOW_MEMORY).hash(password)
+        )
         settings = Settings(
             _env_file=None,  # pyright: ignore[reportCallIssue]
             RUNTIME_DATA_DIR=paths,  # pyright: ignore[reportCallIssue]
             deepseek_api_key="test-key" if provider_status is not None else None,
             alertmanager_webhook_token_file=credential_file,
             scenario_catalog_dir=REPOSITORY_ROOT / "scenarios",
+            operator_verifier_file=verifier_file,
+            operator_origin="https://runtime.test",
         )
         assert settings.runtime_paths == paths
         app = api.create_app(settings=settings)
         async with (
             app.router.lifespan_context(app),
             client_class(
-                transport=httpx.ASGITransport(app=app), base_url="http://runtime.test"
+                transport=httpx.ASGITransport(app=app), base_url="https://runtime.test"
             ) as client,
         ):
             assert app.state.ready is True
+            login = await client.post(
+                "/api/v1/operator/login",
+                json={"password": password},
+                headers={"Origin": "https://runtime.test"},
+            )
+            assert login.status_code == 200
+            client.headers.update(
+                {
+                    "Origin": "https://runtime.test",
+                    "X-CSRF-Token": login.json()["csrfToken"],
+                }
+            )
             health = await client.get("/healthz")
             assert health.status_code == 200
             assert health.json() == {
@@ -165,10 +190,7 @@ async def test_degraded_startup_keeps_persisted_history_sse_and_watchdog_availab
             assert old_detail.status_code == 200
             assert old_detail.json()["selectedRun"]["id"] == str(created.run_id)
             container = cast(api.RuntimeContainer, app.state.container)
-            stream = cast(
-                AsyncGenerator[bytes],
-                await container.events.open_stream(created.incident_id, "0"),
-            )
+            stream = await container.events.open_stream(created.incident_id, "0")
             async with aclosing(stream), asyncio.timeout(1):
                 async for frame in stream:
                     if b"event: run.failed" in frame:

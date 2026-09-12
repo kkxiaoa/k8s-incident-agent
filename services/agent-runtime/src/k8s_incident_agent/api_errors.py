@@ -17,6 +17,13 @@ from k8s_incident_agent.application.incidents import (
     ScenarioNotFoundError,
 )
 from k8s_incident_agent.application.monitoring import MonitoringPanelNotFoundError
+from k8s_incident_agent.auth.sessions import (
+    OperatorAuthenticationError,
+    OperatorCsrfError,
+    OperatorLoginLimitedError,
+    OperatorOriginError,
+)
+from k8s_incident_agent.auth.verifier import OperatorCredentialUnavailableError
 from k8s_incident_agent.model.availability import DiagnosisUnavailableError
 from k8s_incident_agent.monitoring.errors import (
     AlertAuthenticationError,
@@ -109,6 +116,44 @@ _ALERT_TARGET_INVALID = _ErrorContract(
 
 
 def install_exception_handlers(app: FastAPI) -> None:
+    operator_errors: dict[type[Exception], _ErrorContract] = {
+        OperatorAuthenticationError: _ErrorContract(
+            401,
+            "operator_authentication_required",
+            "Operator authentication is required.",
+        ),
+        OperatorOriginError: _ErrorContract(
+            403, "operator_origin_rejected", "Request origin is not permitted."
+        ),
+        OperatorCsrfError: _ErrorContract(
+            403, "operator_csrf_rejected", "Request verification failed."
+        ),
+        OperatorLoginLimitedError: _ErrorContract(
+            429,
+            "operator_login_limited",
+            "Operator login is temporarily limited.",
+            True,
+        ),
+        OperatorCredentialUnavailableError: _ErrorContract(
+            503,
+            "operator_authentication_unavailable",
+            "Operator authentication is unavailable.",
+            True,
+        ),
+    }
+
+    async def operator_handler(_request: Request, error: Exception) -> JSONResponse:
+        contract = operator_errors[type(error)]
+        return _response(
+            contract,
+            headers={"Retry-After": "60"} if contract.status_code == 429 else None,
+        )
+
+    for exception_type in operator_errors:
+        app.add_exception_handler(
+            exception_type, cast(ExceptionHandler, operator_handler)
+        )
+
     async def diagnosis_unavailable_handler(
         _request: Request,
         _error: DiagnosisUnavailableError,
@@ -287,5 +332,5 @@ def _response(
     return JSONResponse(
         status_code=contract.status_code,
         content=content,
-        headers=headers,
+        headers={"Cache-Control": "no-store", **(headers or {})},
     )
