@@ -148,6 +148,7 @@ def test_manual_route_table_contains_read_and_create_endpoints() -> None:
         ),
         ("GET", "/api/v1/incidents/{incident_id}/runs"),
         ("POST", "/api/v1/incidents/{incident_id}/runs"),
+        ("POST", "/api/v1/incidents/{incident_id}/repair-runs"),
         ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
         ("GET", "/api/v1/monitoring/health"),
         ("GET", "/api/v1/monitoring/overview"),
@@ -175,6 +176,8 @@ def test_online_route_table_omits_manual_entrypoints(tmp_path: Path) -> None:
             "/api/v1/incidents/{incident_id}/monitoring/panels/{panel_id}",
         ),
         ("GET", "/api/v1/incidents/{incident_id}/runs"),
+        ("POST", "/api/v1/incidents/{incident_id}/runs"),
+        ("POST", "/api/v1/incidents/{incident_id}/repair-runs"),
         ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
         ("GET", "/api/v1/monitoring/health"),
         ("GET", "/api/v1/monitoring/overview"),
@@ -195,7 +198,7 @@ def test_configured_alertmanager_route_is_internal_runtime_only(
 
     assert ("POST", "/api/v1/alerts/alertmanager") in routes
     assert ("POST", "/api/v1/incidents") not in routes
-    assert ("POST", "/api/v1/incidents/{incident_id}/runs") not in routes
+    assert ("POST", "/api/v1/incidents/{incident_id}/runs") in routes
     assert ("GET", "/api/v1/scenarios") not in routes
 
 

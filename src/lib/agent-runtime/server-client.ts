@@ -24,6 +24,8 @@ const INCIDENT_EVENTS_PATH =
   "/api/v1/incidents/{incident_id}/events" satisfies RuntimePath;
 const INCIDENT_RUNS_PATH =
   "/api/v1/incidents/{incident_id}/runs" satisfies RuntimePath;
+const REPAIR_RUNS_PATH =
+  "/api/v1/incidents/{incident_id}/repair-runs" satisfies RuntimePath;
 const RUN_EVENTS_PATH =
   "/api/v1/incidents/{incident_id}/runs/{run_id}/events" satisfies RuntimePath;
 const MONITORING_HEALTH_PATH =
@@ -96,6 +98,11 @@ const RUNTIME_ERROR_CONTRACTS = {
     status: 409,
     message: "An active run already exists.",
     retryable: true,
+  },
+  repair_source_invalid: {
+    status: 409,
+    message: "Repair source is not applicable.",
+    retryable: false,
   },
   invalid_cursor: {
     status: 400,
@@ -712,9 +719,13 @@ export function fetchRuns(
 export async function createRun(
   incidentId: string,
   incoming?: Headers,
+  body?: ArrayBuffer,
 ): Promise<Response> {
   const path = incidentPath(INCIDENT_RUNS_PATH, incidentId);
   if (path === null) {
+    return errorResponse(422, INVALID_REQUEST);
+  }
+  if (body && body.byteLength > 0 && !isJsonContentType(incoming?.get("content-type") ?? null)) {
     return errorResponse(422, INVALID_REQUEST);
   }
 
@@ -723,11 +734,27 @@ export async function createRun(
       path,
       202,
       RUN_CREATE_ERROR_CODES,
-      { method: "POST" },
+      { method: "POST", ...(body?.byteLength ? { headers: { "content-type": "application/json" }, body } : {}) },
       undefined,
       incoming,
     )
   ).response;
+}
+
+export async function createRepairRun(incidentId: string, request: Request): Promise<Response> {
+  const path = incidentPath(REPAIR_RUNS_PATH, incidentId);
+  if (path === null || !isJsonContentType(request.headers.get("content-type"))) {
+    return errorResponse(422, INVALID_REQUEST);
+  }
+  let body: ArrayBuffer;
+  try {
+    body = await request.arrayBuffer();
+  } catch {
+    return errorResponse(422, INVALID_REQUEST);
+  }
+  return (await requestRest(path, 202, [...RUN_CREATE_ERROR_CODES, "repair_source_invalid"], {
+    method: "POST", headers: { "content-type": "application/json" }, body,
+  }, undefined, request.headers)).response;
 }
 
 export function fetchRunEvents(

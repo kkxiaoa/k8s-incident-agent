@@ -173,6 +173,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
           startedAt,
           completedAt: () => requireDate(now()).toISOString(),
           fetchImpl: authenticatedFetch,
+          anonymousFetch: fetchImpl,
         });
       } else {
         artifact = await evaluateCatalog({
@@ -683,12 +684,8 @@ async function evaluateInfrastructureRecovery(probe, options) {
 }
 
 async function evaluateOnlineBoundary(options) {
-  await requestJson(
-    options.fetchImpl,
-    endpointOrigin("runtime"),
-    "/api/v1/incidents?limit=1",
-  );
-  const [scenariosStatus, createIncidentStatus, createRunStatus] =
+  const incidents = await listIncidentSummaries(options.fetchImpl);
+  const [scenariosStatus, createIncidentStatus] =
     await Promise.all([
       requestStatus(
         options.fetchImpl,
@@ -701,22 +698,47 @@ async function evaluateOnlineBoundary(options) {
         "/api/v1/incidents",
         { method: "POST" },
       ),
-      requestStatus(
-        options.fetchImpl,
-        endpointOrigin("runtime"),
-        "/api/v1/incidents/not-a-uuid/runs",
-        { method: "POST" },
-      ),
     ]);
   if (
     scenariosStatus !== 404 ||
-    createIncidentStatus !== 405 ||
-    createRunStatus !== 405
+    createIncidentStatus !== 405
   ) {
     throw contractError(
       "online_route_set_invalid",
       "Online profile exposes a manual intake route",
     );
+  }
+  const incidentId = incidents.keys().next().value;
+  if (incidentId === undefined) {
+    throw contractError("online_existing_incident_required", "Rerun boundary requires an existing Incident");
+  }
+  const before = await getIncident(incidentId, options.fetchImpl);
+  if (!Number.isSafeInteger(before.selectedRun?.attempt) || before.selectedRun.attempt < 1) throw upstreamContractError();
+  const path = `/api/v1/incidents/${incidentId}/runs`;
+  const mutation = { method: "POST", headers: { "content-type": "application/json" }, body: "{}" };
+  const anonymous = await request(options.anonymousFetch, endpointOrigin("runtime"), path, mutation);
+  if (anonymous.status !== 401 || parseJson(anonymous.body)?.error?.code !== "operator_authentication_required") {
+    throw contractError("online_rerun_boundary_invalid", "Anonymous rerun was not rejected by authentication");
+  }
+  const response = await request(options.fetchImpl, endpointOrigin("runtime"), path, mutation);
+  const document = parseJson(response.body);
+  let authenticatedRerun;
+  if (response.status === 202 && document?.schemaVersion === 5 && UUID_PATTERN.test(document.runId ?? "")) {
+    const created = await requestJson(options.fetchImpl, endpointOrigin("runtime"), `/api/v1/incidents/${incidentId}?runId=${document.runId}`);
+    if (created?.schemaVersion !== 5 || created.incident?.id !== incidentId || created.selectedRun?.id !== document.runId
+        || created.selectedRun.kind !== "diagnosis" || created.selectedRun.requestSource !== "operator"
+        || !Number.isSafeInteger(created.selectedRun.attempt) || created.selectedRun.attempt <= before.selectedRun.attempt
+        || !["QUEUED", "RUNNING", "COMPLETED", "FAILED"].includes(created.selectedRun.status)) throw upstreamContractError();
+    authenticatedRerun = "accepted";
+  } else if (response.status === 409 && document?.error?.code === "active_run_exists"
+      && ["QUEUED", "RUNNING", "WAITING_APPROVAL"].includes(before.selectedRun.status)) {
+    authenticatedRerun = "active_run_exists";
+  } else if (response.status === 503 && document?.error?.code === "diagnosis_unavailable") {
+    const health = await requestJson(options.fetchImpl, endpointOrigin("runtime"), "/healthz");
+    if (health.diagnosis?.status !== "unavailable" || typeof health.diagnosis.reason !== "string") throw upstreamContractError();
+    authenticatedRerun = "diagnosis_unavailable";
+  } else {
+    throw contractError("online_rerun_boundary_invalid", "Authenticated rerun did not match the Runtime state");
   }
   const home = await requestText(
     options.fetchImpl,
@@ -725,8 +747,7 @@ async function evaluateOnlineBoundary(options) {
   );
   if (
     home.includes("离线评估入口") ||
-    home.includes("创建 Incident") ||
-    home.includes("重新诊断")
+    home.includes("创建 Incident")
   ) {
     throw contractError(
       "online_console_invalid",
@@ -743,8 +764,10 @@ async function evaluateOnlineBoundary(options) {
     status: "passed",
     checks: {
       readRoutesAvailable: true,
-      manualRuntimeRoutesAbsent: true,
-      manualConsoleControlsAbsent: true,
+      manualCreationAbsent: true,
+      manualConsoleCreationAbsent: true,
+      anonymousRerunDenied: true,
+      authenticatedRerun,
     },
   };
 }
@@ -2143,8 +2166,9 @@ async function request(fetchImpl, origin, pathname, options = {}) {
   let response;
   try {
     response = await fetchImpl(`${origin}${pathname}`, {
-      headers: { Accept: options.accept ?? "application/json" },
+      headers: { Accept: options.accept ?? "application/json", ...options.headers },
       method: options.method ?? "GET",
+      ...(options.body !== undefined ? { body: options.body } : {}),
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MILLISECONDS),
     });
   } catch (error) {

@@ -17,10 +17,17 @@ from tests.unit.persistence.test_repair_persistence import (
     NOW,
     prepared_repair_record,
 )
+from tests.unit.repair.test_repair_preparation import (
+    FRESH_NOW,
+    KubernetesFixture,
+    ValidatorFixture,
+    create_preparation,
+    credential,
+    seed_source,
+)
 
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.application.scheduling import RunScheduler
-from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.domain.models import (
     RepairOperation,
     RepairWorkflowRunSnapshot,
@@ -28,24 +35,16 @@ from k8s_incident_agent.domain.models import (
     RunStatus,
 )
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredentialLease
-from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.database import create_business_database
 from k8s_incident_agent.persistence.models import (
-    EvidenceRow,
-    RepairProposalRow,
-    RunEventRow,
     RunRow,
 )
 from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
     IncidentRepository,
-    RecoveryConsistencyError,
 )
-from k8s_incident_agent.repair.compiler import compile_repair_proposal
-from k8s_incident_agent.repair.contracts import (
-    EvidenceBoundImageChange,
-    PatchValidationResponse,
-)
+from k8s_incident_agent.repair.client import PatchValidator
+from k8s_incident_agent.repair.preparation import prepare_repair
 from k8s_incident_agent.runtime.paths import RuntimePaths
 
 TABLES = (
@@ -144,6 +143,16 @@ async def test_nonempty_upgrade_retains_owners_proposal_evidence_and_legacy_term
     for row in after["agent_runs"]:
         assert row.pop("kind") == "diagnosis"
         assert row.pop("operation") is None
+        for column in (
+            "source_run_id",
+            "request_source",
+            "operator_ref",
+            "selection_revision",
+            "selection_replica_set_uid",
+            "waiting_expires_at",
+            "end_reason",
+        ):
+            assert row.pop(column) is None
     for row in after["run_events"]:
         assert row["schema_version"] == 5
         payload = json.loads(row["payload_json"])
@@ -251,22 +260,44 @@ def _repair_row(
 @pytest.mark.parametrize(
     "status", [RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.WAITING_APPROVAL]
 )
-async def test_repair_active_run_blocks_rerun_retention_and_diagnostic_recovery(
+async def test_repair_active_run_blocks_unbound_rerun_and_retention_but_is_recoverable(
     tmp_path: Path, status: RunStatus
 ) -> None:
-    paths, incident_id, _ = await _legacy_database(tmp_path)
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
     command.upgrade(_alembic_config(paths), "head")
     database = await create_business_database(paths)
     try:
-        repair = _repair_row(incident_id, status)
-        async with database.session_factory() as session, session.begin():
-            session.add(repair)
         repository = IncidentRepository(database.session_factory)
-        snapshot = await repository.get_workflow_run_snapshot(UUID(repair.id))
+        incident_id, source_id = await seed_source(repository)
+        created = await repository.create_repair_run(
+            incident_id,
+            source_id,
+            selection=None,
+            replaces_run_id=None,
+            operator_ref="sandbox-operator",
+            now=FRESH_NOW,
+        )
+        assert created is not None
+        if status is not RunStatus.QUEUED:
+            await repository.start_run(created.run_id, FRESH_NOW)
+        if status is RunStatus.WAITING_APPROVAL:
+            running = await repository.get_workflow_run_snapshot(created.run_id)
+            assert isinstance(running, RepairWorkflowRunSnapshot)
+            await repository.persist_prepared_repair(
+                await prepare_repair(
+                    running,
+                    repository=repository,
+                    adapter=KubernetesFixture().adapter(),
+                    credential=credential(),
+                    validator=cast(PatchValidator, ValidatorFixture()),
+                    now=lambda: FRESH_NOW,
+                )
+            )
+        snapshot = await repository.get_workflow_run_snapshot(created.run_id)
         assert isinstance(snapshot, RepairWorkflowRunSnapshot)
         assert snapshot.operation is RepairOperation.APPLY
         assert not hasattr(snapshot, "model") and not hasattr(snapshot, "budget")
-        assert await repository.list_recoverable_run_ids() == ()
+        assert await repository.list_recoverable_run_ids() == (created.run_id,)
         assert (
             await repository.list_prune_targets(
                 NOW + timedelta(days=365), paths.run_artifacts
@@ -275,18 +306,18 @@ async def test_repair_active_run_blocks_rerun_retention_and_diagnostic_recovery(
         )
         with pytest.raises(ActiveRunExistsError):
             await repository.create_run(incident_id, MODEL, BUDGET)
-        with pytest.raises(RecoveryConsistencyError):
-            await repository.start_run(UUID(repair.id), NOW)
         async with database.session_factory() as session:
-            stored = await session.scalar(select(RunRow).where(RunRow.id == repair.id))
+            stored = await session.scalar(
+                select(RunRow).where(RunRow.id == str(created.run_id))
+            )
             assert stored is not None and stored.status is status
         detail = await repository.get_incident_detail(
-            incident_id, run_id=UUID(repair.id), event_limit=100
+            incident_id, run_id=created.run_id, event_limit=100
         )
         assert detail is not None
         wire = (
             await _application(repository).get_incident(
-                incident_id, run_id=UUID(repair.id)
+                incident_id, run_id=created.run_id
             )
         ).model_dump(mode="json")
         assert wire["selectedRun"]["kind"] == "repair"
@@ -296,7 +327,7 @@ async def test_repair_active_run_blocks_rerun_retention_and_diagnostic_recovery(
     finally:
         await database.dispose()
     before = _dump(paths)
-    with pytest.raises(RuntimeError, match="cannot discard repair runs"):
+    with pytest.raises(RuntimeError, match="would discard request facts"):
         command.downgrade(_alembic_config(paths), "20260907_0005")
     assert _dump(paths) == before
 
@@ -339,107 +370,54 @@ async def test_database_rejects_fake_repair_model_usage_and_invalid_kind_fields(
 async def test_repair_waiting_reads_its_own_proposal_events_and_evidence_without_legacy_diagnosis(
     tmp_path: Path,
 ) -> None:
-    paths, incident_id, diagnostic_id = await _legacy_database(tmp_path)
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
     command.upgrade(_alembic_config(paths), "head")
     database = await create_business_database(paths)
     try:
         repository = IncidentRepository(database.session_factory)
+        incident_id, diagnostic_id = await seed_source(repository)
         application = _application(repository)
         legacy = await application.get_incident(incident_id, run_id=diagnostic_id)
         assert legacy.repair is not None
-        repair = _repair_row(incident_id)
-        evidence_ids = [uuid4(), uuid4()]
-        proposal = compile_repair_proposal(
-            EvidenceBoundImageChange(
-                run_id=UUID(repair.id),
-                action="set_container_image",
-                target=KubernetesTarget.model_validate(
-                    legacy.repair.target.model_dump(by_alias=False)
-                ),
-                target_uid=legacy.repair.target_uid,
-                target_resource_version=legacy.repair.target_resource_version,
-                container_index=legacy.repair.container_index,
-                container_name=legacy.repair.container_name,
-                current_image=legacy.repair.current_image,
-                replacement_image=legacy.repair.replacement_image,
-                evidence_ids=sorted(evidence_ids, key=str),
-            ),
-            schema_checked_at=NOW,
-            policy_checked_at=NOW,
-            diff_checked_at=NOW,
-        )
-        validation = PatchValidationResponse.model_validate(
-            {
-                "proposal_id": proposal.id,
-                "run_id": proposal.run_id,
-                "proposal_digest": proposal.digest,
-                "outcome": "passed",
-                "checked_at": NOW,
-                "error": None,
-            }
-        )
-        async with database.session_factory() as session, session.begin():
-            session.add(repair)
-            await session.flush()
-            for evidence_id, old in zip(evidence_ids, legacy.evidence, strict=True):
-                session.add(
-                    EvidenceRow(
-                        id=str(evidence_id),
-                        run_id=repair.id,
-                        tool_call_id=old.tool_call_id,
-                        tool_name=old.tool_name,
-                        evidence_kind=old.evidence_kind,
-                        target_ref_json=canonical_json(old.target_ref),
-                        payload_json=canonical_json(old.payload),
-                        observed_at=NOW,
-                        truncated=False,
-                        redacted=False,
-                    )
-                )
-            session.add(
-                RepairProposalRow(
-                    id=str(proposal.id),
-                    run_id=repair.id,
-                    schema_version=1,
-                    proposal_json=canonical_json(proposal.model_dump(mode="json")),
-                    validation_json=canonical_json(validation.model_dump(mode="json")),
-                    created_at=NOW,
-                )
+        run = await create_preparation(repository, incident_id, diagnostic_id)
+        await repository.persist_prepared_repair(
+            await prepare_repair(
+                run,
+                repository=repository,
+                adapter=KubernetesFixture().adapter(),
+                credential=credential(),
+                validator=cast(PatchValidator, ValidatorFixture()),
+                now=lambda: FRESH_NOW,
             )
-            session.add(
-                RunEventRow(
-                    run_id=repair.id,
-                    event_key="repair.waiting_approval",
-                    event_type="repair.waiting_approval",
-                    schema_version=5,
-                    occurred_at=NOW,
-                    payload_json=canonical_json(
-                        {
-                            "schemaVersion": 5,
-                            "incidentId": str(incident_id),
-                            "runId": repair.id,
-                            "runKind": "repair",
-                            "occurredAt": NOW.isoformat().replace("+00:00", "Z"),
-                            "proposalId": str(proposal.id),
-                            "proposalDigest": proposal.digest,
-                            "incidentStatus": "WAITING_APPROVAL",
-                            "runStatus": "WAITING_APPROVAL",
-                        }
-                    ),
-                )
-            )
-        detail = await application.get_incident(incident_id, run_id=UUID(repair.id))
+        )
+        detail = await application.get_incident(incident_id, run_id=run.id)
         assert detail.diagnosis is None and detail.repair is not None
         assert detail.repair.id != legacy.repair.id
-        assert set(detail.repair.evidence_ids) == set(evidence_ids)
-        assert {row.id for row in detail.evidence} == set(evidence_ids)
-        assert detail.selected_run.kind is RunKind.REPAIR
-        events = await application.list_run_events(
-            incident_id, UUID(repair.id), limit=100, cursor=None
+        assert len(detail.evidence) == 4
+        assert set(detail.repair.evidence_ids) == {
+            row.id
+            for row in detail.evidence
+            if row.evidence_kind in ("workload", "rollout_history")
+        }
+        assert {row.id for row in detail.evidence}.isdisjoint(
+            row.id for row in legacy.evidence
         )
-        assert len(events.items) == 1
+        assert detail.selected_run.kind is RunKind.REPAIR
+        assert detail.selected_run.source_run_id == diagnostic_id
+        assert detail.selected_run.waiting_expires_at == FRESH_NOW + timedelta(
+            minutes=15
+        )
+        events = await application.list_run_events(
+            incident_id, run.id, limit=100, cursor=None
+        )
+        waiting = [
+            item
+            for item in events.items
+            if item.root.event == "repair.waiting_approval"
+        ]
+        assert len(waiting) == 1
         assert (
-            events.items[0].root.data.model_dump(mode="json")["runStatus"]
+            waiting[0].root.data.model_dump(mode="json")["runStatus"]
             == "WAITING_APPROVAL"
         )
         history = await application.list_runs(incident_id, limit=50, cursor=None)

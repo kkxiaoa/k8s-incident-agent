@@ -11,7 +11,7 @@ from typing import Final, Literal, cast
 from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
-from sqlalchemy import and_, delete, exists, func, or_, select
+from sqlalchemy import and_, delete, exists, func, or_, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
@@ -25,6 +25,7 @@ from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
     NormalizedIncidentTrigger,
+    RepairHistorySelection,
 )
 from k8s_incident_agent.domain.models import (
     CANONICAL_ALERT_TIMESTAMP_PATTERN,
@@ -73,7 +74,7 @@ from k8s_incident_agent.repair.contracts import (
     RepairProposal,
     SetContainerImageIntent,
 )
-from k8s_incident_agent.repair.records import RepairTerminalRecord
+from k8s_incident_agent.repair.records import PreparedRepairRecord, RepairTerminalRecord
 
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
 _SCHEMA_VERSION: Final = 5
@@ -129,6 +130,11 @@ class IncidentRunDetail:
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    request_source: Literal["system", "operator"] | None
+    source_run_id: UUID | None
+    selection: RepairHistorySelection | None
+    waiting_expires_at: datetime | None
+    end_reason: Literal["expired", "superseded"] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +238,7 @@ class _WorkflowRows:
     incident: IncidentRow
     diagnosis: DiagnosisRow | None
     repair_proposal: RepairProposalRow | None
+    repair: IncidentRepairDetail | None
     start_event: RunEventRow | None
     terminal_event: RunEventRow | None
     managed_events: tuple[RunEventRow, ...]
@@ -260,6 +267,10 @@ class ActiveRunExistsError(RepositoryError):
 
     def __init__(self) -> None:
         super().__init__("Incident already has an active Run")
+
+
+class RepairSourceInvalidError(RepositoryError):
+    code = "repair_source_invalid"
 
 
 class RunNotFoundRepositoryError(RepositoryError):
@@ -678,6 +689,7 @@ class IncidentRepository:
                     rows.start_event,
                     rows.terminal_event,
                     rows.repair_proposal,
+                    rows.repair,
                     rows.managed_events,
                 )
                 evidence_rows = list(
@@ -706,7 +718,7 @@ class IncidentRepository:
                     incident,
                     run,
                     rows.diagnosis,
-                    rows.repair_proposal,
+                    rows.repair,
                     alert_signal,
                     evidence_rows,
                     workflow,
@@ -808,6 +820,7 @@ class IncidentRepository:
                     rows.start_event,
                     rows.terminal_event,
                     rows.repair_proposal,
+                    rows.repair,
                     rows.managed_events,
                 )
         except RepositoryError:
@@ -821,8 +834,7 @@ class IncidentRepository:
                 values = await session.scalars(
                     select(RunRow.id)
                     .where(
-                        RunRow.kind == RunKind.DIAGNOSIS,
-                        RunRow.status.in_((RunStatus.QUEUED, RunStatus.RUNNING)),
+                        RunRow.status.in_(_ACTIVE_RUN_STATUSES),
                     )
                     .order_by(RunRow.created_at, RunRow.id)
                 )
@@ -951,6 +963,8 @@ class IncidentRepository:
             async with self._session_factory() as session:
                 run, incident = await _load_run_context(session, run_id)
                 _require_active_run(run, incident)
+                if run.kind is not RunKind.DIAGNOSIS:
+                    raise RecoveryConsistencyError
                 evidence_rows = list(
                     await session.scalars(
                         select(EvidenceRow).where(EvidenceRow.run_id == str(run_id))
@@ -990,7 +1004,7 @@ class IncidentRepository:
             raise RecoveryConsistencyError from None
         try:
             async with self._session_factory() as session:
-                _, incident = await _load_run_context(session, run_id)
+                run, incident = await _load_run_context(session, run_id)
                 incident_id = UUID(incident.id)
                 evidence = await _evidence_by_tool_call(session, run_id, tool_call_id)
                 failure = await _event_by_key(
@@ -1001,25 +1015,32 @@ class IncidentRepository:
                 if evidence is not None and failure is not None:
                     raise RecoveryConsistencyError
 
-                await _require_matching_tool_started(
+                started_event = await _require_matching_tool_started(
                     session,
                     incident_id,
                     run_id,
                     tool_call_id,
                     tool_name,
                     normalized_identity,
+                    run.kind,
                 )
 
                 if evidence is not None:
-                    return await _existing_evidence_outcome(
+                    outcome = await _existing_evidence_outcome(
                         session,
                         evidence,
                         incident_id,
                         run_id,
                         tool_call_id,
                         tool_name,
+                        run.kind,
                     )
+                    if started_event.id >= outcome.event.id:
+                        raise RecoveryConsistencyError
+                    return outcome
                 failure_row = cast(RunEventRow, failure)
+                if started_event.id >= failure_row.id:
+                    raise RecoveryConsistencyError
                 return _existing_failure_outcome(
                     failure_row,
                     _event_payload(failure_row),
@@ -1027,6 +1048,7 @@ class IncidentRepository:
                     run_id,
                     tool_call_id,
                     tool_name,
+                    run.kind,
                 )
         except RepositoryError:
             raise
@@ -1038,6 +1060,8 @@ class IncidentRepository:
         trigger: NormalizedIncidentTrigger,
         model: ModelSnapshot,
         budget: RunBudget,
+        *,
+        operator_ref: str | None = None,
     ) -> CreatedIncident:
         try:
             async with self._session_factory() as session, session.begin():
@@ -1047,6 +1071,11 @@ class IncidentRepository:
                     model=model,
                     budget=budget,
                 )
+                if operator_ref is not None:
+                    run = await session.get(RunRow, str(created.run_id))
+                    if run is None:
+                        raise RecoveryConsistencyError
+                    run.request_source, run.operator_ref = "operator", operator_ref
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
@@ -1151,14 +1180,22 @@ class IncidentRepository:
         incident_id: UUID,
         model: ModelSnapshot,
         budget: RunBudget,
+        *,
+        replaces_run_id: UUID | None = None,
+        operator_ref: str | None = None,
     ) -> CreatedRun | None:
         run_id = uuid4()
         occurred_at = datetime.now(UTC)
         try:
             async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
                 incident = await session.get(IncidentRow, str(incident_id))
                 if incident is None:
                     return None
+                if replaces_run_id is not None:
+                    await _replace_waiting_run(
+                        session, incident, replaces_run_id, occurred_at
+                    )
                 active = await session.scalar(
                     select(
                         exists().where(
@@ -1186,6 +1223,8 @@ class IncidentRepository:
                     occurred_at=occurred_at,
                 )
                 session.add(run_row)
+                run_row.request_source = "operator" if operator_ref else "system"
+                run_row.operator_ref = operator_ref
                 await session.flush()
                 payload = _base_payload(incident_id, run_id, occurred_at)
                 payload.update(
@@ -1235,6 +1274,275 @@ class IncidentRepository:
         await self._notify_committed_event(event)
         return created
 
+    async def create_repair_run(
+        self,
+        incident_id: UUID,
+        source_run_id: UUID,
+        *,
+        selection: RepairHistorySelection | None,
+        replaces_run_id: UUID | None,
+        operator_ref: str,
+        now: datetime,
+    ) -> CreatedRun | None:
+        now = _require_aware_datetime(now)
+        run_id = uuid4()
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                incident = await session.get(IncidentRow, str(incident_id))
+                if incident is None:
+                    return None
+                source = await session.get(RunRow, str(source_run_id))
+                source_row = await _repair_proposal_by_run(session, source_run_id)
+                if (
+                    source is None
+                    or source.incident_id != incident.id
+                    or source_row is None
+                    or source.status
+                    not in (
+                        RunStatus.COMPLETED,
+                        RunStatus.FAILED,
+                        RunStatus.WAITING_APPROVAL,
+                    )
+                    or (
+                        source.kind is RunKind.REPAIR
+                        and source.operation is not RepairOperation.APPLY
+                    )
+                ):
+                    raise RepairSourceInvalidError
+                proposal, _ = _repair_contracts_from_row(source_row, source_run_id)
+                if proposal.target != KubernetesTarget(
+                    cluster=incident.cluster,
+                    namespace=incident.namespace,
+                    api_version=incident.api_version,
+                    kind=incident.kind,
+                    name=incident.resource_name,
+                ):
+                    raise RepairSourceInvalidError
+                if replaces_run_id is not None:
+                    await _replace_waiting_run(session, incident, replaces_run_id, now)
+                active = await session.scalar(
+                    select(
+                        exists().where(
+                            RunRow.incident_id == incident.id,
+                            RunRow.status.in_(_ACTIVE_RUN_STATUSES),
+                        )
+                    )
+                )
+                if active is not False:
+                    raise ActiveRunExistsError
+                previous_attempt = await session.scalar(
+                    select(func.max(RunRow.attempt)).where(
+                        RunRow.incident_id == incident.id
+                    )
+                )
+                if (
+                    not isinstance(previous_attempt, int)
+                    or source.attempt > previous_attempt
+                ):
+                    raise RecoveryConsistencyError
+                run = RunRow(
+                    id=str(run_id),
+                    incident_id=incident.id,
+                    attempt=previous_attempt + 1,
+                    kind=RunKind.REPAIR,
+                    operation=RepairOperation.APPLY,
+                    status=RunStatus.QUEUED,
+                    timeout_seconds=60,
+                    source_run_id=source.id,
+                    request_source="operator",
+                    operator_ref=operator_ref,
+                    selection_revision=selection.revision if selection else None,
+                    selection_replica_set_uid=selection.replica_set_uid
+                    if selection
+                    else None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(run)
+                await session.flush()
+                payload = _base_payload(incident_id, run_id, now, RunKind.REPAIR)
+                payload.update({"attempt": run.attempt, "runStatus": "QUEUED"})
+                event_row = _new_event_row(
+                    run_id=run_id,
+                    event_key="run.queued",
+                    event_type="run.queued",
+                    occurred_at=now,
+                    payload=payload,
+                )
+                session.add(event_row)
+                incident.updated_at = now
+                await session.flush()
+                event = _event_from_row(event_row, expected_incident_id=incident_id)
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        await self._notify_committed_event(event)
+        return CreatedRun(run_id=run_id)
+
+    async def get_repair_source_proposal(self, run_id: UUID) -> RepairProposal:
+        try:
+            async with self._session_factory() as session:
+                run, incident = await _load_run_context(session, run_id)
+                return await _repair_source_proposal(session, run, incident)
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def persist_prepared_repair(self, prepared: PreparedRepairRecord) -> None:
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                run, incident = await _load_run_context(session, prepared.run_id)
+                if run.kind is not RunKind.REPAIR:
+                    raise RecoveryConsistencyError
+                _require_active_run(run, incident)
+                if await _repair_proposal_by_run(session, prepared.run_id) is not None:
+                    raise RecoveryConsistencyError
+                proposal, validation = prepared.proposal, prepared.validation
+                if proposal is not None and validation is not None:
+                    await _require_repair_evidence(session, run, incident, proposal)
+                    session.add(
+                        RepairProposalRow(
+                            id=str(proposal.id),
+                            run_id=run.id,
+                            schema_version=proposal.schema_version,
+                            proposal_json=canonical_json(
+                                cast(
+                                    dict[str, JsonValue],
+                                    proposal.model_dump(mode="json"),
+                                )
+                            ),
+                            validation_json=canonical_json(
+                                cast(
+                                    dict[str, JsonValue],
+                                    validation.model_dump(mode="json"),
+                                )
+                            ),
+                            created_at=proposal.diff_checked_at,
+                        )
+                    )
+                    if prepared.selection is None:
+                        raise RecoveryConsistencyError
+                    run.selection_revision = prepared.selection.revision
+                    run.selection_replica_set_uid = prepared.selection.replica_set_uid
+                run.updated_at = prepared.recorded_at
+                incident.updated_at = prepared.recorded_at
+                run.error_code = prepared.error_code
+                run.error_retryable = prepared.error_retryable
+                if prepared.error_code is None:
+                    if validation is None:
+                        raise RecoveryConsistencyError
+                    run.status = RunStatus.WAITING_APPROVAL
+                    run.waiting_expires_at = validation.checked_at + timedelta(
+                        minutes=15
+                    )
+                    incident.status = IncidentStatus.WAITING_APPROVAL
+                else:
+                    run.status = RunStatus.FAILED
+                    run.completed_at = prepared.recorded_at
+                    incident.status = (
+                        IncidentStatus.STALE_RESOURCE
+                        if prepared.error_code == "stale_resource"
+                        else IncidentStatus.FAILED
+                    )
+                events = _prepared_repair_events(prepared, UUID(incident.id))
+                session.add_all(events)
+                await session.flush()
+                event = _event_from_row(
+                    events[-1], expected_incident_id=UUID(incident.id)
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        await self._notify_committed_event(event)
+
+    async def fail_repair_run(
+        self,
+        run_id: UUID,
+        code: str,
+        retryable: bool,
+        now: datetime,
+    ) -> None:
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                run, incident = await _load_run_context(session, run_id)
+                if (
+                    run.kind is not RunKind.REPAIR
+                    or run.status not in _ACTIVE_RUN_STATUSES
+                ):
+                    return
+                run.status = RunStatus.FAILED
+                run.error_code, run.error_retryable = code, retryable
+                run.completed_at = run.updated_at = now
+                incident.status = IncidentStatus.FAILED
+                incident.updated_at = now
+                payload = _base_payload(UUID(incident.id), run_id, now, RunKind.REPAIR)
+                payload.update(
+                    {
+                        "errorCode": code,
+                        "retryable": retryable,
+                        "incidentStatus": "FAILED",
+                        "runStatus": "FAILED",
+                    }
+                )
+                event_row = _new_event_row(
+                    run_id=run_id,
+                    event_key="run:terminal",
+                    event_type="run.failed",
+                    occurred_at=now,
+                    payload=payload,
+                )
+                session.add(event_row)
+                await session.flush()
+                event = _event_from_row(
+                    event_row, expected_incident_id=UUID(incident.id)
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        await self._notify_committed_event(event)
+
+    async def expire_waiting_repairs(self, now: datetime) -> None:
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                runs = await session.scalars(
+                    select(RunRow)
+                    .where(
+                        RunRow.kind == RunKind.REPAIR,
+                        RunRow.status == RunStatus.WAITING_APPROVAL,
+                        RunRow.waiting_expires_at <= now,
+                    )
+                    .order_by(RunRow.waiting_expires_at, RunRow.id)
+                    .limit(100)
+                )
+                events: list[RunEvent] = []
+                for run in runs:
+                    incident = await session.get(IncidentRow, run.incident_id)
+                    if incident is None:
+                        raise RecoveryConsistencyError
+                    event_row = await _end_waiting_run(
+                        session, run, incident, now, "expired"
+                    )
+                    await session.flush()
+                    events.append(
+                        _event_from_row(
+                            event_row, expected_incident_id=UUID(incident.id)
+                        )
+                    )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        for event in events:
+            await self._notify_committed_event(event)
+
     async def start_run(self, run_id: UUID, started_at: datetime) -> RunRecord:
         started_at = _require_aware_datetime(started_at)
         result = await _execute_with_replay(
@@ -1247,16 +1555,20 @@ class IncidentRepository:
     async def _start_run_once(self, run_id: UUID, started_at: datetime) -> RunRecord:
         async with self._session_factory() as session, session.begin():
             run, incident = await _load_run_context(session, run_id)
-            if run.kind is not RunKind.DIAGNOSIS:
-                raise RecoveryConsistencyError
             incident_id = UUID(incident.id)
             existing = await _event_by_key(session, run_id, "run.started")
             if existing is not None:
                 return _replayed_start(run, incident, existing, started_at)
 
-            _require_incident_transition(incident.status, IncidentStatus.TRIAGING)
+            target_status = (
+                IncidentStatus.TRIAGING
+                if run.kind is RunKind.DIAGNOSIS
+                else IncidentStatus.PATCH_READY
+            )
+            if run.kind is RunKind.DIAGNOSIS:
+                _require_incident_transition(incident.status, target_status)
             _require_run_transition(run.status, RunStatus.RUNNING)
-            incident.status = IncidentStatus.TRIAGING
+            incident.status = target_status
             incident.updated_at = started_at
             run.status = RunStatus.RUNNING
             run.started_at = started_at
@@ -1271,6 +1583,7 @@ class IncidentRepository:
                     run_id,
                     run.attempt,
                     started_at,
+                    run.kind,
                 ),
             )
             session.add(event_row)
@@ -1336,6 +1649,7 @@ class IncidentRepository:
                     tool_call_id,
                     tool_name,
                     call_identity,
+                    run.kind,
                 )
                 return _event_from_row(
                     existing,
@@ -1355,6 +1669,7 @@ class IncidentRepository:
                     tool_name,
                     occurred_at,
                     call_identity,
+                    run.kind,
                 ),
             )
             session.add(event_row)
@@ -1372,7 +1687,7 @@ class IncidentRepository:
         call_identity: dict[str, JsonValue] | None,
     ) -> RunEvent:
         async with self._session_factory() as session:
-            _, incident = await _load_run_context(session, run_id)
+            run, incident = await _load_run_context(session, run_id)
             event_row = await _event_by_key(
                 session, run_id, f"tool:{tool_call_id}:started"
             )
@@ -1385,6 +1700,7 @@ class IncidentRepository:
                 tool_call_id,
                 tool_name,
                 call_identity,
+                run.kind,
             )
             return _event_from_row(
                 event_row,
@@ -1424,6 +1740,7 @@ class IncidentRepository:
                     persisted,
                     failure,
                     incident_id,
+                    run.kind,
                 )
             _require_active_run(run, incident)
 
@@ -1451,6 +1768,7 @@ class IncidentRepository:
                     incident_id,
                     evidence.run_id,
                     occurred_at,
+                    run.kind,
                 ),
             )
             session.add_all((evidence_row, event_row))
@@ -1459,7 +1777,7 @@ class IncidentRepository:
 
     async def _replay_evidence(self, evidence: EvidenceRecord) -> PersistedEvidence:
         async with self._session_factory() as session:
-            _, incident = await _load_run_context(session, evidence.run_id)
+            run, incident = await _load_run_context(session, evidence.run_id)
             persisted = await _evidence_by_tool_call(
                 session, evidence.run_id, evidence.tool_call_id
             )
@@ -1474,6 +1792,7 @@ class IncidentRepository:
                 persisted,
                 failure,
                 UUID(incident.id),
+                run.kind,
             )
 
     async def record_tool_failure(self, failure: ToolFailureRecord) -> RunEvent:
@@ -1503,6 +1822,7 @@ class IncidentRepository:
                     evidence,
                     existing,
                     incident_id,
+                    run.kind,
                 )
             _require_active_run(run, incident)
             event_row = _new_event_row(
@@ -1510,7 +1830,7 @@ class IncidentRepository:
                 event_key=event_key,
                 event_type="tool.failed",
                 occurred_at=failure.occurred_at,
-                payload=_tool_failure_event_payload(failure, incident_id),
+                payload=_tool_failure_event_payload(failure, incident_id, run.kind),
             )
             session.add(event_row)
             await session.flush()
@@ -1521,7 +1841,7 @@ class IncidentRepository:
 
     async def _replay_tool_failure(self, failure: ToolFailureRecord) -> RunEvent:
         async with self._session_factory() as session:
-            _, incident = await _load_run_context(session, failure.run_id)
+            run, incident = await _load_run_context(session, failure.run_id)
             evidence = await _evidence_by_tool_call(
                 session, failure.run_id, failure.tool_call_id
             )
@@ -1535,6 +1855,7 @@ class IncidentRepository:
                 evidence,
                 existing,
                 UUID(incident.id),
+                run.kind,
             )
 
     async def persist_terminal(self, terminal: TerminalRecord) -> PersistedTerminal:
@@ -1949,6 +2270,182 @@ def _require_matching_alert_occurrence(
         raise RecoveryConsistencyError
 
 
+async def _repair_source_proposal(
+    session: AsyncSession,
+    run: RunRow,
+    incident: IncidentRow,
+) -> RepairProposal:
+    if run.kind is not RunKind.REPAIR or run.source_run_id is None:
+        raise RecoveryConsistencyError
+    source = await session.get(RunRow, run.source_run_id)
+    if (
+        source is None
+        or source.incident_id != incident.id
+        or source.attempt >= run.attempt
+        or source.status not in (RunStatus.COMPLETED, RunStatus.FAILED)
+        or (
+            source.kind is RunKind.REPAIR
+            and source.operation is not RepairOperation.APPLY
+        )
+    ):
+        raise RecoveryConsistencyError
+    row = await _repair_proposal_by_run(session, UUID(source.id))
+    if row is None:
+        raise RecoveryConsistencyError
+    proposal, _ = _repair_contracts_from_row(row, UUID(source.id))
+    if proposal.target != KubernetesTarget(
+        cluster=incident.cluster,
+        namespace=incident.namespace,
+        api_version=incident.api_version,
+        kind=incident.kind,
+        name=incident.resource_name,
+    ):
+        raise RecoveryConsistencyError
+    return proposal
+
+
+async def _replace_waiting_run(
+    session: AsyncSession,
+    incident: IncidentRow,
+    replaces_run_id: UUID,
+    now: datetime,
+) -> None:
+    run = await session.get(RunRow, str(replaces_run_id))
+    if (
+        run is None
+        or run.incident_id != incident.id
+        or run.status is not RunStatus.WAITING_APPROVAL
+    ):
+        raise ActiveRunExistsError
+    reason = (
+        "expired"
+        if run.waiting_expires_at is not None
+        and _database_datetime(run.waiting_expires_at) <= now
+        else "superseded"
+    )
+    await _end_waiting_run(session, run, incident, now, reason)
+    await session.flush()
+
+
+async def _end_waiting_run(
+    session: AsyncSession,
+    run: RunRow,
+    incident: IncidentRow,
+    now: datetime,
+    reason: Literal["expired", "superseded"],
+) -> RunEventRow:
+    rows = await _load_workflow_rows(session, UUID(run.id))
+    snapshot = _workflow_run_snapshot(
+        rows.run,
+        rows.incident,
+        rows.diagnosis,
+        rows.start_event,
+        rows.terminal_event,
+        rows.repair_proposal,
+        rows.repair,
+        rows.managed_events,
+    )
+    if (
+        not isinstance(snapshot, RepairWorkflowRunSnapshot)
+        or snapshot.run_status is not RunStatus.WAITING_APPROVAL
+    ):
+        raise RecoveryConsistencyError
+    run.status = RunStatus.COMPLETED
+    run.completed_at = now
+    run.updated_at = now
+    run.end_reason = reason
+    incident.status = IncidentStatus.DIAGNOSED
+    incident.updated_at = now
+    payload = _base_payload(UUID(incident.id), UUID(run.id), now, RunKind.REPAIR)
+    payload.update(
+        {"reason": reason, "runStatus": "COMPLETED", "incidentStatus": "DIAGNOSED"}
+    )
+    event = _new_event_row(
+        run_id=UUID(run.id),
+        event_key="run:terminal",
+        event_type="repair.wait_ended",
+        occurred_at=now,
+        payload=payload,
+    )
+    session.add(event)
+    return event
+
+
+def _prepared_repair_events(
+    prepared: PreparedRepairRecord,
+    incident_id: UUID,
+) -> list[RunEventRow]:
+    stages: list[tuple[str, datetime, dict[str, JsonValue]]] = []
+    proposal, validation = prepared.proposal, prepared.validation
+    if proposal is not None:
+        identity: dict[str, JsonValue] = {
+            "proposalId": str(proposal.id),
+            "proposalDigest": proposal.digest,
+        }
+        stages.append(
+            (
+                "repair.patch_ready",
+                proposal.diff_checked_at,
+                {
+                    **identity,
+                    "incidentStatus": "PATCH_READY",
+                    "runStatus": "RUNNING",
+                },
+            )
+        )
+        if validation is not None and validation.outcome == "passed":
+            stages.extend(
+                (
+                    (
+                        "repair.dry_run_passed",
+                        validation.checked_at,
+                        {
+                            **identity,
+                            "incidentStatus": "DRY_RUN_PASSED",
+                            "runStatus": "RUNNING",
+                        },
+                    ),
+                    (
+                        "repair.waiting_approval",
+                        prepared.recorded_at,
+                        {
+                            **identity,
+                            "incidentStatus": "WAITING_APPROVAL",
+                            "runStatus": "WAITING_APPROVAL",
+                        },
+                    ),
+                )
+            )
+    if prepared.error_code is not None:
+        stages.append(
+            (
+                "run.failed",
+                prepared.recorded_at,
+                {
+                    "errorCode": prepared.error_code,
+                    "retryable": prepared.error_retryable,
+                    "incidentStatus": "STALE_RESOURCE"
+                    if prepared.error_code == "stale_resource"
+                    else "FAILED",
+                    "runStatus": "FAILED",
+                },
+            )
+        )
+    return [
+        _new_event_row(
+            run_id=prepared.run_id,
+            event_key="run:terminal" if name == "run.failed" else name,
+            event_type=name,
+            occurred_at=at,
+            payload={
+                **_base_payload(incident_id, prepared.run_id, at, RunKind.REPAIR),
+                **data,
+            },
+        )
+        for name, at, data in stages
+    ]
+
+
 async def _load_run_context(
     session: AsyncSession, run_id: UUID
 ) -> tuple[RunRow, IncidentRow]:
@@ -2037,6 +2534,15 @@ async def _load_workflow_rows(
         dry_run_event,
         terminal_event,
     ) = row
+    repair = (
+        _incident_repair_detail(repair_proposal, run_id)
+        if repair_proposal is not None
+        else None
+    )
+    if run.kind is RunKind.REPAIR:
+        await _repair_source_proposal(session, run, incident)
+        if repair is not None:
+            await _require_repair_evidence(session, run, incident, repair.proposal)
     managed_events = tuple(
         sorted(
             (
@@ -2052,11 +2558,14 @@ async def _load_workflow_rows(
             key=lambda event: event.id,
         )
     )
+    if run.kind is RunKind.REPAIR:
+        managed_events = await _repair_managed_events(session, run_id)
     return _WorkflowRows(
         run=run,
         incident=incident,
         diagnosis=diagnosis,
         repair_proposal=repair_proposal,
+        repair=repair,
         start_event=start_event,
         terminal_event=terminal_event,
         managed_events=managed_events,
@@ -2096,6 +2605,7 @@ async def _prune_target_from_incident(
             rows.start_event,
             rows.terminal_event,
             rows.repair_proposal,
+            rows.repair,
             rows.managed_events,
         )
         if snapshot.incident_id != incident_id or snapshot.run_status not in (
@@ -2275,7 +2785,7 @@ def _incident_detail_record(
     incident: IncidentRow,
     run: RunRow,
     diagnosis: DiagnosisRow | None,
-    repair_proposal: RepairProposalRow | None,
+    repair: IncidentRepairDetail | None,
     alert_signal: AlertSignalRow | None,
     evidence_rows: list[EvidenceRow],
     workflow: WorkflowRunSnapshot,
@@ -2327,11 +2837,6 @@ def _incident_detail_record(
                 redacted=terminal.redacted,
                 created_at=_database_datetime(diagnosis.created_at),
             )
-        repair_detail = (
-            _incident_repair_detail(repair_proposal, run_id)
-            if repair_proposal is not None
-            else None
-        )
         return IncidentDetailRecord(
             incident=incident_record,
             trigger_summary=incident.trigger_summary,
@@ -2340,7 +2845,7 @@ def _incident_detail_record(
                 _incident_evidence_detail(row, run_id) for row in evidence_rows
             ),
             diagnosis=diagnosis_detail,
-            repair=repair_detail,
+            repair=repair,
             alert_signal=_alert_signal_record(alert_signal, incident_record),
             events=tuple(
                 _event_from_row(
@@ -2371,6 +2876,7 @@ async def _run_detail_from_row(
         rows.start_event,
         rows.terminal_event,
         rows.repair_proposal,
+        rows.repair,
         rows.managed_events,
     )
     return _incident_run_detail(run, workflow)
@@ -2390,6 +2896,8 @@ def _incident_run_detail(
         not _is_positive_integer(run.attempt)
         or any(not _is_optional_non_negative_integer(value) for value in usage)
         or (run.error_code is None) is not (run.error_retryable is None)
+        or run.request_source not in (None, "system", "operator")
+        or (run.request_source == "operator") != (run.operator_ref is not None)
     ):
         raise RecoveryConsistencyError
     return IncidentRunDetail(
@@ -2409,6 +2917,19 @@ def _incident_run_detail(
             if run.completed_at is not None
             else None
         ),
+        request_source=run.request_source,
+        source_run_id=workflow.source_run_id
+        if isinstance(workflow, RepairWorkflowRunSnapshot)
+        else None,
+        selection=workflow.selection
+        if isinstance(workflow, RepairWorkflowRunSnapshot)
+        else None,
+        waiting_expires_at=workflow.waiting_expires_at
+        if isinstance(workflow, RepairWorkflowRunSnapshot)
+        else None,
+        end_reason=workflow.end_reason
+        if isinstance(workflow, RepairWorkflowRunSnapshot)
+        else None,
     )
 
 
@@ -2489,6 +3010,7 @@ def _workflow_run_snapshot(
     start_event: RunEventRow | None,
     terminal_event: RunEventRow | None,
     repair_proposal: RepairProposalRow | None,
+    repair: IncidentRepairDetail | None,
     managed_events: tuple[RunEventRow, ...],
 ) -> WorkflowRunSnapshot:
     snapshot, _ = _workflow_run_projection(
@@ -2498,6 +3020,7 @@ def _workflow_run_snapshot(
         start_event,
         terminal_event,
         repair_proposal,
+        repair,
         managed_events,
     )
     return snapshot
@@ -2510,6 +3033,7 @@ def _workflow_run_projection(
     start_event: RunEventRow | None,
     terminal_event: RunEventRow | None,
     repair_proposal: RepairProposalRow | None,
+    repair: IncidentRepairDetail | None,
     managed_events: tuple[RunEventRow, ...],
 ) -> tuple[WorkflowRunSnapshot, TerminalRecord | None]:
     try:
@@ -2527,7 +3051,15 @@ def _workflow_run_projection(
     except (AttributeError, TypeError, ValueError):
         raise RecoveryConsistencyError from None
     if run.kind is RunKind.REPAIR:
-        return _repair_workflow_snapshot(run, incident, diagnosis, target), None
+        return _repair_workflow_snapshot(
+            run,
+            incident,
+            diagnosis,
+            target,
+            start_event,
+            repair,
+            managed_events,
+        ), None
     if (
         run.incident_id != incident.id
         or not _is_positive_integer(run.attempt)
@@ -2587,7 +3119,7 @@ def _workflow_run_projection(
             repair_terminal = _repair_terminal_record_from_rows(
                 run,
                 diagnosis,
-                repair_proposal,
+                repair,
             )
             _resolve_repair_terminal_replay(
                 repair_terminal,
@@ -2653,6 +3185,9 @@ def _repair_workflow_snapshot(
     incident: IncidentRow,
     diagnosis: DiagnosisRow | None,
     target: KubernetesTarget,
+    start_event: RunEventRow | None,
+    repair: IncidentRepairDetail | None,
+    managed_events: tuple[RunEventRow, ...],
 ) -> RepairWorkflowRunSnapshot:
     """Read business state without replaying a diagnostic graph or model checkpoint."""
     started_at = (
@@ -2695,6 +3230,143 @@ def _repair_workflow_snapshot(
         or (run.error_code is None) != (run.error_retryable is None)
     ):
         raise RecoveryConsistencyError
+    _require_start_event_consistency(run, incident, start_event, started_at)
+    expires_at = (
+        _database_datetime(run.waiting_expires_at)
+        if run.waiting_expires_at is not None
+        else None
+    )
+    try:
+        if run.source_run_id is None:
+            raise ValueError
+        source_run_id = UUID(run.source_run_id)
+        selection = (
+            None
+            if run.selection_revision is None and run.selection_replica_set_uid is None
+            else RepairHistorySelection.model_validate(
+                {
+                    "revision": run.selection_revision,
+                    "replica_set_uid": run.selection_replica_set_uid,
+                }
+            )
+        )
+    except (TypeError, ValueError):
+        raise RecoveryConsistencyError from None
+    proposal, validation = (
+        (repair.proposal, repair.validation) if repair is not None else (None, None)
+    )
+    if (
+        (expires_at is not None)
+        != (validation is not None and validation.outcome == "passed")
+        or (
+            expires_at is not None
+            and validation is not None
+            and expires_at != validation.checked_at + timedelta(minutes=15)
+        )
+        or (
+            run.status is RunStatus.WAITING_APPROVAL
+            and (
+                expires_at is None
+                or incident.status is not IncidentStatus.WAITING_APPROVAL
+            )
+        )
+        or (
+            run.status is RunStatus.RUNNING
+            and incident.status is not IncidentStatus.PATCH_READY
+        )
+        or (
+            run.status in (RunStatus.QUEUED, RunStatus.RUNNING)
+            and (proposal is not None or managed_events)
+        )
+        or (run.status is RunStatus.COMPLETED)
+        != (run.end_reason in ("expired", "superseded"))
+        or run.end_reason not in (None, "expired", "superseded")
+        or (run.end_reason is not None and (expires_at is None or completed_at is None))
+        or (
+            run.end_reason == "expired"
+            and completed_at is not None
+            and expires_at is not None
+            and completed_at < expires_at
+        )
+        or (proposal is not None and (selection is None or proposal.target != target))
+    ):
+        raise RecoveryConsistencyError
+    if run.status in (
+        RunStatus.WAITING_APPROVAL,
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+    ):
+        preparation_events = tuple(
+            event
+            for event in managed_events
+            if event.event_type != "repair.wait_ended"
+            and not (expires_at is not None and event.event_key == "run:terminal")
+        )
+        if not preparation_events:
+            raise RecoveryConsistencyError
+        prepared = PreparedRepairRecord(
+            run_id=UUID(run.id),
+            recorded_at=_database_datetime(preparation_events[-1].occurred_at),
+            proposal=proposal,
+            validation=validation,
+            selection=selection,
+            error_code=run.error_code if expires_at is None else None,
+            error_retryable=run.error_retryable if expires_at is None else None,
+        )
+        expected_events = _prepared_repair_events(prepared, UUID(incident.id))
+        if len(expected_events) != len(preparation_events) or any(
+            actual.event_key != expected.event_key
+            or actual.payload_json != expected.payload_json
+            or actual.event_type != expected.event_type
+            or _database_datetime(actual.occurred_at) != expected.occurred_at
+            for actual, expected in zip(
+                preparation_events, expected_events, strict=True
+            )
+        ):
+            raise RecoveryConsistencyError
+        if run.status is RunStatus.COMPLETED:
+            ended = managed_events[-1]
+            expected_payload = _base_payload(
+                UUID(incident.id),
+                UUID(run.id),
+                cast(datetime, completed_at),
+                RunKind.REPAIR,
+            )
+            expected_payload.update(
+                {
+                    "reason": run.end_reason,
+                    "runStatus": "COMPLETED",
+                    "incidentStatus": "DIAGNOSED",
+                }
+            )
+            if (
+                ended.event_type != "repair.wait_ended"
+                or ended.event_key != "run:terminal"
+                or ended.payload_json != canonical_json(expected_payload)
+            ):
+                raise RecoveryConsistencyError
+        elif run.status is RunStatus.FAILED and expires_at is not None:
+            ended = managed_events[-1]
+            expected_payload = _base_payload(
+                UUID(incident.id),
+                UUID(run.id),
+                cast(datetime, completed_at),
+                RunKind.REPAIR,
+            )
+            expected_payload.update(
+                {
+                    "errorCode": run.error_code,
+                    "retryable": run.error_retryable,
+                    "incidentStatus": "FAILED",
+                    "runStatus": "FAILED",
+                }
+            )
+            if (
+                ended.event_type != "run.failed"
+                or ended.event_key != "run:terminal"
+                or ended.payload_json != canonical_json(expected_payload)
+            ):
+                raise RecoveryConsistencyError
     return RepairWorkflowRunSnapshot(
         id=UUID(run.id),
         incident_id=UUID(incident.id),
@@ -2709,6 +3381,11 @@ def _repair_workflow_snapshot(
         started_at=started_at,
         operation=cast(RepairOperation, run.operation),
         timeout_seconds=run.timeout_seconds,
+        source_run_id=source_run_id,
+        selection=selection,
+        waiting_expires_at=expires_at,
+        proposal_id=proposal.id if proposal else None,
+        end_reason=run.end_reason,
     )
 
 
@@ -2738,6 +3415,7 @@ def _require_start_event_consistency(
             run_id,
             run.attempt,
             started_at,
+            run.kind,
         ),
     ):
         raise RecoveryConsistencyError
@@ -2885,7 +3563,7 @@ def _terminal_record_from_rows(
 def _repair_terminal_record_from_rows(
     run: RunRow,
     diagnosis: DiagnosisRow | None,
-    proposal_row: RepairProposalRow | None,
+    repair: IncidentRepairDetail | None,
 ) -> RepairTerminalRecord:
     if (
         diagnosis is None
@@ -2901,11 +3579,8 @@ def _repair_terminal_record_from_rows(
     validated = _validated_diagnosis_from_row(diagnosis)
     proposal: RepairProposal | None = None
     validation: PatchValidationResponse | None = None
-    if proposal_row is not None:
-        proposal, validation = _repair_contracts_from_row(
-            proposal_row,
-            UUID(run.id),
-        )
+    if repair is not None:
+        proposal, validation = repair.proposal, repair.validation
         validated = validated.model_copy(
             update={
                 "repair_intent": SetContainerImageIntent(
@@ -3003,6 +3678,7 @@ async def _repair_managed_events(
                     "diagnosis.completed",
                     "repair.patch_ready",
                     "repair.dry_run_passed",
+                    "repair.waiting_approval",
                     "run:terminal",
                 )
             ),
@@ -3028,6 +3704,7 @@ def _new_run_row(
         status=RunStatus.QUEUED,
         kind=RunKind.DIAGNOSIS,
         operation=None,
+        request_source="system",
         model_provider=model.provider,
         model_id=model.model_id,
         thinking_mode=model.thinking_mode,
@@ -3104,13 +3781,16 @@ def _event_payload(row: RunEventRow) -> dict[str, JsonValue]:
 
 
 def _base_payload(
-    incident_id: UUID, run_id: UUID, occurred_at: datetime
+    incident_id: UUID,
+    run_id: UUID,
+    occurred_at: datetime,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> dict[str, JsonValue]:
     return {
         "schemaVersion": _SCHEMA_VERSION,
         "incidentId": str(incident_id),
         "runId": str(run_id),
-        "runKind": RunKind.DIAGNOSIS.value,
+        "runKind": run_kind.value,
         "occurredAt": _rfc3339(occurred_at),
     }
 
@@ -3122,8 +3802,9 @@ def _tool_started_event_payload(
     tool_name: str,
     occurred_at: datetime,
     call_identity: dict[str, JsonValue] | None,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> dict[str, JsonValue]:
-    payload = _base_payload(incident_id, run_id, occurred_at)
+    payload = _base_payload(incident_id, run_id, occurred_at, run_kind)
     payload.update({"toolCallId": tool_call_id, "toolName": tool_name})
     if call_identity is not None:
         payload["callIdentity"] = call_identity
@@ -3135,12 +3816,15 @@ def _run_started_event_payload(
     run_id: UUID,
     attempt: int,
     started_at: datetime,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> dict[str, JsonValue]:
-    payload = _base_payload(incident_id, run_id, started_at)
+    payload = _base_payload(incident_id, run_id, started_at, run_kind)
     payload.update(
         {
             "attempt": attempt,
-            "incidentStatus": IncidentStatus.TRIAGING.value,
+            "incidentStatus": "TRIAGING"
+            if run_kind is RunKind.DIAGNOSIS
+            else "PATCH_READY",
             "runStatus": RunStatus.RUNNING.value,
         }
     )
@@ -3176,7 +3860,7 @@ def _started_run(
         id=UUID(run.id),
         status=run.status,
         incident_id=UUID(incident.id),
-        incident_status=IncidentStatus.TRIAGING,
+        incident_status=incident.status,
         started_at=_database_datetime(run.started_at),
         event=_event_from_row(
             event_row,
@@ -3209,7 +3893,8 @@ async def _require_matching_tool_started(
     tool_call_id: str,
     tool_name: str,
     call_identity: dict[str, JsonValue] | None,
-) -> None:
+    run_kind: RunKind = RunKind.DIAGNOSIS,
+) -> RunEventRow:
     event_row = await _event_by_key(session, run_id, f"tool:{tool_call_id}:started")
     if event_row is None:
         raise RecoveryConsistencyError
@@ -3220,7 +3905,9 @@ async def _require_matching_tool_started(
         tool_call_id,
         tool_name,
         call_identity,
+        run_kind,
     )
+    return event_row
 
 
 def _require_matching_tool_started_event(
@@ -3230,6 +3917,7 @@ def _require_matching_tool_started_event(
     tool_call_id: str,
     tool_name: str,
     call_identity: dict[str, JsonValue] | None,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> None:
     actual_identity = _matching_tool_started_identity(
         event_row,
@@ -3237,6 +3925,7 @@ def _require_matching_tool_started_event(
         run_id,
         tool_call_id,
         tool_name,
+        run_kind,
     )
     if actual_identity != call_identity:
         raise RecoveryConsistencyError
@@ -3248,6 +3937,7 @@ def _matching_tool_started_identity(
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> dict[str, JsonValue] | None:
     occurred_at = _database_datetime(event_row.occurred_at)
     event_payload = _event_payload(event_row)
@@ -3272,6 +3962,7 @@ def _matching_tool_started_identity(
             tool_name,
             occurred_at,
             call_identity,
+            run_kind,
         ),
     ):
         raise RecoveryConsistencyError
@@ -3284,6 +3975,7 @@ async def _resolve_evidence_replay(
     persisted: EvidenceRow | None,
     failure: RunEventRow | None,
     incident_id: UUID,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> PersistedEvidence:
     if persisted is None or failure is not None:
         raise RecoveryConsistencyError
@@ -3298,6 +3990,7 @@ async def _resolve_evidence_replay(
         incident_id,
         evidence.run_id,
         occurred_at,
+        run_kind,
     )
     if not _event_matches(
         event_row,
@@ -3332,8 +4025,9 @@ def _evidence_event_payload(
     incident_id: UUID,
     run_id: UUID,
     occurred_at: datetime,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> dict[str, JsonValue]:
-    payload = _base_payload(incident_id, run_id, occurred_at)
+    payload = _base_payload(incident_id, run_id, occurred_at, run_kind)
     payload.update(
         {
             "evidenceId": evidence_row.id,
@@ -3381,6 +4075,7 @@ async def _existing_evidence_outcome(
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> PersistedEvidence:
     event_row = await _event_by_key(session, run_id, f"tool:{tool_call_id}:evidence")
     if event_row is None:
@@ -3392,6 +4087,7 @@ async def _existing_evidence_outcome(
         run_id,
         tool_call_id,
         tool_name,
+        run_kind,
     )
 
 
@@ -3402,6 +4098,7 @@ def _existing_evidence_outcome_from_event(
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> PersistedEvidence:
     occurred_at = _database_datetime(event_row.occurred_at)
     if (
@@ -3419,6 +4116,7 @@ def _existing_evidence_outcome_from_event(
                 incident_id,
                 run_id,
                 occurred_at,
+                run_kind,
             ),
         )
     ):
@@ -3433,6 +4131,7 @@ def _existing_failure_outcome(
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> ToolFailureRecord:
     error_code = event_payload.get("errorCode")
     retryable = event_payload.get("retryable")
@@ -3454,7 +4153,7 @@ def _existing_failure_outcome(
         event_key=f"tool:{tool_call_id}:failed",
         event_type="tool.failed",
         occurred_at=occurred_at,
-        payload=_tool_failure_event_payload(failure, incident_id),
+        payload=_tool_failure_event_payload(failure, incident_id, run_kind),
     ):
         raise RecoveryConsistencyError
     return failure
@@ -3613,6 +4312,7 @@ def _require_earlier_matching_tool_started(
     run_id: UUID,
     tool_call_id: str,
     tool_name: str,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> tuple[int, dict[str, JsonValue] | None]:
     started_event = events_by_key.get(f"tool:{tool_call_id}:started")
     if started_event is None or started_event.id >= outcome_event.id:
@@ -3623,15 +4323,79 @@ def _require_earlier_matching_tool_started(
         run_id,
         tool_call_id,
         tool_name,
+        run_kind,
     )
     return started_event.id, call_identity
+
+
+async def _require_repair_evidence(
+    session: AsyncSession,
+    run: RunRow,
+    incident: IncidentRow,
+    proposal: RepairProposal,
+) -> None:
+    evidence_rows = list(
+        await session.scalars(select(EvidenceRow).where(EvidenceRow.run_id == run.id))
+    )
+    event_rows = list(
+        await session.scalars(select(RunEventRow).where(RunEventRow.run_id == run.id))
+    )
+    events = {row.event_key: row for row in event_rows}
+    expected_kinds = {"workload", "rollout_history", "pods", "events"}
+    if (
+        run.started_at is None
+        or len(evidence_rows) != 4
+        or {row.evidence_kind for row in evidence_rows} != expected_kinds
+    ):
+        raise RecoveryConsistencyError
+    if set(proposal.evidence_ids) != {
+        UUID(row.id)
+        for row in evidence_rows
+        if row.evidence_kind in ("workload", "rollout_history")
+    }:
+        raise RecoveryConsistencyError
+    for row in evidence_rows:
+        event = events.get(f"tool:{row.tool_call_id}:evidence")
+        if (
+            event is None
+            or row.tool_name != f"get_{row.evidence_kind}"
+            or row.tool_call_id != f"repair:{row.tool_name}"
+        ):
+            raise RecoveryConsistencyError
+        persisted = _existing_evidence_outcome_from_event(
+            row,
+            event,
+            UUID(incident.id),
+            UUID(run.id),
+            row.tool_call_id,
+            row.tool_name,
+            RunKind.REPAIR,
+        )
+        _require_earlier_matching_tool_started(
+            events,
+            event,
+            UUID(incident.id),
+            UUID(run.id),
+            row.tool_call_id,
+            row.tool_name,
+            RunKind.REPAIR,
+        )
+        if (
+            persisted.redacted
+            or persisted.truncated
+            or not _database_datetime(run.started_at)
+            <= persisted.observed_at
+            <= proposal.schema_checked_at
+        ):
+            raise RecoveryConsistencyError
 
 
 def _tool_failure_event_payload(
     failure: ToolFailureRecord,
     incident_id: UUID,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> dict[str, JsonValue]:
-    payload = _base_payload(incident_id, failure.run_id, failure.occurred_at)
+    payload = _base_payload(incident_id, failure.run_id, failure.occurred_at, run_kind)
     payload.update(
         {
             "toolCallId": failure.tool_call_id,
@@ -3648,6 +4412,7 @@ def _resolve_failure_replay(
     evidence: EvidenceRow | None,
     existing: RunEventRow | None,
     incident_id: UUID,
+    run_kind: RunKind = RunKind.DIAGNOSIS,
 ) -> RunEvent:
     if evidence is not None or existing is None:
         raise RecoveryConsistencyError
@@ -3658,17 +4423,17 @@ def _resolve_failure_replay(
         event_key=f"tool:{failure.tool_call_id}:failed",
         event_type="tool.failed",
         occurred_at=failure.occurred_at,
-        payload=_tool_failure_event_payload(failure, incident_id),
+        payload=_tool_failure_event_payload(failure, incident_id, run_kind),
     ):
         raise RecoveryConsistencyError
     return _event_from_row(existing, expected_incident_id=incident_id)
 
 
 def _require_active_run(run: RunRow, incident: IncidentRow) -> None:
-    if (
-        run.kind is not RunKind.DIAGNOSIS
-        or run.status is not RunStatus.RUNNING
-        or incident.status is not IncidentStatus.TRIAGING
+    if run.status is not RunStatus.RUNNING or incident.status is not (
+        IncidentStatus.TRIAGING
+        if run.kind is RunKind.DIAGNOSIS
+        else IncidentStatus.PATCH_READY
     ):
         raise RecoveryConsistencyError
 

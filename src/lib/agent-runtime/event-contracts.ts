@@ -14,6 +14,7 @@ export const RUN_EVENT_NAMES = [
   "repair.patch_ready",
   "repair.dry_run_passed",
   "repair.waiting_approval",
+  "repair.wait_ended",
   "diagnosis.insufficient",
   "run.failed",
   "alert.resolved",
@@ -155,7 +156,9 @@ function parseEventData(
       return {
         ...common,
         attempt: positiveIntegerField(value, "attempt"),
-        incidentStatus: literalField(value, "incidentStatus", "TRIAGING"),
+        incidentStatus: common.runKind === "diagnosis"
+          ? literalField(value, "incidentStatus", "TRIAGING")
+          : literalField(value, "incidentStatus", "PATCH_READY"),
         runStatus: literalField(value, "runStatus", "RUNNING"),
       };
     case "tool.started":
@@ -228,6 +231,14 @@ function parseEventData(
         runStatus: common.runKind === "diagnosis"
           ? literalField(value, "runStatus", "COMPLETED")
           : literalField(value, "runStatus", "WAITING_APPROVAL"),
+      };
+    case "repair.wait_ended":
+      return {
+        ...common,
+        runKind: literalField(value, "runKind", "repair"),
+        reason: value.reason === "expired" || value.reason === "superseded" ? value.reason : invalidEvent(),
+        incidentStatus: literalField(value, "incidentStatus", "DIAGNOSED"),
+        runStatus: literalField(value, "runStatus", "COMPLETED"),
       };
     case "diagnosis.insufficient":
       return {

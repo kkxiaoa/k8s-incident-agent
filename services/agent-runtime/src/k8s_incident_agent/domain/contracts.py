@@ -36,6 +36,16 @@ class IncidentSource(_ImmutableContract):
         return _normalized_string(value)
 
 
+class RepairHistorySelection(_ImmutableContract):
+    revision: int = Field(ge=1, le=(1 << 63) - 1)
+    replica_set_uid: str = Field(min_length=1, max_length=253)
+
+    @field_validator("replica_set_uid")
+    @classmethod
+    def require_normalized_uid(cls, value: str) -> str:
+        return _normalized_string(value)
+
+
 class NormalizedIncidentTrigger(_ImmutableContract):
     source: IncidentSource
     display_name: str = Field(min_length=1)

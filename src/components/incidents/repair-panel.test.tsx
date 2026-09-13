@@ -83,7 +83,7 @@ describe("read-only repair validation", () => {
   });
 
   it.each([
-    ["stale_resource", "目标版本已变化"],
+    ["stale_resource", "目标状态已变化"],
     ["patch_validator_admission_denied", "准入检查拒绝"],
     ["patch_validator_timeout", "验证超时"],
     ["patch_validator_permission_denied", "验证权限不足"],

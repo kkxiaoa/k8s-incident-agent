@@ -15,6 +15,8 @@ _WORKFLOW_FAILURE_RETRYABILITY: Final = {
     "repair_schema_invalid": False,
     "repair_policy_denied": False,
     "repair_diff_invalid": False,
+    "repair_no_candidate": False,
+    "repair_timeout": True,
     "stale_resource": False,
     "patch_validator_authentication_failed": False,
     "patch_validator_replay_rejected": False,

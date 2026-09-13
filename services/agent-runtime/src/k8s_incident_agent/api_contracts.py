@@ -3,6 +3,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -16,6 +17,7 @@ from pydantic.alias_generators import to_camel
 from k8s_incident_agent.diagnosis.tool_execution import (
     normalize_diagnostic_tool_call_identity,
 )
+from k8s_incident_agent.domain.contracts import RepairHistorySelection
 from k8s_incident_agent.domain.models import (
     CANONICAL_ALERT_TIMESTAMP_PATTERN,
     AlertSignalStatus,
@@ -134,6 +136,30 @@ class CreateRunResponse(_ApiContract):
     run_id: UUID
 
 
+class CreateRunRequest(_ApiContract):
+    replaces_run_id: Annotated[UUID, Field(strict=False)] | None = None
+
+
+class RepairHistorySelectionResponse(_ApiContract):
+    revision: str = Field(pattern=r"^[1-9][0-9]{0,18}$")
+    replica_set_uid: Annotated[
+        str, AfterValidator(RepairHistorySelection.require_normalized_uid)
+    ] = Field(min_length=1, max_length=253)
+
+    @field_validator("revision")
+    @classmethod
+    def require_int64_revision(cls, value: str) -> str:
+        if int(value) > (1 << 63) - 1:
+            raise ValueError("Revision exceeds the Kubernetes int64 contract")
+        return value
+
+
+class CreateRepairRunRequest(_ApiContract):
+    source_run_id: UUID = Field(strict=False)
+    selection: RepairHistorySelectionResponse | None = None
+    replaces_run_id: Annotated[UUID, Field(strict=False)] | None = None
+
+
 class IncidentListItem(_ApiContract):
     id: UUID
     display_name: str
@@ -172,6 +198,8 @@ class RunSummaryResponse(_ApiContract):
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    request_source: Literal["system", "operator"] | None = None
+    source_run_id: UUID | None = None
 
     @model_validator(mode="after")
     def require_run_kind_fields(self) -> "RunSummaryResponse":
@@ -184,6 +212,9 @@ class RunSummaryResponse(_ApiContract):
 
 class SelectedRunResponse(RunSummaryResponse):
     error: RunErrorResponse | None
+    selection: RepairHistorySelectionResponse | None = None
+    waiting_expires_at: datetime | None = None
+    end_reason: Literal["expired", "superseded"] | None = None
 
 
 class RunHistoryResponse(_ApiContract):
@@ -307,8 +338,15 @@ class RunQueuedEventPayload(_TypedRunEventPayload):
 
 class RunStartedEventPayload(_TypedRunEventPayload):
     attempt: int = Field(ge=1)
-    incident_status: Literal["TRIAGING"]
+    incident_status: Literal["TRIAGING", "PATCH_READY"]
     run_status: Literal["RUNNING"]
+
+    @model_validator(mode="after")
+    def require_start_phase(self) -> "RunStartedEventPayload":
+        expected = "TRIAGING" if self.run_kind is RunKind.DIAGNOSIS else "PATCH_READY"
+        if self.incident_status != expected:
+            raise ValueError("Run start phase must match its kind")
+        return self
 
 
 class PrometheusToolCallIdentity(_ApiContract):
@@ -410,6 +448,18 @@ class RepairWaitingApprovalEventPayload(_TypedRunEventPayload):
         return self
 
 
+class RepairWaitEndedEventPayload(_TypedRunEventPayload):
+    reason: Literal["expired", "superseded"]
+    incident_status: Literal["DIAGNOSED"]
+    run_status: Literal["COMPLETED"]
+
+    @model_validator(mode="after")
+    def require_repair_run(self) -> "RepairWaitEndedEventPayload":
+        if self.run_kind is not RunKind.REPAIR:
+            raise ValueError("Only repair Runs can finish an approval wait")
+        return self
+
+
 class AlertResolvedEventPayload(_TypedRunEventPayload):
     alert_status: Literal["RESOLVED"]
     ends_at: _CanonicalAlertTimestamp
@@ -487,6 +537,12 @@ class RepairWaitingApprovalStreamEvent(_ApiContract):
     data: RepairWaitingApprovalEventPayload
 
 
+class RepairWaitEndedStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["repair.wait_ended"]
+    data: RepairWaitEndedEventPayload
+
+
 class AlertResolvedStreamEvent(_ApiContract):
     id: str
     event: Literal["alert.resolved"]
@@ -508,6 +564,7 @@ class RunEventStreamItem(
             | RepairPatchReadyStreamEvent
             | RepairDryRunPassedStreamEvent
             | RepairWaitingApprovalStreamEvent
+            | RepairWaitEndedStreamEvent
             | AlertResolvedStreamEvent,
             Field(discriminator="event"),
         ]

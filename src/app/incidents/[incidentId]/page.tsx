@@ -3,7 +3,6 @@ import Link from "next/link";
 import { headers } from "next/headers";
 
 import { IncidentStream } from "@/components/incidents/incident-stream";
-import { getIncidentIntakeMode } from "@/lib/agent-runtime/server-config";
 import { loadIncidentPage } from "@/lib/agent-runtime/server-view-data";
 
 interface IncidentPageProps {
@@ -58,7 +57,7 @@ export default async function IncidentPage({ params, searchParams }: IncidentPag
           initialRuns={pageData.runs}
           monitoringPanels={pageData.monitoringPanels}
           latestMode={runId === undefined}
-          manualActions={getIncidentIntakeMode() === "manual"}
+          manualActions
         />
       )}
     </main>

@@ -140,12 +140,14 @@ export async function fetchMonitoringPanelFromBrowser(
 
 export async function createRunFromBrowser(
   incidentId: string,
+  replacesRunId?: string,
 ): Promise<BrowserRuntimeResult<CreateRunView, CreateFailure>> {
   let response: Response;
   try {
     response = await authenticatedFetch(
       `/api/runtime/incidents/${encodeURIComponent(incidentId)}/runs`,
-      { method: "POST", cache: "no-store" },
+      { method: "POST", cache: "no-store", headers: { "content-type": "application/json" },
+        body: JSON.stringify(replacesRunId ? { replacesRunId } : {}), },
     );
   } catch {
     return { ok: false, failure: "unavailable" };

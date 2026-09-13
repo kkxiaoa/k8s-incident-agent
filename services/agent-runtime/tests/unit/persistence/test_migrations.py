@@ -71,6 +71,13 @@ EXPECTED_COLUMNS = {
         "updated_at",
         "kind",
         "operation",
+        "source_run_id",
+        "request_source",
+        "operator_ref",
+        "selection_revision",
+        "selection_replica_set_uid",
+        "waiting_expires_at",
+        "end_reason",
     ),
     "alert_signals": (
         "incident_id",
@@ -127,7 +134,10 @@ EXPECTED_COLUMNS = {
 EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
     "operator_sessions": set(),
     "incidents": set(),
-    "agent_runs": {("incident_id", "incidents", "id")},
+    "agent_runs": {
+        ("incident_id", "incidents", "id"),
+        ("source_run_id", "agent_runs", "id"),
+    },
     "run_events": {("run_id", "agent_runs", "id")},
     "evidence": {("run_id", "agent_runs", "id")},
     "diagnoses": {("run_id", "agent_runs", "id")},
@@ -526,7 +536,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260911_0007",)
+        ).fetchone() == ("20260913_0008",)
 
 
 def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(

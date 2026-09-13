@@ -24,7 +24,7 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
     CompiledStateGraph,
 )
 from langgraph.runtime import Runtime
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from pydantic import ValidationError
 
 from k8s_incident_agent.diagnosis.agent import (
@@ -51,6 +51,7 @@ from k8s_incident_agent.domain.models import (
     DiagnosisWorkflowRunSnapshot,
     JsonValue,
     ModelSnapshot,
+    RepairWorkflowRunSnapshot,
     RootCauseRecord,
     RunStatus,
     TerminalRecord,
@@ -84,6 +85,7 @@ from k8s_incident_agent.repair.contracts import (
     PatchValidationResponse,
     RepairProposal,
 )
+from k8s_incident_agent.repair.preparation import prepare_repair
 from k8s_incident_agent.repair.records import RepairTerminalRecord
 from k8s_incident_agent.scenarios.contracts import validate_supported_target
 from k8s_incident_agent.workflow.failures import require_terminal_error_contract
@@ -115,9 +117,86 @@ class GraphDependencies:
 
 def build_incident_graph(
     dependencies: GraphDependencies,
-    run: DiagnosisWorkflowRunSnapshot,
-    policy: DiagnosticPolicy,
+    run: DiagnosisWorkflowRunSnapshot | RepairWorkflowRunSnapshot,
+    policy: DiagnosticPolicy | None = None,
 ) -> IncidentGraph:
+    builder = StateGraph(
+        IncidentGraphState,
+        context_schema=DiagnosticToolContext,
+        input_schema=IncidentGraphInput,
+    )
+    if isinstance(run, RepairWorkflowRunSnapshot):
+
+        async def start_repair(state: IncidentGraphState) -> dict[str, object]:
+            current = await dependencies.repository.get_workflow_run_snapshot(
+                _state_run_id(state)
+            )
+            if (
+                not isinstance(current, RepairWorkflowRunSnapshot)
+                or current.id != run.id
+            ):
+                raise RecoveryConsistencyError
+            if current.run_status is RunStatus.QUEUED:
+                await dependencies.repository.start_run(current.id, dependencies.now())
+            return {}
+
+        async def prepare(state: IncidentGraphState) -> dict[str, object]:
+            current = await dependencies.repository.get_workflow_run_snapshot(
+                _state_run_id(state)
+            )
+            if not isinstance(current, RepairWorkflowRunSnapshot):
+                raise RecoveryConsistencyError
+            if current.run_status is RunStatus.RUNNING:
+                prepared = await prepare_repair(
+                    current,
+                    repository=dependencies.repository,
+                    adapter=dependencies.adapter,
+                    credential=dependencies.credential,
+                    validator=dependencies.patch_validator,
+                    now=dependencies.now,
+                )
+                await dependencies.repository.persist_prepared_repair(prepared)
+                current = await dependencies.repository.get_workflow_run_snapshot(
+                    current.id
+                )
+            if not isinstance(current, RepairWorkflowRunSnapshot):
+                raise RecoveryConsistencyError
+            return {
+                "repair_proposal_id": str(current.proposal_id)
+                if current.proposal_id
+                else None
+            }
+
+        async def await_approval(state: IncidentGraphState) -> dict[str, object]:
+            current = await dependencies.repository.get_workflow_run_snapshot(
+                _state_run_id(state)
+            )
+            if not isinstance(current, RepairWorkflowRunSnapshot):
+                raise RecoveryConsistencyError
+            if current.run_status is not RunStatus.WAITING_APPROVAL:
+                return {}
+            if current.proposal_id is None or state.get("repair_proposal_id") != str(
+                current.proposal_id
+            ):
+                raise RecoveryConsistencyError
+            # Resume values have no authority; Task 6 will consume a persisted decision.
+            interrupt(
+                {"runId": str(current.id), "proposalId": str(current.proposal_id)}
+            )
+            raise RecoveryConsistencyError
+
+        builder.add_node("start_run", start_repair)  # pyright: ignore[reportUnknownMemberType]
+        builder.add_node("prepare_repair", prepare)  # pyright: ignore[reportUnknownMemberType]
+        builder.add_node("await_approval", await_approval)  # pyright: ignore[reportUnknownMemberType]
+        builder.add_edge(START, "start_run")
+        builder.add_edge("start_run", "prepare_repair")
+        builder.add_edge("prepare_repair", "await_approval")
+        builder.add_edge("await_approval", END)
+        return builder.compile(  # pyright: ignore[reportUnknownMemberType]
+            checkpointer=dependencies.checkpointer, name="incident_workflow"
+        )
+    if policy is None:
+        raise ValueError("Diagnosis requires its resolved policy")
     if policy.repair_action is not None and dependencies.patch_validator is None:
         raise ValueError("Repair policy requires the Patch Validator boundary")
     registry = {
@@ -135,11 +214,6 @@ def build_incident_graph(
             prometheus_panel_ids=policy.prometheus_panel_ids,
             repair_action=policy.repair_action,
         )
-    )
-    builder = StateGraph(
-        IncidentGraphState,
-        context_schema=DiagnosticToolContext,
-        input_schema=IncidentGraphInput,
     )
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
         "start_run",

@@ -129,14 +129,14 @@ function renderIncidentStream(detail = makeIncidentDetail()) {
   );
 }
 
-it.each(["apply", "rollback"] as const)("labels a waiting %s Run without a diagnostic placeholder or rerun action", (operation) => {
+it.each(["apply", "rollback"] as const)("labels a waiting %s Run and allows operator rediagnosis", (operation) => {
   vi.stubGlobal("EventSource", FakeEventSource);
   const detail = makeRepairRunWaitingDetail();
   detail.selectedRun.operation = operation;
   renderIncidentStream(detail);
   const label = operation === "apply" ? "修复" : "回滚";
   expect(screen.getByRole("link", { name: `第 2 次 · ${label} · 等待审批` })).toBeVisible();
-  expect(screen.getByRole("button", { name: "重新诊断" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "重新诊断" })).toBeEnabled();
   expect(screen.queryByRole("heading", { name: "诊断结论" })).toBeNull();
   expect(screen.getByText(`第 2 次运行 · ${label}提案`)).toBeVisible();
 });
@@ -431,9 +431,8 @@ describe("read-only incident presentation", () => {
     expect(screen.getByRole("button", { name: "重新诊断" })).toBeEnabled();
   });
 
-  it("creates a later Run only through the manual latest-mode action", async () => {
-    const detail = makeIncidentDetail();
-    detail.selectedRun.status = "COMPLETED";
+  it("rediagnoses a waiting repair by referencing that exact Run", async () => {
+    const detail = makeRepairRunWaitingDetail();
     stubSessionFetch(
       "fetch",
       vi.fn().mockResolvedValue(
@@ -454,7 +453,7 @@ describe("read-only incident presentation", () => {
 
     expect(fetch).toHaveBeenCalledWith(
       `/api/runtime/incidents/${INCIDENT_ID}/runs`,
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ replacesRunId: detail.selectedRun.id }) }),
     );
     expect(navigation.replace).toHaveBeenCalledWith(
       `/incidents/${INCIDENT_ID}?runId=55555555-5555-4555-8555-555555555555`,
@@ -462,7 +461,7 @@ describe("read-only incident presentation", () => {
     expect(navigation.refresh).toHaveBeenCalledOnce();
   });
 
-  it("does not render a rerun action for the online profile", () => {
+  it("does not render a rerun action when actions are disabled by its caller", () => {
     const detail = makeIncidentDetail();
     detail.selectedRun.status = "COMPLETED";
     vi.stubGlobal("EventSource", FakeEventSource);
@@ -1049,6 +1048,21 @@ describe("read-only incident presentation", () => {
         "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。",
       ),
     ).toBeVisible();
+    expect(screen.queryByText("Incident 已恢复")).toBeNull();
+  });
+
+  it.each([
+    ["expired", "提案已过期，未执行修复"],
+    ["superseded", "后继运行已取代此提案，未执行修复"],
+  ])("renders %s as an ended wait, not recovery", (reason, message) => {
+    const ended = parseRunEvent("repair.wait_ended", "9", JSON.stringify({
+      schemaVersion: 5, incidentId: INCIDENT_ID, runId: RUN_ID, runKind: "repair",
+      runStatus: "COMPLETED", incidentStatus: "DIAGNOSED", reason,
+      occurredAt: "2026-09-02T08:05:00Z",
+    }), INCIDENT_ID);
+    render(<RunTimeline events={[ended]} connection="live" />);
+    expect(screen.getByText("等待审批已结束")).toBeVisible();
+    expect(screen.getByText(message)).toBeVisible();
     expect(screen.queryByText("Incident 已恢复")).toBeNull();
   });
 });

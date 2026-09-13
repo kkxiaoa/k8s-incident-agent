@@ -107,6 +107,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/incidents/{incident_id}/repair-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Repair Run */
+        post: operations["create_repair_run_api_v1_incidents__incident_id__repair_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/incidents/{incident_id}/runs": {
         parameters: {
             query?: never;
@@ -404,6 +421,22 @@ export interface components {
              * @constant
              */
             schemaVersion: 5;
+        };
+        /** CreateRepairRunRequest */
+        CreateRepairRunRequest: {
+            /** Replacesrunid */
+            replacesRunId?: string | null;
+            selection?: components["schemas"]["RepairHistorySelectionResponse"] | null;
+            /**
+             * Sourcerunid
+             * Format: uuid
+             */
+            sourceRunId: string;
+        };
+        /** CreateRunRequest */
+        CreateRunRequest: {
+            /** Replacesrunid */
+            replacesRunId?: string | null;
         };
         /** CreateRunResponse */
         CreateRunResponse: {
@@ -1105,6 +1138,13 @@ export interface components {
             /** Id */
             id: string;
         };
+        /** RepairHistorySelectionResponse */
+        RepairHistorySelectionResponse: {
+            /** Replicasetuid */
+            replicaSetUid: string;
+            /** Revision */
+            revision: string;
+        };
         /**
          * RepairOperation
          * @enum {string}
@@ -1249,6 +1289,56 @@ export interface components {
              */
             outcome: "passed" | "failed";
         };
+        /** RepairWaitEndedEventPayload */
+        RepairWaitEndedEventPayload: {
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Incidentstatus
+             * @constant
+             */
+            incidentStatus: "DIAGNOSED";
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "expired" | "superseded";
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            runKind: components["schemas"]["RunKind"];
+            /**
+             * Runstatus
+             * @constant
+             */
+            runStatus: "COMPLETED";
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 5;
+        };
+        /** RepairWaitEndedStreamEvent */
+        RepairWaitEndedStreamEvent: {
+            data: components["schemas"]["RepairWaitEndedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "repair.wait_ended";
+            /** Id */
+            id: string;
+        };
         /** RepairWaitingApprovalEventPayload */
         RepairWaitingApprovalEventPayload: {
             /**
@@ -1336,7 +1426,7 @@ export interface components {
             schemaVersion: 5;
         };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */
@@ -1457,9 +1547,9 @@ export interface components {
             incidentId: string;
             /**
              * Incidentstatus
-             * @constant
+             * @enum {string}
              */
-            incidentStatus: "TRIAGING";
+            incidentStatus: "TRIAGING" | "PATCH_READY";
             /**
              * Occurredat
              * Format: date-time
@@ -1516,6 +1606,10 @@ export interface components {
             id: string;
             kind: components["schemas"]["RunKind"];
             operation: components["schemas"]["RepairOperation"] | null;
+            /** Requestsource */
+            requestSource?: ("system" | "operator") | null;
+            /** Sourcerunid */
+            sourceRunId?: string | null;
             /** Startedat */
             startedAt: string | null;
             status: components["schemas"]["RunStatus"];
@@ -1588,6 +1682,8 @@ export interface components {
              * Format: date-time
              */
             createdAt: string;
+            /** Endreason */
+            endReason?: ("expired" | "superseded") | null;
             error: components["schemas"]["RunErrorResponse"] | null;
             /**
              * Id
@@ -1596,9 +1692,16 @@ export interface components {
             id: string;
             kind: components["schemas"]["RunKind"];
             operation: components["schemas"]["RepairOperation"] | null;
+            /** Requestsource */
+            requestSource?: ("system" | "operator") | null;
+            selection?: components["schemas"]["RepairHistorySelectionResponse"] | null;
+            /** Sourcerunid */
+            sourceRunId?: string | null;
             /** Startedat */
             startedAt: string | null;
             status: components["schemas"]["RunStatus"];
+            /** Waitingexpiresat */
+            waitingExpiresAt?: string | null;
         };
         /** ToolFailedEventPayload */
         ToolFailedEventPayload: {
@@ -2234,6 +2337,95 @@ export interface operations {
             };
         };
     };
+    create_repair_run_api_v1_incidents__incident_id__repair_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRepairRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateRunResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_runs_api_v1_incidents__incident_id__runs_get: {
         parameters: {
             query?: {
@@ -2331,7 +2523,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CreateRunRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             202: {

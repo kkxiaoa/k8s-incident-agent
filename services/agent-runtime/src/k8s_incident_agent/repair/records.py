@@ -5,11 +5,53 @@ from datetime import datetime
 from uuid import UUID
 
 from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
+from k8s_incident_agent.domain.contracts import RepairHistorySelection
 from k8s_incident_agent.repair.compiler import require_exact_repair_proposal
 from k8s_incident_agent.repair.contracts import (
     PatchValidationResponse,
     RepairProposal,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRepairRecord:
+    run_id: UUID
+    recorded_at: datetime
+    proposal: RepairProposal | None
+    validation: PatchValidationResponse | None
+    selection: RepairHistorySelection | None
+    error_code: str | None
+    error_retryable: bool | None
+
+    def __post_init__(self) -> None:
+        if self.recorded_at.tzinfo is None or self.recorded_at.utcoffset() is None:
+            raise ValueError("Preparation requires an aware timestamp")
+        if (self.error_code is None) != (self.error_retryable is None):
+            raise ValueError("Preparation error is incomplete")
+        if self.proposal is None:
+            if self.validation is not None or self.error_code is None:
+                raise ValueError("Preparation without a proposal must fail")
+            return
+        if (
+            self.proposal.run_id != self.run_id
+            or self.selection is None
+            or self.validation is None
+            or self.validation.proposal_id != self.proposal.id
+            or self.validation.run_id != self.run_id
+            or self.validation.proposal_digest != self.proposal.digest
+            or self.validation.checked_at < self.proposal.diff_checked_at
+            or self.recorded_at < self.validation.checked_at
+        ):
+            raise ValueError("Preparation does not match its proposal and validation")
+        if self.validation.outcome == "passed":
+            if self.error_code is not None:
+                raise ValueError("Passed preparation cannot contain an error")
+        elif (
+            self.validation.error is None
+            or self.error_code != self.validation.error.code
+            or self.error_retryable != self.validation.error.retryable
+        ):
+            raise ValueError("Preparation must preserve the validation failure")
 
 
 @dataclass(frozen=True, slots=True)

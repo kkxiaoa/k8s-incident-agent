@@ -89,9 +89,14 @@ export interface SelectedRunView {
   startedAt: string | null;
   completedAt: string | null;
   error: RunErrorView | null;
+  requestSource?: "system" | "operator" | null;
+  sourceRunId?: string | null;
+  selection?: components["schemas"]["RepairHistorySelectionResponse"] | null;
+  waitingExpiresAt?: string | null;
+  endReason?: "expired" | "superseded" | null;
 }
 
-export type RunSummaryView = Omit<SelectedRunView, "error">;
+export type RunSummaryView = Omit<SelectedRunView, "error" | "selection" | "waitingExpiresAt" | "endReason">;
 
 export interface RunHistoryView {
   items: RunSummaryView[];
@@ -448,6 +453,8 @@ function parseRunBase(value: unknown): RunSummaryView | null {
     !isTimestamp(value.createdAt) ||
     (value.startedAt !== null && !isTimestamp(value.startedAt)) ||
     (value.completedAt !== null && !isTimestamp(value.completedAt))
+    || (value.requestSource !== undefined && value.requestSource !== null && value.requestSource !== "system" && value.requestSource !== "operator")
+    || (value.sourceRunId !== undefined && value.sourceRunId !== null && !isUuid(value.sourceRunId))
   ) {
     return null;
   }
@@ -461,6 +468,8 @@ function parseRunBase(value: unknown): RunSummaryView | null {
     createdAt: value.createdAt,
     startedAt: value.startedAt,
     completedAt: value.completedAt,
+    ...(value.requestSource !== undefined ? { requestSource: value.requestSource as SelectedRunView["requestSource"] } : {}),
+    ...(value.sourceRunId !== undefined ? { sourceRunId: value.sourceRunId as string | null } : {}),
   };
 }
 
@@ -471,7 +480,22 @@ function parseSelectedRun(value: unknown): SelectedRunView | null {
   }
 
   const error = value.error === null ? null : parseRunError(value.error);
-  return value.error !== null && error === null ? null : { ...run, error };
+  if (value.error !== null && error === null) return null;
+  if (value.waitingExpiresAt !== undefined && value.waitingExpiresAt !== null && !isTimestamp(value.waitingExpiresAt)) return null;
+  if (value.endReason !== undefined && value.endReason !== null && value.endReason !== "expired" && value.endReason !== "superseded") return null;
+  const selection = value.selection;
+  if (selection !== undefined && selection !== null && (
+    !isObject(selection) || typeof selection.revision !== "string" || !/^[1-9][0-9]{0,18}$/.test(selection.revision)
+    || BigInt(selection.revision) > BigInt("9223372036854775807")
+    || typeof selection.replicaSetUid !== "string" || selection.replicaSetUid.length === 0 || selection.replicaSetUid.length > 253
+    || selection.replicaSetUid.trim() !== selection.replicaSetUid || /[\x00-\x1f\x7f]/.test(selection.replicaSetUid)
+  )) return null;
+  return {
+    ...run, error,
+    ...(selection !== undefined ? { selection: selection as SelectedRunView["selection"] } : {}),
+    ...(value.waitingExpiresAt !== undefined ? { waitingExpiresAt: value.waitingExpiresAt as string | null } : {}),
+    ...(value.endReason !== undefined ? { endReason: value.endReason as SelectedRunView["endReason"] } : {}),
+  };
 }
 
 function parseEventPage(value: unknown): EventPageView | null {

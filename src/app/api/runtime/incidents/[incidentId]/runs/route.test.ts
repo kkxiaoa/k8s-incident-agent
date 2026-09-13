@@ -39,16 +39,21 @@ describe("/api/runtime/incidents/[incidentId]/runs", () => {
     expect(response.status).toBe(202);
   });
 
-  it("has no rerun capability or upstream call in online mode", async () => {
+  it("forwards authenticated rerun and its exact waiting replacement in online mode", async () => {
     vi.stubEnv("INCIDENT_INTAKE_MODE", "online");
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({}, { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await POST(new Request("http://console.test/runs"), {
+    const body = JSON.stringify({ replacesRunId: INCIDENT_ID });
+    const response = await POST(new Request("http://console.test/runs", {
+      method: "POST", body, headers: { "content-type": "application/json" },
+    }), {
       params: Promise.resolve({ incidentId: INCIDENT_ID }),
     });
 
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(response.status).toBe(404);
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.pathname).toBe(`/api/v1/incidents/${INCIDENT_ID}/runs`);
+    expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe(body);
+    expect(response.status).toBe(202);
   });
 });

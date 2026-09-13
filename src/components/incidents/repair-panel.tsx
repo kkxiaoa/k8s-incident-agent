@@ -9,7 +9,9 @@ const FAILURE_LABELS: Readonly<Record<string, string>> = {
   repair_schema_invalid: "Schema 校验未通过",
   repair_policy_denied: "Policy 校验未通过",
   repair_diff_invalid: "Diff 校验未通过",
-  stale_resource: "目标版本已变化",
+  repair_no_candidate: "没有匹配的历史镜像候选",
+  repair_timeout: "修复准备超时",
+  stale_resource: "目标状态已变化",
   patch_validator_authentication_failed: "验证通信认证失败",
   patch_validator_replay_rejected: "验证请求重放被拒绝",
   patch_validator_permission_denied: "验证权限不足",
@@ -84,6 +86,10 @@ export function RepairPanel({
         </div>
         <span className="repair-run-label">第 {selectedRun.attempt} 次运行 · {selectedRun.kind === "diagnosis" ? "只读建议" : selectedRun.operation === "rollback" ? "回滚提案" : "修复提案"}</span>
       </div>
+
+      {selectedRun.sourceRunId ? <p><Link href={`/incidents/${detail.incident.id}?runId=${selectedRun.sourceRunId}`}>查看来源运行</Link></p> : null}
+      {selectedRun.endReason ? <p role="status">{selectedRun.endReason === "expired" ? "提案已过期，需要重新准备。" : "本次等待已被新的运行替换。"}</p> : null}
+      {selectedRun.status === "WAITING_APPROVAL" && selectedRun.waitingExpiresAt ? <p>等待期限：<LocalTimestamp timestamp={selectedRun.waitingExpiresAt} /></p> : null}
 
       {refreshError !== null ? (
         <p className="page-alert" role="status">修复详情暂不可用</p>
@@ -218,3 +224,4 @@ export function RepairPanel({
     </section>
   );
 }
+import Link from "next/link";

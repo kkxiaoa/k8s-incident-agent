@@ -12,6 +12,19 @@ from tests.factories import (
     monitoring_health_service_stub,
     operator_sessions_stub,
 )
+from tests.unit.persistence.test_repair_persistence import (
+    BUDGET,
+    MODEL,
+    _database,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.repair.test_repair_preparation import (
+    FRESH_NOW,
+    seed_source,
+)
+from tests.unit.repair.test_repair_preparation import (
+    credential as diagnostic_credential,
+)
+from tests.unit.routes.test_operator import credential as credential
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
@@ -33,9 +46,158 @@ from k8s_incident_agent.api_contracts import (
 )
 from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
+from k8s_incident_agent.auth.sessions import OperatorSessions
+from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import IncidentStatus, RunKind, RunStatus
+from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
+
+
+class _QueuedScheduler:
+    async def schedule(self, run_id: UUID) -> None:
+        del run_id
+
+
+@pytest.mark.parametrize("operation", ["repair-runs", "runs"])
+async def test_online_authenticated_existing_incident_mutations_use_real_persistence(
+    tmp_path: Path,
+    credential: tuple[str, str],
+    operation: str,
+) -> None:
+    password, encoded = credential
+    origin = "https://console.example.test"
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        incident_id, source_id = await seed_source(repository)
+        service = IncidentApplicationService(
+            catalog=(),
+            repository=repository,
+            supervisor=_QueuedScheduler(),
+            credential=diagnostic_credential(),
+            model=lambda: MODEL,
+            budget=BUDGET,
+            now=lambda: FRESH_NOW,
+        )
+        sessions = OperatorSessions(
+            sessions=database.session_factory,
+            verifier=PasswordVerifier(encoded),
+            origin=origin,
+        )
+        await sessions.start()
+
+        @asynccontextmanager
+        async def context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
+            yield RuntimeContainer(
+                incidents=service,
+                events=cast(IncidentEventService, object()),
+                alerts=None,
+                monitoring=monitoring_health_service_stub(),
+                diagnostic_model=diagnostic_model_stub(),
+                operator=sessions,
+            )
+
+        settings = Settings(
+            runtime_paths=RuntimePaths.prepare(tmp_path / "api"),
+            incident_intake_mode="online",
+            _env_file=None,  # pyright: ignore[reportCallIssue]
+        )
+        app = api.create_app(settings=settings, runtime_context_factory=context)
+        try:
+            async with (
+                app.router.lifespan_context(app),
+                httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+                    base_url=origin,
+                ) as client,
+            ):
+                path = f"/api/v1/incidents/{incident_id}/{operation}"
+                body: dict[str, object] = (
+                    {"sourceRunId": str(source_id)}
+                    if operation == "repair-runs"
+                    else {}
+                )
+                assert (await client.post(path, json=body)).status_code == 401
+                login = await client.post(
+                    "/api/v1/operator/login",
+                    json={"password": password},
+                    headers={"Origin": origin},
+                )
+                assert login.status_code == 200
+                headers = {"Origin": origin, "X-CSRF-Token": login.json()["csrfToken"]}
+                assert (
+                    await client.post(
+                        "/api/v1/incidents",
+                        json={"scenarioId": "image-pull-backoff"},
+                        headers=headers,
+                    )
+                ).status_code == 405
+                assert (await client.get("/api/v1/scenarios")).status_code == 404
+                assert (
+                    await client.post(path, json=body, headers={"Origin": origin})
+                ).status_code == 403
+                invalid_bodies: list[dict[str, object]] = [
+                    {**body, "actor": "someone"},
+                    {**body, "patch": []},
+                ]
+                if operation == "repair-runs":
+                    invalid_bodies.extend(
+                        {**body, "selection": selection}
+                        for selection in (
+                            {"revision": 2, "replicaSetUid": "rs-old"},
+                            {"revision": "02", "replicaSetUid": "rs-old"},
+                            {
+                                "revision": "9223372036854775808",
+                                "replicaSetUid": "rs-old",
+                            },
+                            {"revision": "2", "replicaSetUid": " rs-old"},
+                            {"revision": "2", "replicaSetUid": "rs-old\n"},
+                        )
+                    )
+                for invalid in invalid_bodies:
+                    response = await client.post(path, json=invalid, headers=headers)
+                    assert response.status_code == 422, response.text
+                    assert (
+                        len(
+                            (
+                                await service.list_runs(
+                                    incident_id, limit=50, cursor=None
+                                )
+                            ).items
+                        )
+                        == 1
+                    )
+                if operation == "repair-runs":
+                    body["selection"] = {
+                        "revision": "9223372036854775807",
+                        "replicaSetUid": "rs-old",
+                    }
+                response = await client.post(path, json=body, headers=headers)
+                assert response.status_code == 202, response.text
+                detail = (
+                    await client.get(
+                        f"/api/v1/incidents/{incident_id}?runId={response.json()['runId']}"
+                    )
+                ).json()
+                selected = detail["selectedRun"]
+                assert selected["kind"] == (
+                    "repair" if operation == "repair-runs" else "diagnosis"
+                )
+                assert (
+                    selected["status"] == "QUEUED"
+                    and selected["requestSource"] == "operator"
+                )
+                assert selected["sourceRunId"] == (
+                    str(source_id) if operation == "repair-runs" else None
+                )
+                if operation == "repair-runs":
+                    assert selected["selection"] == body["selection"]
+                assert (
+                    await client.post(path, json=body, headers=headers)
+                ).status_code == 409
+        finally:
+            await sessions.close()
+
 
 INCIDENT_ID = UUID("00000000-0000-0000-0000-000000000001")
 RUN_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -56,11 +218,15 @@ class _IncidentService:
     async def create_incident(
         self,
         request: CreateIncidentRequest,
+        *,
+        operator_ref: str,
     ) -> CreateIncidentResponse:
         assert request.scenario_id == "image-pull-backoff"
         return CreateIncidentResponse(incident_id=INCIDENT_ID)
 
-    async def create_run(self, incident_id: UUID) -> CreateRunResponse:
+    async def create_run(
+        self, incident_id: UUID, *, replaces_run_id: UUID | None, operator_ref: str
+    ) -> CreateRunResponse:
         assert incident_id == INCIDENT_ID
         return CreateRunResponse(run_id=RUN_ID)
 

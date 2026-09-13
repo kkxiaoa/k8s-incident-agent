@@ -230,6 +230,13 @@ class RunRow(Base):
             values_callable=_enum_values,
         ),
     )
+    source_run_id: Mapped[str | None] = mapped_column(ForeignKey("agent_runs.id"))
+    request_source: Mapped[str | None] = mapped_column(String)
+    operator_ref: Mapped[str | None] = mapped_column(String)
+    selection_revision: Mapped[int | None] = mapped_column(Integer)
+    selection_replica_set_uid: Mapped[str | None] = mapped_column(String)
+    waiting_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_reason: Mapped[str | None] = mapped_column(String)
     model_provider: Mapped[str | None] = mapped_column(String)
     model_id: Mapped[str | None] = mapped_column(String)
     thinking_mode: Mapped[bool | None] = mapped_column(Boolean)

@@ -49,6 +49,8 @@ function runSummary(detail: IncidentDetailResponse): RunSummaryView {
     createdAt: run.createdAt,
     startedAt: run.startedAt,
     completedAt: run.completedAt,
+    requestSource: run.requestSource,
+    sourceRunId: run.sourceRunId,
   };
 }
 
@@ -273,7 +275,9 @@ export function IncidentStream({
     }
     setRerunPending(true);
     setRerunError(null);
-    const result = await createRunFromBrowser(initialDetail.incident.id);
+    const selected = state.detail.selectedRun;
+    const result = await createRunFromBrowser(initialDetail.incident.id,
+      selected.kind === "repair" && selected.status === "WAITING_APPROVAL" ? selected.id : undefined);
     if (result.ok) {
       router.replace(
         `/incidents/${encodeURIComponent(initialDetail.incident.id)}?runId=${encodeURIComponent(result.data.runId)}`,
@@ -291,8 +295,7 @@ export function IncidentStream({
   const visibleRuns = mergeRuns(runs, [runSummary(detail)]);
   const activeRun =
     detail.selectedRun.status === "QUEUED" ||
-    detail.selectedRun.status === "RUNNING" ||
-    detail.selectedRun.status === "WAITING_APPROVAL";
+    detail.selectedRun.status === "RUNNING";
   const monitoringRefreshKey = [
     detail.selectedRun.status,
     detail.selectedRun.startedAt,

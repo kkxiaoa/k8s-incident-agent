@@ -77,6 +77,12 @@ function eventCopy(event: RunEventStreamItem): {
         detail: "验证已完成，集群尚未发生持久修改",
         tone: "warning",
       };
+    case "repair.wait_ended":
+      return {
+        title: "等待审批已结束",
+        detail: event.data.reason === "expired" ? "提案已过期，未执行修复" : "后继运行已取代此提案，未执行修复",
+        tone: "neutral",
+      };
     case "diagnosis.insufficient":
       return { title: "诊断已结束", detail: "现有证据不足", tone: "warning" };
     case "run.failed":

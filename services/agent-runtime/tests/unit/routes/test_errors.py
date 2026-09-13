@@ -32,7 +32,9 @@ class _FailingService:
     async def list_scenarios(self) -> object:
         raise RuntimeError("unused")
 
-    async def create_incident(self, request: CreateIncidentRequest) -> object:
+    async def create_incident(
+        self, request: CreateIncidentRequest, *, operator_ref: str | None = None
+    ) -> object:
         if request.scenario_id == "database":
             raise PersistenceOperationError
         if request.scenario_id == "unexpected":

@@ -71,6 +71,7 @@ def _expected_event_key(event_type: str, payload: RunEventPayload) -> str:
     if event_type in {
         "diagnosis.insufficient",
         "run.failed",
+        "repair.wait_ended",
     }:
         return "run:terminal"
     if isinstance(payload, RepairWaitingApprovalEventPayload):

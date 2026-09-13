@@ -47,6 +47,7 @@ export type IncidentStreamAction =
 const TERMINAL_EVENTS = new Set<RunEventStreamItem["event"]>([
   "diagnosis.insufficient",
   "run.failed",
+  "repair.wait_ended",
 ]);
 
 export function isTerminalRunEvent(event: RunEventStreamItem): boolean {
@@ -114,6 +115,7 @@ function applyIncidentStatus(
     case "repair.patch_ready":
     case "repair.dry_run_passed":
     case "repair.waiting_approval":
+    case "repair.wait_ended":
     case "diagnosis.insufficient":
     case "run.failed":
       return {
@@ -145,6 +147,7 @@ function applySelectedRunStatus(
     case "repair.patch_ready":
     case "repair.dry_run_passed":
     case "repair.waiting_approval":
+    case "repair.wait_ended":
     case "diagnosis.insufficient":
     case "run.failed":
       return {

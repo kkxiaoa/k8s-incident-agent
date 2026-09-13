@@ -68,6 +68,26 @@ function metricPanel() {
 }
 
 describe("parseIncidentDetailResponse", () => {
+  it("preserves source, controlled int64 selection and waiting lifecycle metadata", () => {
+    const detail = makeRepairRunWaitingDetail();
+    const metadata = {
+      requestSource: "operator", sourceRunId: makeWaitingApprovalIncidentDetail().selectedRun.id,
+      selection: { revision: "9223372036854775807", replicaSetUid: "rs-old" },
+      waitingExpiresAt: "2026-08-29T01:15:05Z", endReason: null,
+    };
+    const wire = { ...detail, selectedRun: { ...detail.selectedRun, ...metadata } };
+    expect(parseIncidentDetailResponse(wire)?.selectedRun).toMatchObject(metadata);
+    for (const revision of [9223372036854775807, "9223372036854775808", "02", "2.0"]) {
+      expect(parseIncidentDetailResponse({ ...wire, selectedRun: {
+        ...wire.selectedRun, selection: { ...metadata.selection, revision },
+      } })).toBeNull();
+    }
+    for (const replicaSetUid of [" rs-old", "rs-old\n"]) {
+      expect(parseIncidentDetailResponse({ ...wire, selectedRun: {
+        ...wire.selectedRun, selection: { ...metadata.selection, replicaSetUid },
+      } })).toBeNull();
+    }
+  });
   it("separates a completed diagnostic suggestion from a waiting repair without a diagnosis", () => {
     const legacy = parseIncidentDetailResponse(makeWaitingApprovalIncidentDetail());
     const repair = parseIncidentDetailResponse(makeRepairRunWaitingDetail());

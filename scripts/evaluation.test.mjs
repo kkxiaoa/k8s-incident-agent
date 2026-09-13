@@ -473,8 +473,10 @@ test("online evaluation proves the manual route and control boundary", async () 
   assert.equal(result.artifact.status, "passed");
   assert.deepEqual(result.artifact.checks, {
     readRoutesAvailable: true,
-    manualRuntimeRoutesAbsent: true,
-    manualConsoleControlsAbsent: true,
+    manualCreationAbsent: true,
+    manualConsoleCreationAbsent: true,
+    anonymousRerunDenied: true,
+    authenticatedRerun: "accepted",
   });
 });
 
@@ -497,6 +499,38 @@ test("online evaluation rejects an assembled manual runtime route", async () => 
     message: "Online profile exposes a manual intake route",
   });
 });
+
+for (const [options, code] of [
+  [{ onlineEmpty: true }, "online_existing_incident_required"],
+  [{ anonymousRerunAllowed: true }, "online_rerun_boundary_invalid"],
+  [{ onlineRerunStatus: 200 }, "online_rerun_boundary_invalid"],
+  [{ onlineRerunStatus: 422 }, "online_rerun_boundary_invalid"],
+  [{ onlineWrongRun: true }, "upstream_contract_invalid"],
+]) {
+  test(`online rerun oracle rejects ${JSON.stringify(options)}`, async () => {
+    const harness = createHarness(options);
+    harness.state.online = true;
+    const result = await runEvaluationCommand(
+      { action: "online", profile: "k3s-online", context: "k3s-k8s-incident-agent" },
+      harness.dependencies,
+    );
+    assert.equal(result.artifact.status, "failed");
+    assert.equal(result.artifact.failure.code, code);
+  });
+}
+
+for (const [status, reason] of [[409, "active_run_exists"], [503, "diagnosis_unavailable"]]) {
+  test(`online rerun accepts a state-backed ${reason} rejection`, async () => {
+    const harness = createHarness({ onlineRerunStatus: status });
+    harness.state.online = true;
+    const result = await runEvaluationCommand(
+      { action: "online", profile: "k3s-online", context: "k3s-k8s-incident-agent" },
+      harness.dependencies,
+    );
+    assert.equal(result.artifact.status, "passed");
+    assert.equal(result.artifact.checks.authenticatedRerun, reason);
+  });
+}
 
 test("deployment checks receive expected nonzero command results", async () => {
   const harness = createHarness();
@@ -1049,7 +1083,10 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   }
   if ((url.port === "18080" && url.pathname.startsWith("/api/v1/")) ||
       (url.port === "13000" && url.pathname !== "/api/healthz")) {
-    if (!state.cookie || headers.get("cookie") !== state.cookie) return jsonResponse({ error: { code: "operator_unauthenticated" } }, 401);
+    if (!state.cookie || headers.get("cookie") !== state.cookie) {
+      if (options.anonymousRerunAllowed && url.pathname.endsWith("/runs") && init?.method === "POST") return jsonResponse({}, 202);
+      return jsonResponse({ error: { code: "operator_authentication_required" } }, 401);
+    }
     if (![undefined, "GET", "HEAD"].includes(init?.method)) {
       assert.equal(headers.get("origin"), origin);
       assert.equal(headers.get("x-csrf-token") === state.csrf, true);
@@ -1063,7 +1100,7 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   if (url.port === "13000") {
     if (url.pathname === "/api/healthz") return new Response(null, { status: 204 });
     if (url.pathname === "/") {
-      return textResponse(state.online ? "K8s Incident Agent" : "离线评估入口");
+      return textResponse(state.online ? "K8s Incident Agent 重新诊断" : "离线评估入口");
     }
     if (url.pathname.startsWith("/incidents/")) {
       const incidentId = url.pathname.split("/").at(-1);
@@ -1119,7 +1156,10 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   }
 
   if (url.port !== "18080") return new Response(null, { status: 404 });
-  if (url.pathname === "/healthz") return jsonResponse({ status: "ok" });
+  if (url.pathname === "/healthz") return jsonResponse({ status: "ok", diagnosis: {
+    status: options.onlineRerunStatus === 503 ? "unavailable" : "ready",
+    reason: options.onlineRerunStatus === 503 ? "model_upstream_failed" : null,
+  } });
   const method = init?.method ?? "GET";
   if (url.pathname === "/api/v1/scenarios") {
     return new Response(null, {
@@ -1127,14 +1167,6 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     });
   }
   if (url.pathname === "/api/v1/incidents" && method === "POST") {
-    return new Response(null, {
-      status: options.onlineManualRoutes === true ? 422 : 405,
-    });
-  }
-  if (
-    url.pathname === "/api/v1/incidents/not-a-uuid/runs" &&
-    method === "POST"
-  ) {
     return new Response(null, {
       status: options.onlineManualRoutes === true ? 422 : 405,
     });
@@ -1170,7 +1202,8 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       }))
       .concat(
         [...scenarioById.values()]
-          .filter((scenario) => scenario.applied || scenario.resolved)
+          .filter((scenario, index) => scenario.applied || scenario.resolved ||
+            (state.online && index === 0 && !options.onlineEmpty))
           .map((scenario) => ({
             id: scenario.incidentId,
             updatedAt: scenario.updatedAt,
@@ -1218,6 +1251,14 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   const isOtherIncident = scenario.otherIncidentId === match[1];
   const isControlIncident = scenario.controlIncidentId === match[1];
   const suffix = match[2];
+  if (state.online && suffix === "/runs" && method === "POST") {
+    assert.deepEqual(JSON.parse(init.body), {});
+    if (options.onlineRerunStatus === 409) return jsonResponse({ error: { code: "active_run_exists" } }, 409);
+    if (options.onlineRerunStatus === 503) return jsonResponse({ error: { code: "diagnosis_unavailable" } }, 503);
+    if (options.onlineRerunStatus === 422) return jsonResponse({ error: { code: "invalid_request" } }, 422);
+    state.rerunId = "10000000-0000-4000-8000-000000000099";
+    return jsonResponse({ schemaVersion: 5, runId: state.rerunId }, options.onlineRerunStatus ?? 202);
+  }
   if (suffix === "/runs") {
     return jsonResponse({
       schemaVersion: 5,
@@ -1371,9 +1412,10 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     selectedRun: {
       kind: "diagnosis",
       operation: null,
-      id: scenario.runId,
-      attempt: 1,
-      status: "COMPLETED",
+      id: state.online && state.rerunId && !options.onlineWrongRun ? state.rerunId : scenario.runId,
+      attempt: state.online && state.rerunId ? 2 : 1,
+      status: state.online && options.onlineRerunStatus === 409 ? "RUNNING" : "COMPLETED",
+      requestSource: state.online && state.rerunId ? "operator" : "system",
       error: null,
     },
     eventPage: {

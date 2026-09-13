@@ -20,6 +20,7 @@ from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     DiagnosisWorkflowRunSnapshot,
     ModelSnapshot,
+    RepairWorkflowRunSnapshot,
     RunStatus,
     TerminalRecord,
 )
@@ -91,11 +92,14 @@ class RunSupervisor:
         self._now = now
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
         self._accepting = False
+        self._reconciler: asyncio.Task[None] | None = None
+        self._parked_repairs: set[UUID] = set()
 
     async def start(self) -> None:
         self._accepting = True
         try:
             await self.reconcile()
+            self._reconciler = asyncio.create_task(self._reconcile_periodically())
         except BaseException:
             self._accepting = False
             raise
@@ -121,11 +125,28 @@ class RunSupervisor:
     async def reconcile(self) -> None:
         if not self._accepting:
             raise RuntimeError("Run supervisor is not accepting work")
-        for run_id in await self._repository.list_recoverable_run_ids():
-            await self.schedule(run_id)
+        await self._repository.expire_waiting_repairs(self._now())
+        recoverable = await self._repository.list_recoverable_run_ids()
+        self._parked_repairs.intersection_update(recoverable)
+        for run_id in recoverable:
+            if run_id not in self._parked_repairs:
+                await self.schedule(run_id)
+
+    async def _reconcile_periodically(self) -> None:
+        while self._accepting:
+            await asyncio.sleep(5)
+            try:
+                await self.reconcile()
+            except Exception:
+                # A transient database failure must not disable later reconciliation.
+                continue
 
     async def close(self) -> None:
         self._accepting = False
+        if self._reconciler is not None:
+            self._reconciler.cancel()
+            await asyncio.gather(self._reconciler, return_exceptions=True)
+            self._reconciler = None
         pending = {task for task in self._tasks.values() if not task.done()}
         if not pending:
             return
@@ -141,10 +162,10 @@ class RunSupervisor:
     async def _execute(self, run_id: UUID) -> None:
         try:
             snapshot = await self._repository.get_workflow_run_snapshot(run_id)
-            if (
-                not isinstance(snapshot, DiagnosisWorkflowRunSnapshot)
-                or snapshot.run_status not in _ACTIVE_RUN_STATUSES
-            ):
+            if isinstance(snapshot, RepairWorkflowRunSnapshot):
+                await self._execute_repair(snapshot)
+                return
+            if snapshot.run_status not in _ACTIVE_RUN_STATUSES:
                 return
             config: RunnableConfig = {"configurable": {"thread_id": str(run_id)}}
             checkpoint = await self._checkpointer.aget_tuple(config)
@@ -230,6 +251,76 @@ class RunSupervisor:
             raise
         except Exception as error:
             await self._handle_failure(run_id, error)
+
+    async def _execute_repair(self, run: RepairWorkflowRunSnapshot) -> None:
+        if run.run_status not in (*_ACTIVE_RUN_STATUSES, RunStatus.WAITING_APPROVAL):
+            return
+        config: RunnableConfig = {"configurable": {"thread_id": str(run.id)}}
+        checkpoint = await self._checkpointer.aget_tuple(config)
+        if run.run_status is RunStatus.RUNNING and checkpoint is None:
+            raise RecoveryConsistencyError
+        graph = build_incident_graph(self._dependencies, run)
+        if checkpoint is None:
+            await graph.ainvoke(  # pyright: ignore[reportUnknownMemberType]
+                {"run_id": str(run.id)},
+                config,
+                interrupt_before=["start_run"],
+                durability="sync",
+            )
+        state = await graph.aget_state(config)  # pyright: ignore[reportUnknownMemberType]
+        values = cast(dict[str, object], state.values)
+        if (
+            values.get("run_id") != str(run.id)
+            or set(values) - {"run_id", "messages", "repair_proposal_id"}
+            or values.get("messages") != []
+        ):
+            raise RecoveryConsistencyError
+        if run.run_status is RunStatus.QUEUED:
+            _require_pre_start_state(state, run.id)
+        else:
+            if tuple(state.next) not in (
+                ("start_run",),
+                ("prepare_repair",),
+                ("await_approval",),
+            ):
+                raise RecoveryConsistencyError
+            if values.get("repair_proposal_id") is not None and values[
+                "repair_proposal_id"
+            ] != str(run.proposal_id):
+                raise RecoveryConsistencyError
+            if tuple(state.next) == ("await_approval",):
+                if run.run_status is not RunStatus.WAITING_APPROVAL:
+                    raise RecoveryConsistencyError
+                if values.get("repair_proposal_id") != str(run.proposal_id):
+                    raise RecoveryConsistencyError
+                if (
+                    len(state.tasks) != 1
+                    or state.tasks[0].name != "await_approval"
+                    or state.tasks[0].error is not None
+                ):
+                    raise RecoveryConsistencyError
+                interrupts = state.tasks[0].interrupts
+                if interrupts:
+                    if len(interrupts) != 1 or interrupts[0].value != {
+                        "runId": str(run.id),
+                        "proposalId": str(run.proposal_id),
+                    }:
+                        raise RecoveryConsistencyError
+                    self._parked_repairs.add(run.id)
+                    return
+        await graph.ainvoke(None, config, durability="sync")  # pyright: ignore[reportUnknownMemberType]
+        current = await self._repository.get_workflow_run_snapshot(run.id)
+        if current.run_status is RunStatus.WAITING_APPROVAL:
+            parked = await graph.aget_state(config)  # pyright: ignore[reportUnknownMemberType]
+            if (
+                tuple(parked.next) != ("await_approval",)
+                or len(parked.tasks) != 1
+                or len(parked.tasks[0].interrupts) != 1
+            ):
+                raise RecoveryConsistencyError
+            self._parked_repairs.add(run.id)
+        elif current.run_status in _ACTIVE_RUN_STATUSES:
+            raise RecoveryConsistencyError
 
     def _context(self, run: DiagnosisWorkflowRunSnapshot) -> DiagnosticToolContext:
         started_at = run.started_at or self._now()
@@ -328,11 +419,16 @@ class RunSupervisor:
         try:
             current = await self._repository.get_workflow_run_snapshot(run_id)
         except Exception:
+            await self._repository.fail_repair_run(
+                run_id, "recovery_consistency_error", False, self._now()
+            )
             return
-        if (
-            not isinstance(current, DiagnosisWorkflowRunSnapshot)
-            or current.run_status not in _ACTIVE_RUN_STATUSES
-        ):
+        if isinstance(current, RepairWorkflowRunSnapshot):
+            await self._repository.fail_repair_run(
+                run_id, "recovery_consistency_error", False, self._now()
+            )
+            return
+        if current.run_status not in _ACTIVE_RUN_STATUSES:
             return
         contract = classify_diagnosis_failure(error)
         code, retryable = contract or ("recovery_consistency_error", False)

@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, Query, status
 from k8s_incident_agent.api_contracts import (
     CreateIncidentRequest,
     CreateIncidentResponse,
+    CreateRepairRunRequest,
+    CreateRunRequest,
     CreateRunResponse,
     IncidentDetailResponse,
     IncidentListResponse,
@@ -14,6 +16,8 @@ from k8s_incident_agent.api_contracts import (
     error_responses,
 )
 from k8s_incident_agent.application.incidents import IncidentApplicationService
+from k8s_incident_agent.auth.http import require_operator
+from k8s_incident_agent.auth.sessions import OperatorSession
 from k8s_incident_agent.routes import incident_service
 
 manual_router = APIRouter(prefix="/api/v1")
@@ -23,6 +27,7 @@ _IncidentService = Annotated[
     IncidentApplicationService,
     Depends(incident_service),
 ]
+_Operator = Annotated[OperatorSession, Depends(require_operator)]
 
 
 @manual_router.post(
@@ -34,11 +39,12 @@ _IncidentService = Annotated[
 async def create_incident(
     request: CreateIncidentRequest,
     service: _IncidentService,
+    operator: _Operator,
 ) -> CreateIncidentResponse:
-    return await service.create_incident(request)
+    return await service.create_incident(request, operator_ref=operator.operator_ref)
 
 
-@manual_router.post(
+@router.post(
     "/incidents/{incident_id}/runs",
     response_model=CreateRunResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -47,8 +53,31 @@ async def create_incident(
 async def create_run(
     incident_id: UUID,
     service: _IncidentService,
+    operator: _Operator,
+    request: CreateRunRequest | None = None,
 ) -> CreateRunResponse:
-    return await service.create_run(incident_id)
+    return await service.create_run(
+        incident_id,
+        replaces_run_id=request.replaces_run_id if request else None,
+        operator_ref=operator.operator_ref,
+    )
+
+
+@router.post(
+    "/incidents/{incident_id}/repair-runs",
+    response_model=CreateRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses=error_responses(404, 409, 422, 500, 503),
+)
+async def create_repair_run(
+    incident_id: UUID,
+    request: CreateRepairRunRequest,
+    service: _IncidentService,
+    operator: _Operator,
+) -> CreateRunResponse:
+    return await service.create_repair_run(
+        incident_id, request, operator_ref=operator.operator_ref
+    )
 
 
 @router.get(

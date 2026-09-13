@@ -10,6 +10,7 @@ from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
     NormalizedIncidentTrigger,
+    RepairHistorySelection,
 )
 
 type JsonScalar = str | int | float | bool | None
@@ -175,6 +176,11 @@ class DiagnosisWorkflowRunSnapshot(_WorkflowRunSnapshot):
 class RepairWorkflowRunSnapshot(_WorkflowRunSnapshot):
     operation: RepairOperation
     timeout_seconds: int
+    source_run_id: UUID
+    selection: RepairHistorySelection | None
+    waiting_expires_at: datetime | None
+    proposal_id: UUID | None
+    end_reason: Literal["expired", "superseded"] | None
     kind: Literal[RunKind.REPAIR] = field(default=RunKind.REPAIR, init=False)
 
 

@@ -11,6 +11,7 @@ from k8s_incident_agent.api_contracts import (
     AlertSignalResponse,
     CreateIncidentRequest,
     CreateIncidentResponse,
+    CreateRepairRunRequest,
     CreateRunResponse,
     DiagnosisResponse,
     EventPageResponse,
@@ -22,6 +23,7 @@ from k8s_incident_agent.api_contracts import (
     IncidentSourceResponse,
     IncidentTargetResponse,
     RepairDiffResponse,
+    RepairHistorySelectionResponse,
     RepairPatchOperationResponse,
     RepairProposalResponse,
     RepairValidationErrorResponse,
@@ -47,6 +49,7 @@ from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
     NormalizedIncidentTrigger,
+    RepairHistorySelection,
 )
 from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget, RunEvent
 from k8s_incident_agent.kubernetes.credentials import (
@@ -123,6 +126,8 @@ class IncidentApplicationService:
     async def create_incident(
         self,
         request: CreateIncidentRequest,
+        *,
+        operator_ref: str | None = None,
     ) -> CreateIncidentResponse:
         scenario = self._scenarios.get(request.scenario_id)
         if scenario is None:
@@ -132,17 +137,57 @@ class IncidentApplicationService:
             _normalized_scenario_trigger(scenario),
             model,
             self._budget,
+            operator_ref=operator_ref,
         )
         await schedule_committed_run(self._supervisor, created.run_id)
         return CreateIncidentResponse(incident_id=created.incident_id)
 
-    async def create_run(self, incident_id: UUID) -> CreateRunResponse:
+    async def create_run(
+        self,
+        incident_id: UUID,
+        *,
+        replaces_run_id: UUID | None = None,
+        operator_ref: str | None = None,
+    ) -> CreateRunResponse:
         model = self._require_diagnostic_readiness()
         try:
             created = await self._repository.create_run(
                 incident_id,
                 model,
                 self._budget,
+                replaces_run_id=replaces_run_id,
+                operator_ref=operator_ref,
+            )
+        except ActiveRunExistsError:
+            raise ActiveRunConflictError from None
+        if created is None:
+            raise IncidentNotFoundError
+        await schedule_committed_run(self._supervisor, created.run_id)
+        return CreateRunResponse(run_id=created.run_id)
+
+    async def create_repair_run(
+        self,
+        incident_id: UUID,
+        request: CreateRepairRunRequest,
+        *,
+        operator_ref: str,
+    ) -> CreateRunResponse:
+        selection = (
+            None
+            if request.selection is None
+            else RepairHistorySelection(
+                revision=int(request.selection.revision),
+                replica_set_uid=request.selection.replica_set_uid,
+            )
+        )
+        try:
+            created = await self._repository.create_repair_run(
+                incident_id,
+                request.source_run_id,
+                selection=selection,
+                replaces_run_id=request.replaces_run_id,
+                operator_ref=operator_ref,
+                now=self._now(),
             )
         except ActiveRunExistsError:
             raise ActiveRunConflictError from None
@@ -351,6 +396,8 @@ def _run_summary(run: IncidentRunDetail) -> RunSummaryResponse:
         created_at=run.created_at,
         started_at=run.started_at,
         completed_at=run.completed_at,
+        request_source=run.request_source,
+        source_run_id=run.source_run_id,
     )
 
 
@@ -364,6 +411,14 @@ def _selected_run(run: IncidentRunDetail) -> SelectedRunResponse:
     return SelectedRunResponse(
         **_run_summary(run).model_dump(),
         error=run_error,
+        selection=None
+        if run.selection is None
+        else RepairHistorySelectionResponse(
+            revision=str(run.selection.revision),
+            replica_set_uid=run.selection.replica_set_uid,
+        ),
+        waiting_expires_at=run.waiting_expires_at,
+        end_reason=run.end_reason,
     )
 
 

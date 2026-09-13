@@ -24,6 +24,7 @@ class IncidentGraphState(IncidentGraphInput, total=False):
     repair_policy_checked_at: str
     repair_change: dict[str, JsonValue]
     repair_proposal: dict[str, JsonValue]
+    repair_proposal_id: str | None
     patch_validation: dict[str, JsonValue]
     model_calls: int
     tool_calls: int

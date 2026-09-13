@@ -307,6 +307,62 @@
         "title": "CreateIncidentResponse",
         "type": "object"
       },
+      "CreateRepairRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "replacesRunId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacesrunid"
+          },
+          "selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepairHistorySelectionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sourceRunId": {
+            "format": "uuid",
+            "title": "Sourcerunid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceRunId"
+        ],
+        "title": "CreateRepairRunRequest",
+        "type": "object"
+      },
+      "CreateRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "replacesRunId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replacesrunid"
+          }
+        },
+        "title": "CreateRunRequest",
+        "type": "object"
+      },
       "CreateRunResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1857,6 +1913,28 @@
         "title": "RepairDryRunPassedStreamEvent",
         "type": "object"
       },
+      "RepairHistorySelectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "replicaSetUid": {
+            "maxLength": 253,
+            "minLength": 1,
+            "title": "Replicasetuid",
+            "type": "string"
+          },
+          "revision": {
+            "pattern": "^[1-9][0-9]{0,18}$",
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "replicaSetUid"
+        ],
+        "title": "RepairHistorySelectionResponse",
+        "type": "object"
+      },
       "RepairOperation": {
         "enum": [
           "apply",
@@ -2147,6 +2225,89 @@
         "title": "RepairValidationResponse",
         "type": "object"
       },
+      "RepairWaitEndedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "incidentStatus": {
+            "const": "DIAGNOSED",
+            "title": "Incidentstatus",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "expired",
+              "superseded"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
+          "runStatus": {
+            "const": "COMPLETED",
+            "title": "Runstatus",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 5,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "runKind",
+          "reason",
+          "incidentStatus",
+          "runStatus"
+        ],
+        "title": "RepairWaitEndedEventPayload",
+        "type": "object"
+      },
+      "RepairWaitEndedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RepairWaitEndedEventPayload"
+          },
+          "event": {
+            "const": "repair.wait_ended",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "RepairWaitEndedStreamEvent",
+        "type": "object"
+      },
       "RepairWaitingApprovalEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -2337,6 +2498,7 @@
             "incident.created": "#/components/schemas/IncidentCreatedStreamEvent",
             "repair.dry_run_passed": "#/components/schemas/RepairDryRunPassedStreamEvent",
             "repair.patch_ready": "#/components/schemas/RepairPatchReadyStreamEvent",
+            "repair.wait_ended": "#/components/schemas/RepairWaitEndedStreamEvent",
             "repair.waiting_approval": "#/components/schemas/RepairWaitingApprovalStreamEvent",
             "run.failed": "#/components/schemas/RunFailedStreamEvent",
             "run.queued": "#/components/schemas/RunQueuedStreamEvent",
@@ -2382,6 +2544,9 @@
           },
           {
             "$ref": "#/components/schemas/RepairWaitingApprovalStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/RepairWaitEndedStreamEvent"
           },
           {
             "$ref": "#/components/schemas/AlertResolvedStreamEvent"
@@ -2605,7 +2770,10 @@
             "type": "string"
           },
           "incidentStatus": {
-            "const": "TRIAGING",
+            "enum": [
+              "TRIAGING",
+              "PATCH_READY"
+            ],
             "title": "Incidentstatus",
             "type": "string"
           },
@@ -2723,6 +2891,33 @@
                 "type": "null"
               }
             ]
+          },
+          "requestSource": {
+            "anyOf": [
+              {
+                "enum": [
+                  "system",
+                  "operator"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestsource"
+          },
+          "sourceRunId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcerunid"
           },
           "startedAt": {
             "anyOf": [
@@ -2911,6 +3106,21 @@
             "title": "Createdat",
             "type": "string"
           },
+          "endReason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "expired",
+                  "superseded"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endreason"
+          },
           "error": {
             "anyOf": [
               {
@@ -2939,6 +3149,43 @@
               }
             ]
           },
+          "requestSource": {
+            "anyOf": [
+              {
+                "enum": [
+                  "system",
+                  "operator"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requestsource"
+          },
+          "selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepairHistorySelectionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sourceRunId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcerunid"
+          },
           "startedAt": {
             "anyOf": [
               {
@@ -2953,6 +3200,18 @@
           },
           "status": {
             "$ref": "#/components/schemas/RunStatus"
+          },
+          "waitingExpiresAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waitingexpiresat"
           }
         },
         "required": [
@@ -3874,6 +4133,121 @@
         "summary": "Get Incident Monitoring Panel"
       }
     },
+    "/api/v1/incidents/{incident_id}/repair-runs": {
+      "post": {
+        "operationId": "create_repair_run_api_v1_incidents__incident_id__repair_runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRepairRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "summary": "Create Repair Run"
+      }
+    },
     "/api/v1/incidents/{incident_id}/runs": {
       "get": {
         "operationId": "list_runs_api_v1_incidents__incident_id__runs_get",
@@ -4020,6 +4394,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CreateRunRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {

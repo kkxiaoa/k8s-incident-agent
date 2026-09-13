@@ -32,6 +32,7 @@ from k8s_incident_agent.monitoring.errors import (
     AlertPayloadTruncatedError,
     AlertTargetInvalidError,
 )
+from k8s_incident_agent.persistence.repositories import RepairSourceInvalidError
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,18 @@ _ALERT_TARGET_INVALID = _ErrorContract(
 
 
 def install_exception_handlers(app: FastAPI) -> None:
+    async def repair_source_handler(
+        _request: Request, _error: RepairSourceInvalidError
+    ) -> JSONResponse:
+        return _response(
+            _ErrorContract(
+                409, "repair_source_invalid", "Repair source is not applicable."
+            )
+        )
+
+    app.add_exception_handler(
+        RepairSourceInvalidError, cast(ExceptionHandler, repair_source_handler)
+    )
     operator_errors: dict[type[Exception], _ErrorContract] = {
         OperatorAuthenticationError: _ErrorContract(
             401,

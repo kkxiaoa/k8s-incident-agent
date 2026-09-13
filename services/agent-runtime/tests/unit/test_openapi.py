@@ -27,6 +27,7 @@ EXPECTED_OPERATIONS = {
     ),
     ("GET", "/api/v1/incidents/{incident_id}/runs"),
     ("POST", "/api/v1/incidents/{incident_id}/runs"),
+    ("POST", "/api/v1/incidents/{incident_id}/repair-runs"),
     ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
     ("GET", "/api/v1/monitoring/health"),
     ("GET", "/api/v1/monitoring/overview"),
@@ -80,6 +81,13 @@ EXPECTED_ERROR_STATUSES = {
         "500",
         "503",
     },
+    ("POST", "/api/v1/incidents/{incident_id}/repair-runs"): {
+        "404",
+        "409",
+        "422",
+        "500",
+        "503",
+    },
     ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"): {
         "400",
         "404",
@@ -124,6 +132,10 @@ EXPECTED_EVENT_COMPONENTS = {
     "repair.waiting_approval": (
         "RepairWaitingApprovalStreamEvent",
         "RepairWaitingApprovalEventPayload",
+    ),
+    "repair.wait_ended": (
+        "RepairWaitEndedStreamEvent",
+        "RepairWaitEndedEventPayload",
     ),
     "alert.resolved": (
         "AlertResolvedStreamEvent",

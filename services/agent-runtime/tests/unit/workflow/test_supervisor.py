@@ -39,6 +39,9 @@ class _PolicyResolver:
 
 
 class _BlockingTerminalRepository:
+    async def expire_waiting_repairs(self, now: datetime) -> None:
+        pass
+
     def __init__(self, run: DiagnosisWorkflowRunSnapshot) -> None:
         self.run = run
         self.release = asyncio.Event()

@@ -162,6 +162,29 @@ function alertResolved(id: string, runId = RUN_ID) {
 }
 
 describe("parseRunEvent", () => {
+  it.each(["expired", "superseded"])("ends a %s repair wait and refreshes the authoritative detail", (reason) => {
+    const detail = makeRepairRunWaitingDetail();
+    const payload = {
+      schemaVersion: 5, incidentId: INCIDENT_ID, runId: detail.selectedRun.id,
+      runKind: "repair", runStatus: "COMPLETED", incidentStatus: "DIAGNOSED",
+      occurredAt: "2026-08-29T01:16:00Z", reason,
+    };
+    const event = parseRunEvent("repair.wait_ended", "2", JSON.stringify(payload), INCIDENT_ID);
+    expect(isTerminalRunEvent(event)).toBe(true);
+    const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
+    expect(state.detail.selectedRun.status).toBe("COMPLETED");
+    expect(state.detail.incident.status).toBe("DIAGNOSED");
+    expect(state.detailRefreshEventId).toBe("2");
+    for (const change of [{ reason: "approved" }, { runKind: "diagnosis" }, { runStatus: "WAITING_APPROVAL" }]) {
+      expect(() => parseRunEvent("repair.wait_ended", "2", JSON.stringify({ ...payload, ...change }), INCIDENT_ID)).toThrow();
+    }
+  });
+
+  it("accepts repair start in PATCH_READY, never diagnosis TRIAGING", () => {
+    const payload = { ...runStarted("2").data, runKind: "repair", incidentStatus: "PATCH_READY" };
+    expect(parseRunEvent("run.started", "2", JSON.stringify(payload), INCIDENT_ID).data.runKind).toBe("repair");
+    expect(() => parseRunEvent("run.started", "2", JSON.stringify({ ...payload, incidentStatus: "TRIAGING" }), INCIDENT_ID)).toThrow();
+  });
   it("refreshes a new repair waiting proposal without turning it into a terminal Run", () => {
     const detail = makeRepairRunWaitingDetail();
     detail.selectedRun.status = "RUNNING";

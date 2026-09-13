@@ -572,8 +572,15 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
       break;
     case "repair.waiting_approval":
       record.detail.incident.status = "WAITING_APPROVAL";
+      record.detail.selectedRun.status = event.data.runStatus;
+      record.detail.selectedRun.completedAt = event.data.runStatus === "COMPLETED" ? event.data.occurredAt : null;
+      record.finished = event.data.runStatus === "COMPLETED";
+      break;
+    case "repair.wait_ended":
+      record.detail.incident.status = "DIAGNOSED";
       record.detail.selectedRun.status = "COMPLETED";
       record.detail.selectedRun.completedAt = event.data.occurredAt;
+      record.detail.selectedRun.endReason = event.data.reason;
       record.finished = true;
       break;
     case "diagnosis.insufficient":
