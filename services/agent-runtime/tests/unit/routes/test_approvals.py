@@ -38,7 +38,10 @@ from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.auth.sessions import OperatorSessions
 from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
-from k8s_incident_agent.domain.models import RepairWorkflowRunSnapshot
+from k8s_incident_agent.domain.models import (
+    NormalizedAlertOccurrence,
+    RepairWorkflowRunSnapshot,
+)
 from k8s_incident_agent.execution.api import ExecutionEndpoint
 from k8s_incident_agent.execution.contracts import ExecutionReceipt, ExecutionResult
 from k8s_incident_agent.internal_auth import NonceReplayCache
@@ -125,6 +128,7 @@ async def approval_harness(
     *,
     enabled: bool = True,
     executor_key: bytes | None = None,
+    occurrence: NormalizedAlertOccurrence | None = None,
 ) -> AsyncGenerator[ApprovalHarness]:
     password, encoded = credential
     clock = [FRESH_NOW]
@@ -139,7 +143,7 @@ async def approval_harness(
             sandbox_execution_enabled=enabled,
             execution_cluster="k8s-incident-agent",
         )
-        incident_id, source_id = await seed_source(repository)
+        incident_id, source_id = await seed_source(repository, occurrence)
         run = await create_preparation(repository, incident_id, source_id)
         graph = build_incident_graph(
             dependencies(repository, saver, KubernetesFixture(), lambda: clock[0]), run

@@ -63,6 +63,7 @@ from k8s_incident_agent.execution.contracts import (
     ApprovalDecision,
     ApprovalRecord,
     ExecutionCommand,
+    ExecutionReceipt,
     ExecutionRecord,
     ExecutionResult,
     ExecutionStatus,
@@ -80,6 +81,7 @@ from k8s_incident_agent.persistence.models import (
     RepairProposalRow,
     RunEventRow,
     RunRow,
+    VerificationRow,
 )
 from k8s_incident_agent.repair.compiler import require_exact_repair_proposal
 from k8s_incident_agent.repair.contracts import (
@@ -88,6 +90,12 @@ from k8s_incident_agent.repair.contracts import (
     SetContainerImageIntent,
 )
 from k8s_incident_agent.repair.records import PreparedRepairRecord, RepairTerminalRecord
+from k8s_incident_agent.repair.verification_contracts import (
+    MAX_OBSERVATION_BYTES,
+    VerificationObservation,
+    VerificationRecord,
+    verification_sample_key,
+)
 
 PROJECT_NAMESPACE: Final = UUID("5c2f2e64-4c10-5ba3-99f0-8f9f37c660b8")
 _SCHEMA_VERSION: Final = 5
@@ -115,6 +123,7 @@ class PruneTarget:
     alert_signal_rows: int
     approval_rows: int = 0
     execution_rows: int = 0
+    verification_rows: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +192,17 @@ class IncidentRepairDetail:
     validation: PatchValidationResponse
     approval: ApprovalRecord | None = None
     execution: ExecutionRecord | None = None
+    verification: VerificationRecord | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RepairVerificationContext:
+    record: VerificationRecord
+    proposal: RepairProposal
+    receipt: ExecutionReceipt
+    previous: VerificationObservation | None
+    occurrence_resolved: bool | None
+    watchdog_received_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -696,6 +716,9 @@ class IncidentRepository:
             raise ValueError("Event page limit must be between 1 and 100")
         try:
             async with self._session_factory() as session:
+                # SQLite's legacy driver does not begin a snapshot for SELECT.
+                # Keep the Run, ledger and Evidence on the same committed version.
+                await session.execute(text("BEGIN"))
                 incident = await session.get(IncidentRow, str(incident_id))
                 if incident is None:
                     return None
@@ -768,6 +791,7 @@ class IncidentRepository:
                             ExecutionRow.run_id == RunRow.id,
                             RunRow.incident_id == incident.id,
                             ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
+                            ExecutionRow.target_released_at.is_(None),
                         )
                     )
                 )
@@ -790,6 +814,7 @@ class IncidentRepository:
             raise ValueError("Run cursor attempt must be positive")
         try:
             async with self._session_factory() as session:
+                await session.execute(text("BEGIN"))
                 incident = await session.get(IncidentRow, str(incident_id))
                 if incident is None:
                     return None
@@ -857,6 +882,7 @@ class IncidentRepository:
     ) -> WorkflowRunSnapshot:
         try:
             async with self._session_factory() as session:
+                await session.execute(text("BEGIN"))
                 rows = await _load_workflow_rows(session, run_id)
                 return _workflow_run_snapshot(
                     rows.run,
@@ -908,6 +934,7 @@ class IncidentRepository:
                     ExecutionRow.run_id == RunRow.id,
                     RunRow.incident_id == IncidentRow.id,
                     ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
+                    ExecutionRow.target_released_at.is_(None),
                 )
                 incidents = list(
                     await session.scalars(
@@ -959,6 +986,17 @@ class IncidentRepository:
 
                 run_ids = tuple(str(run_id) for run_id in target.run_ids)
 
+                await _delete_exact_rows(
+                    session,
+                    delete(VerificationRow).where(
+                        VerificationRow.execution_id.in_(
+                            select(ExecutionRow.id).where(
+                                ExecutionRow.run_id.in_(run_ids)
+                            )
+                        )
+                    ),
+                    target.verification_rows,
+                )
                 await _delete_exact_rows(
                     session,
                     delete(ExecutionRow).where(ExecutionRow.run_id.in_(run_ids)),
@@ -1864,6 +1902,226 @@ class IncidentRepository:
         for event in events:
             await self._notify_committed_event(event)
         return persisted
+
+    async def get_verification_context(
+        self, run_id: UUID
+    ) -> RepairVerificationContext | None:
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                rows = await _load_workflow_rows(session, run_id)
+                repair = rows.repair
+                execution = repair.execution if repair else None
+                if (
+                    repair is None
+                    or execution is None
+                    or execution.status != "APPLIED"
+                    or rows.run.status is not RunStatus.RUNNING
+                ):
+                    return None
+                if (
+                    execution.reported_at is None
+                    or execution.result is None
+                    or execution.result.receipt is None
+                ):
+                    raise RecoveryConsistencyError
+                record = repair.verification
+                if record is None:
+                    record = VerificationRecord(
+                        execution_id=execution.id,
+                        started_at=execution.reported_at,
+                        deadline_at=execution.reported_at + timedelta(minutes=10),
+                    )
+                    session.add(
+                        VerificationRow(
+                            execution_id=str(execution.id),
+                            record_json=record.model_dump_json(),
+                        )
+                    )
+                previous = None
+                if record.sample_count:
+                    evidence = await _evidence_by_tool_call(
+                        session,
+                        run_id,
+                        verification_sample_key(execution.id, record.sample_count),
+                    )
+                    if (
+                        evidence is None
+                        or evidence.evidence_kind != "recovery_observation"
+                    ):
+                        raise RecoveryConsistencyError
+                    previous = VerificationObservation.model_validate_json(
+                        evidence.payload_json
+                    )
+                    if previous.observed_at != record.last_observed_at:
+                        raise RecoveryConsistencyError
+                signal = await session.get(AlertSignalRow, rows.incident.id)
+                watchdog = await session.get(MonitoringSourceStateRow, 1)
+                return RepairVerificationContext(
+                    record,
+                    repair.proposal,
+                    execution.result.receipt,
+                    previous,
+                    signal.status is AlertSignalStatus.RESOLVED
+                    if signal is not None
+                    else (
+                        False
+                        if rows.incident.trigger_source == "alertmanager"
+                        else None
+                    ),
+                    _database_datetime(watchdog.last_watchdog_received_at)
+                    if watchdog is not None
+                    else None,
+                )
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        except (ValueError, TypeError):
+            raise RecoveryConsistencyError from None
+
+    async def persist_verification(
+        self,
+        run_id: UUID,
+        expected: VerificationRecord,
+        updated: VerificationRecord,
+        observation: VerificationObservation | None,
+    ) -> None:
+        events: list[RunEvent] = []
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                rows = await _load_workflow_rows(session, run_id)
+                if rows.repair is None or rows.repair.verification is None:
+                    raise RecoveryConsistencyError
+                if rows.repair.verification == updated:
+                    return
+                if (
+                    rows.repair.verification != expected
+                    or expected.outcome != "observing"
+                    or updated.execution_id != expected.execution_id
+                    or updated.started_at != expected.started_at
+                    or updated.deadline_at != expected.deadline_at
+                    or updated.sample_count
+                    != expected.sample_count + (observation is not None)
+                ):
+                    raise RecoveryConsistencyError
+                row = await session.get(VerificationRow, str(updated.execution_id))
+                execution = await session.get(ExecutionRow, str(updated.execution_id))
+                if row is None or execution is None or execution.status != "APPLIED":
+                    raise RecoveryConsistencyError
+                at = updated.completed_at or updated.last_observed_at
+                if at is None:
+                    raise RecoveryConsistencyError
+                if observation is not None:
+                    encoded = canonical_json(
+                        cast(
+                            dict[str, JsonValue],
+                            observation.model_dump(mode="json", by_alias=True),
+                        )
+                    )
+                    if (
+                        len(encoded.encode()) > MAX_OBSERVATION_BYTES
+                        or observation.observed_at != updated.last_observed_at
+                    ):
+                        raise RecoveryConsistencyError
+                    key = verification_sample_key(
+                        updated.execution_id, updated.sample_count
+                    )
+                    target = rows.repair.proposal.target
+                    evidence_row = EvidenceRow(
+                        id=str(evidence_id(run_id, key)),
+                        run_id=str(run_id),
+                        tool_call_id=key,
+                        tool_name="verify_recovery",
+                        evidence_kind="recovery_observation",
+                        target_ref_json=canonical_json(
+                            cast(
+                                dict[str, JsonValue],
+                                target.model_dump(mode="json", by_alias=True),
+                            )
+                        ),
+                        observed_at=observation.observed_at,
+                        payload_json=encoded,
+                        truncated=observation.logs.truncated
+                        if observation.logs
+                        else False,
+                        redacted=observation.logs.redacted
+                        if observation.logs
+                        else False,
+                    )
+                    event = _new_event_row(
+                        run_id=run_id,
+                        event_key=f"tool:{key}:evidence",
+                        event_type="evidence.recorded",
+                        occurred_at=at,
+                        payload=_evidence_event_payload(
+                            evidence_row,
+                            UUID(rows.incident.id),
+                            run_id,
+                            at,
+                            RunKind.REPAIR,
+                        ),
+                    )
+                    session.add_all((evidence_row, event))
+                    await session.flush()
+                    events.append(
+                        _event_from_row(
+                            event, expected_incident_id=UUID(rows.incident.id)
+                        )
+                    )
+                row.record_json = updated.model_dump_json()
+                if updated.outcome != "observing":
+                    rows.run.status = (
+                        RunStatus.COMPLETED
+                        if updated.outcome == "recovered"
+                        else RunStatus.FAILED
+                    )
+                    rows.run.completed_at = updated.completed_at
+                    rows.run.error_code = (
+                        None
+                        if updated.outcome == "recovered"
+                        else f"verification_{updated.outcome}"
+                    )
+                    rows.run.error_retryable = (
+                        None if updated.outcome == "recovered" else False
+                    )
+                    rows.incident.status = (
+                        IncidentStatus.RESOLVED
+                        if updated.outcome == "recovered"
+                        else IncidentStatus.FAILED
+                    )
+                    execution.target_released_at = updated.completed_at
+                rows.run.updated_at = rows.incident.updated_at = at
+                payload = _base_payload(
+                    UUID(rows.incident.id), run_id, at, RunKind.REPAIR
+                )
+                payload.update(
+                    {
+                        "executionId": str(updated.execution_id),
+                        "outcome": updated.outcome,
+                        "reason": updated.reason,
+                        "sampleCount": updated.sample_count,
+                        "runStatus": rows.run.status.value,
+                        "incidentStatus": rows.incident.status.value,
+                    }
+                )
+                event = _new_event_row(
+                    run_id=run_id,
+                    event_key="run:terminal"
+                    if updated.outcome != "observing"
+                    else f"verification:{updated.sample_count}",
+                    event_type="repair.verification_updated",
+                    occurred_at=at,
+                    payload=payload,
+                )
+                session.add(event)
+                await session.flush()
+                events.append(
+                    _event_from_row(event, expected_incident_id=UUID(rows.incident.id))
+                )
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        for event in events:
+            await self._notify_committed_event(event)
 
     async def reconcile_executions(self, now: datetime) -> None:
         events: list[RunEvent] = []
@@ -2862,6 +3120,7 @@ async def _require_no_incident_execution(
                 ExecutionRow.run_id == RunRow.id,
                 RunRow.incident_id == incident_id,
                 ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
+                ExecutionRow.target_released_at.is_(None),
             )
         )
     )
@@ -2943,10 +3202,55 @@ async def _load_repair_ledger(
     ):
         raise RecoveryConsistencyError
     execution = _execution_record(execution_row) if execution_row is not None else None
+    verification_row = (
+        await session.get(VerificationRow, execution_row.id)
+        if execution_row is not None
+        else None
+    )
+    try:
+        verification = (
+            VerificationRecord.model_validate_json(verification_row.record_json)
+            if verification_row is not None
+            else None
+        )
+    except (ValueError, TypeError):
+        raise RecoveryConsistencyError from None
+    if verification is not None and (
+        execution is None
+        or execution.status != "APPLIED"
+        or verification.execution_id != execution.id
+        or verification.started_at != execution.reported_at
+        or (
+            verification.completed_at is not None
+            and (
+                run.completed_at is None
+                or verification.completed_at != _database_datetime(run.completed_at)
+            )
+        )
+        or run.error_code
+        != (
+            None
+            if verification.outcome in ("observing", "recovered")
+            else f"verification_{verification.outcome}"
+        )
+    ):
+        raise RecoveryConsistencyError
+    if execution_row is not None and (
+        (
+            _database_datetime(execution_row.target_released_at)
+            if execution_row.target_released_at is not None
+            else None
+        )
+        != (verification.completed_at if verification else None)
+    ):
+        raise RecoveryConsistencyError
     expected_run_status = (
         RunStatus.COMPLETED
-        if approval.decision == "reject"
+        if (verification is not None and verification.outcome == "recovered")
+        or approval.decision == "reject"
         or (execution is not None and execution.status == "EXPIRED")
+        else RunStatus.FAILED
+        if verification is not None and verification.outcome != "observing"
         else RunStatus.RUNNING
         if execution is not None
         and execution.status in ("PENDING", "CLAIMED", "APPLIED")
@@ -3006,7 +3310,9 @@ async def _load_repair_ledger(
             )
         ):
             raise RecoveryConsistencyError
-    return replace(repair, approval=approval, execution=execution)
+    return replace(
+        repair, approval=approval, execution=execution, verification=verification
+    )
 
 
 async def _advance_execution(
@@ -3280,6 +3586,17 @@ async def _prune_target_from_incident(
         .select_from(ExecutionRow)
         .where(ExecutionRow.run_id.in_(persisted_run_ids))
     )
+    verification_rows = await session.scalar(
+        select(func.count())
+        .select_from(VerificationRow)
+        .where(
+            VerificationRow.execution_id.in_(
+                select(ExecutionRow.id).where(
+                    ExecutionRow.run_id.in_(persisted_run_ids)
+                )
+            )
+        )
+    )
     if (
         not isinstance(event_rows, int)
         or event_rows < 0
@@ -3293,6 +3610,7 @@ async def _prune_target_from_incident(
         or alert_signal_rows < 0
         or not isinstance(approval_rows, int)
         or not isinstance(execution_rows, int)
+        or not isinstance(verification_rows, int)
     ):
         raise RecoveryConsistencyError
     return PruneTarget(
@@ -3308,6 +3626,7 @@ async def _prune_target_from_incident(
         alert_signal_rows=alert_signal_rows,
         approval_rows=approval_rows,
         execution_rows=execution_rows,
+        verification_rows=verification_rows,
     )
 
 
@@ -3899,6 +4218,7 @@ def _repair_workflow_snapshot(
     )
     approval = repair.approval if repair is not None else None
     execution = repair.execution if repair is not None else None
+    verification = repair.verification if repair is not None else None
     if (
         (expires_at is not None)
         != (validation is not None and validation.outcome == "passed")
@@ -3933,6 +4253,7 @@ def _repair_workflow_snapshot(
         or (run.status is RunStatus.COMPLETED)
         != (
             run.end_reason in ("expired", "superseded", "rejected", "execution_expired")
+            or (verification is not None and verification.outcome == "recovered")
         )
         or run.end_reason
         not in (None, "expired", "superseded", "rejected", "execution_expired")
@@ -4058,6 +4379,7 @@ def _repair_workflow_snapshot(
         end_reason=run.end_reason,
         approval=approval,
         execution=execution,
+        verification=verification,
     )
 
 
@@ -5007,7 +5329,19 @@ async def _require_repair_evidence(
     proposal: RepairProposal,
 ) -> None:
     evidence_rows = list(
-        await session.scalars(select(EvidenceRow).where(EvidenceRow.run_id == run.id))
+        await session.scalars(
+            select(EvidenceRow).where(
+                EvidenceRow.run_id == run.id,
+                EvidenceRow.tool_call_id.in_(
+                    (
+                        "repair:get_workload",
+                        "repair:get_rollout_history",
+                        "repair:get_pods",
+                        "repair:get_events",
+                    )
+                ),
+            )
+        )
     )
     event_rows = list(
         await session.scalars(select(RunEventRow).where(RunEventRow.run_id == run.id))

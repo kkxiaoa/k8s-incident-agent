@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import re
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
 from k8s_incident_agent.domain.contracts import KubernetesTarget
@@ -18,6 +20,7 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricWindow,
     PrometheusHealthSignals,
     PrometheusObservation,
+    RecoveryMonitoring,
 )
 from k8s_incident_agent.monitoring.errors import (
     MonitoringBoundaryError,
@@ -60,6 +63,122 @@ class PrometheusQueryService:
 
     async def close(self) -> None:
         await self._client.close()
+
+    async def observe_recovery(
+        self,
+        *,
+        target: KubernetesTarget,
+        container_name: str,
+        pod_uids: tuple[str, ...],
+        applied_at: datetime,
+    ) -> RecoveryMonitoring:
+        if (
+            target.cluster != self._cluster_id
+            or target.api_version != "apps/v1"
+            or target.kind != "Deployment"
+            or target.namespace is None
+            or not 1 <= len(pod_uids) <= 32
+            or len(set(pod_uids)) != len(pod_uids)
+        ):
+            raise MonitoringBoundaryError(MonitoringErrorCode.TARGET_UNSUPPORTED)
+        names = tuple(
+            entry.alert_id
+            for entry in self._catalog.entries
+            if entry.target.api_version == target.api_version
+            and entry.target.kind == target.kind
+        )
+        at = _utc_now(self._now())
+
+        def query(expression: str):
+            return self._client.query_instant(expression, at=at, lookback_seconds=60)
+
+        def metric_query(metric: str) -> str:
+            selector = (
+                f'{metric}{{job="kube-state-metrics",namespace="{_escape_promql_label_value(target.namespace or "")}",'
+                f'container="{_escape_promql_label_value(container_name)}",'
+                f'uid=~"{_escape_promql_label_value("|".join(re.escape(uid) for uid in pod_uids))}"}}'
+            )
+            # Aggregate only AFTER timestamp(raw); the oldest input and exact UID
+            # coverage cannot be hidden by a fresh evaluation or duplicate series.
+            return (
+                f"label_replace(count((count by(uid)({selector}) == 1) and on(uid) "
+                f'(sum by(uid)({selector}) == 1)), "check", "covered", "", "") or '
+                f'label_replace(min(timestamp({selector})), "check", "oldest", "", "")'
+            )
+
+        alerts_query = (
+            f'ALERTS{{namespace="{_escape_promql_label_value(target.namespace)}",'
+            f'deployment="{_escape_promql_label_value(target.name)}",'
+            f'alertname=~"{_escape_promql_label_value("|".join(re.escape(name) for name in names))}",'
+            'alertstate=~"pending|firing"}'
+        )
+        up, up_at, ready, running, alerts, rules = await asyncio.gather(
+            query(_UP_QUERY),
+            query(f"timestamp({_UP_QUERY})"),
+            query(metric_query("kube_pod_container_status_ready")),
+            query(metric_query("kube_pod_container_status_running")),
+            query(alerts_query),
+            self._client.read_recovery_rules((*names, "Watchdog")),
+        )
+        partial = any(result.partial for result in (up, up_at, ready, running, alerts))
+        healthy_up = all(
+            _single_up(up, job) and _fresh_job(up_at, job, at)
+            for job in ("kube-state-metrics", "alertmanager")
+        )
+        oldest_rule = min(rule.last_evaluation for rule in rules)
+        received_at = _utc_now(self._now())
+        healthy_rules = all(
+            rule.health == "ok" and _fresh(rule.last_evaluation, received_at)
+            for rule in rules
+        )
+        oldest_samples: list[datetime] = []
+        target_healthy = not partial
+        for result in (ready, running):
+            if any(
+                len(series.labels) != 1 or series.labels[0][0] != "check"
+                for series in result.series
+            ):
+                raise MonitoringBoundaryError(
+                    MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+                )
+            values = {
+                series.label("check"): series.samples[-1].value
+                for series in result.series
+            }
+            if set(values) != {"covered", "oldest"} or len(result.series) != 2:
+                target_healthy = False
+                continue
+            sampled_at = _sample_time(values["oldest"])
+            oldest_samples.append(sampled_at)
+            target_healthy = (
+                target_healthy
+                and values["covered"] == len(pod_uids)
+                and _fresh(sampled_at, at)
+                and sampled_at >= applied_at
+            )
+        active: set[str] = set()
+        for series in alerts.series:
+            name = series.label("alertname")
+            if (
+                name is None
+                or name not in names
+                or series.label("namespace") != target.namespace
+                or series.label("deployment") != target.name
+                or series.label("alertstate") not in ("pending", "firing")
+                or series.samples[-1].value != 1
+            ):
+                raise MonitoringBoundaryError(
+                    MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+                )
+            active.add(name)
+        return RecoveryMonitoring(
+            checked_at=at,
+            chain_healthy=not partial and healthy_up and healthy_rules,
+            target_healthy=target_healthy,
+            oldest_target_sample_at=min(oldest_samples) if oldest_samples else None,
+            oldest_rule_evaluation_at=oldest_rule,
+            active_alerts=sorted(active),
+        )
 
     async def query_panel(
         self,
@@ -258,6 +377,26 @@ def _single_up(result: PrometheusQueryResult, job: str) -> bool:
     if len(matching) > 1:
         raise MonitoringBoundaryError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID)
     return bool(matching and matching[0].samples[-1].value == 1)
+
+
+def _sample_time(seconds: float) -> datetime:
+    try:
+        return datetime.fromtimestamp(seconds, UTC)
+    except (ValueError, OverflowError, OSError):
+        raise MonitoringBoundaryError(
+            MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+        ) from None
+
+
+def _fresh(sample: datetime, at: datetime) -> bool:
+    return at - timedelta(seconds=60) <= sample <= at
+
+
+def _fresh_job(result: PrometheusQueryResult, job: str, at: datetime) -> bool:
+    matching = [series for series in result.series if series.label("job") == job]
+    return len(matching) == 1 and _fresh(
+        _sample_time(matching[0].samples[-1].value), at
+    )
 
 
 def _watchdog_firing(result: PrometheusQueryResult) -> bool:

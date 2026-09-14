@@ -48,6 +48,8 @@ export function RepairPanel({
   refreshError: string | null;
 }) {
   const { repair, selectedRun, evidence } = detail;
+  const verification = detail.verification;
+  const verificationFailed = verification && verification.outcome !== "observing" && verification.outcome !== "recovered";
   const execution = detail.approval?.execution;
   const executionMessage = execution ? {
     PENDING: "已批准，等待执行领取",
@@ -128,13 +130,23 @@ export function RepairPanel({
         </>
       ) : (
         <>
-          <div className={`repair-verdict${repair.validation.outcome === "failed" ? " repair-verdict--failed" : ""}`}>
-            <span className="repair-verdict__icon"><UiIcon name={repair.validation.outcome === "passed" ? "check" : "close"} /></span>
+          <div className={`repair-verdict${verificationFailed || repair.validation.outcome === "failed" ? " repair-verdict--failed" : ""}`}>
+            <span className="repair-verdict__icon"><UiIcon name={verification?.outcome === "observing" ? "activity" : verificationFailed || repair.validation.outcome === "failed" ? "close" : "check"} /></span>
             <div>
-              <strong>{executionMessage ?? (repair.validation.outcome === "passed"
+              <strong>{verification ? {
+                observing: "写入已确认，正在观察恢复",
+                recovered: "工作负载与告警恢复已验证",
+                workload_failed: "工作负载未恢复，验证已停止",
+                monitoring_unavailable: "监控链路不可用，无法证明恢复",
+                insufficient_evidence: "有效观测不足，无法证明恢复",
+                target_drift: "目标已发生后续变化，验证已停止",
+                timeout: "恢复验证已超时",
+              }[verification.outcome] : executionMessage ?? (repair.validation.outcome === "passed"
                 ? "已通过验证，尚未批准或执行"
                 : "验证未通过，尚未批准或执行")}</strong>
-              <p>本次运行的验证快照，不代表目标当前状态。Dry-run 不证明应用已经恢复。</p>
+              <p>{verification ? "恢复结论仅覆盖已观察的 Kubernetes 工作负载与相关告警，不证明业务请求或数据正确性。" : "本次运行的验证快照，不代表目标当前状态。Dry-run 不证明应用已经恢复。"}</p>
+              {verification ? <p>已保存 {verification.sampleCount} 次观测 · 验证截止 <LocalTimestamp timestamp={verification.deadlineAt} />{verification.healthySince ? <> · 本段健康窗口起于 <LocalTimestamp timestamp={verification.healthySince} /></> : null}</p> : null}
+              {verification?.reason ? <p>当前判据：{{ rollout_pending: "等待本次 rollout 完成", workload_unhealthy: "工作负载尚未稳定", sample_missing: "缺少有效 Kubernetes 观测", sample_gap: "观测中断，重新累计健康窗口", monitoring_unavailable: "监控链路或规则不可用", metrics_missing_or_stale: "目标原始指标缺失或陈旧", alerts_active: "相关告警仍处于 pending/firing", occurrence_not_resolved: "尚未收到本次告警解除通知", target_drift: "目标 UID、镜像或 generation 已改变", deadline_exceeded: "达到原始验证期限" }[verification.reason]}</p> : null}
               {execution?.lateResult ? <p>迟到成功回执已保留；未知状态与目标占用未自动解除。</p> : null}
             </div>
             <span className="repair-verdict__boundary">{execution?.status ?? "未执行"}</span>

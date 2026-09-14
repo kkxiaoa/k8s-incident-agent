@@ -4,6 +4,7 @@ import {
   makeIncidentDetail,
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
+  makeRecoveryDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import {
@@ -15,6 +16,22 @@ import {
   parseMonitoringPanelListResponse,
   parseRuntimeHealthResponse,
 } from "./response-contracts";
+
+it.each(["observing", "recovered", "monitoring_unavailable"] as const)("keeps %s bound to its trusted execution and original window", (outcome) => {
+  const value = makeRecoveryDetail(outcome);
+  expect(parseIncidentDetailResponse(value)?.verification).toEqual(value.verification);
+  for (const changes of [{ executionId: value.incident.id }, { startedAt: "2026-09-14T01:00:03Z", deadlineAt: "2026-09-14T01:10:03Z" }, { sampleCount: 121 }, { lastObservedAt: "2026-09-14T01:20:00Z" }]) {
+    expect(parseIncidentDetailResponse({ ...value, verification: { ...value.verification, ...changes } })).toBeNull();
+  }
+  expect(parseIncidentDetailResponse({ ...value, approval: null })).toBeNull();
+});
+
+it("does not accept recovery without sixty seconds of saved healthy samples", () => {
+  const value = makeRecoveryDetail("recovered");
+  for (const changes of [{ sampleCount: 12 }, { healthySince: "2026-09-14T01:00:03Z" }, { healthySince: null }, { reason: "alerts_active" }]) {
+    expect(parseIncidentDetailResponse({ ...value, verification: { ...value.verification, ...changes } })).toBeNull();
+  }
+});
 
 it("preserves UNKNOWN and late receipt evidence with exact Run/proposal binding", () => {
   const value = makeRepairRunWaitingDetail();

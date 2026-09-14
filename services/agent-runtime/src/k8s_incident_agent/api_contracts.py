@@ -31,6 +31,11 @@ from k8s_incident_agent.domain.models import (
 from k8s_incident_agent.execution.contracts import ApprovalDecision, ExecutionStatus
 from k8s_incident_agent.model.errors import ModelErrorCode
 from k8s_incident_agent.repair.contracts import PatchValidationErrorCode
+from k8s_incident_agent.repair.verification_contracts import (
+    VerificationOutcome,
+    VerificationReason,
+    VerificationRecord,
+)
 
 
 def _require_utc_datetime(value: datetime, field_name: str) -> datetime:
@@ -573,6 +578,31 @@ class AlertResolvedEventPayload(_TypedRunEventPayload):
     ends_at: _CanonicalAlertTimestamp
 
 
+class VerificationUpdatedEventPayload(_TypedRunEventPayload):
+    execution_id: UUID
+    outcome: VerificationOutcome
+    reason: VerificationReason | None
+    sample_count: int = Field(ge=0, le=120)
+    incident_status: Literal["VERIFYING", "RESOLVED", "FAILED"]
+    run_status: Literal["RUNNING", "COMPLETED", "FAILED"]
+
+    @model_validator(mode="after")
+    def require_verification_state(self) -> "VerificationUpdatedEventPayload":
+        expected = (
+            ("RUNNING", "VERIFYING")
+            if self.outcome == "observing"
+            else ("COMPLETED", "RESOLVED")
+            if self.outcome == "recovered"
+            else ("FAILED", "FAILED")
+        )
+        if (
+            self.run_kind is not RunKind.REPAIR
+            or (self.run_status, self.incident_status) != expected
+        ):
+            raise ValueError("Verification state is inconsistent")
+        return self
+
+
 class IncidentCreatedStreamEvent(_ApiContract):
     id: str
     event: Literal["incident.created"]
@@ -669,6 +699,12 @@ class ExecutionUpdatedStreamEvent(_ApiContract):
     data: ExecutionUpdatedEventPayload
 
 
+class VerificationUpdatedStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["repair.verification_updated"]
+    data: VerificationUpdatedEventPayload
+
+
 class RunEventStreamItem(
     RootModel[
         Annotated[
@@ -687,6 +723,7 @@ class RunEventStreamItem(
             | RepairWaitEndedStreamEvent
             | ApprovalDecidedStreamEvent
             | ExecutionUpdatedStreamEvent
+            | VerificationUpdatedStreamEvent
             | AlertResolvedStreamEvent,
             Field(discriminator="event"),
         ]
@@ -715,6 +752,7 @@ class IncidentDetailResponse(_ApiContract):
     diagnosis: DiagnosisResponse | None
     repair: RepairProposalResponse | None
     approval: ApprovalResponse | None = None
+    verification: VerificationRecord | None = None
     run_creation_blocked: bool = False
     alert_signal: AlertSignalResponse | None
     event_cursor: str = Field(pattern=r"^[1-9][0-9]*$")

@@ -11,6 +11,7 @@ from k8s_incident_agent.api_contracts import (
     RunFailedEventPayload,
     ToolFailedEventPayload,
     ToolStartedEventPayload,
+    VerificationUpdatedEventPayload,
 )
 from k8s_incident_agent.diagnosis.tool_execution import (
     validate_diagnostic_tool_failure_contract,
@@ -70,6 +71,12 @@ def validated_event_json(event: RunEvent) -> str:
 
 
 def _expected_event_key(event_type: str, payload: RunEventPayload) -> str:
+    if isinstance(payload, VerificationUpdatedEventPayload):
+        return (
+            "run:terminal"
+            if payload.outcome != "observing"
+            else f"verification:{payload.sample_count}"
+        )
     if isinstance(payload, ApprovalDecidedEventPayload):
         return (
             "repair.approval_decided"

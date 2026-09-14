@@ -95,6 +95,12 @@ function eventCopy(event: RunEventStreamItem): {
         detail: event.data.executionStatus === "APPLIED" ? "API 写入已确认，恢复尚未验证" : event.data.executionStatus === "UNKNOWN" ? "无法确定写入归属，禁止重试或自动回滚" : "执行账本已更新",
         tone: event.data.executionStatus === "UNKNOWN" ? "danger" : "neutral",
       };
+    case "repair.verification_updated":
+      return {
+        title: event.data.outcome === "recovered" ? "恢复验证通过" : event.data.outcome === "observing" ? "恢复观测已保存" : "恢复验证已停止",
+        detail: `${event.data.sampleCount} 次观测 · ${event.data.reason ?? "工作负载与告警判据"}`,
+        tone: event.data.outcome === "observing" || event.data.outcome === "recovered" ? "neutral" : "warning",
+      };
     case "diagnosis.insufficient":
       return { title: "诊断已结束", detail: "现有证据不足", tone: "warning" };
     case "run.failed":

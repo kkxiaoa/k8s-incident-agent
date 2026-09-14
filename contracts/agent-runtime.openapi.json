@@ -1504,6 +1504,16 @@
           },
           "selectedRun": {
             "$ref": "#/components/schemas/SelectedRunResponse"
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1726,6 +1736,7 @@
           "WAITING_APPROVAL",
           "APPLYING",
           "VERIFYING",
+          "RESOLVED",
           "REJECTED",
           "INSUFFICIENT_EVIDENCE",
           "STALE_RESOURCE",
@@ -2996,6 +3007,7 @@
             "repair.dry_run_passed": "#/components/schemas/RepairDryRunPassedStreamEvent",
             "repair.execution_updated": "#/components/schemas/ExecutionUpdatedStreamEvent",
             "repair.patch_ready": "#/components/schemas/RepairPatchReadyStreamEvent",
+            "repair.verification_updated": "#/components/schemas/VerificationUpdatedStreamEvent",
             "repair.wait_ended": "#/components/schemas/RepairWaitEndedStreamEvent",
             "repair.waiting_approval": "#/components/schemas/RepairWaitingApprovalStreamEvent",
             "run.failed": "#/components/schemas/RunFailedStreamEvent",
@@ -3051,6 +3063,9 @@
           },
           {
             "$ref": "#/components/schemas/ExecutionUpdatedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/VerificationUpdatedStreamEvent"
           },
           {
             "$ref": "#/components/schemas/AlertResolvedStreamEvent"
@@ -3894,6 +3909,233 @@
           "data"
         ],
         "title": "ToolStartedStreamEvent",
+        "type": "object"
+      },
+      "VerificationOutcome": {
+        "enum": [
+          "observing",
+          "recovered",
+          "workload_failed",
+          "monitoring_unavailable",
+          "insufficient_evidence",
+          "target_drift",
+          "timeout"
+        ],
+        "type": "string"
+      },
+      "VerificationReason": {
+        "enum": [
+          "rollout_pending",
+          "workload_unhealthy",
+          "sample_missing",
+          "sample_gap",
+          "monitoring_unavailable",
+          "metrics_missing_or_stale",
+          "alerts_active",
+          "occurrence_not_resolved",
+          "target_drift",
+          "deadline_exceeded"
+        ],
+        "type": "string"
+      },
+      "VerificationRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "completedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completedat"
+          },
+          "deadlineAt": {
+            "format": "date-time",
+            "title": "Deadlineat",
+            "type": "string"
+          },
+          "executionId": {
+            "format": "uuid",
+            "title": "Executionid",
+            "type": "string"
+          },
+          "healthySince": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Healthysince"
+          },
+          "lastObservedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastobservedat"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/VerificationOutcome",
+            "default": "observing"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sampleCount": {
+            "default": 0,
+            "maximum": 120.0,
+            "minimum": 0.0,
+            "title": "Samplecount",
+            "type": "integer"
+          },
+          "startedAt": {
+            "format": "date-time",
+            "title": "Startedat",
+            "type": "string"
+          }
+        },
+        "required": [
+          "executionId",
+          "startedAt",
+          "deadlineAt",
+          "completedAt",
+          "outcome",
+          "reason",
+          "sampleCount",
+          "lastObservedAt",
+          "healthySince"
+        ],
+        "title": "VerificationRecord",
+        "type": "object"
+      },
+      "VerificationUpdatedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "executionId": {
+            "format": "uuid",
+            "title": "Executionid",
+            "type": "string"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "incidentStatus": {
+            "enum": [
+              "VERIFYING",
+              "RESOLVED",
+              "FAILED"
+            ],
+            "title": "Incidentstatus",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/VerificationOutcome"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
+          "runStatus": {
+            "enum": [
+              "RUNNING",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "title": "Runstatus",
+            "type": "string"
+          },
+          "sampleCount": {
+            "maximum": 120.0,
+            "minimum": 0.0,
+            "title": "Samplecount",
+            "type": "integer"
+          },
+          "schemaVersion": {
+            "const": 5,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "runKind",
+          "executionId",
+          "outcome",
+          "reason",
+          "sampleCount",
+          "incidentStatus",
+          "runStatus"
+        ],
+        "title": "VerificationUpdatedEventPayload",
+        "type": "object"
+      },
+      "VerificationUpdatedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/VerificationUpdatedEventPayload"
+          },
+          "event": {
+            "const": "repair.verification_updated",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "VerificationUpdatedStreamEvent",
         "type": "object"
       }
     },

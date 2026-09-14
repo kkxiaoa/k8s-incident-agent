@@ -53,7 +53,7 @@ const TERMINAL_EVENTS = new Set<RunEventStreamItem["event"]>([
 export function isTerminalRunEvent(event: RunEventStreamItem): boolean {
   return (
     TERMINAL_EVENTS.has(event.event) ||
-    ((event.event === "repair.approval_decided" || event.event === "repair.execution_updated") && event.data.runStatus !== "RUNNING") ||
+    ((event.event === "repair.approval_decided" || event.event === "repair.execution_updated" || event.event === "repair.verification_updated") && event.data.runStatus !== "RUNNING") ||
     ((event.event === "diagnosis.completed" || event.event === "repair.waiting_approval") &&
       event.data.runStatus === "COMPLETED")
   );
@@ -67,7 +67,7 @@ export function requiresIncidentDetailRefresh(
   if (event.event === "alert.resolved") {
     return true;
   }
-  if (event.event === "repair.approval_decided" || event.event === "repair.execution_updated") {
+  if (event.event === "repair.approval_decided" || event.event === "repair.execution_updated" || event.event === "repair.verification_updated") {
     return true;
   }
   if (latestMode && event.event === "run.queued") {
@@ -122,6 +122,7 @@ function applyIncidentStatus(
     case "repair.wait_ended":
     case "repair.approval_decided":
     case "repair.execution_updated":
+    case "repair.verification_updated":
     case "diagnosis.insufficient":
     case "run.failed":
       return {
@@ -156,6 +157,7 @@ function applySelectedRunStatus(
     case "repair.wait_ended":
     case "repair.approval_decided":
     case "repair.execution_updated":
+    case "repair.verification_updated":
     case "diagnosis.insufficient":
     case "run.failed":
       return {

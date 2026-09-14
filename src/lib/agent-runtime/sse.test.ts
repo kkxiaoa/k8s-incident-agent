@@ -9,6 +9,7 @@ import {
   makeIncidentDetail,
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
+  makeRecoveryDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import { parseRunEventHistoryResponse } from "./response-contracts";
@@ -22,6 +23,18 @@ import {
 
 const OTHER_RUN_ID = "55555555-5555-4555-8555-555555555555";
 const OTHER_INCIDENT_ID = "66666666-6666-4666-8666-666666666666";
+
+it.each(["observing", "recovered", "monitoring_unavailable"] as const)("refreshes the durable %s verification and deduplicates its replay", (outcome) => {
+  const detail = makeRecoveryDetail(outcome);
+  const payload = { schemaVersion: 5, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-14T01:01:02Z", executionId: detail.verification!.executionId,
+    outcome, reason: detail.verification!.reason, sampleCount: detail.verification!.sampleCount, runStatus: detail.selectedRun.status, incidentStatus: detail.incident.status };
+  const event = parseRunEvent("repair.verification_updated", "999", JSON.stringify(payload), detail.incident.id)!;
+  expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id, true)).toBe(true);
+  expect(isTerminalRunEvent(event)).toBe(outcome !== "observing");
+  const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
+  expect(reduceIncidentStream(state, { type: "event", event })).toEqual(state);
+  expect(() => parseRunEvent("repair.verification_updated", "999", JSON.stringify({ ...payload, runStatus: "QUEUED" }), detail.incident.id)).toThrow("Invalid incident event");
+});
 
 it.each([
   ["CLAIMED", "RUNNING", "APPLYING"],

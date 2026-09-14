@@ -1,4 +1,5 @@
 import type { components } from "./generated";
+import { isVerificationOutcome, isVerificationReason, type VerificationView } from "./verification-contracts";
 import {
   isCanonicalAlertTimestamp,
   isValidEventId,
@@ -146,6 +147,7 @@ export interface IncidentDetailView {
   diagnosis: DiagnosisView | null;
   repair: RepairProposalView | null;
   approval?: components["schemas"]["ApprovalResponse"] | null;
+  verification?: VerificationView | null;
   runCreationBlocked: boolean;
   alertSignal: AlertSignalView | null;
 }
@@ -289,6 +291,7 @@ function isIncidentStatus(
     value === "WAITING_APPROVAL" ||
     value === "APPLYING" ||
     value === "VERIFYING" ||
+    value === "RESOLVED" ||
     value === "REJECTED" ||
     value === "INSUFFICIENT_EVIDENCE" ||
     value === "STALE_RESOURCE" ||
@@ -884,6 +887,27 @@ function parseApproval(value: unknown): components["schemas"]["ApprovalResponse"
   return { id: value.id, runId: value.runId, proposalId: value.proposalId, proposalDigest: value.proposalDigest, validationDigest: value.validationDigest, decision: value.decision, actor: value.actor, decidedAt: value.decidedAt, expiresAt: value.expiresAt, execution };
 }
 
+function parseVerification(value: unknown): VerificationView | null {
+  if (!isObject(value) || !isUuid(value.executionId) || !isTimestamp(value.startedAt) || !isTimestamp(value.deadlineAt) ||
+      !isVerificationOutcome(value.outcome) || !isVerificationReason(value.reason) ||
+      !Number.isInteger(value.sampleCount) || (value.sampleCount as number) < 0 || (value.sampleCount as number) > 120 ||
+      (value.completedAt !== null && !isTimestamp(value.completedAt)) ||
+      (value.lastObservedAt !== null && !isTimestamp(value.lastObservedAt)) ||
+      (value.healthySince !== null && !isTimestamp(value.healthySince))) return null;
+  if (Date.parse(value.deadlineAt) - Date.parse(value.startedAt) !== 600_000 ||
+      (value.outcome === "observing") !== (value.completedAt === null) ||
+      (value.sampleCount === 0) !== (value.lastObservedAt === null) ||
+      (value.lastObservedAt !== null && (Date.parse(value.lastObservedAt) < Date.parse(value.startedAt) || Date.parse(value.lastObservedAt) >= Date.parse(value.deadlineAt))) ||
+      (value.healthySince !== null && (value.lastObservedAt === null || Date.parse(value.healthySince) < Date.parse(value.startedAt) || Date.parse(value.healthySince) > Date.parse(value.lastObservedAt))) ||
+      (value.completedAt !== null && Date.parse(value.completedAt) < Date.parse(value.lastObservedAt ?? value.startedAt)) ||
+      (value.outcome !== "observing" && value.outcome !== "recovered" && value.reason === null) ||
+      (value.outcome === "recovered" && (value.healthySince === null || value.lastObservedAt === null ||
+       value.reason !== null || (value.sampleCount as number) < 13 || Date.parse(value.lastObservedAt) - Date.parse(value.healthySince) < 60_000))) return null;
+  return { executionId: value.executionId, startedAt: value.startedAt, deadlineAt: value.deadlineAt,
+    completedAt: value.completedAt, outcome: value.outcome, reason: value.reason, sampleCount: value.sampleCount as number,
+    lastObservedAt: value.lastObservedAt, healthySince: value.healthySince };
+}
+
 export function parseIncidentDetailResponse(
   value: unknown,
 ): IncidentDetailView | null {
@@ -905,6 +929,7 @@ export function parseIncidentDetailResponse(
     value.diagnosis === null ? null : parseDiagnosis(value.diagnosis);
   const repair = value.repair === null ? null : parseRepairProposal(value.repair);
   const approval = value.approval == null ? null : parseApproval(value.approval);
+  const verification = value.verification == null ? null : parseVerification(value.verification);
   const alertSignal =
     value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
   if (
@@ -922,6 +947,9 @@ export function parseIncidentDetailResponse(
     (selectedRun.kind === "repair" && diagnosis !== null) ||
     (value.repair !== null && repair === null) ||
     (value.approval != null && approval === null) ||
+    (value.verification != null && verification === null) ||
+    (verification !== null && (selectedRun.kind !== "repair" || approval?.execution?.status !== "APPLIED" ||
+      verification.executionId !== approval.execution.id || approval.execution.reportedAt === null || Date.parse(verification.startedAt) !== Date.parse(approval.execution.reportedAt) || selectedRun.status !== (verification.outcome === "observing" ? "RUNNING" : verification.outcome === "recovered" ? "COMPLETED" : "FAILED"))) ||
     (approval !== null && (selectedRun.kind !== "repair" || approval.runId !== selectedRun.id || approval.proposalId !== repair?.id || approval.proposalDigest !== repair?.digest)) ||
     (value.alertSignal !== null && alertSignal === null) ||
     (incident.source.type === "scenario" && value.alertSignal !== null) ||
@@ -962,6 +990,7 @@ export function parseIncidentDetailResponse(
     diagnosis,
     repair,
     ...(value.approval !== undefined ? { approval } : {}),
+    ...(value.verification !== undefined ? { verification } : {}),
     runCreationBlocked: value.runCreationBlocked,
     alertSignal,
   };

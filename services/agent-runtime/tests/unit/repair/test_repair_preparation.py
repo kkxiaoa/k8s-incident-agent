@@ -42,6 +42,7 @@ from k8s_incident_agent.domain.contracts import RepairHistorySelection
 from k8s_incident_agent.domain.models import (
     EvidenceRecord,
     JsonValue,
+    NormalizedAlertOccurrence,
     RepairWorkflowRunSnapshot,
     RunStatus,
 )
@@ -192,11 +193,19 @@ def credential() -> DiagnosticCredential:
     )
 
 
-async def seed_source(repository: IncidentRepository) -> tuple[UUID, UUID]:
-    created = await repository.create_incident_and_run(
-        normalized_trigger(), MODEL, BUDGET
-    )
-    await repository.start_run(created.run_id, NOW)
+async def seed_source(
+    repository: IncidentRepository, occurrence: NormalizedAlertOccurrence | None = None
+) -> tuple[UUID, UUID]:
+    if occurrence is None:
+        created = await repository.create_incident_and_run(
+            normalized_trigger(), MODEL, BUDGET
+        )
+        incident_id, run_id = created.incident_id, created.run_id
+    else:
+        batch = await repository.apply_alert_occurrences((occurrence,), MODEL, BUDGET)
+        run_id = batch.created_run_ids[0]
+        incident_id = (await repository.get_workflow_run_snapshot(run_id)).incident_id
+    await repository.start_run(run_id, NOW)
     source_fixture = KubernetesFixture(NOW)
     source_fixture.deployment.metadata.resource_version = "old-rv"
     adapter = source_fixture.adapter()
@@ -206,10 +215,10 @@ async def seed_source(repository: IncidentRepository) -> tuple[UUID, UUID]:
         ("rollout_history", adapter.read_rollout_history),
     ):
         observation = await reader(TARGET)
-        await repository.record_tool_started(created.run_id, kind, f"get_{kind}")
+        await repository.record_tool_started(run_id, kind, f"get_{kind}")
         evidence = await repository.record_evidence(
             EvidenceRecord(
-                run_id=created.run_id,
+                run_id=run_id,
                 tool_call_id=kind,
                 tool_name=f"get_{kind}",
                 evidence_kind=kind,
@@ -252,7 +261,7 @@ async def seed_source(repository: IncidentRepository) -> tuple[UUID, UUID]:
     )
     proposal = compile_repair_proposal(
         EvidenceBoundImageChange(
-            run_id=created.run_id,
+            run_id=run_id,
             action="set_container_image",
             target=TARGET,
             target_uid="deployment-uid",
@@ -269,7 +278,7 @@ async def seed_source(repository: IncidentRepository) -> tuple[UUID, UUID]:
     )
     validation = PatchValidationResponse(
         proposal_id=proposal.id,
-        run_id=created.run_id,
+        run_id=run_id,
         proposal_digest=proposal.digest,
         outcome="passed",
         checked_at=NOW,
@@ -277,7 +286,7 @@ async def seed_source(repository: IncidentRepository) -> tuple[UUID, UUID]:
     )
     await repository.persist_repair_terminal(
         RepairTerminalRecord(
-            run_id=created.run_id,
+            run_id=run_id,
             diagnosis_completed_at=NOW,
             completed_at=NOW,
             diagnosis=diagnosis,
@@ -289,7 +298,7 @@ async def seed_source(repository: IncidentRepository) -> tuple[UUID, UUID]:
             tool_calls=2,
         )
     )
-    return created.incident_id, created.run_id
+    return incident_id, run_id
 
 
 async def create_preparation(

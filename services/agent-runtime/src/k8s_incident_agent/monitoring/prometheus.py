@@ -62,6 +62,13 @@ class PrometheusQueryResult:
     partial: bool
 
 
+@dataclass(frozen=True, slots=True)
+class PrometheusRule:
+    name: str
+    health: Literal["ok", "err", "unknown"]
+    last_evaluation: datetime
+
+
 class PrometheusHttpClient:
     def __init__(self, http: httpx.AsyncClient) -> None:
         self._http = http
@@ -133,14 +140,48 @@ class PrometheusHttpClient:
         *,
         expected_result_type: Literal["matrix", "vector"],
     ) -> PrometheusQueryResult:
+        payload = await self._request("POST", path, form)
+        return _parse_success(payload, expected_result_type=expected_result_type)
+
+    async def read_recovery_rules(
+        self, names: tuple[str, ...]
+    ) -> tuple[PrometheusRule, ...]:
+        if not names or len(names) > 8 or len(set(names)) != len(names):
+            raise MonitoringBoundaryError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID)
+        parameters = [
+            ("type", "alert"),
+            ("exclude_alerts", "true"),
+            ("rule_group[]", "k8s-incident-agent"),
+            ("file[]", "/etc/prometheus/rules/alerts.yaml"),
+            ("group_limit", "1"),
+            *(("rule_name[]", name) for name in names),
+        ]
+        payload = await self._request("GET", "/api/v1/rules", parameters)
+        return _parse_recovery_rules(payload, names)
+
+    async def _request(
+        self,
+        method: Literal["GET", "POST"],
+        path: str,
+        parameters: Mapping[str, str] | list[tuple[str, str]],
+    ) -> bytes:
         try:
             async with (
                 asyncio.timeout(_REQUEST_TIMEOUT_SECONDS),
                 self._limit,
                 self._http.stream(
-                    "POST",
+                    method,
                     path,
-                    data=form,
+                    data=cast(Mapping[str, str], parameters)
+                    if method == "POST"
+                    else None,
+                    params=httpx.QueryParams(
+                        tuple(parameters)
+                        if isinstance(parameters, list)
+                        else parameters
+                    )
+                    if method == "GET"
+                    else None,
                     headers={"accept": "application/json"},
                     timeout=_REQUEST_TIMEOUT_SECONDS,
                 ) as response,
@@ -165,7 +206,72 @@ class PrometheusHttpClient:
             raise MonitoringBoundaryError(MonitoringErrorCode.QUERY_FAILED)
         if content_type.partition(";")[0].strip().lower() != "application/json":
             raise MonitoringBoundaryError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID)
-        return _parse_success(payload, expected_result_type=expected_result_type)
+        return payload
+
+
+def _parse_recovery_rules(
+    payload: bytes, names: tuple[str, ...]
+) -> tuple[PrometheusRule, ...]:
+    try:
+        document = load_unique_json(payload)
+        if not isinstance(document, dict):
+            raise ValueError
+        document = cast(dict[str, object], document)
+        data = document.get("data")
+        if document.get("status") != "success" or not isinstance(data, dict):
+            raise ValueError
+        data = cast(dict[str, object], data)
+        groups = data.get("groups")
+        if (
+            document.get("warnings")
+            or document.get("infos")
+            or data.get("groupNextToken")
+            or not isinstance(groups, list)
+            or len(cast(list[object], groups)) != 1
+        ):
+            raise ValueError
+        group = cast(list[object], groups)[0]
+        if not isinstance(group, dict):
+            raise ValueError
+        group = cast(dict[str, object], group)
+        rules = group.get("rules")
+        if (
+            group.get("name") != "k8s-incident-agent"
+            or group.get("file") != "/etc/prometheus/rules/alerts.yaml"
+            or not isinstance(rules, list)
+            or len(cast(list[object], rules)) != len(names)
+        ):
+            raise ValueError
+        projected: list[PrometheusRule] = []
+        for raw in cast(list[object], rules):
+            if not isinstance(raw, dict):
+                raise ValueError
+            rule = cast(dict[str, object], raw)
+            name, health, at = (
+                rule.get("name"),
+                rule.get("health"),
+                rule.get("lastEvaluation"),
+            )
+            if (
+                name not in names
+                or rule.get("type") != "alerting"
+                or health not in ("ok", "err", "unknown")
+                or not isinstance(at, str)
+            ):
+                raise ValueError
+            parsed = datetime.fromisoformat(at.replace("Z", "+00:00"))
+            if parsed.utcoffset() is None:
+                raise ValueError
+            projected.append(
+                PrometheusRule(cast(str, name), health, parsed.astimezone(UTC))
+            )
+        if len({rule.name for rule in projected}) != len(names):
+            raise ValueError
+        return tuple(projected)
+    except (ValueError, TypeError, OverflowError):
+        raise MonitoringBoundaryError(
+            MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+        ) from None
 
 
 async def _read_response_body(response: httpx.Response) -> bytes:

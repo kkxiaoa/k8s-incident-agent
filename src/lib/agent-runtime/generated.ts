@@ -1018,6 +1018,7 @@ export interface components {
              */
             schemaVersion: 5;
             selectedRun: components["schemas"]["SelectedRunResponse"];
+            verification?: components["schemas"]["VerificationRecord"] | null;
         };
         /** IncidentListItem */
         IncidentListItem: {
@@ -1110,7 +1111,7 @@ export interface components {
          * IncidentStatus
          * @enum {string}
          */
-        IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "PATCH_READY" | "DRY_RUN_PASSED" | "WAITING_APPROVAL" | "APPLYING" | "VERIFYING" | "REJECTED" | "INSUFFICIENT_EVIDENCE" | "STALE_RESOURCE" | "FAILED";
+        IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "PATCH_READY" | "DRY_RUN_PASSED" | "WAITING_APPROVAL" | "APPLYING" | "VERIFYING" | "RESOLVED" | "REJECTED" | "INSUFFICIENT_EVIDENCE" | "STALE_RESOURCE" | "FAILED";
         /** IncidentTargetResponse */
         IncidentTargetResponse: {
             /** Apiversion */
@@ -1663,7 +1664,7 @@ export interface components {
             schemaVersion: 5;
         };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["VerificationUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */
@@ -2020,6 +2021,96 @@ export interface components {
              * @enum {string}
              */
             event: "tool.started";
+            /** Id */
+            id: string;
+        };
+        /** @enum {string} */
+        VerificationOutcome: "observing" | "recovered" | "workload_failed" | "monitoring_unavailable" | "insufficient_evidence" | "target_drift" | "timeout";
+        /** @enum {string} */
+        VerificationReason: "rollout_pending" | "workload_unhealthy" | "sample_missing" | "sample_gap" | "monitoring_unavailable" | "metrics_missing_or_stale" | "alerts_active" | "occurrence_not_resolved" | "target_drift" | "deadline_exceeded";
+        /** VerificationRecord */
+        VerificationRecord: {
+            /** Completedat */
+            completedAt: string | null;
+            /**
+             * Deadlineat
+             * Format: date-time
+             */
+            deadlineAt: string;
+            /**
+             * Executionid
+             * Format: uuid
+             */
+            executionId: string;
+            /** Healthysince */
+            healthySince: string | null;
+            /** Lastobservedat */
+            lastObservedAt: string | null;
+            /** @default observing */
+            outcome: components["schemas"]["VerificationOutcome"];
+            reason: components["schemas"]["VerificationReason"] | null;
+            /**
+             * Samplecount
+             * @default 0
+             */
+            sampleCount: number;
+            /**
+             * Startedat
+             * Format: date-time
+             */
+            startedAt: string;
+        };
+        /** VerificationUpdatedEventPayload */
+        VerificationUpdatedEventPayload: {
+            /**
+             * Executionid
+             * Format: uuid
+             */
+            executionId: string;
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Incidentstatus
+             * @enum {string}
+             */
+            incidentStatus: "VERIFYING" | "RESOLVED" | "FAILED";
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            outcome: components["schemas"]["VerificationOutcome"];
+            reason: components["schemas"]["VerificationReason"] | null;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            runKind: components["schemas"]["RunKind"];
+            /**
+             * Runstatus
+             * @enum {string}
+             */
+            runStatus: "RUNNING" | "COMPLETED" | "FAILED";
+            /** Samplecount */
+            sampleCount: number;
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 5;
+        };
+        /** VerificationUpdatedStreamEvent */
+        VerificationUpdatedStreamEvent: {
+            data: components["schemas"]["VerificationUpdatedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "repair.verification_updated";
             /** Id */
             id: string;
         };

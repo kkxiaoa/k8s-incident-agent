@@ -39,6 +39,7 @@ from k8s_incident_agent.workflow.graph import (
     build_incident_graph,
     classify_diagnosis_failure,
 )
+from k8s_incident_agent.workflow.state import IncidentGraphInput
 
 _SHUTDOWN_GRACE_SECONDS: Final = 5.0
 _ACTIVE_RUN_STATUSES: Final = frozenset({RunStatus.QUEUED, RunStatus.RUNNING})
@@ -288,11 +289,13 @@ class RunSupervisor:
             _require_pre_start_state(state, run.id)
         else:
             if not state.next and run.approval is not None:
-                return
-            if tuple(state.next) not in (
+                if run.execution is None or run.execution.status != "APPLIED":
+                    return
+            elif tuple(state.next) not in (
                 ("start_run",),
                 ("prepare_repair",),
                 ("await_approval",),
+                ("verify_recovery",),
             ):
                 raise RecoveryConsistencyError
             if values.get("repair_proposal_id") is not None and values[
@@ -326,6 +329,8 @@ class RunSupervisor:
         graph_input = (
             Command(resume={"approvalId": str(run.approval.id)})
             if run.approval is not None and any(task.interrupts for task in state.tasks)
+            else IncidentGraphInput(run_id=str(run.id))
+            if not state.next
             else None
         )
         await graph.ainvoke(graph_input, config, durability="sync")  # pyright: ignore[reportUnknownMemberType]

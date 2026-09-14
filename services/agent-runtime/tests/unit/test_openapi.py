@@ -101,6 +101,10 @@ EXPECTED_ERROR_STATUSES = {
 }
 
 EXPECTED_EVENT_COMPONENTS = {
+    "repair.verification_updated": (
+        "VerificationUpdatedStreamEvent",
+        "VerificationUpdatedEventPayload",
+    ),
     "repair.approval_decided": (
         "ApprovalDecidedStreamEvent",
         "ApprovalDecidedEventPayload",

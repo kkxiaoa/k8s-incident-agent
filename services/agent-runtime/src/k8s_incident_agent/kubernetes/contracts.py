@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from k8s_incident_agent.domain.contracts import KubernetesTarget
+from k8s_incident_agent.kubernetes.errors import KubernetesErrorCode
 
 DiagnosticTarget = KubernetesTarget
 MAX_DEPLOYMENT_REVISION: Final = (1 << 63) - 1
@@ -216,6 +217,34 @@ class PodsPayload(_EvidenceContract):
     pods: list[PodSummary]
 
 
+class RecoveryPod(_EvidenceContract):
+    name: str = Field(min_length=1, max_length=253)
+    uid: str = Field(min_length=1, max_length=253)
+    ready: bool
+    terminating: bool
+    image: str | None
+    container_state: Literal["waiting", "running", "terminated", "unknown"]
+    waiting_reason: str | None
+    restart_count: int | None = Field(ge=0)
+
+
+class RecoveryWorkload(_EvidenceContract):
+    target_ref: TargetRef
+    generation: int | None = Field(ge=0)
+    observed_generation: int | None = Field(ge=0)
+    image: str | None
+    desired: int = Field(ge=0)
+    updated: int = Field(ge=0)
+    available: int = Field(ge=0)
+    replicas: int = Field(ge=0)
+    terminating: bool
+    rollout_failed: bool
+    current_replica_set: TargetRef | None
+    old_replicas: int = Field(ge=0)
+    old_pods: int = Field(ge=0)
+    pods: list[RecoveryPod] = Field(max_length=32)
+
+
 class RegardingSummary(_EvidenceContract):
     api_version: str = Field(min_length=1)
     kind: str = Field(min_length=1)
@@ -309,6 +338,20 @@ class ContainerLogSummary(_EvidenceContract):
 class ContainerLogsPayload(_EvidenceContract):
     source_workload: SourceWorkload
     containers: list[ContainerLogSummary]
+
+
+class RecoveryLog(_EvidenceContract):
+    pod_name: str
+    pod_uid: str
+    snapshot: ContainerLogSnapshot
+
+
+class RecoveryLogs(_EvidenceContract):
+    containers: list[RecoveryLog] = Field(max_length=2)
+    not_sampled_pods: int = Field(ge=0)
+    error: KubernetesErrorCode | None
+    redacted: bool
+    truncated: bool
 
 
 class ServiceDetail(_EvidenceContract):

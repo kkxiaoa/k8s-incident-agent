@@ -579,6 +579,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
         diagnosis=diagnosis,
         repair=repair,
         approval=_approval_response(detail.repair),
+        verification=detail.repair.verification if detail.repair is not None else None,
         run_creation_blocked=detail.run_creation_blocked,
         alert_signal=alert_signal,
         event_cursor=str(detail.event_cursor),

@@ -87,6 +87,7 @@ from k8s_incident_agent.repair.contracts import (
 )
 from k8s_incident_agent.repair.preparation import prepare_repair
 from k8s_incident_agent.repair.records import RepairTerminalRecord
+from k8s_incident_agent.repair.verification import verify_recovery
 from k8s_incident_agent.scenarios.contracts import validate_supported_target
 from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 from k8s_incident_agent.workflow.state import IncidentGraphInput, IncidentGraphState
@@ -193,13 +194,26 @@ def build_incident_graph(
                 raise RecoveryConsistencyError
             return {}
 
+        async def verify(state: IncidentGraphState) -> dict[str, object]:
+            await verify_recovery(
+                _state_run_id(state),
+                repository=dependencies.repository,
+                adapter=dependencies.adapter,
+                prometheus=dependencies.prometheus,
+                credential=dependencies.credential,
+                now=dependencies.now,
+            )
+            return {}
+
         builder.add_node("start_run", start_repair)  # pyright: ignore[reportUnknownMemberType]
         builder.add_node("prepare_repair", prepare)  # pyright: ignore[reportUnknownMemberType]
         builder.add_node("await_approval", await_approval)  # pyright: ignore[reportUnknownMemberType]
+        builder.add_node("verify_recovery", verify)  # pyright: ignore[reportUnknownMemberType]
         builder.add_edge(START, "start_run")
         builder.add_edge("start_run", "prepare_repair")
         builder.add_edge("prepare_repair", "await_approval")
-        builder.add_edge("await_approval", END)
+        builder.add_edge("await_approval", "verify_recovery")
+        builder.add_edge("verify_recovery", END)
         return builder.compile(  # pyright: ignore[reportUnknownMemberType]
             checkpointer=dependencies.checkpointer, name="incident_workflow"
         )

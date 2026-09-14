@@ -48,6 +48,8 @@ def test_domain_statuses_define_only_the_multi_run_transitions() -> None:
         (IncidentStatus.APPLYING, IncidentStatus.FAILED),
         (IncidentStatus.APPLYING, IncidentStatus.STALE_RESOURCE),
         (IncidentStatus.VERIFYING, IncidentStatus.FAILED),
+        (IncidentStatus.VERIFYING, IncidentStatus.RESOLVED),
+        (IncidentStatus.RESOLVED, IncidentStatus.TRIAGING),
         (IncidentStatus.REJECTED, IncidentStatus.TRIAGING),
         (IncidentStatus.INSUFFICIENT_EVIDENCE, IncidentStatus.TRIAGING),
         (IncidentStatus.INSUFFICIENT_EVIDENCE, IncidentStatus.FAILED),

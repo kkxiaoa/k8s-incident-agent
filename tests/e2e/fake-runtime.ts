@@ -442,6 +442,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
       evidence: [],
       diagnosis: null,
       repair: null,
+      verification: null,
       alertSignal: null,
     },
   };

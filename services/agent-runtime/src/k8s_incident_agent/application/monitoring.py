@@ -1,10 +1,11 @@
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import UUID
 
 from k8s_incident_agent.application.incidents import IncidentNotFoundError
 from k8s_incident_agent.monitoring.catalog import AlertCatalog, AlertCatalogEntry
 from k8s_incident_agent.monitoring.contracts import (
+    WATCHDOG_STALE_AFTER,
     IncidentMetricPanel,
     IncidentMonitoringPanels,
     MetricMarker,
@@ -32,7 +33,6 @@ from k8s_incident_agent.persistence.repositories import (
 )
 from k8s_incident_agent.scenarios.contracts import PublicScenario
 
-_WATCHDOG_STALE_AFTER = timedelta(minutes=6)
 _MARKER_RUN_LIMIT = 50
 
 
@@ -276,7 +276,7 @@ def _notification_state(
     if (
         last_watchdog is None
         or last_watchdog > checked_at
-        or checked_at - last_watchdog > _WATCHDOG_STALE_AFTER
+        or checked_at - last_watchdog > WATCHDOG_STALE_AFTER
     ):
         return MonitoringComponentState.STALE
     return MonitoringComponentState.HEALTHY

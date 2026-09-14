@@ -9,7 +9,7 @@ from alembic import command, op
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
-from tests.unit.routes.test_approvals import approval_harness
+from tests.unit.routes.test_approvals import applied_result, approval_harness
 from tests.unit.routes.test_operator import credential as credential
 
 from k8s_incident_agent.persistence.database import (
@@ -24,6 +24,71 @@ from k8s_incident_agent.runtime.lock import (
 from k8s_incident_agent.runtime.paths import FilesystemIdentity, RuntimePaths
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize("fail_ddl", [False, True])
+async def test_verification_upgrade_preserves_applied_ledger_and_transactional_ddl(
+    tmp_path: Path,
+    credential: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_ddl: bool,
+) -> None:
+    async with approval_harness(tmp_path, credential) as harness:
+        await harness.approve()
+        result = await applied_result(harness)
+        detail = await harness.repository.get_incident_detail(
+            harness.incident_id, run_id=harness.run_id, event_limit=100
+        )
+        assert (
+            detail is not None
+            and detail.repair is not None
+            and detail.repair.execution is not None
+        )
+        await harness.repository.report_execution(
+            detail.repair.execution.id, result, now=harness.now
+        )
+        paths = RuntimePaths.prepare(tmp_path / "runtime")
+        config = _alembic_config(paths)
+        command.downgrade(config, "20260913_0009")
+        schema = _schema_snapshot(paths.business_database)
+        with sqlite3.connect(paths.business_database) as connection:
+            before = {
+                table: connection.execute(
+                    f'SELECT * FROM "{table}" ORDER BY rowid'
+                ).fetchall()
+                for table in schema["tables"]
+            }
+        original = op.create_table
+
+        def interrupted_create(name: str, *columns: Any, **kwargs: Any) -> Any:
+            if name == "verifications":
+                raise RuntimeError("test verification DDL interruption")
+            return original(name, *columns, **kwargs)
+
+        if fail_ddl:
+            monkeypatch.setattr(op, "create_table", interrupted_create)
+            with pytest.raises(
+                RuntimeError, match="test verification DDL interruption"
+            ):
+                command.upgrade(config, "head")
+            assert _schema_snapshot(paths.business_database) == schema
+        else:
+            command.upgrade(config, "head")
+        with sqlite3.connect(paths.business_database) as connection:
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            for table, values in before.items():
+                names = ",".join(f'"{column}"' for column in schema["columns"][table])
+                assert (
+                    connection.execute(
+                        f'SELECT {names} FROM "{table}" ORDER BY rowid'
+                    ).fetchall()
+                    == values
+                )
+        if not fail_ddl:
+            context = await harness.repository.get_verification_context(harness.run_id)
+            assert context is not None and context.record.started_at == harness.now()
+            with pytest.raises(RuntimeError, match="cannot discard recovery facts"):
+                command.downgrade(config, "20260913_0009")
 
 
 @pytest.mark.parametrize("fail_ddl", [False, True])
@@ -75,7 +140,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
             } == before
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260913_0008" if fail_ddl else "20260913_0009",)
+            ).fetchone() == ("20260913_0008" if fail_ddl else "20260914_0010",)
             if fail_ddl:
                 assert (
                     connection.execute(
@@ -88,6 +153,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
 
 
 EXPECTED_COLUMNS = {
+    "verifications": ("execution_id", "record_json"),
     "approvals": (
         "id",
         "run_id",
@@ -113,6 +179,7 @@ EXPECTED_COLUMNS = {
         "reported_at",
         "result_json",
         "late_result_json",
+        "target_released_at",
     ),
     "operator_sessions": (
         "token_hash",
@@ -222,6 +289,7 @@ EXPECTED_COLUMNS = {
 }
 
 EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
+    "verifications": {("execution_id", "executions", "id")},
     "approvals": {
         ("run_id", "agent_runs", "id"),
         ("proposal_id", "repair_proposals", "id"),
@@ -242,6 +310,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
 }
 
 EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
+    "verifications": set(),
     "approvals": {("run_id",), ("proposal_id",)},
     "executions": {
         ("approval_id",),
@@ -260,6 +329,7 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
 }
 
 EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
+    "verifications": set(),
     "approvals": set(),
     "executions": set(),
     "operator_sessions": set(),
@@ -637,7 +707,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260913_0009",)
+        ).fetchone() == ("20260914_0010",)
 
 
 def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(

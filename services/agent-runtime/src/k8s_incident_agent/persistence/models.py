@@ -70,7 +70,7 @@ class IncidentRow(Base):
         CheckConstraint(
             "status IN ('RECEIVED', 'TRIAGING', 'DIAGNOSED', "
             "'PATCH_READY', 'DRY_RUN_PASSED', 'WAITING_APPROVAL', "
-            "'APPLYING', 'VERIFYING', 'REJECTED', "
+            "'APPLYING', 'VERIFYING', 'RESOLVED', 'REJECTED', "
             "'INSUFFICIENT_EVIDENCE', 'STALE_RESOURCE', 'FAILED')",
             name="status",
         ),
@@ -387,6 +387,10 @@ class ExecutionRow(Base):
             "'STALE_RESOURCE', 'REJECTED', 'UNKNOWN')",
             name="status",
         ),
+        CheckConstraint(
+            "target_released_at IS NULL OR (status = 'APPLIED' AND reported_at IS NOT NULL)",
+            name="target_release",
+        ),
         Index(
             "uq_executions_occupied_target",
             "cluster",
@@ -394,7 +398,9 @@ class ExecutionRow(Base):
             "kind",
             "resource_name",
             unique=True,
-            sqlite_where=text("status IN ('PENDING', 'CLAIMED', 'APPLIED', 'UNKNOWN')"),
+            sqlite_where=text(
+                "target_released_at IS NULL AND status IN ('PENDING', 'CLAIMED', 'APPLIED', 'UNKNOWN')"
+            ),
         ),
     )
 
@@ -413,3 +419,13 @@ class ExecutionRow(Base):
     reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result_json: Mapped[str | None] = mapped_column(Text)
     late_result_json: Mapped[str | None] = mapped_column(Text)
+    target_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VerificationRow(Base):
+    __tablename__ = "verifications"
+
+    execution_id: Mapped[str] = mapped_column(
+        ForeignKey("executions.id"), primary_key=True
+    )
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)

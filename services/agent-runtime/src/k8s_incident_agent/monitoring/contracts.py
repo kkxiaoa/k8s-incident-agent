@@ -9,6 +9,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
+WATCHDOG_STALE_AFTER = timedelta(minutes=6)
+
 
 class MetricWindow(StrEnum):
     FIFTEEN_MINUTES = "15m"
@@ -96,6 +98,15 @@ class MetricSample(_MonitoringContract):
         if not math.isfinite(value):
             raise ValueError("Metric sample value must be finite")
         return value
+
+
+class RecoveryMonitoring(_MonitoringContract):
+    checked_at: datetime
+    chain_healthy: bool
+    target_healthy: bool
+    oldest_target_sample_at: datetime | None
+    oldest_rule_evaluation_at: datetime | None
+    active_alerts: list[str] = Field(max_length=8)
 
 
 class MetricPanelResult(_MonitoringContract):

@@ -115,6 +115,7 @@ def _target_payload(
         "repairProposalRows": target.repair_proposal_rows,
         "approvalRows": target.approval_rows,
         "executionRows": target.execution_rows,
+        "verificationRows": target.verification_rows,
         "runIds": [str(run_id) for run_id in target.run_ids],
         "runRows": target.run_rows,
         "updatedAt": target.updated_at.isoformat(),

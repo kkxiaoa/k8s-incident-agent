@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { parseIncidentDetailResponse } from "@/lib/agent-runtime/response-contracts";
-import { makeWaitingApprovalIncidentDetail, makeRepairRunWaitingDetail } from "@/test/agent-runtime-fixtures";
+import { makeWaitingApprovalIncidentDetail, makeRepairRunWaitingDetail, makeRecoveryDetail } from "@/test/agent-runtime-fixtures";
 
 import { RepairPanel } from "./repair-panel";
 
@@ -12,6 +12,19 @@ function detail() {
 }
 
 describe("read-only repair validation", () => {
+  it.each([
+    ["observing", "写入已确认，正在观察恢复"],
+    ["recovered", "工作负载与告警恢复已验证"],
+    ["monitoring_unavailable", "监控链路不可用，无法证明恢复"],
+  ] as const)("shows %s independently from the passed dry-run", (outcome, label) => {
+    const value = parseIncidentDetailResponse(makeRecoveryDetail(outcome))!;
+    render(<RepairPanel detail={value} pending={false} refreshError={null} />);
+    const verdict = screen.getByText(label).closest(".repair-verdict")!;
+    expect(verdict).toHaveTextContent("不证明业务请求或数据正确性");
+    expect(verdict.classList.contains("repair-verdict--failed")).toBe(outcome === "monitoring_unavailable");
+    expect(screen.getAllByText("已通过")).toHaveLength(4);
+    expect(screen.queryByRole("button", { name: /批准|执行|回滚/ })).toBeNull();
+  });
   it.each([
     ["CLAIMED", "执行已领取，等待可信结果"],
     ["APPLIED", "API 写入已确认，恢复尚未验证"],

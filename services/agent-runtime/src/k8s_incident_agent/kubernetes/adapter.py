@@ -85,6 +85,10 @@ from k8s_incident_agent.kubernetes.contracts import (
     PodSummary,
     PvcStorageObservation,
     PvcStoragePayload,
+    RecoveryLog,
+    RecoveryLogs,
+    RecoveryPod,
+    RecoveryWorkload,
     RegardingSummary,
     ReplicaSummary,
     RequestedStorageClass,
@@ -246,6 +250,7 @@ class _MetadataView(Protocol):
     owner_references: object
     labels: object
     annotations: object
+    deletion_timestamp: object
 
 
 class _DeploymentSpecView(Protocol):
@@ -322,10 +327,12 @@ class _ReplicaSetView(Protocol):
     kind: object
     metadata: object
     spec: object
+    status: object
 
 
 class _ReplicaSetSpecView(Protocol):
     template: object
+    replicas: object
 
 
 class _OwnerReferenceView(Protocol):
@@ -541,6 +548,122 @@ class KubernetesEvidenceAdapter:
         self._server_timeout_seconds = max(1, math.ceil(clients.timeout_seconds))
         self._clock = clock or _utc_now
 
+    async def read_recovery_workload(
+        self, target: DiagnosticTarget, container_name: str
+    ) -> RecoveryWorkload:
+        """Read one owner-bound rollout; never register this as a model Tool."""
+        try:
+            state = _SanitizationState()
+            associations = await self._read_associations(target, state)
+            context = associations.workload
+            deployment = cast(_DeploymentView, context.deployment)
+            metadata = _metadata(deployment.metadata)
+            spec = cast(_DeploymentSpecView, deployment.spec)
+            template = _recovery_template(spec.template)
+            matching = [
+                rs
+                for rs in associations.replica_sets
+                if _recovery_template(
+                    cast(_ReplicaSetSpecView, cast(_ReplicaSetView, rs).spec).template
+                )
+                == template
+            ]
+            if len(matching) > 1:
+                raise _contract_error()
+            current = matching[0] if matching else None
+            current_metadata = (
+                _metadata(cast(_ReplicaSetView, current).metadata)
+                if current is not None
+                else None
+            )
+            current_ref = (
+                TargetRef(
+                    api_version="apps/v1",
+                    kind="ReplicaSet",
+                    namespace=context.target_ref.namespace,
+                    name=_required_string(current_metadata.name),
+                    uid=_required_string(current_metadata.uid),
+                )
+                if current_metadata is not None
+                else None
+            )
+            pods: list[RecoveryPod] = []
+            old_pods = 0
+            for associated in associations.pods:
+                if current_ref is None or associated.owner.uid != current_ref.uid:
+                    old_pods += 1
+                    continue
+                if associated.owner.name != current_ref.name:
+                    raise _contract_error()
+                pods.append(_project_recovery_pod(associated.pod, container_name))
+            # Lists are not a cross-resource transaction. Re-read the spec anchor;
+            # status-only resourceVersion changes need not invalidate this sample.
+            latest = await self._read_deployment(target, state)
+            if (
+                latest.uid != context.uid
+                or _metadata(
+                    cast(_DeploymentView, latest.deployment).metadata
+                ).generation
+                != metadata.generation
+            ):
+                raise _contract_error()
+            status = cast(_DeploymentStatusView | None, deployment.status)
+            conditions = cast(
+                list[_ConditionView], [] if status is None else status.conditions or []
+            )
+            result = RecoveryWorkload(
+                target_ref=context.target_ref,
+                generation=_optional_nonnegative_int(metadata.generation),
+                observed_generation=_optional_nonnegative_int(
+                    None if status is None else status.observed_generation
+                ),
+                image=_recovery_container_image(
+                    _deployment_pod_spec(cast(V1DeploymentSpec, deployment.spec)),
+                    container_name,
+                ),
+                desired=_nonnegative_int(spec.replicas),
+                updated=_zero_if_missing(
+                    None if status is None else status.updated_replicas
+                ),
+                available=_zero_if_missing(
+                    None if status is None else status.available_replicas
+                ),
+                replicas=_zero_if_missing(getattr(status, "replicas", None)),
+                terminating=metadata.deletion_timestamp is not None,
+                rollout_failed=any(
+                    (condition.type == "Progressing" and condition.status == "False")
+                    or (
+                        condition.type == "ReplicaFailure"
+                        and condition.status == "True"
+                    )
+                    for condition in conditions
+                ),
+                current_replica_set=current_ref,
+                old_replicas=sum(
+                    max(
+                        _nonnegative_int(
+                            cast(
+                                _ReplicaSetSpecView, cast(_ReplicaSetView, rs).spec
+                            ).replicas
+                        ),
+                        _zero_if_missing(
+                            getattr(cast(_ReplicaSetView, rs).status, "replicas", None)
+                        ),
+                    )
+                    for rs in associations.replica_sets
+                    if rs is not current
+                ),
+                old_pods=old_pods,
+                pods=sorted(pods, key=lambda pod: pod.uid),
+            )
+            if state.truncated or state.redacted:
+                raise _contract_error()
+            return result
+        except KubernetesBoundaryError:
+            raise
+        except Exception as error:
+            raise map_kubernetes_exception(error) from None
+
     async def read_workload(
         self,
         target: DiagnosticTarget,
@@ -562,6 +685,66 @@ class KubernetesEvidenceAdapter:
             raise
         except Exception as error:
             raise map_kubernetes_exception(error) from None
+
+    async def read_recovery_logs(
+        self,
+        target: DiagnosticTarget,
+        container_name: str,
+        workload: RecoveryWorkload,
+        since_at: datetime,
+    ) -> RecoveryLogs:
+        state = _SanitizationState()
+        try:
+            before = await self.read_recovery_workload(target, container_name)
+            if (
+                not _same_recovery_identity(before, workload)
+                or workload.current_replica_set is None
+            ):
+                raise _contract_error()
+            owner = workload.current_replica_set
+            snapshots: list[RecoveryLog] = []
+            for pod in workload.pods[:2]:
+                log_target = _ContainerLogTarget(
+                    pod.name,
+                    pod.uid,
+                    OwnerSummary(
+                        api_version=owner.api_version,
+                        kind=owner.kind,
+                        name=owner.name,
+                        uid=owner.uid,
+                        controller=True,
+                    ),
+                    container_name,
+                    pod.restart_count or 0,
+                )
+                snapshot = await self._read_container_log_snapshot(
+                    workload.target_ref.namespace,
+                    log_target,
+                    "current",
+                    state,
+                    since_at=since_at,
+                )
+                snapshots.append(
+                    RecoveryLog(pod_name=pod.name, pod_uid=pod.uid, snapshot=snapshot)
+                )
+            after = await self.read_recovery_workload(target, container_name)
+            if not _same_recovery_identity(after, workload):
+                raise _contract_error()
+            return RecoveryLogs(
+                containers=snapshots,
+                not_sampled_pods=max(0, len(workload.pods) - 2),
+                error=None,
+                redacted=state.redacted,
+                truncated=state.truncated,
+            )
+        except KubernetesBoundaryError as error:
+            return RecoveryLogs(
+                containers=[],
+                not_sampled_pods=len(workload.pods),
+                error=error.code,
+                redacted=False,
+                truncated=False,
+            )
 
     async def read_rollout_history(
         self,
@@ -1024,6 +1207,8 @@ class KubernetesEvidenceAdapter:
         target: _ContainerLogTarget,
         source: str,
         state: _SanitizationState,
+        *,
+        since_at: datetime | None = None,
     ) -> ContainerLogSnapshot:
         previous = source == "previous"
         try:
@@ -1035,7 +1220,17 @@ class KubernetesEvidenceAdapter:
                 insecure_skip_tls_verify_backend=False,
                 limit_bytes=LOG_RESPONSE_LIMIT_BYTES,
                 previous=previous,
-                since_seconds=LOG_SINCE_SECONDS,
+                since_seconds=LOG_SINCE_SECONDS
+                if since_at is None
+                else max(
+                    1,
+                    min(
+                        LOG_SINCE_SECONDS,
+                        math.ceil(
+                            (_observation_time(self._clock) - since_at).total_seconds()
+                        ),
+                    ),
+                ),
                 tail_lines=LOG_LINE_LIMIT,
                 timestamps=True,
                 _preload_content=False,
@@ -1071,6 +1266,10 @@ class KubernetesEvidenceAdapter:
         finally:
             release()
         lines = _normalize_log_lines(raw, state)
+        if since_at is not None:
+            # The locked SDK exposes sinceSeconds but not sinceTime. Round the
+            # request outward and retain only timestamps after the execution.
+            lines = [line for line in lines if line.timestamp >= since_at]
         return ContainerLogSnapshot(
             source=cast(Literal["current", "previous"], source),
             status="available" if lines else "no_logs_in_window",
@@ -1795,6 +1994,95 @@ def _selector(
     return (
         Selector(match_labels=normalized_labels),
         ",".join(f"{key}={value}" for key, value in raw_labels.items()),
+    )
+
+
+def _recovery_template(value: object) -> dict[str, object]:
+    if not isinstance(value, V1PodTemplateSpec):
+        raise _contract_error()
+    # Mirrors the controller's EqualIgnoreHash comparison. Full templates remain
+    # in memory only; no env, command, annotations or hash is copied to Evidence.
+    result = cast(dict[str, object], value.to_dict())
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        raise _contract_error()
+    metadata = cast(dict[str, object], metadata)
+    labels = metadata.get("labels")
+    if labels is not None:
+        if not isinstance(labels, dict):
+            raise _contract_error()
+        cast(dict[str, object], labels).pop("pod-template-hash", None)
+    return result
+
+
+def _same_recovery_identity(left: RecoveryWorkload, right: RecoveryWorkload) -> bool:
+    return (
+        left.target_ref == right.target_ref
+        and left.generation == right.generation
+        and left.image == right.image
+        and left.current_replica_set == right.current_replica_set
+        and [(pod.name, pod.uid, pod.image, pod.restart_count) for pod in left.pods]
+        == [(pod.name, pod.uid, pod.image, pod.restart_count) for pod in right.pods]
+    )
+
+
+def _recovery_container_image(spec: _PodSpecView, name: str) -> str | None:
+    containers = spec.containers
+    if not isinstance(containers, list):
+        raise _contract_error()
+    matches = [
+        container
+        for container in cast(list[_WorkloadContainerView], containers)
+        if container.name == name
+    ]
+    if len(matches) > 1:
+        raise _contract_error()
+    if not matches:
+        return None
+    image = _required_string(matches[0].image)
+    sanitized = sanitize_untrusted_text(image)
+    if sanitized.redacted or sanitized.truncated:
+        raise _contract_error()
+    return image
+
+
+def _project_recovery_pod(pod: V1Pod, container_name: str) -> RecoveryPod:
+    view = cast(_PodView, pod)
+    metadata = _metadata(view.metadata)
+    statuses = cast(
+        list[_ContainerStatusView],
+        getattr(view.status, "container_statuses", None) or [],
+    )
+    matches = [item for item in statuses if item.name == container_name]
+    if len(matches) > 1:
+        raise _contract_error()
+    container = matches[0] if matches else None
+    state = None if container is None else container.state
+    states = [
+        name
+        for name in ("waiting", "running", "terminated")
+        if getattr(state, name, None) is not None
+    ]
+    if len(states) > 1:
+        raise _contract_error()
+    waiting = getattr(state, "waiting", None)
+    reason = getattr(waiting, "reason", None)
+    return RecoveryPod(
+        name=_required_string(metadata.name),
+        uid=_required_string(metadata.uid),
+        ready=_pod_ready_condition(cast(V1PodStatus | None, view.status)) is True,
+        terminating=metadata.deletion_timestamp is not None,
+        image=_recovery_container_image(cast(_PodSpecView, view.spec), container_name),
+        container_state=cast(
+            Literal["waiting", "running", "terminated", "unknown"],
+            states[0] if states else "unknown",
+        ),
+        waiting_reason=reason
+        if reason in ("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff")
+        else None,
+        restart_count=None
+        if container is None
+        else _nonnegative_int(container.restart_count),
     )
 
 

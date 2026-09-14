@@ -13,6 +13,7 @@ from k8s_incident_agent.domain.contracts import (
     RepairHistorySelection,
 )
 from k8s_incident_agent.execution.contracts import ApprovalRecord, ExecutionRecord
+from k8s_incident_agent.repair.verification_contracts import VerificationRecord
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
@@ -32,6 +33,7 @@ class IncidentStatus(StrEnum):
     WAITING_APPROVAL = "WAITING_APPROVAL"
     APPLYING = "APPLYING"
     VERIFYING = "VERIFYING"
+    RESOLVED = "RESOLVED"
     REJECTED = "REJECTED"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     STALE_RESOURCE = "STALE_RESOURCE"
@@ -187,6 +189,7 @@ class RepairWorkflowRunSnapshot(_WorkflowRunSnapshot):
     end_reason: Literal["expired", "superseded", "rejected", "execution_expired"] | None
     approval: ApprovalRecord | None = None
     execution: ExecutionRecord | None = None
+    verification: VerificationRecord | None = None
     kind: Literal[RunKind.REPAIR] = field(default=RunKind.REPAIR, init=False)
 
 
@@ -330,7 +333,10 @@ _INCIDENT_TRANSITIONS: Final[dict[IncidentStatus, frozenset[IncidentStatus]]] = 
     IncidentStatus.APPLYING: frozenset(
         {IncidentStatus.VERIFYING, IncidentStatus.FAILED, IncidentStatus.STALE_RESOURCE}
     ),
-    IncidentStatus.VERIFYING: frozenset({IncidentStatus.FAILED}),
+    IncidentStatus.VERIFYING: frozenset(
+        {IncidentStatus.FAILED, IncidentStatus.RESOLVED}
+    ),
+    IncidentStatus.RESOLVED: frozenset({IncidentStatus.TRIAGING}),
     IncidentStatus.REJECTED: frozenset({IncidentStatus.TRIAGING}),
     IncidentStatus.INSUFFICIENT_EVIDENCE: frozenset(
         {IncidentStatus.TRIAGING, IncidentStatus.FAILED}

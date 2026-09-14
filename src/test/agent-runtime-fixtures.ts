@@ -168,3 +168,26 @@ export function makeRepairRunWaitingDetail(): IncidentDetailResponse {
   detail.diagnosis = null;
   return detail;
 }
+
+export function makeRecoveryDetail(outcome: "observing" | "recovered" | "monitoring_unavailable"): IncidentDetailResponse {
+  const detail = makeRepairRunWaitingDetail();
+  const appliedAt = "2026-09-14T01:00:02Z";
+  const completedAt = outcome === "observing" ? null : "2026-09-14T01:01:02Z";
+  detail.approval = {
+    id: REPAIR_PROPOSAL_ID, runId: detail.selectedRun.id, proposalId: REPAIR_PROPOSAL_ID,
+    proposalDigest: REPAIR_PROPOSAL_DIGEST, validationDigest: `sha256:${"a".repeat(64)}`,
+    decision: "approve", actor: "sandbox-operator", decidedAt: "2026-09-14T01:00:00Z", expiresAt: "2026-09-14T01:15:00Z",
+    execution: { id: REPAIR_PROPOSAL_ID, status: "APPLIED", startBefore: "2026-09-14T01:00:30Z", claimedAt: "2026-09-14T01:00:01Z", reportedAt: appliedAt,
+      result: { outcome: "APPLIED", receipt: { uid: detail.repair!.targetUid, resourceVersion: "patched-rv", generation: 4, beforeGeneration: 3 }, error: null }, lateResult: null },
+  };
+  detail.verification = { executionId: REPAIR_PROPOSAL_ID, startedAt: appliedAt, deadlineAt: "2026-09-14T01:10:02Z", completedAt, outcome,
+    reason: outcome === "monitoring_unavailable" ? "monitoring_unavailable" : null,
+    sampleCount: outcome === "observing" ? 1 : 13,
+    lastObservedAt: completedAt ?? appliedAt, healthySince: outcome === "monitoring_unavailable" ? null : appliedAt };
+  detail.selectedRun.status = outcome === "observing" ? "RUNNING" : outcome === "recovered" ? "COMPLETED" : "FAILED";
+  detail.selectedRun.completedAt = completedAt;
+  detail.selectedRun.error = outcome === "monitoring_unavailable" ? { code: "verification_monitoring_unavailable", retryable: false } : null;
+  detail.incident.status = outcome === "observing" ? "VERIFYING" : outcome === "recovered" ? "RESOLVED" : "FAILED";
+  detail.runCreationBlocked = outcome === "observing";
+  return detail;
+}

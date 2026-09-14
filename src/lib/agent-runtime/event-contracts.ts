@@ -1,4 +1,5 @@
 import type { components } from "./generated";
+import { isVerificationOutcome, isVerificationReason } from "./verification-contracts";
 
 export type RunEventStreamItem = components["schemas"]["RunEventStreamItem"];
 
@@ -16,6 +17,7 @@ export const RUN_EVENT_NAMES = [
   "repair.wait_ended",
   "repair.approval_decided",
   "repair.execution_updated",
+  "repair.verification_updated",
   "diagnosis.insufficient",
   "run.failed",
   "alert.resolved",
@@ -265,6 +267,17 @@ function parseEventData(
             ? literalField(value, "runStatus", "RUNNING")
             : literalField(value, "runStatus", "COMPLETED"),
       };
+    }
+    case "repair.verification_updated": {
+      const outcome = value.outcome;
+      if (!isVerificationOutcome(outcome) || !isVerificationReason(value.reason) ||
+          !Number.isInteger(value.sampleCount) || (value.sampleCount as number) < 0 || (value.sampleCount as number) > 120) return invalidEvent();
+      const expected = outcome === "observing" ? ["RUNNING", "VERIFYING"] as const :
+        outcome === "recovered" ? ["COMPLETED", "RESOLVED"] as const : ["FAILED", "FAILED"] as const;
+      return { ...common, runKind: literalField(value, "runKind", "repair"),
+        executionId: uuidField(value, "executionId"), outcome, reason: value.reason,
+        sampleCount: value.sampleCount as number, runStatus: literalField(value, "runStatus", expected[0]),
+        incidentStatus: literalField(value, "incidentStatus", expected[1]) };
     }
     case "repair.execution_updated": {
       const executionStatus =
