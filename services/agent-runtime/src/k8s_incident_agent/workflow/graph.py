@@ -146,7 +146,7 @@ def build_incident_graph(
             )
             if not isinstance(current, RepairWorkflowRunSnapshot):
                 raise RecoveryConsistencyError
-            if current.run_status is RunStatus.RUNNING:
+            if current.run_status is RunStatus.RUNNING and current.approval is None:
                 prepared = await prepare_repair(
                     current,
                     repository=dependencies.repository,
@@ -179,11 +179,19 @@ def build_incident_graph(
                 current.proposal_id
             ):
                 raise RecoveryConsistencyError
-            # Resume values have no authority; Task 6 will consume a persisted decision.
-            interrupt(
+            decision = interrupt(
                 {"runId": str(current.id), "proposalId": str(current.proposal_id)}
             )
-            raise RecoveryConsistencyError
+            resumed = await dependencies.repository.get_workflow_run_snapshot(
+                current.id
+            )
+            if (
+                not isinstance(resumed, RepairWorkflowRunSnapshot)
+                or resumed.approval is None
+                or decision != {"approvalId": str(resumed.approval.id)}
+            ):
+                raise RecoveryConsistencyError
+            return {}
 
         builder.add_node("start_run", start_repair)  # pyright: ignore[reportUnknownMemberType]
         builder.add_node("prepare_repair", prepare)  # pyright: ignore[reportUnknownMemberType]

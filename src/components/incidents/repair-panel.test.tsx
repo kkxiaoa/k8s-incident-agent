@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { parseIncidentDetailResponse } from "@/lib/agent-runtime/response-contracts";
-import { makeWaitingApprovalIncidentDetail } from "@/test/agent-runtime-fixtures";
+import { makeWaitingApprovalIncidentDetail, makeRepairRunWaitingDetail } from "@/test/agent-runtime-fixtures";
 
 import { RepairPanel } from "./repair-panel";
 
@@ -12,6 +12,24 @@ function detail() {
 }
 
 describe("read-only repair validation", () => {
+  it.each([
+    ["CLAIMED", "执行已领取，等待可信结果"],
+    ["APPLIED", "API 写入已确认，恢复尚未验证"],
+    ["UNKNOWN", "写入结果未知，目标保持占用"],
+  ] as const)("displays %s from the ledger without a false not-executed label", (status, label) => {
+    const value = parseIncidentDetailResponse(makeRepairRunWaitingDetail())!;
+    value.selectedRun.status = status === "UNKNOWN" ? "FAILED" : "RUNNING";
+    value.approval = {
+      id: value.repair!.id, runId: value.selectedRun.id, proposalId: value.repair!.id,
+      proposalDigest: value.repair!.digest, validationDigest: `sha256:${"a".repeat(64)}`,
+      decision: "approve", actor: "sandbox-operator", decidedAt: "2026-09-13T01:00:00Z", expiresAt: "2026-09-13T01:15:00Z",
+      execution: { id: value.repair!.id, status, startBefore: "2026-09-13T01:00:30Z", claimedAt: "2026-09-13T01:00:01Z", reportedAt: status === "APPLIED" ? "2026-09-13T01:00:02Z" : null, result: status === "APPLIED" ? { outcome: "APPLIED", error: null, receipt: { uid: value.repair!.targetUid, resourceVersion: "patched-rv", generation: 4, beforeGeneration: 3 } } : null, lateResult: null },
+    };
+    render(<RepairPanel detail={value} pending={false} refreshError={null} />);
+    const panel = screen.getByRole("region", { name: "修复验证" });
+    expect(panel).toHaveTextContent(label);
+    expect(panel).not.toHaveTextContent("尚未批准或执行");
+  });
   it("shows the recorded change, gates, impact and owner-bound Evidence without execution controls", async () => {
     const value = detail();
     render(<RepairPanel detail={value} pending={false} refreshError={null} />);

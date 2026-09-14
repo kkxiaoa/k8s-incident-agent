@@ -9,6 +9,8 @@ from uuid import UUID
 
 from k8s_incident_agent.api_contracts import (
     AlertSignalResponse,
+    ApprovalRequest,
+    ApprovalResponse,
     CreateIncidentRequest,
     CreateIncidentResponse,
     CreateRepairRunRequest,
@@ -16,6 +18,7 @@ from k8s_incident_agent.api_contracts import (
     DiagnosisResponse,
     EventPageResponse,
     EvidenceResponse,
+    ExecutionResponse,
     IncidentDetailResponse,
     IncidentListItem,
     IncidentListResponse,
@@ -62,6 +65,7 @@ from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
     IncidentDetailRecord,
     IncidentListRecord,
+    IncidentRepairDetail,
     IncidentRepository,
     IncidentRunDetail,
     RunNotFoundRepositoryError,
@@ -195,6 +199,30 @@ class IncidentApplicationService:
             raise IncidentNotFoundError
         await schedule_committed_run(self._supervisor, created.run_id)
         return CreateRunResponse(run_id=created.run_id)
+
+    async def decide_approval(
+        self,
+        incident_id: UUID,
+        request: ApprovalRequest,
+        *,
+        operator_ref: str,
+        operator_token_hash: str,
+    ) -> ApprovalResponse:
+        repair = await self._repository.decide_approval(
+            incident_id,
+            request.run_id,
+            request.proposal_id,
+            request.proposal_digest,
+            request.decision,
+            operator_ref=operator_ref,
+            operator_token_hash=operator_token_hash,
+            now=self._now,
+        )
+        await schedule_committed_run(self._supervisor, request.run_id)
+        response = _approval_response(repair)
+        if response is None:
+            raise RuntimeError("Committed decision is missing")
+        return response
 
     async def list_incidents(
         self,
@@ -422,6 +450,20 @@ def _selected_run(run: IncidentRunDetail) -> SelectedRunResponse:
     )
 
 
+def _approval_response(repair: IncidentRepairDetail | None) -> ApprovalResponse | None:
+    if repair is None or repair.approval is None:
+        return None
+    execution = repair.execution
+    return ApprovalResponse(
+        **repair.approval.model_dump(),
+        execution=ExecutionResponse.model_validate(
+            execution.model_dump(exclude={"approval_id"})
+        )
+        if execution
+        else None,
+    )
+
+
 def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailResponse:
     incident = detail.incident
     diagnosis = None
@@ -536,6 +578,8 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
         ),
         diagnosis=diagnosis,
         repair=repair,
+        approval=_approval_response(detail.repair),
+        run_creation_blocked=detail.run_creation_blocked,
         alert_signal=alert_signal,
         event_cursor=str(detail.event_cursor),
     )

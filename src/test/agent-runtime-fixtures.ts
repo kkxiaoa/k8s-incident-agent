@@ -114,6 +114,7 @@ export function makeWaitingApprovalIncidentDetail(): IncidentDetailResponse {
 export function makeIncidentDetail(): IncidentDetailResponse {
   return {
     schemaVersion: 5,
+    runCreationBlocked: false,
     incident: {
       id: INCIDENT_ID,
       source: {

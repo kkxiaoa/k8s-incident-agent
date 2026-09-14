@@ -12,6 +12,7 @@ from k8s_incident_agent.domain.contracts import (
     NormalizedIncidentTrigger,
     RepairHistorySelection,
 )
+from k8s_incident_agent.execution.contracts import ApprovalRecord, ExecutionRecord
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
@@ -29,6 +30,9 @@ class IncidentStatus(StrEnum):
     PATCH_READY = "PATCH_READY"
     DRY_RUN_PASSED = "DRY_RUN_PASSED"
     WAITING_APPROVAL = "WAITING_APPROVAL"
+    APPLYING = "APPLYING"
+    VERIFYING = "VERIFYING"
+    REJECTED = "REJECTED"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     STALE_RESOURCE = "STALE_RESOURCE"
     FAILED = "FAILED"
@@ -180,7 +184,9 @@ class RepairWorkflowRunSnapshot(_WorkflowRunSnapshot):
     selection: RepairHistorySelection | None
     waiting_expires_at: datetime | None
     proposal_id: UUID | None
-    end_reason: Literal["expired", "superseded"] | None
+    end_reason: Literal["expired", "superseded", "rejected", "execution_expired"] | None
+    approval: ApprovalRecord | None = None
+    execution: ExecutionRecord | None = None
     kind: Literal[RunKind.REPAIR] = field(default=RunKind.REPAIR, init=False)
 
 
@@ -314,8 +320,18 @@ _INCIDENT_TRANSITIONS: Final[dict[IncidentStatus, frozenset[IncidentStatus]]] = 
         {IncidentStatus.WAITING_APPROVAL, IncidentStatus.FAILED}
     ),
     IncidentStatus.WAITING_APPROVAL: frozenset(
-        {IncidentStatus.TRIAGING, IncidentStatus.FAILED}
+        {
+            IncidentStatus.TRIAGING,
+            IncidentStatus.FAILED,
+            IncidentStatus.APPLYING,
+            IncidentStatus.REJECTED,
+        }
     ),
+    IncidentStatus.APPLYING: frozenset(
+        {IncidentStatus.VERIFYING, IncidentStatus.FAILED, IncidentStatus.STALE_RESOURCE}
+    ),
+    IncidentStatus.VERIFYING: frozenset({IncidentStatus.FAILED}),
+    IncidentStatus.REJECTED: frozenset({IncidentStatus.TRIAGING}),
     IncidentStatus.INSUFFICIENT_EVIDENCE: frozenset(
         {IncidentStatus.TRIAGING, IncidentStatus.FAILED}
     ),

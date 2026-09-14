@@ -1,7 +1,6 @@
 import type { components } from "./generated";
 
-export type RunEventStreamItem =
-  components["schemas"]["RunEventStreamItem"];
+export type RunEventStreamItem = components["schemas"]["RunEventStreamItem"];
 
 export const RUN_EVENT_NAMES = [
   "incident.created",
@@ -15,6 +14,8 @@ export const RUN_EVENT_NAMES = [
   "repair.dry_run_passed",
   "repair.waiting_approval",
   "repair.wait_ended",
+  "repair.approval_decided",
+  "repair.execution_updated",
   "diagnosis.insufficient",
   "run.failed",
   "alert.resolved",
@@ -123,8 +124,10 @@ function commonFields(value: JsonObject) {
 
   return {
     schemaVersion: 5 as const,
-    runKind: value.runKind === "diagnosis" || value.runKind === "repair"
-      ? value.runKind as "diagnosis" | "repair" : invalidEvent(),
+    runKind:
+      value.runKind === "diagnosis" || value.runKind === "repair"
+        ? (value.runKind as "diagnosis" | "repair")
+        : invalidEvent(),
     incidentId: uuidField(value, "incidentId"),
     runId: uuidField(value, "runId"),
     occurredAt: timestampField(value, "occurredAt"),
@@ -156,9 +159,10 @@ function parseEventData(
       return {
         ...common,
         attempt: positiveIntegerField(value, "attempt"),
-        incidentStatus: common.runKind === "diagnosis"
-          ? literalField(value, "incidentStatus", "TRIAGING")
-          : literalField(value, "incidentStatus", "PATCH_READY"),
+        incidentStatus:
+          common.runKind === "diagnosis"
+            ? literalField(value, "incidentStatus", "TRIAGING")
+            : literalField(value, "incidentStatus", "PATCH_READY"),
         runStatus: literalField(value, "runStatus", "RUNNING"),
       };
     case "tool.started":
@@ -211,11 +215,7 @@ function parseEventData(
         ...common,
         proposalId: uuidField(value, "proposalId"),
         proposalDigest: digestField(value, "proposalDigest"),
-        incidentStatus: literalField(
-          value,
-          "incidentStatus",
-          "DRY_RUN_PASSED",
-        ),
+        incidentStatus: literalField(value, "incidentStatus", "DRY_RUN_PASSED"),
         runStatus: literalField(value, "runStatus", "RUNNING"),
       };
     case "repair.waiting_approval":
@@ -228,18 +228,79 @@ function parseEventData(
           "incidentStatus",
           "WAITING_APPROVAL",
         ),
-        runStatus: common.runKind === "diagnosis"
-          ? literalField(value, "runStatus", "COMPLETED")
-          : literalField(value, "runStatus", "WAITING_APPROVAL"),
+        runStatus:
+          common.runKind === "diagnosis"
+            ? literalField(value, "runStatus", "COMPLETED")
+            : literalField(value, "runStatus", "WAITING_APPROVAL"),
       };
     case "repair.wait_ended":
       return {
         ...common,
         runKind: literalField(value, "runKind", "repair"),
-        reason: value.reason === "expired" || value.reason === "superseded" ? value.reason : invalidEvent(),
+        reason:
+          value.reason === "expired" || value.reason === "superseded"
+            ? value.reason
+            : invalidEvent(),
         incidentStatus: literalField(value, "incidentStatus", "DIAGNOSED"),
         runStatus: literalField(value, "runStatus", "COMPLETED"),
       };
+    case "repair.approval_decided": {
+      const decision =
+        value.decision === "approve" || value.decision === "reject"
+          ? value.decision
+          : invalidEvent();
+      return {
+        ...common,
+        runKind: literalField(value, "runKind", "repair"),
+        approvalId: uuidField(value, "approvalId"),
+        proposalId: uuidField(value, "proposalId"),
+        proposalDigest: digestField(value, "proposalDigest"),
+        decision,
+        incidentStatus:
+          decision === "approve"
+            ? literalField(value, "incidentStatus", "APPLYING")
+            : literalField(value, "incidentStatus", "REJECTED"),
+        runStatus:
+          decision === "approve"
+            ? literalField(value, "runStatus", "RUNNING")
+            : literalField(value, "runStatus", "COMPLETED"),
+      };
+    }
+    case "repair.execution_updated": {
+      const executionStatus =
+        value.executionStatus === "PENDING" ||
+        value.executionStatus === "CLAIMED" ||
+        value.executionStatus === "APPLIED" ||
+        value.executionStatus === "EXPIRED" ||
+        value.executionStatus === "STALE_RESOURCE" ||
+        value.executionStatus === "REJECTED" ||
+        value.executionStatus === "UNKNOWN"
+          ? value.executionStatus
+          : invalidEvent();
+      const [runStatus, incidentStatus] = (
+        {
+          PENDING: ["RUNNING", "APPLYING"],
+          CLAIMED: ["RUNNING", "APPLYING"],
+          APPLIED: ["RUNNING", "VERIFYING"],
+          EXPIRED: ["COMPLETED", "DIAGNOSED"],
+          STALE_RESOURCE: ["FAILED", "STALE_RESOURCE"],
+          REJECTED: ["FAILED", "FAILED"],
+          UNKNOWN: ["FAILED", "FAILED"],
+        } as const
+      )[executionStatus];
+      const lateResult = booleanField(value, "lateResult");
+      if (lateResult && executionStatus !== "UNKNOWN") return invalidEvent();
+      return {
+        ...common,
+        runKind: literalField(value, "runKind", "repair"),
+        executionId: uuidField(value, "executionId"),
+        approvalId: uuidField(value, "approvalId"),
+        executionStatus,
+        lateResult,
+        runStatus: literalField(value, "runStatus", runStatus),
+        incidentStatus: literalField(value, "incidentStatus", incidentStatus),
+      };
+    }
     case "diagnosis.insufficient":
       return {
         ...common,
@@ -287,11 +348,7 @@ function isEventName(value: unknown): value is RunEventStreamItem["event"] {
 }
 
 export function parseRunEventItem(value: unknown): RunEventStreamItem {
-  if (
-    !isObject(value) ||
-    !isEventName(value.event) ||
-    !isObject(value.data)
-  ) {
+  if (!isObject(value) || !isEventName(value.event) || !isObject(value.data)) {
     return invalidEvent();
   }
 

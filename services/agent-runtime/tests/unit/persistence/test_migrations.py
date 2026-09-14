@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from alembic import command
+from alembic import command, op
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
+from tests.unit.routes.test_approvals import approval_harness
+from tests.unit.routes.test_operator import credential as credential
 
 from k8s_incident_agent.persistence.database import (
     DatabaseSchemaNotCurrentError,
@@ -23,7 +25,95 @@ from k8s_incident_agent.runtime.paths import FilesystemIdentity, RuntimePaths
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
 
+
+@pytest.mark.parametrize("fail_ddl", [False, True])
+async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back_failure(
+    tmp_path: Path,
+    credential: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_ddl: bool,
+) -> None:
+    async with approval_harness(tmp_path, credential) as harness:
+        paths = RuntimePaths.prepare(tmp_path / "runtime")
+        config = _alembic_config(paths)
+        command.downgrade(config, "20260913_0008")
+        tables = (
+            "incidents",
+            "agent_runs",
+            "repair_proposals",
+            "run_events",
+            "evidence",
+            "operator_sessions",
+        )
+        with sqlite3.connect(paths.business_database) as connection:
+            before = {
+                table: connection.execute(
+                    f'SELECT * FROM "{table}" ORDER BY rowid'
+                ).fetchall()
+                for table in tables
+            }
+        original = op.create_table
+
+        def interrupted_create(table_name: str, *columns: Any, **kwargs: Any) -> Any:
+            if table_name == "executions":
+                raise RuntimeError("test migration interruption")
+            return original(table_name, *columns, **kwargs)
+
+        if fail_ddl:
+            monkeypatch.setattr(op, "create_table", interrupted_create)
+            with pytest.raises(RuntimeError, match="test migration interruption"):
+                command.upgrade(config, "head")
+        else:
+            command.upgrade(config, "head")
+        with sqlite3.connect(paths.business_database) as connection:
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert {
+                table: connection.execute(
+                    f'SELECT * FROM "{table}" ORDER BY rowid'
+                ).fetchall()
+                for table in tables
+            } == before
+            assert connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone() == ("20260913_0008" if fail_ddl else "20260913_0009",)
+            if fail_ddl:
+                assert (
+                    connection.execute(
+                        "SELECT name FROM sqlite_master WHERE name IN ('approvals', 'executions')"
+                    ).fetchall()
+                    == []
+                )
+        if not fail_ddl:
+            assert (await harness.approve())["decision"] == "approve"
+
+
 EXPECTED_COLUMNS = {
+    "approvals": (
+        "id",
+        "run_id",
+        "proposal_id",
+        "proposal_digest",
+        "validation_digest",
+        "decision",
+        "actor",
+        "decided_at",
+        "expires_at",
+    ),
+    "executions": (
+        "id",
+        "approval_id",
+        "run_id",
+        "cluster",
+        "namespace",
+        "kind",
+        "resource_name",
+        "status",
+        "start_before",
+        "claimed_at",
+        "reported_at",
+        "result_json",
+        "late_result_json",
+    ),
     "operator_sessions": (
         "token_hash",
         "operator_ref",
@@ -132,6 +222,11 @@ EXPECTED_COLUMNS = {
 }
 
 EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
+    "approvals": {
+        ("run_id", "agent_runs", "id"),
+        ("proposal_id", "repair_proposals", "id"),
+    },
+    "executions": {("approval_id", "approvals", "id"), ("run_id", "agent_runs", "id")},
     "operator_sessions": set(),
     "incidents": set(),
     "agent_runs": {
@@ -147,6 +242,12 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
 }
 
 EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
+    "approvals": {("run_id",), ("proposal_id",)},
+    "executions": {
+        ("approval_id",),
+        ("run_id",),
+        ("cluster", "namespace", "kind", "resource_name"),
+    },
     "operator_sessions": set(),
     "incidents": set(),
     "agent_runs": {("incident_id",), ("incident_id", "attempt")},
@@ -159,6 +260,8 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
 }
 
 EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
+    "approvals": set(),
+    "executions": set(),
     "operator_sessions": set(),
     "incidents": {("created_at", "id")},
     "agent_runs": {("status",)},
@@ -210,9 +313,7 @@ def _schema_snapshot(database: Path) -> dict[str, Any]:
             query_indexes[table] = set()
             for index in connection.execute(f'PRAGMA index_list("{table}")'):
                 index_columns = _index_columns(connection, str(index[1]))
-                if str(index[3]) == "u" or str(index[1]) == (
-                    "uq_agent_runs_active_incident_id"
-                ):
+                if int(index[2]) == 1 and str(index[3]) != "pk":
                     unique_keys[table].add(index_columns)
                 elif str(index[3]) == "c":
                     query_indexes[table].add(index_columns)
@@ -536,7 +637,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260913_0008",)
+        ).fetchone() == ("20260913_0009",)
 
 
 def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(

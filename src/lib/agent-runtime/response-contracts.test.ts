@@ -16,6 +16,24 @@ import {
   parseRuntimeHealthResponse,
 } from "./response-contracts";
 
+it("preserves UNKNOWN and late receipt evidence with exact Run/proposal binding", () => {
+  const value = makeRepairRunWaitingDetail();
+  const receipt = { uid: value.repair!.targetUid, resourceVersion: "patched-rv", generation: 4, beforeGeneration: 3 };
+  const approval = {
+    id: value.repair!.id, runId: value.selectedRun.id, proposalId: value.repair!.id,
+    proposalDigest: value.repair!.digest, validationDigest: `sha256:${"a".repeat(64)}`,
+    decision: "approve", actor: "sandbox-operator", decidedAt: "2026-09-13T01:00:00Z", expiresAt: "2026-09-13T01:15:00Z",
+    execution: { id: value.repair!.id, status: "UNKNOWN", startBefore: "2026-09-13T01:00:30Z", claimedAt: "2026-09-13T01:00:01Z", reportedAt: "2026-09-13T01:01:00Z", result: null, lateResult: { outcome: "APPLIED", receipt, error: null } },
+  };
+  const response = { ...value, approval, runCreationBlocked: true, selectedRun: { ...value.selectedRun, status: "FAILED", error: { code: "execution_outcome_unknown", retryable: false } }, incident: { ...value.incident, status: "FAILED" } };
+  const parsed = parseIncidentDetailResponse(response);
+  expect(parsed?.approval).toEqual(approval);
+  expect(parsed?.runCreationBlocked).toBe(true);
+  expect(parseIncidentDetailResponse({ ...response, runCreationBlocked: undefined })).toBeNull();
+  expect(parseIncidentDetailResponse({ ...response, approval: { ...approval, runId: value.incident.id } })).toBeNull();
+  expect(parseIncidentDetailResponse({ ...response, approval: { ...approval, execution: { ...approval.execution, status: "APPLIED" } } })).toBeNull();
+});
+
 it("projects diagnostic availability and rejects contradictory or unknown health claims", () => {
   const health = { status: "ok", diagnosis: { status: "unavailable", reason: "configuration_invalid" } };
   expect(parseRuntimeHealthResponse({ ...health, privateMetadata: "discard" })).toEqual(health);

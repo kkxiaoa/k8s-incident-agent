@@ -56,6 +56,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/incidents/{incident_id}/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Approval */
+        post: operations["decide_approval_api_v1_incidents__incident_id__approvals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/incidents/{incident_id}/events": {
         parameters: {
             query?: never;
@@ -403,6 +420,118 @@ export interface components {
              */
             version: "4";
         };
+        /** ApprovalDecidedEventPayload */
+        ApprovalDecidedEventPayload: {
+            /**
+             * Approvalid
+             * Format: uuid
+             */
+            approvalId: string;
+            decision: components["schemas"]["ApprovalDecision"];
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Incidentstatus
+             * @enum {string}
+             */
+            incidentStatus: "APPLYING" | "REJECTED";
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Proposaldigest */
+            proposalDigest: string;
+            /**
+             * Proposalid
+             * Format: uuid
+             */
+            proposalId: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            runKind: components["schemas"]["RunKind"];
+            /**
+             * Runstatus
+             * @enum {string}
+             */
+            runStatus: "RUNNING" | "COMPLETED";
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 5;
+        };
+        /** ApprovalDecidedStreamEvent */
+        ApprovalDecidedStreamEvent: {
+            data: components["schemas"]["ApprovalDecidedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "repair.approval_decided";
+            /** Id */
+            id: string;
+        };
+        /** @enum {string} */
+        ApprovalDecision: "approve" | "reject";
+        /** ApprovalRequest */
+        ApprovalRequest: {
+            decision: components["schemas"]["ApprovalDecision"];
+            /** Proposaldigest */
+            proposalDigest: string;
+            /**
+             * Proposalid
+             * Format: uuid
+             */
+            proposalId: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+        };
+        /** ApprovalResponse */
+        ApprovalResponse: {
+            /** Actor */
+            actor: string;
+            /**
+             * Decidedat
+             * Format: date-time
+             */
+            decidedAt: string;
+            decision: components["schemas"]["ApprovalDecision"];
+            execution: components["schemas"]["ExecutionResponse"] | null;
+            /**
+             * Expiresat
+             * Format: date-time
+             */
+            expiresAt: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Proposaldigest */
+            proposalDigest: string;
+            /**
+             * Proposalid
+             * Format: uuid
+             */
+            proposalId: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            /** Validationdigest */
+            validationDigest: string;
+        };
         /** CreateIncidentRequest */
         CreateIncidentRequest: {
             /** Scenarioid */
@@ -712,6 +841,108 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** ExecutionReceiptResponse */
+        ExecutionReceiptResponse: {
+            /** Beforegeneration */
+            beforeGeneration: number;
+            /** Generation */
+            generation: number;
+            /** Resourceversion */
+            resourceVersion: string;
+            /** Uid */
+            uid: string;
+        };
+        /** ExecutionResponse */
+        ExecutionResponse: {
+            /** Claimedat */
+            claimedAt: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            lateResult: components["schemas"]["ExecutionResultResponse"] | null;
+            /** Reportedat */
+            reportedAt: string | null;
+            result: components["schemas"]["ExecutionResultResponse"] | null;
+            /**
+             * Startbefore
+             * Format: date-time
+             */
+            startBefore: string;
+            status: components["schemas"]["ExecutionStatus"];
+        };
+        /** ExecutionResultResponse */
+        ExecutionResultResponse: {
+            /** Error */
+            error: ("permission_denied" | "admission_denied" | "precondition_failed" | "upstream_failed" | "outcome_unknown") | null;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "APPLIED" | "STALE_RESOURCE" | "REJECTED" | "UNKNOWN";
+            receipt: components["schemas"]["ExecutionReceiptResponse"] | null;
+        };
+        /** @enum {string} */
+        ExecutionStatus: "PENDING" | "CLAIMED" | "APPLIED" | "EXPIRED" | "STALE_RESOURCE" | "REJECTED" | "UNKNOWN";
+        /** ExecutionUpdatedEventPayload */
+        ExecutionUpdatedEventPayload: {
+            /**
+             * Approvalid
+             * Format: uuid
+             */
+            approvalId: string;
+            /**
+             * Executionid
+             * Format: uuid
+             */
+            executionId: string;
+            executionStatus: components["schemas"]["ExecutionStatus"];
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Incidentstatus
+             * @enum {string}
+             */
+            incidentStatus: "APPLYING" | "VERIFYING" | "DIAGNOSED" | "STALE_RESOURCE" | "FAILED";
+            /** Lateresult */
+            lateResult: boolean;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+            runKind: components["schemas"]["RunKind"];
+            /**
+             * Runstatus
+             * @enum {string}
+             */
+            runStatus: "RUNNING" | "COMPLETED" | "FAILED";
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 5;
+        };
+        /** ExecutionUpdatedStreamEvent */
+        ExecutionUpdatedStreamEvent: {
+            data: components["schemas"]["ExecutionUpdatedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "repair.execution_updated";
+            /** Id */
+            id: string;
+        };
         /** IncidentCreatedEventPayload */
         IncidentCreatedEventPayload: {
             /** Attempt */
@@ -766,6 +997,7 @@ export interface components {
         /** IncidentDetailResponse */
         IncidentDetailResponse: {
             alertSignal: components["schemas"]["AlertSignalResponse"] | null;
+            approval?: components["schemas"]["ApprovalResponse"] | null;
             diagnosis: components["schemas"]["DiagnosisResponse"] | null;
             /** Eventcursor */
             eventCursor: string;
@@ -774,6 +1006,11 @@ export interface components {
             evidence: components["schemas"]["EvidenceResponse"][];
             incident: components["schemas"]["IncidentResponse"];
             repair: components["schemas"]["RepairProposalResponse"] | null;
+            /**
+             * Runcreationblocked
+             * @default false
+             */
+            runCreationBlocked: boolean;
             /**
              * Schemaversion
              * @default 5
@@ -873,7 +1110,7 @@ export interface components {
          * IncidentStatus
          * @enum {string}
          */
-        IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "PATCH_READY" | "DRY_RUN_PASSED" | "WAITING_APPROVAL" | "INSUFFICIENT_EVIDENCE" | "STALE_RESOURCE" | "FAILED";
+        IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "PATCH_READY" | "DRY_RUN_PASSED" | "WAITING_APPROVAL" | "APPLYING" | "VERIFYING" | "REJECTED" | "INSUFFICIENT_EVIDENCE" | "STALE_RESOURCE" | "FAILED";
         /** IncidentTargetResponse */
         IncidentTargetResponse: {
             /** Apiversion */
@@ -1426,7 +1663,7 @@ export interface components {
             schemaVersion: 5;
         };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */
@@ -1683,7 +1920,7 @@ export interface components {
              */
             createdAt: string;
             /** Endreason */
-            endReason?: ("expired" | "superseded") | null;
+            endReason?: ("expired" | "superseded" | "rejected" | "execution_expired") | null;
             error: components["schemas"]["RunErrorResponse"] | null;
             /**
              * Id
@@ -2059,6 +2296,86 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    decide_approval_api_v1_incidents__incident_id__approvals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

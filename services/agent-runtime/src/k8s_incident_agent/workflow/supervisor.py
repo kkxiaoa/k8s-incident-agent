@@ -10,7 +10,7 @@ from uuid import UUID
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.types import StateSnapshot
+from langgraph.types import Command, StateSnapshot
 from pydantic import ValidationError
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
@@ -126,9 +126,14 @@ class RunSupervisor:
         if not self._accepting:
             raise RuntimeError("Run supervisor is not accepting work")
         await self._repository.expire_waiting_repairs(self._now())
+        await self._repository.reconcile_executions(self._now())
         recoverable = await self._repository.list_recoverable_run_ids()
         self._parked_repairs.intersection_update(recoverable)
         for run_id in recoverable:
+            if run_id in self._parked_repairs:
+                snapshot = await self._repository.get_workflow_run_snapshot(run_id)
+                if snapshot.run_status is not RunStatus.WAITING_APPROVAL:
+                    self._parked_repairs.discard(run_id)
             if run_id not in self._parked_repairs:
                 await self.schedule(run_id)
 
@@ -257,7 +262,11 @@ class RunSupervisor:
             return
         config: RunnableConfig = {"configurable": {"thread_id": str(run.id)}}
         checkpoint = await self._checkpointer.aget_tuple(config)
-        if run.run_status is RunStatus.RUNNING and checkpoint is None:
+        if (
+            run.run_status is RunStatus.RUNNING
+            and run.approval is None
+            and checkpoint is None
+        ):
             raise RecoveryConsistencyError
         graph = build_incident_graph(self._dependencies, run)
         if checkpoint is None:
@@ -278,6 +287,8 @@ class RunSupervisor:
         if run.run_status is RunStatus.QUEUED:
             _require_pre_start_state(state, run.id)
         else:
+            if not state.next and run.approval is not None:
+                return
             if tuple(state.next) not in (
                 ("start_run",),
                 ("prepare_repair",),
@@ -289,7 +300,10 @@ class RunSupervisor:
             ] != str(run.proposal_id):
                 raise RecoveryConsistencyError
             if tuple(state.next) == ("await_approval",):
-                if run.run_status is not RunStatus.WAITING_APPROVAL:
+                if (
+                    run.run_status is not RunStatus.WAITING_APPROVAL
+                    and run.approval is None
+                ):
                     raise RecoveryConsistencyError
                 if values.get("repair_proposal_id") != str(run.proposal_id):
                     raise RecoveryConsistencyError
@@ -306,9 +320,15 @@ class RunSupervisor:
                         "proposalId": str(run.proposal_id),
                     }:
                         raise RecoveryConsistencyError
-                    self._parked_repairs.add(run.id)
-                    return
-        await graph.ainvoke(None, config, durability="sync")  # pyright: ignore[reportUnknownMemberType]
+                    if run.approval is None:
+                        self._parked_repairs.add(run.id)
+                        return
+        graph_input = (
+            Command(resume={"approvalId": str(run.approval.id)})
+            if run.approval is not None and any(task.interrupts for task in state.tasks)
+            else None
+        )
+        await graph.ainvoke(graph_input, config, durability="sync")  # pyright: ignore[reportUnknownMemberType]
         current = await self._repository.get_workflow_run_snapshot(run.id)
         if current.run_status is RunStatus.WAITING_APPROVAL:
             parked = await graph.aget_state(config)  # pyright: ignore[reportUnknownMemberType]
@@ -319,7 +339,10 @@ class RunSupervisor:
             ):
                 raise RecoveryConsistencyError
             self._parked_repairs.add(run.id)
-        elif current.run_status in _ACTIVE_RUN_STATUSES:
+        elif current.run_status in _ACTIVE_RUN_STATUSES and not (
+            isinstance(current, RepairWorkflowRunSnapshot)
+            and current.execution is not None
+        ):
             raise RecoveryConsistencyError
 
     def _context(self, run: DiagnosisWorkflowRunSnapshot) -> DiagnosticToolContext:

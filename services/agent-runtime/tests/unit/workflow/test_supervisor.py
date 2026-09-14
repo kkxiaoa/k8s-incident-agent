@@ -39,6 +39,9 @@ class _PolicyResolver:
 
 
 class _BlockingTerminalRepository:
+    async def reconcile_executions(self, now: datetime) -> None:
+        pass
+
     async def expire_waiting_repairs(self, now: datetime) -> None:
         pass
 

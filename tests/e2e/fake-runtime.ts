@@ -409,6 +409,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
     events,
     detail: {
       schemaVersion: 5,
+      runCreationBlocked: false,
       incident: {
         id: incidentId,
         source: {

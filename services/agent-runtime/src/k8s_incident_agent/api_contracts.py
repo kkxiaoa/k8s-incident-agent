@@ -28,6 +28,7 @@ from k8s_incident_agent.domain.models import (
     RunKind,
     RunStatus,
 )
+from k8s_incident_agent.execution.contracts import ApprovalDecision, ExecutionStatus
 from k8s_incident_agent.model.errors import ModelErrorCode
 from k8s_incident_agent.repair.contracts import PatchValidationErrorCode
 
@@ -160,6 +161,58 @@ class CreateRepairRunRequest(_ApiContract):
     replaces_run_id: Annotated[UUID, Field(strict=False)] | None = None
 
 
+class ApprovalRequest(_ApiContract):
+    run_id: UUID = Field(strict=False)
+    proposal_id: UUID = Field(strict=False)
+    proposal_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    decision: ApprovalDecision
+
+
+class ExecutionReceiptResponse(_ApiContract):
+    uid: str
+    resource_version: str
+    generation: int
+    before_generation: int
+
+
+class ExecutionResultResponse(_ApiContract):
+    outcome: Literal["APPLIED", "STALE_RESOURCE", "REJECTED", "UNKNOWN"]
+    receipt: ExecutionReceiptResponse | None
+    error: (
+        Literal[
+            "permission_denied",
+            "admission_denied",
+            "precondition_failed",
+            "upstream_failed",
+            "outcome_unknown",
+        ]
+        | None
+    )
+
+
+class ExecutionResponse(_ApiContract):
+    id: UUID
+    status: ExecutionStatus
+    start_before: datetime
+    claimed_at: datetime | None
+    reported_at: datetime | None
+    result: ExecutionResultResponse | None
+    late_result: ExecutionResultResponse | None
+
+
+class ApprovalResponse(_ApiContract):
+    id: UUID
+    run_id: UUID
+    proposal_id: UUID
+    proposal_digest: str
+    validation_digest: str
+    decision: ApprovalDecision
+    actor: str
+    decided_at: datetime
+    expires_at: datetime
+    execution: ExecutionResponse | None
+
+
 class IncidentListItem(_ApiContract):
     id: UUID
     display_name: str
@@ -214,7 +267,9 @@ class SelectedRunResponse(RunSummaryResponse):
     error: RunErrorResponse | None
     selection: RepairHistorySelectionResponse | None = None
     waiting_expires_at: datetime | None = None
-    end_reason: Literal["expired", "superseded"] | None = None
+    end_reason: (
+        Literal["expired", "superseded", "rejected", "execution_expired"] | None
+    ) = None
 
 
 class RunHistoryResponse(_ApiContract):
@@ -460,6 +515,59 @@ class RepairWaitEndedEventPayload(_TypedRunEventPayload):
         return self
 
 
+class ApprovalDecidedEventPayload(_TypedRunEventPayload):
+    approval_id: UUID
+    proposal_id: UUID
+    proposal_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    decision: ApprovalDecision
+    incident_status: Literal["APPLYING", "REJECTED"]
+    run_status: Literal["RUNNING", "COMPLETED"]
+
+    @model_validator(mode="after")
+    def require_decision_state(self) -> "ApprovalDecidedEventPayload":
+        expected = (
+            ("RUNNING", "APPLYING")
+            if self.decision == "approve"
+            else ("COMPLETED", "REJECTED")
+        )
+        if (
+            self.run_kind is not RunKind.REPAIR
+            or (self.run_status, self.incident_status) != expected
+        ):
+            raise ValueError("Decision state is inconsistent")
+        return self
+
+
+class ExecutionUpdatedEventPayload(_TypedRunEventPayload):
+    execution_id: UUID
+    approval_id: UUID
+    execution_status: ExecutionStatus
+    late_result: bool
+    incident_status: Literal[
+        "APPLYING", "VERIFYING", "DIAGNOSED", "STALE_RESOURCE", "FAILED"
+    ]
+    run_status: Literal["RUNNING", "COMPLETED", "FAILED"]
+
+    @model_validator(mode="after")
+    def require_execution_state(self) -> "ExecutionUpdatedEventPayload":
+        expected = {
+            "PENDING": ("RUNNING", "APPLYING"),
+            "CLAIMED": ("RUNNING", "APPLYING"),
+            "APPLIED": ("RUNNING", "VERIFYING"),
+            "EXPIRED": ("COMPLETED", "DIAGNOSED"),
+            "STALE_RESOURCE": ("FAILED", "STALE_RESOURCE"),
+            "REJECTED": ("FAILED", "FAILED"),
+            "UNKNOWN": ("FAILED", "FAILED"),
+        }[self.execution_status]
+        if (
+            self.run_kind is not RunKind.REPAIR
+            or (self.run_status, self.incident_status) != expected
+            or (self.late_result and self.execution_status != "UNKNOWN")
+        ):
+            raise ValueError("Execution state is inconsistent")
+        return self
+
+
 class AlertResolvedEventPayload(_TypedRunEventPayload):
     alert_status: Literal["RESOLVED"]
     ends_at: _CanonicalAlertTimestamp
@@ -549,6 +657,18 @@ class AlertResolvedStreamEvent(_ApiContract):
     data: AlertResolvedEventPayload
 
 
+class ApprovalDecidedStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["repair.approval_decided"]
+    data: ApprovalDecidedEventPayload
+
+
+class ExecutionUpdatedStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["repair.execution_updated"]
+    data: ExecutionUpdatedEventPayload
+
+
 class RunEventStreamItem(
     RootModel[
         Annotated[
@@ -565,6 +685,8 @@ class RunEventStreamItem(
             | RepairDryRunPassedStreamEvent
             | RepairWaitingApprovalStreamEvent
             | RepairWaitEndedStreamEvent
+            | ApprovalDecidedStreamEvent
+            | ExecutionUpdatedStreamEvent
             | AlertResolvedStreamEvent,
             Field(discriminator="event"),
         ]
@@ -592,6 +714,8 @@ class IncidentDetailResponse(_ApiContract):
     evidence: tuple[EvidenceResponse, ...]
     diagnosis: DiagnosisResponse | None
     repair: RepairProposalResponse | None
+    approval: ApprovalResponse | None = None
+    run_creation_blocked: bool = False
     alert_signal: AlertSignalResponse | None
     event_cursor: str = Field(pattern=r"^[1-9][0-9]*$")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable, Iterable
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.dml import Delete
 
+from k8s_incident_agent.auth.sessions import OperatorAuthenticationError
 from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
 from k8s_incident_agent.diagnosis.tool_execution import (
     normalize_diagnostic_tool_call_identity,
@@ -57,13 +59,24 @@ from k8s_incident_agent.domain.models import (
     ToolFailureRecord,
     WorkflowRunSnapshot,
 )
+from k8s_incident_agent.execution.contracts import (
+    ApprovalDecision,
+    ApprovalRecord,
+    ExecutionCommand,
+    ExecutionRecord,
+    ExecutionResult,
+    ExecutionStatus,
+)
 from k8s_incident_agent.persistence.canonical import canonical_json, parse_json_object
 from k8s_incident_agent.persistence.models import (
     AlertSignalRow,
+    ApprovalRow,
     DiagnosisRow,
     EvidenceRow,
+    ExecutionRow,
     IncidentRow,
     MonitoringSourceStateRow,
+    OperatorSessionRow,
     RepairProposalRow,
     RunEventRow,
     RunRow,
@@ -83,6 +96,7 @@ _ACTIVE_RUN_STATUSES: Final = (
     RunStatus.RUNNING,
     RunStatus.WAITING_APPROVAL,
 )
+_OCCUPIED_EXECUTION_STATUSES: Final = ("PENDING", "CLAIMED", "APPLIED", "UNKNOWN")
 _CANONICAL_ALERT_TIMESTAMP = re.compile(CANONICAL_ALERT_TIMESTAMP_PATTERN)
 _OVERVIEW_HOUR = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
 
@@ -99,6 +113,8 @@ class PruneTarget:
     repair_proposal_rows: int
     run_rows: int
     alert_signal_rows: int
+    approval_rows: int = 0
+    execution_rows: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +150,7 @@ class IncidentRunDetail:
     source_run_id: UUID | None
     selection: RepairHistorySelection | None
     waiting_expires_at: datetime | None
-    end_reason: Literal["expired", "superseded"] | None
+    end_reason: Literal["expired", "superseded", "rejected", "execution_expired"] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +181,8 @@ class IncidentDiagnosisDetail:
 class IncidentRepairDetail:
     proposal: RepairProposal
     validation: PatchValidationResponse
+    approval: ApprovalRecord | None = None
+    execution: ExecutionRecord | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +197,7 @@ class IncidentDetailRecord:
     events: tuple[RunEvent, ...]
     has_older_events: bool
     event_cursor: int
+    run_creation_blocked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +292,18 @@ class RepairSourceInvalidError(RepositoryError):
     code = "repair_source_invalid"
 
 
+class ApprovalConflictError(RepositoryError):
+    code = "approval_conflict"
+
+
+class ExecutionDisabledError(RepositoryError):
+    code = "execution_disabled"
+
+
+class ExecutionReportConflictError(RepositoryError):
+    code = "execution_report_conflict"
+
+
 class RunNotFoundRepositoryError(RepositoryError):
     code = "run_not_found"
 
@@ -339,9 +370,13 @@ class IncidentRepository:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         on_event_committed: Callable[[UUID], Awaitable[None]] | None = None,
+        sandbox_execution_enabled: bool = False,
+        execution_cluster: str | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._on_event_committed = on_event_committed
+        self._execution_enabled = sandbox_execution_enabled
+        self._execution_cluster = execution_cluster
 
     async def incident_exists(self, incident_id: UUID) -> bool:
         try:
@@ -714,7 +749,7 @@ class IncidentRepository:
                 )
                 if not isinstance(event_cursor, int) or event_cursor <= 0:
                     raise RecoveryConsistencyError
-                return _incident_detail_record(
+                detail = _incident_detail_record(
                     incident,
                     run,
                     rows.diagnosis,
@@ -727,6 +762,16 @@ class IncidentRepository:
                     len(event_rows) > event_limit,
                     event_cursor,
                 )
+                occupied = await session.scalar(
+                    select(
+                        exists().where(
+                            ExecutionRow.run_id == RunRow.id,
+                            RunRow.incident_id == incident.id,
+                            ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
+                        )
+                    )
+                )
+                return replace(detail, run_creation_blocked=bool(occupied))
         except RepositoryError:
             raise
         except SQLAlchemyError:
@@ -859,12 +904,18 @@ class IncidentRepository:
                     RunRow.incident_id == IncidentRow.id,
                     RunRow.status.in_(_ACTIVE_RUN_STATUSES),
                 )
+                occupied = exists().where(
+                    ExecutionRow.run_id == RunRow.id,
+                    RunRow.incident_id == IncidentRow.id,
+                    ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
+                )
                 incidents = list(
                     await session.scalars(
                         select(IncidentRow)
                         .where(
                             IncidentRow.updated_at < cutoff,
                             ~active_run,
+                            ~occupied,
                         )
                         .order_by(IncidentRow.updated_at, IncidentRow.id)
                     )
@@ -907,6 +958,17 @@ class IncidentRepository:
                     raise RecoveryConsistencyError
 
                 run_ids = tuple(str(run_id) for run_id in target.run_ids)
+
+                await _delete_exact_rows(
+                    session,
+                    delete(ExecutionRow).where(ExecutionRow.run_id.in_(run_ids)),
+                    target.execution_rows,
+                )
+                await _delete_exact_rows(
+                    session,
+                    delete(ApprovalRow).where(ApprovalRow.run_id.in_(run_ids)),
+                    target.approval_rows,
+                )
 
                 await _delete_exact_rows(
                     session,
@@ -1196,6 +1258,7 @@ class IncidentRepository:
                     await _replace_waiting_run(
                         session, incident, replaces_run_id, occurred_at
                     )
+                await _require_no_incident_execution(session, incident.id)
                 active = await session.scalar(
                     select(
                         exists().where(
@@ -1321,6 +1384,7 @@ class IncidentRepository:
                     raise RepairSourceInvalidError
                 if replaces_run_id is not None:
                     await _replace_waiting_run(session, incident, replaces_run_id, now)
+                await _require_no_incident_execution(session, incident.id)
                 active = await session.scalar(
                     select(
                         exists().where(
@@ -1476,6 +1540,13 @@ class IncidentRepository:
                     or run.status not in _ACTIVE_RUN_STATUSES
                 ):
                     return
+                if (
+                    await session.scalar(
+                        select(ApprovalRow.id).where(ApprovalRow.run_id == run.id)
+                    )
+                    is not None
+                ):
+                    return
                 run.status = RunStatus.FAILED
                 run.error_code, run.error_retryable = code, retryable
                 run.completed_at = run.updated_at = now
@@ -1507,6 +1578,330 @@ class IncidentRepository:
         except SQLAlchemyError:
             raise PersistenceOperationError from None
         await self._notify_committed_event(event)
+
+    async def decide_approval(
+        self,
+        incident_id: UUID,
+        run_id: UUID,
+        proposal_id: UUID,
+        proposal_digest: str,
+        decision: ApprovalDecision,
+        *,
+        operator_ref: str,
+        operator_token_hash: str,
+        now: Callable[[], datetime],
+    ) -> IncidentRepairDetail:
+        if not self._execution_enabled:
+            raise ExecutionDisabledError
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                decided_at = _require_aware_datetime(now())
+                principal = await session.get(OperatorSessionRow, operator_token_hash)
+                if (
+                    principal is None
+                    or principal.revoked
+                    or principal.expires_at <= decided_at.timestamp()
+                    or principal.operator_ref != operator_ref
+                ):
+                    raise OperatorAuthenticationError
+                run = await session.get(RunRow, str(run_id))
+                if run is None or run.incident_id != str(incident_id):
+                    raise ApprovalConflictError
+                rows = await _load_workflow_rows(session, run_id)
+                snapshot = _workflow_run_snapshot(
+                    rows.run,
+                    rows.incident,
+                    rows.diagnosis,
+                    rows.start_event,
+                    rows.terminal_event,
+                    rows.repair_proposal,
+                    rows.repair,
+                    rows.managed_events,
+                )
+                repair = rows.repair
+                if (
+                    not isinstance(snapshot, RepairWorkflowRunSnapshot)
+                    or repair is None
+                    or rows.repair_proposal is None
+                    or repair.proposal.id != proposal_id
+                    or repair.proposal.digest != proposal_digest
+                ):
+                    raise ApprovalConflictError
+                if repair.approval is not None:
+                    if repair.approval.decision != decision:
+                        raise ApprovalConflictError
+                    return repair
+                self._require_execution_scope(repair.proposal)
+                if (
+                    snapshot.run_status is not RunStatus.WAITING_APPROVAL
+                    or snapshot.operation is not RepairOperation.APPLY
+                    or snapshot.waiting_expires_at is None
+                    or not repair.validation.checked_at
+                    <= decided_at
+                    < snapshot.waiting_expires_at
+                    or repair.validation.outcome != "passed"
+                ):
+                    raise ApprovalConflictError
+                approval = ApprovalRecord(
+                    id=uuid4(),
+                    run_id=run_id,
+                    proposal_id=proposal_id,
+                    proposal_digest=proposal_digest,
+                    validation_digest=_validation_digest(
+                        rows.repair_proposal.validation_json
+                    ),
+                    decision=decision,
+                    actor=operator_ref,
+                    decided_at=decided_at,
+                    expires_at=snapshot.waiting_expires_at,
+                )
+                session.add(
+                    ApprovalRow(
+                        **{
+                            **approval.model_dump(),
+                            "id": str(approval.id),
+                            "run_id": str(run_id),
+                            "proposal_id": str(proposal_id),
+                        }
+                    )
+                )
+                await session.flush()
+                execution: ExecutionRecord | None = None
+                if decision == "approve":
+                    target = repair.proposal.target
+                    execution_row = ExecutionRow(
+                        id=str(uuid4()),
+                        approval_id=str(approval.id),
+                        run_id=str(run_id),
+                        cluster=target.cluster,
+                        namespace=target.namespace,
+                        kind=target.kind,
+                        resource_name=target.name,
+                        status="PENDING",
+                        start_before=min(
+                            decided_at + timedelta(seconds=30), approval.expires_at
+                        ),
+                    )
+                    session.add(execution_row)
+                    run.status = RunStatus.RUNNING
+                    rows.incident.status = IncidentStatus.APPLYING
+                    await session.flush()
+                    execution = _execution_record(execution_row)
+                else:
+                    run.status = RunStatus.COMPLETED
+                    run.end_reason = "rejected"
+                    run.completed_at = decided_at
+                    rows.incident.status = IncidentStatus.REJECTED
+                run.updated_at = rows.incident.updated_at = decided_at
+                payload = _base_payload(incident_id, run_id, decided_at, RunKind.REPAIR)
+                payload.update(
+                    {
+                        "approvalId": str(approval.id),
+                        "proposalId": str(proposal_id),
+                        "proposalDigest": proposal_digest,
+                        "decision": decision,
+                        "runStatus": run.status.value,
+                        "incidentStatus": rows.incident.status.value,
+                    }
+                )
+                event_row = _new_event_row(
+                    run_id=run_id,
+                    event_key="repair.approval_decided"
+                    if decision == "approve"
+                    else "run:terminal",
+                    event_type="repair.approval_decided",
+                    occurred_at=decided_at,
+                    payload=payload,
+                )
+                session.add(event_row)
+                await session.flush()
+                event = _event_from_row(event_row, expected_incident_id=incident_id)
+                result = replace(repair, approval=approval, execution=execution)
+        except IntegrityError:
+            raise ApprovalConflictError from None
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        await self._notify_committed_event(event)
+        return result
+
+    def _require_execution_scope(self, proposal: RepairProposal) -> None:
+        target = proposal.target
+        if (
+            target.cluster != self._execution_cluster
+            or target.namespace != "k8s-incident-scenarios"
+            or target.api_version != "apps/v1"
+            or target.kind != "Deployment"
+        ):
+            raise ApprovalConflictError
+
+    async def claim_execution(
+        self, *, now: Callable[[], datetime]
+    ) -> ExecutionCommand | None:
+        if not self._execution_enabled:
+            return None
+        command: ExecutionCommand | None = None
+        event: RunEvent | None = None
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                claimed_at = _require_aware_datetime(now())
+                execution = await session.scalar(
+                    select(ExecutionRow)
+                    .where(ExecutionRow.status == "PENDING")
+                    .order_by(ExecutionRow.start_before, ExecutionRow.id)
+                    .limit(1)
+                )
+                if execution is None:
+                    return None
+                rows = await _load_workflow_rows(session, UUID(execution.run_id))
+                repair = rows.repair
+                if repair is None or repair.approval is None:
+                    raise RecoveryConsistencyError
+                self._require_execution_scope(repair.proposal)
+                if claimed_at < repair.approval.decided_at:
+                    raise RecoveryConsistencyError
+                if claimed_at >= _database_datetime(execution.start_before):
+                    event = await _advance_execution(
+                        session, rows, execution, "EXPIRED", claimed_at
+                    )
+                else:
+                    execution.claimed_at = claimed_at
+                    event = await _advance_execution(
+                        session, rows, execution, "CLAIMED", claimed_at
+                    )
+                    command = ExecutionCommand(
+                        execution_id=UUID(execution.id),
+                        approval=repair.approval,
+                        change=repair.proposal.change,
+                        validation=repair.validation,
+                        start_before=_database_datetime(execution.start_before),
+                    )
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        await self._notify_committed_event(event)
+        # A command may only escape after COMMIT. Cancellation cannot make it claimable again.
+        return command
+
+    async def report_execution(
+        self,
+        execution_id: UUID,
+        result: ExecutionResult,
+        *,
+        now: Callable[[], datetime],
+    ) -> ExecutionRecord:
+        events: list[RunEvent] = []
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                reported_at = _require_aware_datetime(now())
+                execution = await session.get(ExecutionRow, str(execution_id))
+                if execution is None or execution.claimed_at is None:
+                    raise ExecutionReportConflictError
+                if reported_at < _database_datetime(execution.claimed_at):
+                    raise ExecutionReportConflictError
+                rows = await _load_workflow_rows(session, UUID(execution.run_id))
+                if rows.repair is None:
+                    raise RecoveryConsistencyError
+                if (
+                    result.receipt is not None
+                    and result.receipt.uid != rows.repair.proposal.target_uid
+                ):
+                    raise ExecutionReportConflictError
+                encoded = canonical_json(
+                    cast(dict[str, JsonValue], result.model_dump(mode="json"))
+                )
+                if encoded in (execution.result_json, execution.late_result_json):
+                    return _execution_record(execution)
+                became_unknown = (
+                    execution.status == "CLAIMED"
+                    and reported_at
+                    > _database_datetime(execution.start_before) + timedelta(seconds=10)
+                )
+                if became_unknown:
+                    events.append(
+                        await _advance_execution(
+                            session, rows, execution, "UNKNOWN", reported_at
+                        )
+                    )
+                if execution.status == "UNKNOWN":
+                    if (became_unknown and result.outcome != "APPLIED") or (
+                        result.outcome == "UNKNOWN" and execution.result_json is None
+                    ):
+                        execution.result_json = encoded
+                        execution.reported_at = reported_at
+                    elif (
+                        result.outcome != "APPLIED"
+                        or execution.late_result_json is not None
+                    ):
+                        raise ExecutionReportConflictError
+                    else:
+                        execution.late_result_json = encoded
+                        execution.reported_at = reported_at
+                        events.append(
+                            await _advance_execution(
+                                session,
+                                rows,
+                                execution,
+                                "UNKNOWN",
+                                reported_at,
+                                late=True,
+                            )
+                        )
+                elif execution.status != "CLAIMED" or execution.result_json is not None:
+                    raise ExecutionReportConflictError
+                else:
+                    execution.result_json = encoded
+                    execution.reported_at = reported_at
+                    events.append(
+                        await _advance_execution(
+                            session, rows, execution, result.outcome, reported_at
+                        )
+                    )
+                persisted = _execution_record(execution)
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        for event in events:
+            await self._notify_committed_event(event)
+        return persisted
+
+    async def reconcile_executions(self, now: datetime) -> None:
+        events: list[RunEvent] = []
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                executions = await session.scalars(
+                    select(ExecutionRow)
+                    .where(
+                        or_(
+                            and_(
+                                ExecutionRow.status == "PENDING",
+                                ExecutionRow.start_before <= now,
+                            ),
+                            and_(
+                                ExecutionRow.status == "CLAIMED",
+                                ExecutionRow.start_before < now - timedelta(seconds=10),
+                            ),
+                        )
+                    )
+                    .order_by(ExecutionRow.start_before, ExecutionRow.id)
+                    .limit(100)
+                )
+                for execution in executions:
+                    rows = await _load_workflow_rows(session, UUID(execution.run_id))
+                    events.append(
+                        await _advance_execution(
+                            session,
+                            rows,
+                            execution,
+                            "EXPIRED" if execution.status == "PENDING" else "UNKNOWN",
+                            now,
+                        )
+                    )
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        for event in events:
+            await self._notify_committed_event(event)
 
     async def expire_waiting_repairs(self, now: datetime) -> None:
         try:
@@ -2458,6 +2853,235 @@ async def _load_run_context(
     return run, incident
 
 
+async def _require_no_incident_execution(
+    session: AsyncSession, incident_id: str
+) -> None:
+    occupied = await session.scalar(
+        select(
+            exists().where(
+                ExecutionRow.run_id == RunRow.id,
+                RunRow.incident_id == incident_id,
+                ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
+            )
+        )
+    )
+    if occupied:
+        raise ActiveRunExistsError
+
+
+def _validation_digest(validation_json: str) -> str:
+    return "sha256:" + hashlib.sha256(validation_json.encode()).hexdigest()
+
+
+def _approval_record(row: ApprovalRow) -> ApprovalRecord:
+    try:
+        return ApprovalRecord(
+            id=UUID(row.id),
+            run_id=UUID(row.run_id),
+            proposal_id=UUID(row.proposal_id),
+            proposal_digest=row.proposal_digest,
+            validation_digest=row.validation_digest,
+            decision=cast(ApprovalDecision, row.decision),
+            actor=row.actor,
+            decided_at=_database_datetime(row.decided_at),
+            expires_at=_database_datetime(row.expires_at),
+        )
+    except (ValueError, TypeError):
+        raise RecoveryConsistencyError from None
+
+
+def _execution_record(row: ExecutionRow) -> ExecutionRecord:
+    try:
+        return ExecutionRecord(
+            id=UUID(row.id),
+            approval_id=UUID(row.approval_id),
+            status=cast(ExecutionStatus, row.status),
+            start_before=_database_datetime(row.start_before),
+            claimed_at=_database_datetime(row.claimed_at) if row.claimed_at else None,
+            reported_at=_database_datetime(row.reported_at)
+            if row.reported_at
+            else None,
+            result=ExecutionResult.model_validate_json(row.result_json)
+            if row.result_json
+            else None,
+            late_result=ExecutionResult.model_validate_json(row.late_result_json)
+            if row.late_result_json
+            else None,
+        )
+    except (ValueError, TypeError):
+        raise RecoveryConsistencyError from None
+
+
+async def _load_repair_ledger(
+    session: AsyncSession,
+    run: RunRow,
+    repair: IncidentRepairDetail,
+    validation_json: str,
+) -> IncidentRepairDetail:
+    approval_row = await session.scalar(
+        select(ApprovalRow).where(ApprovalRow.run_id == run.id)
+    )
+    execution_row = await session.scalar(
+        select(ExecutionRow).where(ExecutionRow.run_id == run.id)
+    )
+    if approval_row is None:
+        if execution_row is not None:
+            raise RecoveryConsistencyError
+        return repair
+    approval = _approval_record(approval_row)
+    proposal, validation = repair.proposal, repair.validation
+    if (
+        approval.proposal_id != proposal.id
+        or approval.proposal_digest != proposal.digest
+        or approval.validation_digest != _validation_digest(validation_json)
+        or validation.outcome != "passed"
+        or not validation.checked_at <= approval.decided_at < approval.expires_at
+        or approval.expires_at != validation.checked_at + timedelta(minutes=15)
+        or run.waiting_expires_at is None
+        or approval.expires_at != _database_datetime(run.waiting_expires_at)
+        or (approval.decision == "approve") != (execution_row is not None)
+    ):
+        raise RecoveryConsistencyError
+    execution = _execution_record(execution_row) if execution_row is not None else None
+    expected_run_status = (
+        RunStatus.COMPLETED
+        if approval.decision == "reject"
+        or (execution is not None and execution.status == "EXPIRED")
+        else RunStatus.RUNNING
+        if execution is not None
+        and execution.status in ("PENDING", "CLAIMED", "APPLIED")
+        else RunStatus.FAILED
+    )
+    if run.status is not expected_run_status:
+        raise RecoveryConsistencyError
+    if execution is not None and execution_row is not None:
+        target = proposal.target
+        if (
+            execution.approval_id != approval.id
+            or (
+                execution_row.cluster,
+                execution_row.namespace,
+                execution_row.kind,
+                execution_row.resource_name,
+            )
+            != (target.cluster, target.namespace, target.kind, target.name)
+            or execution.start_before
+            != min(approval.decided_at + timedelta(seconds=30), approval.expires_at)
+            or (execution.status in ("PENDING", "EXPIRED"))
+            != (execution.claimed_at is None)
+            or (
+                execution.claimed_at is not None
+                and not approval.decided_at
+                <= execution.claimed_at
+                < execution.start_before
+            )
+            or (
+                execution.status == "APPLIED"
+                and (execution.result is None or execution.result.outcome != "APPLIED")
+            )
+            or (
+                execution.status in ("PENDING", "CLAIMED", "EXPIRED")
+                and execution.result is not None
+            )
+            or (
+                execution.status in ("STALE_RESOURCE", "REJECTED")
+                and (
+                    execution.result is None
+                    or execution.result.outcome != execution.status
+                )
+            )
+            or (
+                execution.late_result is not None
+                and (
+                    execution.status != "UNKNOWN"
+                    or execution.late_result.outcome != "APPLIED"
+                )
+            )
+            or (execution.reported_at is None)
+            != (execution.result is None and execution.late_result is None)
+            or any(
+                result.receipt is not None and result.receipt.uid != proposal.target_uid
+                for result in (execution.result, execution.late_result)
+                if result is not None
+            )
+        ):
+            raise RecoveryConsistencyError
+    return replace(repair, approval=approval, execution=execution)
+
+
+async def _advance_execution(
+    session: AsyncSession,
+    rows: _WorkflowRows,
+    execution: ExecutionRow,
+    status: ExecutionStatus,
+    occurred_at: datetime,
+    *,
+    late: bool = False,
+) -> RunEvent:
+    run, incident = rows.run, rows.incident
+    execution.status = status
+    if not late:
+        if status in ("PENDING", "CLAIMED", "APPLIED"):
+            run.status = RunStatus.RUNNING
+            incident.status = (
+                IncidentStatus.VERIFYING
+                if status == "APPLIED"
+                else IncidentStatus.APPLYING
+            )
+        elif status == "EXPIRED":
+            run.status = RunStatus.COMPLETED
+            run.end_reason = "execution_expired"
+            run.completed_at = occurred_at
+            incident.status = IncidentStatus.DIAGNOSED
+        else:
+            run.status = RunStatus.FAILED
+            run.error_code = (
+                "execution_outcome_unknown"
+                if status == "UNKNOWN"
+                else (
+                    "stale_resource"
+                    if status == "STALE_RESOURCE"
+                    else "execution_rejected"
+                )
+            )
+            run.error_retryable = False
+            run.completed_at = occurred_at
+            incident.status = (
+                IncidentStatus.STALE_RESOURCE
+                if status == "STALE_RESOURCE"
+                else IncidentStatus.FAILED
+            )
+    run.updated_at = incident.updated_at = occurred_at
+    payload = _base_payload(
+        UUID(incident.id), UUID(run.id), occurred_at, RunKind.REPAIR
+    )
+    payload.update(
+        {
+            "executionId": execution.id,
+            "approvalId": execution.approval_id,
+            "executionStatus": status,
+            "lateResult": late,
+            "runStatus": run.status.value,
+            "incidentStatus": incident.status.value,
+        }
+    )
+    terminal = (
+        status in ("EXPIRED", "REJECTED", "STALE_RESOURCE", "UNKNOWN") and not late
+    )
+    event_row = _new_event_row(
+        run_id=UUID(run.id),
+        event_key="run:terminal"
+        if terminal
+        else f"execution:{execution.id}:{'late_applied' if late else status}",
+        event_type="repair.execution_updated",
+        occurred_at=occurred_at,
+        payload=payload,
+    )
+    session.add(event_row)
+    await session.flush()
+    return _event_from_row(event_row, expected_incident_id=UUID(incident.id))
+
+
 async def _load_workflow_rows(
     session: AsyncSession,
     run_id: UUID,
@@ -2541,8 +3165,11 @@ async def _load_workflow_rows(
     )
     if run.kind is RunKind.REPAIR:
         await _repair_source_proposal(session, run, incident)
-        if repair is not None:
+        if repair is not None and repair_proposal is not None:
             await _require_repair_evidence(session, run, incident, repair.proposal)
+            repair = await _load_repair_ledger(
+                session, run, repair, repair_proposal.validation_json
+            )
     managed_events = tuple(
         sorted(
             (
@@ -2577,6 +3204,7 @@ async def _prune_target_from_incident(
     incident: IncidentRow,
     artifact_root: Path,
 ) -> PruneTarget:
+    await _require_no_incident_execution(session, incident.id)
     try:
         incident_id = UUID(incident.id)
         updated_at = _database_datetime(incident.updated_at)
@@ -2642,6 +3270,16 @@ async def _prune_target_from_incident(
         .select_from(AlertSignalRow)
         .where(AlertSignalRow.incident_id == incident.id)
     )
+    approval_rows = await session.scalar(
+        select(func.count())
+        .select_from(ApprovalRow)
+        .where(ApprovalRow.run_id.in_(persisted_run_ids))
+    )
+    execution_rows = await session.scalar(
+        select(func.count())
+        .select_from(ExecutionRow)
+        .where(ExecutionRow.run_id.in_(persisted_run_ids))
+    )
     if (
         not isinstance(event_rows, int)
         or event_rows < 0
@@ -2653,6 +3291,8 @@ async def _prune_target_from_incident(
         or repair_proposal_rows < 0
         or not isinstance(alert_signal_rows, int)
         or alert_signal_rows < 0
+        or not isinstance(approval_rows, int)
+        or not isinstance(execution_rows, int)
     ):
         raise RecoveryConsistencyError
     return PruneTarget(
@@ -2666,6 +3306,8 @@ async def _prune_target_from_incident(
         repair_proposal_rows=repair_proposal_rows,
         run_rows=len(runs),
         alert_signal_rows=alert_signal_rows,
+        approval_rows=approval_rows,
+        execution_rows=execution_rows,
     )
 
 
@@ -3255,6 +3897,8 @@ def _repair_workflow_snapshot(
     proposal, validation = (
         (repair.proposal, repair.validation) if repair is not None else (None, None)
     )
+    approval = repair.approval if repair is not None else None
+    execution = repair.execution if repair is not None else None
     if (
         (expires_at is not None)
         != (validation is not None and validation.outcome == "passed")
@@ -3272,15 +3916,26 @@ def _repair_workflow_snapshot(
         )
         or (
             run.status is RunStatus.RUNNING
-            and incident.status is not IncidentStatus.PATCH_READY
+            and incident.status
+            is not (
+                IncidentStatus.VERIFYING
+                if execution is not None and execution.status == "APPLIED"
+                else IncidentStatus.APPLYING
+                if execution is not None
+                else IncidentStatus.PATCH_READY
+            )
         )
         or (
             run.status in (RunStatus.QUEUED, RunStatus.RUNNING)
+            and approval is None
             and (proposal is not None or managed_events)
         )
         or (run.status is RunStatus.COMPLETED)
-        != (run.end_reason in ("expired", "superseded"))
-        or run.end_reason not in (None, "expired", "superseded")
+        != (
+            run.end_reason in ("expired", "superseded", "rejected", "execution_expired")
+        )
+        or run.end_reason
+        not in (None, "expired", "superseded", "rejected", "execution_expired")
         or (run.end_reason is not None and (expires_at is None or completed_at is None))
         or (
             run.end_reason == "expired"
@@ -3291,7 +3946,16 @@ def _repair_workflow_snapshot(
         or (proposal is not None and (selection is None or proposal.target != target))
     ):
         raise RecoveryConsistencyError
-    if run.status in (
+    if approval is not None:
+        if (approval.decision == "reject" and run.end_reason != "rejected") or (
+            execution is not None
+            and execution.status == "EXPIRED"
+            and run.end_reason != "execution_expired"
+        ):
+            raise RecoveryConsistencyError
+    elif run.end_reason in ("rejected", "execution_expired"):
+        raise RecoveryConsistencyError
+    if approval is not None or run.status in (
         RunStatus.WAITING_APPROVAL,
         RunStatus.COMPLETED,
         RunStatus.FAILED,
@@ -3300,6 +3964,8 @@ def _repair_workflow_snapshot(
             event
             for event in managed_events
             if event.event_type != "repair.wait_ended"
+            and event.event_type
+            not in ("repair.approval_decided", "repair.execution_updated")
             and not (expires_at is not None and event.event_key == "run:terminal")
         )
         if not preparation_events:
@@ -3324,7 +3990,7 @@ def _repair_workflow_snapshot(
             )
         ):
             raise RecoveryConsistencyError
-        if run.status is RunStatus.COMPLETED:
+        if run.status is RunStatus.COMPLETED and approval is None:
             ended = managed_events[-1]
             expected_payload = _base_payload(
                 UUID(incident.id),
@@ -3345,7 +4011,11 @@ def _repair_workflow_snapshot(
                 or ended.payload_json != canonical_json(expected_payload)
             ):
                 raise RecoveryConsistencyError
-        elif run.status is RunStatus.FAILED and expires_at is not None:
+        elif (
+            run.status is RunStatus.FAILED
+            and expires_at is not None
+            and approval is None
+        ):
             ended = managed_events[-1]
             expected_payload = _base_payload(
                 UUID(incident.id),
@@ -3386,6 +4056,8 @@ def _repair_workflow_snapshot(
         waiting_expires_at=expires_at,
         proposal_id=proposal.id if proposal else None,
         end_reason=run.end_reason,
+        approval=approval,
+        execution=execution,
     )
 
 

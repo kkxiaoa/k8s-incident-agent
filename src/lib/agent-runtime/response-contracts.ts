@@ -93,7 +93,7 @@ export interface SelectedRunView {
   sourceRunId?: string | null;
   selection?: components["schemas"]["RepairHistorySelectionResponse"] | null;
   waitingExpiresAt?: string | null;
-  endReason?: "expired" | "superseded" | null;
+  endReason?: "expired" | "superseded" | "rejected" | "execution_expired" | null;
 }
 
 export type RunSummaryView = Omit<SelectedRunView, "error" | "selection" | "waitingExpiresAt" | "endReason">;
@@ -145,6 +145,8 @@ export interface IncidentDetailView {
   evidence: EvidenceView[];
   diagnosis: DiagnosisView | null;
   repair: RepairProposalView | null;
+  approval?: components["schemas"]["ApprovalResponse"] | null;
+  runCreationBlocked: boolean;
   alertSignal: AlertSignalView | null;
 }
 
@@ -285,6 +287,9 @@ function isIncidentStatus(
     value === "PATCH_READY" ||
     value === "DRY_RUN_PASSED" ||
     value === "WAITING_APPROVAL" ||
+    value === "APPLYING" ||
+    value === "VERIFYING" ||
+    value === "REJECTED" ||
     value === "INSUFFICIENT_EVIDENCE" ||
     value === "STALE_RESOURCE" ||
     value === "FAILED"
@@ -482,7 +487,7 @@ function parseSelectedRun(value: unknown): SelectedRunView | null {
   const error = value.error === null ? null : parseRunError(value.error);
   if (value.error !== null && error === null) return null;
   if (value.waitingExpiresAt !== undefined && value.waitingExpiresAt !== null && !isTimestamp(value.waitingExpiresAt)) return null;
-  if (value.endReason !== undefined && value.endReason !== null && value.endReason !== "expired" && value.endReason !== "superseded") return null;
+  if (value.endReason !== undefined && value.endReason !== null && value.endReason !== "expired" && value.endReason !== "superseded" && value.endReason !== "rejected" && value.endReason !== "execution_expired") return null;
   const selection = value.selection;
   if (selection !== undefined && selection !== null && (
     !isObject(selection) || typeof selection.revision !== "string" || !/^[1-9][0-9]{0,18}$/.test(selection.revision)
@@ -850,6 +855,35 @@ export function parseRunEventHistoryResponse(
     : page;
 }
 
+function parseExecutionResult(value: unknown): components["schemas"]["ExecutionResultResponse"] | null {
+  if (!isObject(value)) return null;
+  if (value.outcome === "APPLIED") {
+    const receipt = value.receipt;
+    if (value.error !== null || !isObject(receipt) || typeof receipt.uid !== "string" || !receipt.uid || typeof receipt.resourceVersion !== "string" || !receipt.resourceVersion || !Number.isSafeInteger(receipt.generation) || (receipt.generation as number) < 1 || !Number.isSafeInteger(receipt.beforeGeneration) || (receipt.beforeGeneration as number) < 1) return null;
+    return { outcome: "APPLIED", error: null, receipt: { uid: receipt.uid, resourceVersion: receipt.resourceVersion, generation: receipt.generation as number, beforeGeneration: receipt.beforeGeneration as number } };
+  }
+  if (value.receipt !== null) return null;
+  if (value.outcome === "UNKNOWN" && value.error === "outcome_unknown") return { outcome: "UNKNOWN", receipt: null, error: "outcome_unknown" };
+  if (value.outcome === "STALE_RESOURCE" && value.error === "precondition_failed") return { outcome: "STALE_RESOURCE", receipt: null, error: "precondition_failed" };
+  if (value.outcome === "REJECTED" && (value.error === "permission_denied" || value.error === "admission_denied" || value.error === "precondition_failed" || value.error === "upstream_failed")) return { outcome: "REJECTED", receipt: null, error: value.error };
+  return null;
+}
+
+function parseApproval(value: unknown): components["schemas"]["ApprovalResponse"] | null {
+  if (!isObject(value) || !isUuid(value.id) || !isUuid(value.runId) || !isUuid(value.proposalId) || typeof value.proposalDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.proposalDigest) || typeof value.validationDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.validationDigest) || (value.decision !== "approve" && value.decision !== "reject") || typeof value.actor !== "string" || !value.actor || !isTimestamp(value.decidedAt) || !isTimestamp(value.expiresAt)) return null;
+  let execution: components["schemas"]["ExecutionResponse"] | null = null;
+  if (value.execution !== null) {
+    const item = value.execution;
+    if (!isObject(item) || !isUuid(item.id) || (item.status !== "PENDING" && item.status !== "CLAIMED" && item.status !== "APPLIED" && item.status !== "EXPIRED" && item.status !== "STALE_RESOURCE" && item.status !== "REJECTED" && item.status !== "UNKNOWN") || !isTimestamp(item.startBefore) || (item.claimedAt !== null && !isTimestamp(item.claimedAt)) || (item.reportedAt !== null && !isTimestamp(item.reportedAt))) return null;
+    const result = item.result === null ? null : parseExecutionResult(item.result);
+    const lateResult = item.lateResult === null ? null : parseExecutionResult(item.lateResult);
+    if ((item.result !== null && result === null) || (item.lateResult !== null && lateResult === null) || (item.status === "APPLIED" && result?.outcome !== "APPLIED") || (lateResult !== null && (item.status !== "UNKNOWN" || lateResult.outcome !== "APPLIED"))) return null;
+    execution = { id: item.id, status: item.status, startBefore: item.startBefore, claimedAt: item.claimedAt, reportedAt: item.reportedAt, result, lateResult };
+  }
+  if ((value.decision === "approve") !== (execution !== null)) return null;
+  return { id: value.id, runId: value.runId, proposalId: value.proposalId, proposalDigest: value.proposalDigest, validationDigest: value.validationDigest, decision: value.decision, actor: value.actor, decidedAt: value.decidedAt, expiresAt: value.expiresAt, execution };
+}
+
 export function parseIncidentDetailResponse(
   value: unknown,
 ): IncidentDetailView | null {
@@ -858,6 +892,7 @@ export function parseIncidentDetailResponse(
     value.schemaVersion !== 5 ||
     !isValidEventId(value.eventCursor) ||
     !Array.isArray(value.evidence)
+    || typeof value.runCreationBlocked !== "boolean"
   ) {
     return null;
   }
@@ -869,6 +904,7 @@ export function parseIncidentDetailResponse(
   const diagnosis =
     value.diagnosis === null ? null : parseDiagnosis(value.diagnosis);
   const repair = value.repair === null ? null : parseRepairProposal(value.repair);
+  const approval = value.approval == null ? null : parseApproval(value.approval);
   const alertSignal =
     value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
   if (
@@ -885,6 +921,8 @@ export function parseIncidentDetailResponse(
     (value.diagnosis !== null && diagnosis === null) ||
     (selectedRun.kind === "repair" && diagnosis !== null) ||
     (value.repair !== null && repair === null) ||
+    (value.approval != null && approval === null) ||
+    (approval !== null && (selectedRun.kind !== "repair" || approval.runId !== selectedRun.id || approval.proposalId !== repair?.id || approval.proposalDigest !== repair?.digest)) ||
     (value.alertSignal !== null && alertSignal === null) ||
     (incident.source.type === "scenario" && value.alertSignal !== null) ||
     (incident.source.type === "alertmanager" && alertSignal === null)
@@ -923,6 +961,8 @@ export function parseIncidentDetailResponse(
     evidence: evidence as EvidenceView[],
     diagnosis,
     repair,
+    ...(value.approval !== undefined ? { approval } : {}),
+    runCreationBlocked: value.runCreationBlocked,
     alertSignal,
   };
 }

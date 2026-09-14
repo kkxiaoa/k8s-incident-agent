@@ -270,7 +270,7 @@ export function IncidentStream({
   };
 
   const createRun = async () => {
-    if (rerunPending) {
+    if (rerunPending || state.detail.runCreationBlocked) {
       return;
     }
     setRerunPending(true);
@@ -295,7 +295,9 @@ export function IncidentStream({
   const visibleRuns = mergeRuns(runs, [runSummary(detail)]);
   const activeRun =
     detail.selectedRun.status === "QUEUED" ||
-    detail.selectedRun.status === "RUNNING";
+    detail.selectedRun.status === "RUNNING" ||
+    detail.runCreationBlocked ||
+    (state.detailRefreshEventId !== null && BigInt(detail.eventCursor) < BigInt(state.detailRefreshEventId));
   const monitoringRefreshKey = [
     detail.selectedRun.status,
     detail.selectedRun.startedAt,

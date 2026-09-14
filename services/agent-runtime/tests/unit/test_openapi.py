@@ -9,6 +9,7 @@ from k8s_incident_agent import api
 from k8s_incident_agent import openapi as openapi_exporter
 
 EXPECTED_OPERATIONS = {
+    ("POST", "/api/v1/incidents/{incident_id}/approvals"),
     ("POST", "/api/v1/operator/login"),
     ("POST", "/api/v1/operator/logout"),
     ("GET", "/api/v1/operator/session"),
@@ -100,6 +101,14 @@ EXPECTED_ERROR_STATUSES = {
 }
 
 EXPECTED_EVENT_COMPONENTS = {
+    "repair.approval_decided": (
+        "ApprovalDecidedStreamEvent",
+        "ApprovalDecidedEventPayload",
+    ),
+    "repair.execution_updated": (
+        "ExecutionUpdatedStreamEvent",
+        "ExecutionUpdatedEventPayload",
+    ),
     "incident.created": (
         "IncidentCreatedStreamEvent",
         "IncidentCreatedEventPayload",

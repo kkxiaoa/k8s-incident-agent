@@ -17,10 +17,28 @@ import {
   isTerminalRunEvent,
   parseRunEvent,
   reduceIncidentStream,
+  requiresIncidentDetailRefresh,
 } from "./sse";
 
 const OTHER_RUN_ID = "55555555-5555-4555-8555-555555555555";
 const OTHER_INCIDENT_ID = "66666666-6666-4666-8666-666666666666";
+
+it.each([
+  ["CLAIMED", "RUNNING", "APPLYING"],
+  ["APPLIED", "RUNNING", "VERIFYING"],
+  ["UNKNOWN", "FAILED", "FAILED"],
+] as const)("projects %s and refreshes the authoritative ledger", (executionStatus, runStatus, incidentStatus) => {
+  const detail = makeRepairRunWaitingDetail();
+  const payload = { schemaVersion: 5, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-13T01:00:00Z", approvalId: OTHER_RUN_ID, executionId: OTHER_INCIDENT_ID, executionStatus, runStatus, incidentStatus, lateResult: false };
+  const event = parseRunEvent("repair.execution_updated", "999", JSON.stringify(payload), detail.incident.id)!;
+  expect(event).not.toBeNull();
+  expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id, true)).toBe(true);
+  expect(isTerminalRunEvent(event)).toBe(runStatus === "FAILED");
+  const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
+  expect(state.detail.incident.status).toBe(incidentStatus);
+  expect(state.detail.selectedRun.status).toBe(runStatus);
+  expect(() => parseRunEvent("repair.execution_updated", "999", JSON.stringify({ ...payload, incidentStatus: "RESOLVED" }), detail.incident.id)).toThrow("Invalid incident event");
+});
 
 function incidentCreated(id: string) {
   return parseRunEvent(

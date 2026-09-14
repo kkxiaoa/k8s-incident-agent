@@ -4,6 +4,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 
 from k8s_incident_agent.api_contracts import (
+    ApprovalRequest,
+    ApprovalResponse,
     CreateIncidentRequest,
     CreateIncidentResponse,
     CreateRepairRunRequest,
@@ -21,6 +23,7 @@ from k8s_incident_agent.auth.sessions import OperatorSession
 from k8s_incident_agent.routes import incident_service
 
 manual_router = APIRouter(prefix="/api/v1")
+approval_router = APIRouter(prefix="/api/v1")
 router = APIRouter(prefix="/api/v1")
 
 _IncidentService = Annotated[
@@ -28,6 +31,25 @@ _IncidentService = Annotated[
     Depends(incident_service),
 ]
 _Operator = Annotated[OperatorSession, Depends(require_operator)]
+
+
+@approval_router.post(
+    "/incidents/{incident_id}/approvals",
+    response_model=ApprovalResponse,
+    responses=error_responses(401, 403, 409, 422, 500, 503),
+)
+async def decide_approval(
+    incident_id: UUID,
+    request: ApprovalRequest,
+    service: _IncidentService,
+    operator: _Operator,
+) -> ApprovalResponse:
+    return await service.decide_approval(
+        incident_id,
+        request,
+        operator_ref=operator.operator_ref,
+        operator_token_hash=operator.token_hash,
+    )
 
 
 @manual_router.post(

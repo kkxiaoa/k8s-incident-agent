@@ -48,6 +48,16 @@ export function RepairPanel({
   refreshError: string | null;
 }) {
   const { repair, selectedRun, evidence } = detail;
+  const execution = detail.approval?.execution;
+  const executionMessage = execution ? {
+    PENDING: "已批准，等待执行领取",
+    CLAIMED: "执行已领取，等待可信结果",
+    APPLIED: "API 写入已确认，恢复尚未验证",
+    EXPIRED: "执行许可已到期，未领取、未写入",
+    STALE_RESOURCE: "目标资源已变化，执行已停止",
+    REJECTED: "执行被明确拒绝",
+    UNKNOWN: "写入结果未知，目标保持占用；禁止重试或自动回滚",
+  }[execution.status] : detail.approval?.decision === "reject" ? "修复已被拒绝，未执行" : null;
   const error = repair?.validation.error ?? selectedRun.error;
   const failure = error === null ? undefined : FAILURE_LABELS[error.code];
   const active = selectedRun.status === "QUEUED" || selectedRun.status === "RUNNING" || selectedRun.status === "WAITING_APPROVAL";
@@ -88,7 +98,7 @@ export function RepairPanel({
       </div>
 
       {selectedRun.sourceRunId ? <p><Link href={`/incidents/${detail.incident.id}?runId=${selectedRun.sourceRunId}`}>查看来源运行</Link></p> : null}
-      {selectedRun.endReason ? <p role="status">{selectedRun.endReason === "expired" ? "提案已过期，需要重新准备。" : "本次等待已被新的运行替换。"}</p> : null}
+      {selectedRun.endReason ? <p role="status">{{ expired: "提案已过期，需要重新准备。", superseded: "本次等待已被新的运行替换。", rejected: "本次修复申请已被拒绝。", execution_expired: "执行许可已到期，需要重新准备。" }[selectedRun.endReason]}</p> : null}
       {selectedRun.status === "WAITING_APPROVAL" && selectedRun.waitingExpiresAt ? <p>等待期限：<LocalTimestamp timestamp={selectedRun.waitingExpiresAt} /></p> : null}
 
       {refreshError !== null ? (
@@ -121,12 +131,13 @@ export function RepairPanel({
           <div className={`repair-verdict${repair.validation.outcome === "failed" ? " repair-verdict--failed" : ""}`}>
             <span className="repair-verdict__icon"><UiIcon name={repair.validation.outcome === "passed" ? "check" : "close"} /></span>
             <div>
-              <strong>{repair.validation.outcome === "passed"
+              <strong>{executionMessage ?? (repair.validation.outcome === "passed"
                 ? "已通过验证，尚未批准或执行"
-                : "验证未通过，尚未批准或执行"}</strong>
+                : "验证未通过，尚未批准或执行")}</strong>
               <p>本次运行的验证快照，不代表目标当前状态。Dry-run 不证明应用已经恢复。</p>
+              {execution?.lateResult ? <p>迟到成功回执已保留；未知状态与目标占用未自动解除。</p> : null}
             </div>
-            <span className="repair-verdict__boundary">未执行</span>
+            <span className="repair-verdict__boundary">{execution?.status ?? "未执行"}</span>
           </div>
 
           <div className="repair-workbench">

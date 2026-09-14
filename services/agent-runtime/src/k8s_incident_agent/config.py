@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     model_max_retries: int = Field(default=2, ge=0)
     runtime_retention_days: int = Field(default=7, ge=1, le=30)
     incident_intake_mode: Literal["manual", "online"] = "manual"
+    sandbox_execution_enabled: bool = False
     operator_verifier_file: Path | None = Field(default=None, repr=False)
     operator_origin: str | None = None
     kubernetes_credential_mode: Literal["kind_kubeconfig", "in_cluster"] = (

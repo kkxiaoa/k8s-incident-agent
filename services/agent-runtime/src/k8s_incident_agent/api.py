@@ -101,7 +101,15 @@ def create_app(
     settings: Settings | None = None,
     runtime_context_factory: RuntimeContextFactory | None = None,
     include_alertmanager_route: bool | None = None,
+    include_approval_route: bool | None = None,
 ) -> FastAPI:
+    from k8s_incident_agent.routes.incidents import approval_router
+
+    route_execution_enabled = (
+        include_approval_route
+        if include_approval_route is not None
+        else settings is not None and settings.sandbox_execution_enabled
+    )
     route_intake_mode = (
         settings.incident_intake_mode if settings is not None else "manual"
     )
@@ -116,6 +124,10 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         resolved_settings = settings or Settings()
+        if resolved_settings.sandbox_execution_enabled != route_execution_enabled:
+            raise ConfigurationInvalidError(
+                "SANDBOX_EXECUTION_ENABLED changed after route assembly"
+            )
         if resolved_settings.incident_intake_mode != route_intake_mode:
             raise ConfigurationInvalidError(
                 "INCIDENT_INTAKE_MODE changed after route assembly"
@@ -195,6 +207,8 @@ def create_app(
         responses=error_responses(401, 403),
     )
     app.include_router(operator_router)
+    if route_execution_enabled:
+        app.include_router(approval_router, dependencies=[Depends(require_operator)])
     if route_alertmanager_enabled:
         _install_alertmanager_openapi_contract(app)
     return app
@@ -307,6 +321,8 @@ async def build_runtime_container(
         repository = IncidentRepository(
             database.session_factory,
             on_event_committed=event_notifier.notify,
+            sandbox_execution_enabled=settings.sandbox_execution_enabled,
+            execution_cluster=settings.kubernetes_cluster_id,
         )
         adapter = KubernetesEvidenceAdapter(kubernetes_clients)
         prometheus = PrometheusQueryService(

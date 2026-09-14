@@ -53,6 +53,7 @@ const TERMINAL_EVENTS = new Set<RunEventStreamItem["event"]>([
 export function isTerminalRunEvent(event: RunEventStreamItem): boolean {
   return (
     TERMINAL_EVENTS.has(event.event) ||
+    ((event.event === "repair.approval_decided" || event.event === "repair.execution_updated") && event.data.runStatus !== "RUNNING") ||
     ((event.event === "diagnosis.completed" || event.event === "repair.waiting_approval") &&
       event.data.runStatus === "COMPLETED")
   );
@@ -64,6 +65,9 @@ export function requiresIncidentDetailRefresh(
   latestMode: boolean,
 ): boolean {
   if (event.event === "alert.resolved") {
+    return true;
+  }
+  if (event.event === "repair.approval_decided" || event.event === "repair.execution_updated") {
     return true;
   }
   if (latestMode && event.event === "run.queued") {
@@ -116,6 +120,8 @@ function applyIncidentStatus(
     case "repair.dry_run_passed":
     case "repair.waiting_approval":
     case "repair.wait_ended":
+    case "repair.approval_decided":
+    case "repair.execution_updated":
     case "diagnosis.insufficient":
     case "run.failed":
       return {
@@ -148,6 +154,8 @@ function applySelectedRunStatus(
     case "repair.dry_run_passed":
     case "repair.waiting_approval":
     case "repair.wait_ended":
+    case "repair.approval_decided":
+    case "repair.execution_updated":
     case "diagnosis.insufficient":
     case "run.failed":
       return {

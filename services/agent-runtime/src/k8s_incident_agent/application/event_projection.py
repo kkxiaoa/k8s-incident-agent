@@ -1,8 +1,10 @@
 from pydantic import ValidationError
 
 from k8s_incident_agent.api_contracts import (
+    ApprovalDecidedEventPayload,
     DiagnosisCompletedEventPayload,
     EvidenceRecordedEventPayload,
+    ExecutionUpdatedEventPayload,
     RepairWaitingApprovalEventPayload,
     RunEventPayload,
     RunEventStreamItem,
@@ -68,6 +70,18 @@ def validated_event_json(event: RunEvent) -> str:
 
 
 def _expected_event_key(event_type: str, payload: RunEventPayload) -> str:
+    if isinstance(payload, ApprovalDecidedEventPayload):
+        return (
+            "repair.approval_decided"
+            if payload.decision == "approve"
+            else "run:terminal"
+        )
+    if isinstance(payload, ExecutionUpdatedEventPayload):
+        if payload.late_result:
+            return f"execution:{payload.execution_id}:late_applied"
+        if payload.run_status in ("COMPLETED", "FAILED"):
+            return "run:terminal"
+        return f"execution:{payload.execution_id}:{payload.execution_status}"
     if event_type in {
         "diagnosis.insufficient",
         "run.failed",

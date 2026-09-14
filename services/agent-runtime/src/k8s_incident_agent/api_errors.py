@@ -32,7 +32,11 @@ from k8s_incident_agent.monitoring.errors import (
     AlertPayloadTruncatedError,
     AlertTargetInvalidError,
 )
-from k8s_incident_agent.persistence.repositories import RepairSourceInvalidError
+from k8s_incident_agent.persistence.repositories import (
+    ApprovalConflictError,
+    ExecutionDisabledError,
+    RepairSourceInvalidError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +121,29 @@ _ALERT_TARGET_INVALID = _ErrorContract(
 
 
 def install_exception_handlers(app: FastAPI) -> None:
+    async def approval_conflict_handler(
+        _request: Request, _error: ApprovalConflictError
+    ) -> JSONResponse:
+        return _response(
+            _ErrorContract(
+                409, "approval_conflict", "Exact approval is no longer available."
+            )
+        )
+
+    async def execution_disabled_handler(
+        _request: Request, _error: ExecutionDisabledError
+    ) -> JSONResponse:
+        return _response(
+            _ErrorContract(403, "execution_disabled", "Sandbox execution is disabled.")
+        )
+
+    app.add_exception_handler(
+        ApprovalConflictError, cast(ExceptionHandler, approval_conflict_handler)
+    )
+    app.add_exception_handler(
+        ExecutionDisabledError, cast(ExceptionHandler, execution_disabled_handler)
+    )
+
     async def repair_source_handler(
         _request: Request, _error: RepairSourceInvalidError
     ) -> JSONResponse:

@@ -61,7 +61,9 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     arguments = _parser().parse_args()
     output: Path = arguments.output
-    schema = create_app(include_alertmanager_route=True).openapi()
+    schema = create_app(
+        include_alertmanager_route=True, include_approval_route=True
+    ).openapi()
     _prune_unreferenced_schemas(schema)
     document = json.dumps(
         schema,

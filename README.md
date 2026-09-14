@@ -9,9 +9,10 @@
 - 已实现来源中立的持久化 Incident、可重复 Run、只读 Kubernetes Evidence、诊断 Agent、REST/SSE BFF 与 Incident Console；
 - 当前工作区增加单操作者登录、30 分钟可撤销会话、Origin/CSRF 与读取/SSR/SSE 认证；该认证变更尚未进行集群 live 验证，不代表审批或执行已开放；
 - 固定 Kind 与单节点 K3s profile 已使用同一组双架构 Console / Runtime 产物完成安装、真实诊断、网络与身份门禁、持久化恢复和普通卸载验证；这不是任意 Kubernetes 兼容性承诺；
-- development / evaluation 可手动触发版本化场景；online profile 不暴露人工创建或重新运行入口；
+- development / evaluation 可手动触发版本化场景；online profile 禁止人工创建 Incident，允许认证操作者对已有 Incident 重新诊断或准备修复；
 - Alertmanager intake、managed monitoring、有界 Prometheus 查询、Run-owned Evidence 与 Console 必要指标图表已实现；五个故障族的七个场景已有 fixed Kind/K3s 组合 live 证据，不代表任意 Kubernetes 兼容性或统计准确率、延迟、恢复率基线；
-- Evidence-bound 镜像修复提案、独立 server-side dry-run 与只读修复验证 Console 已完成离线实现和验证；该修复链路尚未完成最终镜像与集群 live 验收。当前止于 `WAITING_APPROVAL`，尚未批准或执行；审批、受控执行、恢复验证与回滚仍未实现。
+- Evidence-bound 镜像修复提案、独立 server-side dry-run、持久等待及精确审批/执行账本已实现。`SANDBOX_EXECUTION_ENABLED` 默认 `false`，关闭时不注册审批端点；显式开启后，认证操作者可决定本次 Run 的 exact proposal，批准仅生成一次可领取的执行项。当前尚无独立执行 worker、Kubernetes 持久写、恢复验证或回滚；该链路尚未完成最终镜像与集群 live 验收。
+- 已领取但结果不确定的执行保持 `UNKNOWN` 并占用目标，禁止自动重试、回滚或释放；可信成功回执仅进入 `VERIFYING`，不表示恢复成功。当前 Console 展示账本事实，完整审批交互仍待实现。
 
 ## 产品边界
 

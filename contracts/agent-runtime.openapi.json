@@ -271,6 +271,215 @@
         "title": "AlertmanagerWebhook",
         "type": "object"
       },
+      "ApprovalDecidedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "approvalId": {
+            "format": "uuid",
+            "title": "Approvalid",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "incidentStatus": {
+            "enum": [
+              "APPLYING",
+              "REJECTED"
+            ],
+            "title": "Incidentstatus",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "proposalDigest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Proposaldigest",
+            "type": "string"
+          },
+          "proposalId": {
+            "format": "uuid",
+            "title": "Proposalid",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
+          "runStatus": {
+            "enum": [
+              "RUNNING",
+              "COMPLETED"
+            ],
+            "title": "Runstatus",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 5,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "runKind",
+          "approvalId",
+          "proposalId",
+          "proposalDigest",
+          "decision",
+          "incidentStatus",
+          "runStatus"
+        ],
+        "title": "ApprovalDecidedEventPayload",
+        "type": "object"
+      },
+      "ApprovalDecidedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ApprovalDecidedEventPayload"
+          },
+          "event": {
+            "const": "repair.approval_decided",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "ApprovalDecidedStreamEvent",
+        "type": "object"
+      },
+      "ApprovalDecision": {
+        "enum": [
+          "approve",
+          "reject"
+        ],
+        "type": "string"
+      },
+      "ApprovalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          },
+          "proposalDigest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Proposaldigest",
+            "type": "string"
+          },
+          "proposalId": {
+            "format": "uuid",
+            "title": "Proposalid",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "proposalId",
+          "proposalDigest",
+          "decision"
+        ],
+        "title": "ApprovalRequest",
+        "type": "object"
+      },
+      "ApprovalResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "decidedAt": {
+            "format": "date-time",
+            "title": "Decidedat",
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "title": "Expiresat",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "proposalDigest": {
+            "title": "Proposaldigest",
+            "type": "string"
+          },
+          "proposalId": {
+            "format": "uuid",
+            "title": "Proposalid",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "validationDigest": {
+            "title": "Validationdigest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "runId",
+          "proposalId",
+          "proposalDigest",
+          "validationDigest",
+          "decision",
+          "actor",
+          "decidedAt",
+          "expiresAt",
+          "execution"
+        ],
+        "title": "ApprovalResponse",
+        "type": "object"
+      },
       "CreateIncidentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -871,6 +1080,275 @@
         "title": "EvidenceResponse",
         "type": "object"
       },
+      "ExecutionReceiptResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "beforeGeneration": {
+            "title": "Beforegeneration",
+            "type": "integer"
+          },
+          "generation": {
+            "title": "Generation",
+            "type": "integer"
+          },
+          "resourceVersion": {
+            "title": "Resourceversion",
+            "type": "string"
+          },
+          "uid": {
+            "title": "Uid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uid",
+          "resourceVersion",
+          "generation",
+          "beforeGeneration"
+        ],
+        "title": "ExecutionReceiptResponse",
+        "type": "object"
+      },
+      "ExecutionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "claimedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimedat"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "lateResult": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionResultResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reportedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reportedat"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionResultResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startBefore": {
+            "format": "date-time",
+            "title": "Startbefore",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "startBefore",
+          "claimedAt",
+          "reportedAt",
+          "result",
+          "lateResult"
+        ],
+        "title": "ExecutionResponse",
+        "type": "object"
+      },
+      "ExecutionResultResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "enum": [
+                  "permission_denied",
+                  "admission_denied",
+                  "precondition_failed",
+                  "upstream_failed",
+                  "outcome_unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "outcome": {
+            "enum": [
+              "APPLIED",
+              "STALE_RESOURCE",
+              "REJECTED",
+              "UNKNOWN"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionReceiptResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "outcome",
+          "receipt",
+          "error"
+        ],
+        "title": "ExecutionResultResponse",
+        "type": "object"
+      },
+      "ExecutionStatus": {
+        "enum": [
+          "PENDING",
+          "CLAIMED",
+          "APPLIED",
+          "EXPIRED",
+          "STALE_RESOURCE",
+          "REJECTED",
+          "UNKNOWN"
+        ],
+        "type": "string"
+      },
+      "ExecutionUpdatedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "approvalId": {
+            "format": "uuid",
+            "title": "Approvalid",
+            "type": "string"
+          },
+          "executionId": {
+            "format": "uuid",
+            "title": "Executionid",
+            "type": "string"
+          },
+          "executionStatus": {
+            "$ref": "#/components/schemas/ExecutionStatus"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "incidentStatus": {
+            "enum": [
+              "APPLYING",
+              "VERIFYING",
+              "DIAGNOSED",
+              "STALE_RESOURCE",
+              "FAILED"
+            ],
+            "title": "Incidentstatus",
+            "type": "string"
+          },
+          "lateResult": {
+            "title": "Lateresult",
+            "type": "boolean"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          },
+          "runKind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
+          "runStatus": {
+            "enum": [
+              "RUNNING",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "title": "Runstatus",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 5,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "runId",
+          "occurredAt",
+          "runKind",
+          "executionId",
+          "approvalId",
+          "executionStatus",
+          "lateResult",
+          "incidentStatus",
+          "runStatus"
+        ],
+        "title": "ExecutionUpdatedEventPayload",
+        "type": "object"
+      },
+      "ExecutionUpdatedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ExecutionUpdatedEventPayload"
+          },
+          "event": {
+            "const": "repair.execution_updated",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "ExecutionUpdatedStreamEvent",
+        "type": "object"
+      },
       "IncidentCreatedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -965,6 +1443,16 @@
               }
             ]
           },
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "diagnosis": {
             "anyOf": [
               {
@@ -1002,6 +1490,11 @@
                 "type": "null"
               }
             ]
+          },
+          "runCreationBlocked": {
+            "default": false,
+            "title": "Runcreationblocked",
+            "type": "boolean"
           },
           "schemaVersion": {
             "const": 5,
@@ -1231,6 +1724,9 @@
           "PATCH_READY",
           "DRY_RUN_PASSED",
           "WAITING_APPROVAL",
+          "APPLYING",
+          "VERIFYING",
+          "REJECTED",
           "INSUFFICIENT_EVIDENCE",
           "STALE_RESOURCE",
           "FAILED"
@@ -2496,7 +2992,9 @@
             "diagnosis.insufficient": "#/components/schemas/DiagnosisInsufficientStreamEvent",
             "evidence.recorded": "#/components/schemas/EvidenceRecordedStreamEvent",
             "incident.created": "#/components/schemas/IncidentCreatedStreamEvent",
+            "repair.approval_decided": "#/components/schemas/ApprovalDecidedStreamEvent",
             "repair.dry_run_passed": "#/components/schemas/RepairDryRunPassedStreamEvent",
+            "repair.execution_updated": "#/components/schemas/ExecutionUpdatedStreamEvent",
             "repair.patch_ready": "#/components/schemas/RepairPatchReadyStreamEvent",
             "repair.wait_ended": "#/components/schemas/RepairWaitEndedStreamEvent",
             "repair.waiting_approval": "#/components/schemas/RepairWaitingApprovalStreamEvent",
@@ -2547,6 +3045,12 @@
           },
           {
             "$ref": "#/components/schemas/RepairWaitEndedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ApprovalDecidedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutionUpdatedStreamEvent"
           },
           {
             "$ref": "#/components/schemas/AlertResolvedStreamEvent"
@@ -3111,7 +3615,9 @@
               {
                 "enum": [
                   "expired",
-                  "superseded"
+                  "superseded",
+                  "rejected",
+                  "execution_expired"
                 ],
                 "type": "string"
               },
@@ -3800,6 +4306,111 @@
           }
         ],
         "summary": "Get Incident"
+      }
+    },
+    "/api/v1/incidents/{incident_id}/approvals": {
+      "post": {
+        "operationId": "decide_approval_api_v1_incidents__incident_id__approvals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "summary": "Decide Approval"
       }
     },
     "/api/v1/incidents/{incident_id}/events": {

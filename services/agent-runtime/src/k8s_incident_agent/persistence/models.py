@@ -70,6 +70,7 @@ class IncidentRow(Base):
         CheckConstraint(
             "status IN ('RECEIVED', 'TRIAGING', 'DIAGNOSED', "
             "'PATCH_READY', 'DRY_RUN_PASSED', 'WAITING_APPROVAL', "
+            "'APPLYING', 'VERIFYING', 'REJECTED', "
             "'INSUFFICIENT_EVIDENCE', 'STALE_RESOURCE', 'FAILED')",
             name="status",
         ),
@@ -348,3 +349,67 @@ class RepairProposalRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class ApprovalRow(Base):
+    __tablename__ = "approvals"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_approvals_run_id"),
+        UniqueConstraint("proposal_id", name="uq_approvals_proposal_id"),
+        CheckConstraint("decision IN ('approve', 'reject')", name="decision"),
+        CheckConstraint("expires_at > decided_at", name="expiry"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    proposal_id: Mapped[str] = mapped_column(
+        ForeignKey("repair_proposals.id"), nullable=False
+    )
+    proposal_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    validation_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    decision: Mapped[str] = mapped_column(String, nullable=False)
+    actor: Mapped[str] = mapped_column(String, nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class ExecutionRow(Base):
+    __tablename__ = "executions"
+    __table_args__ = (
+        UniqueConstraint("approval_id", name="uq_executions_approval_id"),
+        UniqueConstraint("run_id", name="uq_executions_run_id"),
+        CheckConstraint(
+            "status IN ('PENDING', 'CLAIMED', 'APPLIED', 'EXPIRED', "
+            "'STALE_RESOURCE', 'REJECTED', 'UNKNOWN')",
+            name="status",
+        ),
+        Index(
+            "uq_executions_occupied_target",
+            "cluster",
+            "namespace",
+            "kind",
+            "resource_name",
+            unique=True,
+            sqlite_where=text("status IN ('PENDING', 'CLAIMED', 'APPLIED', 'UNKNOWN')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    approval_id: Mapped[str] = mapped_column(ForeignKey("approvals.id"), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    cluster: Mapped[str] = mapped_column(String, nullable=False)
+    namespace: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    resource_name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    start_before: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_json: Mapped[str | None] = mapped_column(Text)
+    late_result_json: Mapped[str | None] = mapped_column(Text)

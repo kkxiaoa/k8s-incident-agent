@@ -88,6 +88,8 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
                 "evidenceRows": 1,
                 "incidentId": str(INCIDENT_ID),
                 "repairProposalRows": 1,
+                "approvalRows": 0,
+                "executionRows": 0,
                 "runIds": [str(RUN_ID)],
                 "runRows": 1,
                 "updatedAt": "2026-09-01T08:00:00+00:00",

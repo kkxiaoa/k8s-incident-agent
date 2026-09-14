@@ -83,6 +83,18 @@ function eventCopy(event: RunEventStreamItem): {
         detail: event.data.reason === "expired" ? "提案已过期，未执行修复" : "后继运行已取代此提案，未执行修复",
         tone: "neutral",
       };
+    case "repair.approval_decided":
+      return {
+        title: event.data.decision === "approve" ? "修复已批准" : "修复已拒绝",
+        detail: event.data.decision === "approve" ? "已提交唯一执行项，尚无写入成功回执" : "本次申请结束，未执行修复",
+        tone: "neutral",
+      };
+    case "repair.execution_updated":
+      return {
+        title: event.data.lateResult ? "收到迟到成功回执，目标继续占用" : `执行状态：${event.data.executionStatus}`,
+        detail: event.data.executionStatus === "APPLIED" ? "API 写入已确认，恢复尚未验证" : event.data.executionStatus === "UNKNOWN" ? "无法确定写入归属，禁止重试或自动回滚" : "执行账本已更新",
+        tone: event.data.executionStatus === "UNKNOWN" ? "danger" : "neutral",
+      };
     case "diagnosis.insufficient":
       return { title: "诊断已结束", detail: "现有证据不足", tone: "warning" };
     case "run.failed":

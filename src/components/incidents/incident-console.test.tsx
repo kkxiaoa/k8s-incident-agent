@@ -478,6 +478,39 @@ describe("read-only incident presentation", () => {
     expect(screen.queryByRole("button", { name: "重新诊断" })).toBeNull();
   });
 
+  it("blocks historical rediagnosis while an UNKNOWN ledger refresh is pending and after it is persisted", async () => {
+    const detail = makeIncidentDetail();
+    detail.selectedRun.status = "COMPLETED";
+    let resolveRequest!: (response: Response) => void;
+    stubSessionFetch("fetch", vi.fn(() => new Promise<Response>((resolve) => {
+      resolveRequest = resolve;
+    })));
+    vi.stubGlobal("EventSource", FakeEventSource);
+    renderIncidentStream(detail);
+    expect(screen.getByRole("button", { name: "重新诊断" })).toBeEnabled();
+
+    act(() => FakeEventSource.current!.emit("repair.execution_updated", "999", {
+      schemaVersion: 5,
+      incidentId: INCIDENT_ID,
+      runId: "55555555-5555-4555-8555-555555555555",
+      runKind: "repair",
+      occurredAt: "2026-09-13T01:00:00Z",
+      approvalId: "66666666-6666-4666-8666-666666666666",
+      executionId: "77777777-7777-4777-8777-777777777777",
+      executionStatus: "UNKNOWN",
+      runStatus: "FAILED",
+      incidentStatus: "FAILED",
+      lateResult: false,
+    }));
+    expect(screen.getByRole("button", { name: "重新诊断" })).toBeDisabled();
+    const persisted = structuredClone(detail);
+    persisted.runCreationBlocked = true;
+    persisted.incident.status = "FAILED";
+    persisted.eventCursor = "999";
+    await act(async () => resolveRequest(detailResponse(persisted)));
+    expect(screen.getByRole("button", { name: "重新诊断" })).toBeDisabled();
+  });
+
   it("renders a historical failed Run after the Incident has recovered", () => {
     const detail = makeIncidentDetail();
     detail.incident.status = "DIAGNOSED";
