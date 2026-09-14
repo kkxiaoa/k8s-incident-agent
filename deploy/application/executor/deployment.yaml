@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-executor
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/name: sandbox-executor
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-executor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sandbox-executor
+        app.kubernetes.io/part-of: k8s-incident-agent
+    spec:
+      serviceAccountName: sandbox-executor
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: k8s-incident-agent-runtime
+          imagePullPolicy: IfNotPresent
+          command: ["sandbox-executor"]
+          env:
+            - name: KUBERNETES_CLUSTER_ID
+              value: k8s-incident-agent
+            - name: EXECUTOR_HMAC_KEY_FILE
+              value: /var/run/secrets/k8s-incident-agent/executor/hmac-key
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: kubernetes-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            - name: executor-auth
+              mountPath: /var/run/secrets/k8s-incident-agent/executor
+              readOnly: true
+      volumes:
+        - name: kubernetes-api-access
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  expirationSeconds: 600
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        - name: executor-auth
+          secret:
+            secretName: executor-auth
+            defaultMode: 0440
+            items:
+              - key: hmac-key
+                path: hmac-key

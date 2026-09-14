@@ -88,3 +88,16 @@ class ExecutionCommand(_ExecutionContract):
     change: EvidenceBoundImageChange
     validation: PatchValidationResponse
     start_before: AwareDatetime
+
+
+class ExecutionClaim(_ExecutionContract):
+    """Empty by design: the worker cannot select a target, task, or action."""
+
+
+class ExecutionReport(_ExecutionContract):
+    execution_id: UUID
+    result: ExecutionResult
+
+
+class ExecutionAcknowledgement(_ExecutionContract):
+    execution_id: UUID

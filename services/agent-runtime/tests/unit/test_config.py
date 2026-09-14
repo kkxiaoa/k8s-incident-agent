@@ -20,6 +20,7 @@ MODEL_ENVIRONMENT_VARIABLES = (
     "RUNTIME_RETENTION_DAYS",
     "INCIDENT_INTAKE_MODE",
     "SANDBOX_EXECUTION_ENABLED",
+    "EXECUTOR_HMAC_KEY_FILE",
     "KUBERNETES_CREDENTIAL_MODE",
     "KUBERNETES_CLUSTER_ID",
     "KUBERNETES_DIAGNOSTIC_NAMESPACE",
@@ -63,6 +64,7 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     assert settings.model_name == "deepseek-flash"
     assert settings.model_thinking is False
     assert settings.sandbox_execution_enabled is False
+    assert settings.executor_hmac_key_file is None
     assert settings.model_timeout_seconds == 60
     assert settings.model_max_retries == 2
     assert settings.runtime_retention_days == 7

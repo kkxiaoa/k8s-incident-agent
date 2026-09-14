@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     runtime_retention_days: int = Field(default=7, ge=1, le=30)
     incident_intake_mode: Literal["manual", "online"] = "manual"
     sandbox_execution_enabled: bool = False
+    executor_hmac_key_file: Path | None = Field(default=None, repr=False)
     operator_verifier_file: Path | None = Field(default=None, repr=False)
     operator_origin: str | None = None
     kubernetes_credential_mode: Literal["kind_kubeconfig", "in_cluster"] = (
@@ -99,6 +100,15 @@ class Settings(BaseSettings):
         if value is None:
             return None
         return _dedicated_absolute_path(value, "OPERATOR_VERIFIER_FILE")
+
+    @field_validator("executor_hmac_key_file", mode="before")
+    @classmethod
+    def validate_executor_hmac_key_file(cls, value: Path | str | None) -> Path | None:
+        return (
+            None
+            if value is None
+            else _dedicated_absolute_path(value, "EXECUTOR_HMAC_KEY_FILE")
+        )
 
     @field_validator("operator_origin")
     @classmethod
@@ -297,6 +307,24 @@ class PatchValidatorSettings(BaseSettings):
             value,
             "PATCH_VALIDATOR_HMAC_KEY_FILE",
         )
+
+
+class ExecutorSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        extra="ignore",
+        hide_input_in_errors=True,
+        validate_default=True,
+    )
+    kubernetes_cluster_id: Literal["k8s-incident-agent"] = "k8s-incident-agent"
+    executor_hmac_key_file: Path = Field(
+        default=Path("/var/run/secrets/k8s-incident-agent/executor/hmac-key"),
+        repr=False,
+    )
+
+    @field_validator("executor_hmac_key_file", mode="before")
+    @classmethod
+    def validate_key_file(cls, value: Path | str) -> Path:
+        return _dedicated_absolute_path(value, "EXECUTOR_HMAC_KEY_FILE")
 
 
 def _dedicated_absolute_path(value: Path | str, field_name: str) -> Path:

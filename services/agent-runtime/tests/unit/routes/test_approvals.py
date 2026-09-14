@@ -39,7 +39,9 @@ from k8s_incident_agent.auth.sessions import OperatorSessions
 from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import RepairWorkflowRunSnapshot
+from k8s_incident_agent.execution.api import ExecutionEndpoint
 from k8s_incident_agent.execution.contracts import ExecutionReceipt, ExecutionResult
+from k8s_incident_agent.internal_auth import NonceReplayCache
 from k8s_incident_agent.persistence.database import BusinessDatabase
 from k8s_incident_agent.persistence.models import (
     ApprovalRow,
@@ -122,6 +124,7 @@ async def approval_harness(
     credential: tuple[str, str],
     *,
     enabled: bool = True,
+    executor_key: bytes | None = None,
 ) -> AsyncGenerator[ApprovalHarness]:
     password, encoded = credential
     clock = [FRESH_NOW]
@@ -176,11 +179,24 @@ async def approval_harness(
                 monitoring=monitoring_health_service_stub(),
                 diagnostic_model=diagnostic_model_stub(),
                 operator=sessions,
+                execution=(
+                    ExecutionEndpoint(
+                        repository,
+                        executor_key,
+                        NonceReplayCache(freshness_seconds=30),
+                        lambda: clock[0],
+                    )
+                    if executor_key is not None
+                    else None
+                ),
             )
 
         settings = Settings(
             RUNTIME_DATA_DIR=RuntimePaths.prepare(tmp_path / "api"),  # pyright: ignore[reportCallIssue]
             sandbox_execution_enabled=enabled,
+            executor_hmac_key_file=(
+                tmp_path / "executor-key" if executor_key is not None else None
+            ),
             _env_file=None,  # pyright: ignore[reportCallIssue]
         )
         app = create_app(settings=settings, runtime_context_factory=context)

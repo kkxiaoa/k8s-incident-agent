@@ -23,6 +23,7 @@ dependencies = [
 [project.scripts]
 agent-runtime = "k8s_incident_agent.api:main"
 patch-validator = "k8s_incident_agent.repair.api:main"
+sandbox-executor = "k8s_incident_agent.execution.worker:main"
 agent-runtime-openapi = "k8s_incident_agent.openapi:main"
 model-compat = "k8s_incident_agent.model.compatibility:main"
 runtime = "k8s_incident_agent.runtime.cli:main"

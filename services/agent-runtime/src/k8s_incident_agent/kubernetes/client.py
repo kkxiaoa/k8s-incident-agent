@@ -151,6 +151,17 @@ async def create_incluster_kubernetes_clients(
     diagnostic_namespace: str,
 ) -> KubernetesClients:
     _require_positive_timeout(timeout_seconds)
+    api_client = create_incluster_api_client()
+    return await _create_scoped_clients(
+        api_client,
+        timeout_seconds=timeout_seconds,
+        cluster_id=cluster_id,
+        diagnostic_namespace=diagnostic_namespace,
+    )
+
+
+def create_incluster_api_client() -> ApiClient:
+    """Use only the workload's mounted, refreshing in-cluster identity."""
     configuration = Configuration()
     try:
         _load_incluster_config(
@@ -165,13 +176,7 @@ async def create_incluster_kubernetes_clients(
     configuration_view = cast(_ConfigurationView, configuration)
     _require_incluster_configuration(configuration_view)
     _protect_incluster_refresh_hook(configuration_view)
-    api_client = _create_api_client(configuration_view)
-    return await _create_scoped_clients(
-        api_client,
-        timeout_seconds=timeout_seconds,
-        cluster_id=cluster_id,
-        diagnostic_namespace=diagnostic_namespace,
-    )
+    return _create_api_client(configuration_view)
 
 
 def _create_api_client(configuration: _ConfigurationView) -> ApiClient:

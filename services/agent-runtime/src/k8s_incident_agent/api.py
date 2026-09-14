@@ -33,6 +33,9 @@ from k8s_incident_agent.config import ConfigurationInvalidError, Settings
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyCatalog
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
 from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget
+from k8s_incident_agent.execution.api import ExecutionEndpoint
+from k8s_incident_agent.execution.api import router as execution_router
+from k8s_incident_agent.internal_auth import NonceReplayCache
 from k8s_incident_agent.kubernetes.access import (
     require_diagnostic_target_scope,
     verify_diagnostic_access,
@@ -88,6 +91,7 @@ class RuntimeContainer:
     monitoring: MonitoringApplicationService
     diagnostic_model: DiagnosticModelAvailability
     operator: OperatorSessions
+    execution: ExecutionEndpoint | None = None
 
 
 type RuntimeContextFactory = Callable[
@@ -110,6 +114,9 @@ def create_app(
         if include_approval_route is not None
         else settings is not None and settings.sandbox_execution_enabled
     )
+    route_executor_configured = (
+        settings is not None and settings.executor_hmac_key_file is not None
+    )
     route_intake_mode = (
         settings.incident_intake_mode if settings is not None else "manual"
     )
@@ -127,6 +134,12 @@ def create_app(
         if resolved_settings.sandbox_execution_enabled != route_execution_enabled:
             raise ConfigurationInvalidError(
                 "SANDBOX_EXECUTION_ENABLED changed after route assembly"
+            )
+        if (
+            resolved_settings.executor_hmac_key_file is not None
+        ) != route_executor_configured:
+            raise ConfigurationInvalidError(
+                "EXECUTOR_HMAC_KEY_FILE changed after route assembly"
             )
         if resolved_settings.incident_intake_mode != route_intake_mode:
             raise ConfigurationInvalidError(
@@ -209,6 +222,8 @@ def create_app(
     app.include_router(operator_router)
     if route_execution_enabled:
         app.include_router(approval_router, dependencies=[Depends(require_operator)])
+    if route_executor_configured:
+        app.include_router(execution_router)
     if route_alertmanager_enabled:
         _install_alertmanager_openapi_contract(app)
     return app
@@ -265,6 +280,22 @@ async def build_runtime_container(
             else None
         )
         patch_validator_key = load_hmac_key(settings.patch_validator_hmac_key_file)
+        if (
+            settings.sandbox_execution_enabled
+            and settings.executor_hmac_key_file is None
+        ):
+            raise ConfigurationInvalidError(
+                "EXECUTOR_HMAC_KEY_FILE is required for sandbox execution"
+            )
+        executor_key = (
+            load_hmac_key(settings.executor_hmac_key_file)
+            if settings.executor_hmac_key_file is not None
+            else None
+        )
+        if executor_key is not None and executor_key == patch_validator_key:
+            raise ConfigurationInvalidError(
+                "Executor and Validator keys must be independent"
+            )
 
         budget = RunBudget(
             max_model_calls=settings.agent_max_model_calls,
@@ -407,6 +438,16 @@ async def build_runtime_container(
             ),
             diagnostic_model=diagnostic_model,
             operator=operator,
+            execution=(
+                ExecutionEndpoint(
+                    repository=repository,
+                    key=executor_key,
+                    replay_cache=NonceReplayCache(freshness_seconds=30),
+                    now=now,
+                )
+                if executor_key is not None
+                else None
+            ),
         )
 
 
