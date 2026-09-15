@@ -1,0 +1,30 @@
+.text-shimmer {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.text-shimmer__highlight {
+  position: absolute;
+  inset: 0;
+  color: #08a6a6;
+  pointer-events: none;
+  user-select: none;
+  mask-image: linear-gradient(90deg, transparent, rgb(0 0 0 / 25%) 15%, #000 30%, #000 70%, rgb(0 0 0 / 25%) 85%, transparent);
+  mask-size: 80px 100%;
+  mask-repeat: no-repeat;
+  animation: text-shimmer-scan 1.8s linear infinite;
+}
+
+.text-shimmer__highlight::before { content: attr(data-text); }
+
+@keyframes text-shimmer-scan {
+  from { mask-position: -80px 0; }
+  to { mask-position: calc(100% + 80px) 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer__highlight { display: none; animation: none; }
+}

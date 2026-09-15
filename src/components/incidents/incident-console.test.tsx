@@ -12,6 +12,7 @@ import {
   makeIncidentDetail,
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
+  makeRecoveryDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import { DiagnosisPanel } from "./diagnosis-panel";
@@ -129,15 +130,18 @@ function renderIncidentStream(detail = makeIncidentDetail()) {
   );
 }
 
-it.each(["apply", "rollback"] as const)("labels a waiting %s Run and allows operator rediagnosis", (operation) => {
+it.each(["apply", "rollback"] as const)("labels a waiting %s Run and allows operator rediagnosis", async (operation) => {
   vi.stubGlobal("EventSource", FakeEventSource);
   const detail = makeRepairRunWaitingDetail();
   detail.selectedRun.operation = operation;
   renderIncidentStream(detail);
   const label = operation === "apply" ? "修复" : "回滚";
+  await userEvent.setup().click(screen.getByText("选择运行记录"));
   expect(screen.getByRole("link", { name: `第 2 次 · ${label} · 等待审批` })).toBeVisible();
   expect(screen.getByRole("button", { name: "重新诊断" })).toBeEnabled();
-  expect(screen.queryByRole("heading", { name: "诊断结论" })).toBeNull();
+  expect(screen.getByRole("heading", { name: "诊断结论" })).toBeVisible();
+  expect(screen.getByText(/来源诊断暂不可用/)).toBeVisible();
+  expect(screen.getByText("事件记录").closest("details")).toHaveAttribute("open");
   expect(screen.getByText(`第 2 次运行 · ${label}提案`)).toBeVisible();
 });
 
@@ -175,7 +179,7 @@ describe("repair detail refresh", () => {
       occurredAt: "2026-08-29T01:00:08Z",
     }));
     expect(screen.getByText("正在读取持久化的修复验证结果…")).toBeInTheDocument();
-    expect(screen.queryByText("已通过验证，尚未批准或执行")).not.toBeInTheDocument();
+    expect(screen.queryByText("只读建议已保存，需重新准备后才能审批")).not.toBeInTheDocument();
     const response = outcome === "unavailable"
       ? new Response(null, { status: 503 })
       : outcome === "invalid"
@@ -183,10 +187,10 @@ describe("repair detail refresh", () => {
         : detailResponse(terminal);
     await act(async () => resolveRequest(response));
     if (outcome === "passed") {
-      expect(screen.getByText("已通过验证，尚未批准或执行")).toBeInTheDocument();
+      expect(screen.getByText("只读建议已保存，需重新准备后才能审批")).toBeInTheDocument();
     } else {
       expect(screen.getByText("修复详情暂不可用")).toBeInTheDocument();
-      expect(screen.queryByText("已通过验证，尚未批准或执行")).not.toBeInTheDocument();
+      expect(screen.queryByText("只读建议已保存，需重新准备后才能审批")).not.toBeInTheDocument();
       if (outcome === "invalid") expect(screen.getByText("持久化详情不符合数据契约，未采用该响应。")).toBeInTheDocument();
     }
     expect(fetchMock).toHaveBeenCalledWith(`/api/runtime/incidents/${INCIDENT_ID}`, expect.objectContaining({ method: "GET", cache: "no-store" }));
@@ -419,16 +423,19 @@ describe("read-only incident presentation", () => {
   it("keeps saved history visible when a new diagnostic Run is unavailable", async () => {
     const detail = makeIncidentDetail();
     detail.selectedRun.status = "COMPLETED";
-    stubSessionFetch("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
+    detail.actions.rerun = null;
+    const latest = structuredClone(detail);
+    latest.actions.rerun = "diagnosis_unavailable";
+    stubSessionFetch("fetch", vi.fn(async (_url, init) => init?.method === "POST" ? new Response(JSON.stringify({ error: {
       code: "diagnosis_unavailable", message: "Model diagnosis is unavailable.", retryable: true,
-    } }), { status: 503, headers: { "content-type": "application/json" } })));
+    } }), { status: 503, headers: { "content-type": "application/json" } }) : new Response(JSON.stringify(latest), { headers: { "content-type": "application/json" } })));
     vi.stubGlobal("EventSource", FakeEventSource);
     const user = userEvent.setup();
     renderIncidentStream(detail);
     await user.click(screen.getByRole("button", { name: "重新诊断" }));
     expect(await screen.findByText(/模型诊断暂不可用，未创建新 Run/)).toBeVisible();
     expect(navigation.replace).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "重新诊断" })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "重新诊断" })).toBeDisabled());
   });
 
   it("rediagnoses a waiting repair by referencing that exact Run", async () => {
@@ -450,6 +457,7 @@ describe("read-only incident presentation", () => {
 
     renderIncidentStream(detail);
     await user.click(screen.getByRole("button", { name: "重新诊断" }));
+    await user.click(screen.getByRole("button", { name: "确认重新诊断" }));
 
     expect(fetch).toHaveBeenCalledWith(
       `/api/runtime/incidents/${INCIDENT_ID}/runs`,
@@ -459,6 +467,55 @@ describe("read-only incident presentation", () => {
       `/incidents/${INCIDENT_ID}?runId=55555555-5555-4555-8555-555555555555`,
     );
     expect(navigation.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("reads persisted availability on the first SSE connection, reconnect and window focus", async () => {
+    const detail = makeRepairRunWaitingDetail();
+    const expired = structuredClone(detail);
+    expired.actions.approve = expired.actions.reject = "proposal_expired";
+    const reads = vi.fn(async () => Response.json(expired));
+    stubSessionFetch("fetch", reads);
+    vi.stubGlobal("EventSource", FakeEventSource);
+    renderIncidentStream(detail);
+    act(() => FakeEventSource.current!.onopen?.(new Event("open")));
+    expect(await screen.findByText(/这不是登录会话过期/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "审阅并批准" })).toBeDisabled();
+    act(() => {
+      FakeEventSource.current!.onerror?.(new Event("error"));
+      FakeEventSource.current!.onopen?.(new Event("open"));
+    });
+    await waitFor(() => expect(reads).toHaveBeenCalledTimes(2));
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(reads).toHaveBeenCalledTimes(3));
+  });
+
+  it("does not treat an approval response as execution or recovery before detail is read", async () => {
+    const detail = makeRepairRunWaitingDetail();
+    const persisted = makeRecoveryDetail("recovered");
+    persisted.eventCursor = "9";
+    let releaseRead!: (response: Response) => void;
+    const writes = vi.fn();
+    stubSessionFetch("fetch", vi.fn(async (_url, init) => {
+      if (init?.method === "POST") {
+        writes();
+        return Response.json(persisted.approval);
+      }
+      return new Promise<Response>((resolve) => { releaseRead = resolve; });
+    }));
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const user = userEvent.setup();
+    renderIncidentStream(detail);
+    await user.click(screen.getByRole("button", { name: "审阅并批准" }));
+    await user.dblClick(screen.getByRole("button", { name: "批准并执行" }));
+    expect(writes).toHaveBeenCalledOnce();
+    const panel = screen.getByRole("region", { name: /修复处置|回滚处置|修复建议/ });
+    expect(within(panel).queryByText("APPLIED")).toBeNull();
+    expect(within(panel).queryByText("工作负载与告警恢复已验证")).toBeNull();
+    expect(screen.getByRole("button", { name: "批准并执行" })).toBeDisabled();
+    await act(async () => releaseRead(Response.json(persisted)));
+    expect(within(panel).getAllByText("APPLIED")[0]).toBeVisible();
+    expect(within(panel).getByText("工作负载与告警恢复已验证")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "审阅并批准" })).toBeNull();
   });
 
   it("does not render a rerun action when actions are disabled by its caller", () => {
@@ -481,6 +538,7 @@ describe("read-only incident presentation", () => {
   it("blocks historical rediagnosis while an UNKNOWN ledger refresh is pending and after it is persisted", async () => {
     const detail = makeIncidentDetail();
     detail.selectedRun.status = "COMPLETED";
+    detail.actions.rerun = null;
     let resolveRequest!: (response: Response) => void;
     stubSessionFetch("fetch", vi.fn(() => new Promise<Response>((resolve) => {
       resolveRequest = resolve;
@@ -504,7 +562,7 @@ describe("read-only incident presentation", () => {
     }));
     expect(screen.getByRole("button", { name: "重新诊断" })).toBeDisabled();
     const persisted = structuredClone(detail);
-    persisted.runCreationBlocked = true;
+    persisted.actions.rerun = "execution_held";
     persisted.incident.status = "FAILED";
     persisted.eventCursor = "999";
     await act(async () => resolveRequest(detailResponse(persisted)));
@@ -925,12 +983,12 @@ describe("read-only incident presentation", () => {
     const { rerender } = render(<RunTimeline events={[]} connection="live" />);
 
     expect(screen.getByText("正在等待持久化运行事件")).toHaveClass(
-      "timeline-waiting__text",
+      "text-shimmer",
     );
 
     rerender(<RunTimeline events={[]} connection="invalid" />);
     expect(screen.getByText("事件流已停止，未收到有效运行事件。")).not.toHaveClass(
-      "timeline-waiting__text",
+      "text-shimmer",
     );
   });
 

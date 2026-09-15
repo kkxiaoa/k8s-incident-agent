@@ -300,6 +300,8 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        ActionUnavailableReason: "not_applicable" | "active_run" | "execution_held" | "target_occupied" | "execution_disabled" | "outside_scope" | "proposal_expired" | "no_history_candidates" | "diagnosis_unavailable";
         /** AlertResolvedEventPayload */
         AlertResolvedEventPayload: {
             /**
@@ -945,6 +947,19 @@ export interface components {
             /** Id */
             id: string;
         };
+        /** IncidentActions */
+        IncidentActions: {
+            approve: components["schemas"]["ActionUnavailableReason"] | null;
+            edit: components["schemas"]["ActionUnavailableReason"] | null;
+            /** Historycandidates */
+            historyCandidates: components["schemas"]["RepairHistoryCandidate"][];
+            preparationSource: components["schemas"]["RepairPreparationSource"] | null;
+            prepare: components["schemas"]["ActionUnavailableReason"] | null;
+            refresh: components["schemas"]["ActionUnavailableReason"] | null;
+            reject: components["schemas"]["ActionUnavailableReason"] | null;
+            rerun: components["schemas"]["ActionUnavailableReason"] | null;
+            rollback: components["schemas"]["ActionUnavailableReason"] | null;
+        };
         /** IncidentCreatedEventPayload */
         IncidentCreatedEventPayload: {
             /** Attempt */
@@ -998,6 +1013,7 @@ export interface components {
         };
         /** IncidentDetailResponse */
         IncidentDetailResponse: {
+            actions: components["schemas"]["IncidentActions"];
             alertSignal: components["schemas"]["AlertSignalResponse"] | null;
             approval?: components["schemas"]["ApprovalResponse"] | null;
             diagnosis: components["schemas"]["DiagnosisResponse"] | null;
@@ -1008,11 +1024,6 @@ export interface components {
             evidence: components["schemas"]["EvidenceResponse"][];
             incident: components["schemas"]["IncidentResponse"];
             repair: components["schemas"]["RepairProposalResponse"] | null;
-            /**
-             * Runcreationblocked
-             * @default false
-             */
-            runCreationBlocked: boolean;
             /**
              * Schemaversion
              * @default 5
@@ -1378,6 +1389,15 @@ export interface components {
             /** Id */
             id: string;
         };
+        /** RepairHistoryCandidate */
+        RepairHistoryCandidate: {
+            /** Image */
+            image: string;
+            /** Replicasetuid */
+            replicaSetUid: string;
+            /** Revision */
+            revision: string;
+        };
         /** RepairHistorySelectionResponse */
         RepairHistorySelectionResponse: {
             /** Replicasetuid */
@@ -1453,6 +1473,16 @@ export interface components {
             event: "repair.patch_ready";
             /** Id */
             id: string;
+        };
+        /** RepairPreparationSource */
+        RepairPreparationSource: {
+            /** Sourceexecutionid */
+            sourceExecutionId: string | null;
+            /**
+             * Sourcerunid
+             * Format: uuid
+             */
+            sourceRunId: string;
         };
         /** RepairProposalResponse */
         RepairProposalResponse: {

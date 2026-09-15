@@ -22,8 +22,8 @@ export interface IncidentStreamState {
   eventPageCursor: string | null;
   events: RunEventStreamItem[];
   lastEventId: string;
-  latestMode: boolean;
   refreshError: string | null;
+  refreshing: boolean;
   streamError: string | null;
 }
 
@@ -31,6 +31,7 @@ export type IncidentStreamAction =
   | { type: "connected" }
   | { type: "disconnected" }
   | { type: "event"; event: RunEventStreamItem }
+  | { type: "refresh_requested"; afterEventId: string }
   | {
       type: "snapshot";
       afterEventId: string;
@@ -62,7 +63,6 @@ export function isTerminalRunEvent(event: RunEventStreamItem): boolean {
 export function requiresIncidentDetailRefresh(
   event: RunEventStreamItem,
   selectedRunId: string,
-  latestMode: boolean,
 ): boolean {
   if (event.event === "alert.resolved") {
     return true;
@@ -70,7 +70,7 @@ export function requiresIncidentDetailRefresh(
   if (event.event === "repair.approval_decided" || event.event === "repair.execution_updated" || event.event === "repair.verification_updated") {
     return true;
   }
-  if (latestMode && event.event === "run.queued") {
+  if (event.event === "run.queued" || isTerminalRunEvent(event)) {
     return true;
   }
   return (
@@ -93,7 +93,6 @@ function uniqueEvents(items: RunEventStreamItem[]): RunEventStreamItem[] {
 
 export function createIncidentStreamState(
   detail: IncidentDetailResponse,
-  latestMode = true,
 ): IncidentStreamState {
   return {
     connection: "connecting",
@@ -102,8 +101,8 @@ export function createIncidentStreamState(
     eventPageCursor: detail.eventPage.nextCursor,
     events: ascending(detail.eventPage.items),
     lastEventId: detail.eventCursor,
-    latestMode,
     refreshError: null,
+    refreshing: false,
     streamError: null,
   };
 }
@@ -180,6 +179,8 @@ export function reduceIncidentStream(
   action: IncidentStreamAction,
 ): IncidentStreamState {
   switch (action.type) {
+    case "refresh_requested":
+      return { ...state, detailRefreshEventId: action.afterEventId, refreshing: true };
     case "connected":
       return { ...state, connection: "live", streamError: null };
     case "disconnected":
@@ -193,6 +194,9 @@ export function reduceIncidentStream(
     case "snapshot": {
       if (action.afterEventId !== state.detailRefreshEventId) {
         return state;
+      }
+      if (BigInt(action.detail.eventCursor) < BigInt(state.detail.eventCursor)) {
+        return { ...state, refreshing: false, refreshError: "详情版本落后于已保存的页面状态，请刷新后再操作。" };
       }
 
       const sameRun = action.detail.selectedRun.id === state.detail.selectedRun.id;
@@ -216,6 +220,7 @@ export function reduceIncidentStream(
           ...(sameRun ? state.events : []),
         ]),
         refreshError: null,
+        refreshing: false,
       };
     }
     case "older_events":
@@ -226,7 +231,7 @@ export function reduceIncidentStream(
       };
     case "refresh_failed":
       return action.afterEventId === state.detailRefreshEventId
-        ? { ...state, refreshError: action.message }
+        ? { ...state, refreshError: action.message, refreshing: false }
         : state;
     case "event": {
       if (BigInt(action.event.id) <= BigInt(state.lastEventId)) {
@@ -237,7 +242,6 @@ export function reduceIncidentStream(
       const refresh = requiresIncidentDetailRefresh(
         action.event,
         state.detail.selectedRun.id,
-        state.latestMode,
       );
       const incidentDetail = applyIncidentStatus(state.detail, action.event);
       return {

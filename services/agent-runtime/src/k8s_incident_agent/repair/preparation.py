@@ -42,6 +42,7 @@ from k8s_incident_agent.repair.compiler import (
     compile_repair_proposal,
 )
 from k8s_incident_agent.repair.contracts import EvidenceBoundImageChange, RepairProposal
+from k8s_incident_agent.repair.history import image_history_candidates
 from k8s_incident_agent.repair.records import PreparedRepairRecord
 from k8s_incident_agent.repair.rollback import resolve_rollback_change
 
@@ -122,13 +123,12 @@ def resolve_fresh_change(
     ):
         raise RepairPreparationError("stale_resource")
     candidates = [
-        (revision, container.image)
-        for revision in revisions[1:]
-        for container in revision.containers
-        if container.name == source.container_name
-        and container.image != source.current_image
-        and (
-            (selection is None and container.image == source.replacement_image)
+        (revision, image)
+        for revision, image in image_history_candidates(
+            history.payload, source.container_name, source.current_image
+        )
+        if (
+            (selection is None and image == source.replacement_image)
             or (
                 selection is not None
                 and revision.revision == selection.revision

@@ -108,13 +108,22 @@ export function makeWaitingApprovalIncidentDetail(): IncidentDetailResponse {
     createdAt: "2026-08-29T01:00:04Z",
   };
   detail.repair = makeRepairProposal();
+  detail.actions = {
+    ...detail.actions, prepare: null, edit: null, rerun: null,
+    preparationSource: { sourceRunId: detail.selectedRun.id, sourceExecutionId: null },
+    historyCandidates: [{ revision: "1", replicaSetUid: "previous-rs-uid", image: detail.repair.replacementImage }],
+  };
   return detail;
 }
 
 export function makeIncidentDetail(): IncidentDetailResponse {
   return {
     schemaVersion: 5,
-    runCreationBlocked: false,
+    actions: {
+      prepare: "not_applicable", refresh: "not_applicable", edit: "not_applicable",
+      approve: "not_applicable", reject: "not_applicable", rerun: "active_run", rollback: "not_applicable",
+      preparationSource: null, historyCandidates: [],
+    },
     incident: {
       id: INCIDENT_ID,
       source: {
@@ -166,6 +175,10 @@ export function makeRepairRunWaitingDetail(): IncidentDetailResponse {
     completedAt: null,
   };
   detail.diagnosis = null;
+  detail.actions = {
+    ...detail.actions, prepare: "not_applicable", refresh: null, approve: null, reject: null,
+    preparationSource: { sourceRunId: detail.selectedRun.id, sourceExecutionId: null },
+  };
   return detail;
 }
 
@@ -186,6 +199,9 @@ export function makeRollbackRecoveryDetail(outcome: "observing" | "recovered" | 
   repair.patch[4].value = repair.replacementImage;
   detail.repair!.evidenceIds = [detail.repair!.evidenceIds[0]];
   detail.evidence = detail.evidence.filter((item) => detail.repair!.evidenceIds.includes(item.id));
+  detail.actions.rollback = "not_applicable";
+  detail.actions.historyCandidates = [];
+  detail.actions.preparationSource = { sourceRunId: RUN_ID, sourceExecutionId: detail.repair!.sourceExecutionId };
   return detail;
 }
 
@@ -208,6 +224,10 @@ export function makeRecoveryDetail(outcome: "observing" | "recovered" | "monitor
   detail.selectedRun.completedAt = completedAt;
   detail.selectedRun.error = outcome === "monitoring_unavailable" ? { code: "verification_monitoring_unavailable", retryable: false } : null;
   detail.incident.status = outcome === "observing" ? "VERIFYING" : outcome === "recovered" ? "RESOLVED" : "FAILED";
-  detail.runCreationBlocked = outcome === "observing";
+  detail.actions = {
+    ...detail.actions, refresh: "not_applicable", edit: "not_applicable", approve: "not_applicable", reject: "not_applicable",
+    rerun: outcome === "observing" ? "execution_held" : null,
+    rollback: outcome === "observing" ? "not_applicable" : null,
+  };
   return detail;
 }

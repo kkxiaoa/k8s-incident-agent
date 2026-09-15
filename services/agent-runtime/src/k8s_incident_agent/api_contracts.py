@@ -30,6 +30,7 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.execution.contracts import ApprovalDecision, ExecutionStatus
 from k8s_incident_agent.model.errors import ModelErrorCode
+from k8s_incident_agent.repair.actions import IncidentActions
 from k8s_incident_agent.repair.contracts import PatchValidationErrorCode
 from k8s_incident_agent.repair.verification_contracts import (
     VerificationOutcome,
@@ -763,7 +764,7 @@ class IncidentDetailResponse(_ApiContract):
     repair: RepairProposalResponse | None
     approval: ApprovalResponse | None = None
     verification: VerificationRecord | None = None
-    run_creation_blocked: bool = False
+    actions: IncidentActions
     alert_signal: AlertSignalResponse | None
     event_cursor: str = Field(pattern=r"^[1-9][0-9]*$")
 

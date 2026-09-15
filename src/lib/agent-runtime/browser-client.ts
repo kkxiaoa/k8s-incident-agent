@@ -1,6 +1,7 @@
 import { authenticatedFetch } from "./operator-client";
 import {
   parseCreateIncidentResponse,
+  parseApprovalResponse,
   parseCreateRunResponse,
   parseIncidentDetailResponse,
   parseIncidentMetricPanelResponse,
@@ -8,6 +9,8 @@ import {
   parseRunHistoryResponse,
   type CreateIncidentView,
   type CreateRunView,
+  type RepairRunRequest,
+  type ApprovalRequest,
   type EventPageView,
   type IncidentDetailView,
   type IncidentMetricPanelView,
@@ -82,6 +85,37 @@ export async function createIncidentFromBrowser(
   return data !== null
     ? { ok: true, data }
     : { ok: false, failure: "invalid_response" };
+}
+
+type RepairActionFailure = BrowserRuntimeFailure | "conflict" | "forbidden";
+
+async function postRepairAction<T>(
+  incidentId: string, endpoint: "repair-runs" | "approvals", request: RepairRunRequest | ApprovalRequest,
+  parse: (body: unknown) => T | null,
+): Promise<BrowserRuntimeResult<T, RepairActionFailure>> {
+  try {
+    const response = await authenticatedFetch(
+      `/api/runtime/incidents/${encodeURIComponent(incidentId)}/${endpoint}`,
+      { method: "POST", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(request) },
+    );
+    if (!response.ok) return { ok: false, failure: response.status === 409 ? "conflict" : response.status === 403 ? "forbidden" : failureForStatus(response.status) };
+    const data = parse(await jsonBody(response));
+    return data === null ? { ok: false, failure: "invalid_response" } : { ok: true, data };
+  } catch {
+    return { ok: false, failure: "unavailable" };
+  }
+}
+
+export function prepareRepairFromBrowser(incidentId: string, request: RepairRunRequest) {
+  return postRepairAction(incidentId, "repair-runs", request, parseCreateRunResponse);
+}
+
+export function decideRepairFromBrowser(incidentId: string, request: ApprovalRequest) {
+  return postRepairAction(incidentId, "approvals", request, (body) => {
+    const approval = parseApprovalResponse(body);
+    return approval?.runId === request.runId && approval.proposalId === request.proposalId
+      && approval.proposalDigest === request.proposalDigest && approval.decision === request.decision ? approval : null;
+  });
 }
 
 export async function fetchIncidentFromBrowser(

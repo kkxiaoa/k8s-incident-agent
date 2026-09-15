@@ -4,12 +4,12 @@ import { evidenceTargetLabel } from "@/lib/agent-runtime/view-models";
 
 import { JsonViewer } from "./json-viewer";
 
-function EvidenceCard({ evidence, index }: { evidence: EvidenceResponse; index: number }) {
+function EvidenceCard({ evidence, index, idPrefix }: { evidence: EvidenceResponse; index: number; idPrefix: string }) {
   return (
     <article
       className="evidence-card"
-      id={`evidence-${evidence.id}`}
-      data-testid={`evidence-${evidence.id}`}
+      id={`${idPrefix}-${evidence.id}`}
+      data-testid={`${idPrefix}-${evidence.id}`}
     >
       <header className="evidence-card__header">
         <div>
@@ -47,13 +47,14 @@ function EvidenceCard({ evidence, index }: { evidence: EvidenceResponse; index: 
   );
 }
 
-export function EvidenceList({ evidence }: { evidence: EvidenceResponse[] }) {
+export function EvidenceList({ evidence, sourceRunAttempt }: { evidence: EvidenceResponse[]; sourceRunAttempt?: number }) {
+  const idPrefix = sourceRunAttempt === undefined ? "evidence" : "source-evidence";
   return (
-    <section className="console-section" aria-labelledby="evidence-heading">
+    <section className="console-section" aria-labelledby={`${idPrefix}-heading`}>
       <div className="section-heading">
         <div>
           <span className="eyebrow">Evidence-first</span>
-          <h2 id="evidence-heading">Kubernetes 证据</h2>
+          <h2 id={`${idPrefix}-heading`}>{sourceRunAttempt === undefined ? "Kubernetes 证据" : `来源诊断证据 · 第 ${sourceRunAttempt} 次运行`}</h2>
         </div>
         <span className="section-count">{evidence.length}</span>
       </div>
@@ -63,7 +64,7 @@ export function EvidenceList({ evidence }: { evidence: EvidenceResponse[] }) {
       ) : (
         <div className="evidence-grid">
           {evidence.map((item, index) => (
-            <EvidenceCard key={item.id} evidence={item} index={index} />
+            <EvidenceCard key={item.id} evidence={item} index={index} idPrefix={idPrefix} />
           ))}
         </div>
       )}

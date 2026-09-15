@@ -4,7 +4,7 @@ import { OPERATOR_COOKIE, OPERATOR_CSRF_HEADER } from "../../src/lib/agent-runti
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import type { components } from "../../src/lib/agent-runtime/generated";
-import { makeWaitingApprovalIncidentDetail } from "../../src/test/agent-runtime-fixtures";
+import { makeIncidentDetail, makeRecoveryDetail, makeWaitingApprovalIncidentDetail } from "../../src/test/agent-runtime-fixtures";
 
 type ScenarioResponse = components["schemas"]["ScenarioResponse"];
 type IncidentDetailResponse =
@@ -26,7 +26,120 @@ interface FakeIncident {
   events: RunEventStreamItem[];
   finished: boolean;
   metricState: "ok" | "monitoring_unavailable";
+  metricAnchor?: string;
   mode: OutcomeMode;
+  history?: IncidentDetailResponse[];
+}
+
+const lifecycleStreams = new Map<string, Set<ServerResponse>>();
+let nextRepair = 100;
+
+function publishLifecycle(record: FakeIncident, event: RunEventStreamItem) {
+  record.events.push(event);
+  record.detail.eventCursor = event.id;
+  record.detail.eventPage.items.unshift(event);
+  for (const response of lifecycleStreams.get(record.detail.incident.id) ?? []) response.write(serializeEvent(event));
+}
+
+function lifecycleBase(detail: IncidentDetailResponse) {
+  return { schemaVersion: 5 as const, runKind: "repair" as const, incidentId: detail.incident.id,
+    runId: detail.selectedRun.id, occurredAt: new Date().toISOString() };
+}
+
+function selectedFakeDetail(record: FakeIncident, runId: string | null): IncidentDetailResponse | undefined {
+  const selected = runId === null || runId === record.detail.selectedRun.id ? record.detail : record.history?.find((item) => item.selectedRun.id === runId);
+  if (!selected) return undefined;
+  const detail = structuredClone(selected);
+  detail.incident = structuredClone(record.detail.incident);
+  detail.eventCursor = record.detail.eventCursor;
+  const otherActive = selected !== record.detail && ["QUEUED", "RUNNING", "WAITING_APPROVAL"].includes(record.detail.selectedRun.status);
+  const busy = record.detail.actions.rerun === "execution_held" ? "execution_held" : otherActive ? "active_run" : null;
+  if (busy) {
+    detail.actions.rerun = busy;
+    for (const key of ["prepare", "refresh", "edit", "rollback"] as const) if (detail.actions[key] === null) detail.actions[key] = busy;
+  }
+  if (detail.selectedRun.status === "WAITING_APPROVAL" && detail.selectedRun.waitingExpiresAt
+    && Date.parse(detail.selectedRun.waitingExpiresAt) <= Date.now()) detail.actions.approve = detail.actions.reject = "proposal_expired";
+  return detail;
+}
+
+function prepareFakeRepair(record: FakeIncident, request: components["schemas"]["CreateRepairRunRequest"]): boolean {
+  const source = [record.detail, ...(record.history ?? [])].find((item) => item.selectedRun.id === request.sourceRunId);
+  if (!source?.repair || record.detail.actions.rerun === "execution_held") return false;
+  const old = record.detail;
+  if (old.selectedRun.status === "WAITING_APPROVAL") {
+    if (request.replacesRunId !== old.selectedRun.id) return false;
+    old.selectedRun.status = "COMPLETED";
+    old.selectedRun.endReason = "superseded";
+    old.selectedRun.completedAt = new Date().toISOString();
+    old.actions.approve = old.actions.reject = "not_applicable";
+    publishLifecycle(record, { id: eventId(), event: "repair.wait_ended", data: {
+      ...lifecycleBase(old), reason: "superseded", incidentStatus: "DIAGNOSED", runStatus: "COMPLETED",
+    } });
+  } else if (["QUEUED", "RUNNING"].includes(old.selectedRun.status)) return false;
+  const chosen = request.selection ? source.actions.historyCandidates.find((item) => item.revision === request.selection!.revision && item.replicaSetUid === request.selection!.replicaSetUid) : null;
+  if (request.selection && !chosen) return false;
+  record.history = [structuredClone(old), ...(record.history ?? [])];
+  const detail = structuredClone(source);
+  const sequence = nextRepair++;
+  const now = new Date().toISOString();
+  detail.selectedRun = { ...detail.selectedRun, id: uuid("2", sequence), kind: "repair", operation: request.sourceExecutionId ? "rollback" : "apply",
+    attempt: old.selectedRun.attempt + 1, status: "WAITING_APPROVAL", sourceRunId: request.sourceRunId,
+    requestSource: "operator", selection: request.selection ?? null, createdAt: now, startedAt: now, completedAt: null,
+    error: null, endReason: null, waitingExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString() };
+  detail.incident.status = "WAITING_APPROVAL";
+  detail.diagnosis = detail.approval = detail.verification = null;
+  const repair = detail.repair!;
+  repair.id = uuid("8", sequence);
+  repair.digest = `sha256:${sequence.toString(16).padStart(64, "0")}`;
+  repair.targetResourceVersion = `fresh-${sequence}`;
+  repair.patch[1].value = repair.targetResourceVersion;
+  repair.sourceExecutionId = request.sourceExecutionId ?? null;
+  if (request.sourceExecutionId) {
+    [repair.currentImage, repair.replacementImage] = [repair.replacementImage, repair.currentImage];
+    repair.evidenceIds = [repair.evidenceIds[0]];
+    detail.evidence = detail.evidence.filter((item) => repair.evidenceIds.includes(item.id));
+  } else if (chosen) repair.replacementImage = chosen.image;
+  repair.patch[3].value = repair.diff.before = repair.currentImage;
+  repair.patch[4].value = repair.diff.after = repair.replacementImage;
+  repair.schemaCheckedAt = repair.policyCheckedAt = repair.diffCheckedAt = now;
+  repair.validation = { outcome: "passed", checkedAt: now, error: null };
+  detail.actions = { ...detail.actions, prepare: "not_applicable", refresh: null, edit: request.sourceExecutionId ? "not_applicable" : null,
+    approve: null, reject: null, rerun: null, rollback: "not_applicable",
+    preparationSource: { sourceRunId: request.sourceExecutionId ? request.sourceRunId : detail.selectedRun.id, sourceExecutionId: request.sourceExecutionId ?? null },
+    historyCandidates: request.sourceExecutionId ? [] : detail.actions.historyCandidates };
+  detail.eventPage = { items: [], nextCursor: null };
+  record.detail = detail;
+  record.finished = true;
+  publishLifecycle(record, { id: eventId(), event: "run.queued", data: { ...lifecycleBase(detail), attempt: detail.selectedRun.attempt, runStatus: "QUEUED" } });
+  publishLifecycle(record, { id: eventId(), event: "repair.waiting_approval", data: { ...lifecycleBase(detail), proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "WAITING_APPROVAL", runStatus: "WAITING_APPROVAL" } });
+  return true;
+}
+
+function decideFakeRepair(record: FakeIncident, request: components["schemas"]["ApprovalRequest"]): boolean {
+  const detail = record.detail;
+  const repair = detail.repair;
+  if (!repair || request.runId !== detail.selectedRun.id || request.proposalId !== repair.id || request.proposalDigest !== repair.digest) return false;
+  if (detail.approval) return detail.approval.decision === request.decision;
+  if (selectedFakeDetail(record, null)!.actions[request.decision] !== null) return false;
+  const now = new Date().toISOString();
+  detail.approval = { id: uuid("7", nextRepair++), runId: request.runId, proposalId: request.proposalId,
+    proposalDigest: request.proposalDigest, validationDigest: repair.digest, decision: request.decision, actor: "sandbox-operator",
+    decidedAt: now, expiresAt: detail.selectedRun.waitingExpiresAt!, execution: request.decision === "approve" ? {
+      id: uuid("6", nextRepair++), status: "PENDING", startBefore: new Date(Date.now() + 30_000).toISOString(),
+      claimedAt: null, reportedAt: null, result: null, lateResult: null,
+    } : null };
+  detail.selectedRun.status = request.decision === "approve" ? "RUNNING" : "COMPLETED";
+  detail.selectedRun.completedAt = request.decision === "approve" ? null : now;
+  detail.selectedRun.endReason = request.decision === "reject" ? "rejected" : null;
+  detail.incident.status = request.decision === "approve" ? "APPLYING" : "REJECTED";
+  detail.actions = { ...detail.actions, approve: "not_applicable", reject: "not_applicable", edit: "not_applicable",
+    refresh: request.decision === "approve" ? "not_applicable" : null, rerun: request.decision === "approve" ? "execution_held" : null };
+  publishLifecycle(record, { id: eventId(), event: "repair.approval_decided", data: {
+    ...lifecycleBase(detail), approvalId: detail.approval.id, proposalId: repair.id, proposalDigest: repair.digest,
+    decision: request.decision, incidentStatus: detail.incident.status, runStatus: detail.selectedRun.status,
+  } });
+  return true;
 }
 
 const SCENARIO: ScenarioResponse = {
@@ -409,7 +522,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
     events,
     detail: {
       schemaVersion: 5,
-      runCreationBlocked: false,
+      actions: makeIncidentDetail().actions,
       incident: {
         id: incidentId,
         source: {
@@ -685,6 +798,11 @@ function streamEvents(
     "content-type": "text/event-stream",
   });
   response.flushHeaders();
+  response.write(": heartbeat\n\n");
+  const streams = lifecycleStreams.get(incidentId) ?? new Set<ServerResponse>();
+  streams.add(response);
+  lifecycleStreams.set(incidentId, streams);
+  response.once("close", () => streams.delete(response));
 
   for (const event of batch) {
     if (!replay) {
@@ -715,7 +833,7 @@ function listItem(record: FakeIncident): IncidentListItem {
 }
 
 function monitoringOverview() {
-  const generatedAt = new Date(TERMINAL_AT);
+  const generatedAt = new Date(Math.max(Date.parse(TERMINAL_AT), ...[...incidents.values()].map((record) => Date.parse(record.metricAnchor ?? TERMINAL_AT))));
   const currentHour = new Date(generatedAt);
   currentHour.setUTCMinutes(0, 0, 0);
   const showcaseCreated = new Map([
@@ -877,11 +995,15 @@ function metricPanel(
   const serviceEndpoints = panelId === "service-ready-endpoints";
   const affectedPods = panelId === "image-pull-affected-pods";
   const alertResolved = record.detail.alertSignal?.status === "RESOLVED";
-  const affectedPodCount = alertResolved ? 0 : 3;
-  const availableReplicas = alertResolved ? 3 : 0;
+  const recovered = alertResolved || record.detail.verification?.outcome === "recovered";
+  const observing = record.detail.verification?.outcome === "observing";
+  const affectedPodCount = recovered ? 0 : observing ? 1 : 3;
+  const availableReplicas = recovered ? 3 : observing ? 2 : 0;
   const readyEndpoints = alertResolved ? 2 : 0;
   const windowDuration = metricWindowMilliseconds(window);
-  const queriedAt = Date.parse(alertResolved ? RESOLVED_QUERY_AT : TERMINAL_AT);
+  const markers = metricMarkers(record);
+  const queriedAt = Math.max(Date.parse(record.metricAnchor ?? (alertResolved ? RESOLVED_QUERY_AT : TERMINAL_AT)),
+    ...markers.map((marker) => Date.parse(marker.occurredAt)));
   const queriedAtTimestamp = new Date(queriedAt).toISOString();
   const windowStartsAt = queriedAt - windowDuration;
   const healthyValue = affectedPods ? 0 : serviceEndpoints ? 2 : 3;
@@ -902,7 +1024,12 @@ function metricPanel(
   if (alertSignal === null) {
     const incidentCreatedAt = Date.parse(record.detail.incident.createdAt);
     addSample(incidentCreatedAt - 15_000, healthyValue);
-    addSample(incidentCreatedAt, failingValue);
+    addSample(incidentCreatedAt, affectedPods ? 3 : 0);
+    const verification = record.detail.verification;
+    if (verification) {
+      addSample(Date.parse(verification.startedAt), affectedPods ? 3 : 0);
+      addSample(Date.parse(verification.healthySince ?? verification.lastObservedAt ?? verification.startedAt), failingValue);
+    }
   } else {
     const pendingAt = Date.parse(ALERT_PENDING_AT);
     const firingAt = Date.parse(alertSignal.startsAt);
@@ -954,9 +1081,182 @@ function metricPanel(
         record.metricState === "monitoring_unavailable" ? null : failingValue,
       samples: record.metricState === "monitoring_unavailable" ? [] : samples,
     },
-    markers: metricMarkers(record),
+    markers: markers.filter((marker) => Date.parse(marker.occurredAt) >= windowStartsAt && Date.parse(marker.occurredAt) <= queriedAt)
+      .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)),
     markersTruncated: false,
   };
+}
+
+function repairFixture(outcome = "passed"): FakeIncident {
+  const detail = makeWaitingApprovalIncidentDetail();
+  const repair = detail.repair!;
+  detail.incident.target = SCENARIO.target;
+  repair.target = SCENARIO.target;
+  detail.incident.source = { type: "scenario", ref: SCENARIO.scenarioId, revision: "3" };
+  detail.incident.displayName = SCENARIO.displayName;
+  detail.evidence[0].targetRef = { api_version: "apps/v1", kind: "Deployment", namespace: SCENARIO.target.namespace, name: SCENARIO.target.name, uid: repair.targetUid };
+  detail.evidence[1].targetRef = detail.evidence[0].targetRef;
+  detail.evidence[0].payload = { workload: { resource_version: repair.targetResourceVersion, replicas: { desired: 3, available: 0, ready: 0 }, containers: [{ name: repair.containerName, image: repair.currentImage, source_index: repair.containerIndex }] } };
+  detail.evidence[1].payload = { source_workload: { resource_version: repair.targetResourceVersion }, revisions: [
+    { revision: 2, containers: [{ name: repair.containerName, image: repair.currentImage }] },
+    { revision: 1, containers: [{ name: repair.containerName, image: repair.replacementImage }] },
+  ] };
+  const base = { schemaVersion: 5 as const, runKind: "diagnosis" as const, incidentId: detail.incident.id, runId: detail.selectedRun.id };
+  const events: RunEventStreamItem[] = [{
+    id: eventId(), event: "diagnosis.completed", data: { ...base, diagnosisId: detail.diagnosis!.id, outcome: "diagnosed", incidentStatus: "DIAGNOSED", runStatus: "RUNNING", occurredAt: repair.schemaCheckedAt },
+  }, {
+    id: eventId(), event: "repair.patch_ready", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "PATCH_READY", runStatus: "RUNNING", occurredAt: repair.diffCheckedAt },
+  }];
+  if (["repair_schema_invalid", "repair_policy_denied", "repair_diff_invalid"].includes(outcome ?? "")) {
+    const code = outcome!;
+    detail.repair = null;
+    detail.incident.status = "FAILED";
+    detail.selectedRun.status = "FAILED";
+    detail.selectedRun.error = { code, retryable: false };
+    if (code === "repair_schema_invalid") {
+      detail.diagnosis = null;
+      events.length = 0;
+    } else {
+      events.splice(1);
+    }
+    events.push({ id: eventId(), event: "run.failed", data: { ...base, errorCode: code, retryable: false, incidentStatus: "FAILED", runStatus: "FAILED", occurredAt: detail.selectedRun.completedAt! } });
+  } else if (outcome === "stale") {
+    detail.incident.status = "STALE_RESOURCE";
+    detail.selectedRun.status = "FAILED";
+    detail.selectedRun.error = { code: "stale_resource", retryable: false };
+    repair.validation = { ...repair.validation, outcome: "failed", error: { code: "stale_resource", retryable: false } };
+    events.push({ id: eventId(), event: "run.failed", data: { ...base, errorCode: "stale_resource", retryable: false, incidentStatus: "STALE_RESOURCE", runStatus: "FAILED", occurredAt: detail.selectedRun.completedAt! } });
+  } else {
+    events.push({ id: eventId(), event: "repair.dry_run_passed", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "DRY_RUN_PASSED", runStatus: "RUNNING", occurredAt: repair.validation.checkedAt } },
+      { id: eventId(), event: "repair.waiting_approval", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "WAITING_APPROVAL", runStatus: "COMPLETED", occurredAt: detail.selectedRun.completedAt! } });
+  }
+  if (outcome === "invalid") repair.patch[4].path = "/spec/replicas";
+  detail.eventCursor = events.at(-1)!.id;
+  detail.eventPage = { items: [...events].reverse(), nextCursor: null };
+  if (detail.repair === null) {
+    detail.actions.prepare = detail.actions.edit = "not_applicable";
+    detail.actions.preparationSource = null;
+    detail.actions.historyCandidates = [];
+  }
+  return { detail, events, finished: true, metricState: "ok", mode: "diagnosed" };
+}
+
+export function seedManualRepairShowcase(): number {
+  if (incidents.size !== 0) throw new Error("Manual showcase requires an empty fake Runtime");
+  const cases = [
+    ["T10 · 诊断建议 → 准备修复", "diagnosis"],
+    ["T10 · 待审批 / 历史镜像 / 刷新", "waiting"],
+    ["T10 · 已拒绝，可重新准备", "rejected"],
+    ["T10 · 提案过期，可重新准备", "expired"],
+    ["T7 · 已批准，等待领取", "pending"],
+    ["T7 · 已领取，等待写入结果", "claimed"],
+    ["T7 · UNKNOWN，禁止重试", "unknown"],
+    ["T8 · 写入已确认，恢复观察中", "observing"],
+    ["T8 · 工作负载与告警恢复成功", "recovered"],
+    ["T8 · 监控不可用，不能证明恢复", "monitoring_unavailable"],
+    ["T9 · 回滚提案，必须另行批准", "rollback-waiting"],
+    ["T9 · 已回滚，恢复已验证", "rollback-recovered"],
+    ["T9 · 已回滚，但恢复无法证明", "rollback-monitoring_unavailable"],
+    ["T9 · 回滚结果 UNKNOWN，保持占用", "rollback-unknown"],
+  ] as const;
+  const now = new Date().toISOString();
+  const approve = (record: FakeIncident, decision: "approve" | "reject" = "approve") => {
+    const detail = record.detail;
+    if (!decideFakeRepair(record, { runId: detail.selectedRun.id, proposalId: detail.repair!.id,
+      proposalDigest: detail.repair!.digest, decision })) throw new Error("Invalid manual approval fixture");
+  };
+  const recover = (record: FakeIncident, outcome: "observing" | "recovered" | "monitoring_unavailable") => {
+    const detail = record.detail;
+    const observed = makeRecoveryDetail(outcome);
+    const execution = detail.approval!.execution!;
+    const startedAt = new Date(Date.parse(now) - (outcome === "observing" ? 0 : 60_000)).toISOString();
+    detail.approval!.decidedAt = new Date(Date.parse(startedAt) - 2000).toISOString();
+    detail.repair!.validation.checkedAt = new Date(Date.parse(startedAt) - 3000).toISOString();
+    detail.repair!.schemaCheckedAt = detail.repair!.policyCheckedAt = detail.repair!.diffCheckedAt = detail.repair!.validation.checkedAt;
+    detail.selectedRun.createdAt = detail.selectedRun.startedAt = new Date(Date.parse(startedAt) - 4000).toISOString();
+    Object.assign(execution, observed.approval!.execution, { id: execution.id,
+      claimedAt: new Date(Date.parse(startedAt) - 1000).toISOString(), reportedAt: startedAt,
+      startBefore: new Date(Date.parse(startedAt) + 28_000).toISOString() });
+    execution.result!.receipt!.uid = detail.repair!.targetUid;
+    detail.verification = { ...observed.verification!, executionId: execution.id, startedAt,
+      deadlineAt: new Date(Date.parse(startedAt) + 600_000).toISOString(), lastObservedAt: now,
+      healthySince: outcome === "recovered" ? startedAt : null, completedAt: outcome === "observing" ? null : now };
+    detail.selectedRun.status = outcome === "observing" ? "RUNNING"
+      : detail.selectedRun.operation === "rollback" ? "COMPLETED" : observed.selectedRun.status;
+    detail.selectedRun.completedAt = outcome === "observing" ? null : now;
+    detail.selectedRun.error = detail.selectedRun.operation === "rollback" ? null : observed.selectedRun.error;
+    detail.incident.status = outcome === "observing" ? "VERIFYING"
+      : detail.selectedRun.operation === "rollback" ? "ROLLED_BACK" : outcome === "recovered" ? "RESOLVED" : "FAILED";
+    detail.actions.rerun = outcome === "observing" ? "execution_held" : null;
+    detail.actions.rollback = outcome !== "observing" && detail.selectedRun.operation === "apply" ? null : "not_applicable";
+    publishLifecycle(record, { id: eventId(), event: "repair.verification_updated", data: {
+      ...lifecycleBase(detail), executionId: execution.id, outcome, reason: detail.verification.reason,
+      sampleCount: detail.verification.sampleCount, runStatus: detail.selectedRun.status as "RUNNING" | "COMPLETED" | "FAILED", incidentStatus: detail.incident.status,
+    } });
+  };
+  for (const [label, state] of cases) {
+    const record = repairFixture();
+    const detail = record.detail;
+    const originalStart = Date.parse(detail.incident.createdAt);
+    const shift = (timestamp: string) => new Date(Date.parse(now) - 5 * 60_000 + Date.parse(timestamp) - originalStart).toISOString();
+    detail.incident.createdAt = shift(detail.incident.createdAt);
+    detail.selectedRun.createdAt = shift(detail.selectedRun.createdAt);
+    if (detail.selectedRun.startedAt) detail.selectedRun.startedAt = shift(detail.selectedRun.startedAt);
+    if (detail.selectedRun.completedAt) detail.selectedRun.completedAt = shift(detail.selectedRun.completedAt);
+    if (detail.diagnosis) detail.diagnosis.createdAt = shift(detail.diagnosis.createdAt);
+    for (const evidence of detail.evidence) evidence.observedAt = shift(evidence.observedAt);
+    const proposal = detail.repair!;
+    proposal.schemaCheckedAt = shift(proposal.schemaCheckedAt);
+    proposal.policyCheckedAt = shift(proposal.policyCheckedAt);
+    proposal.diffCheckedAt = shift(proposal.diffCheckedAt);
+    proposal.validation.checkedAt = shift(proposal.validation.checkedAt);
+    for (const event of record.events) event.data.occurredAt = shift(event.data.occurredAt);
+    record.metricAnchor = now;
+    detail.incident.id = uuid("1", nextIncident++);
+    detail.incident.displayName = label;
+    detail.incident.triggerSummary = "手工 UI 走查测试数据；不连接 Kubernetes，不证明真实执行或恢复。";
+    detail.incident.status = "DIAGNOSED";
+    for (const event of record.events) event.data.incidentId = detail.incident.id;
+    if (state !== "diagnosis") {
+      if (!prepareFakeRepair(record, { sourceRunId: detail.selectedRun.id })) throw new Error("Invalid manual preparation fixture");
+      if (state === "expired") {
+        record.detail.selectedRun.waitingExpiresAt = new Date(Date.now() - 1000).toISOString();
+        record.detail.actions.approve = record.detail.actions.reject = "proposal_expired";
+      } else if (state === "rejected") approve(record, "reject");
+      else if (state !== "waiting") {
+        approve(record);
+        if (state.startsWith("rollback-")) {
+          recover(record, "monitoring_unavailable");
+          const source = record.detail;
+          if (!prepareFakeRepair(record, { sourceRunId: source.selectedRun.id, sourceExecutionId: source.approval!.execution!.id })) throw new Error("Invalid manual rollback fixture");
+          if (state !== "rollback-waiting") approve(record);
+        }
+        if (state === "claimed" || state.endsWith("unknown")) {
+          const current = record.detail;
+          const execution = current.approval!.execution!;
+          execution.claimedAt = now;
+          execution.status = state === "claimed" ? "CLAIMED" : "UNKNOWN";
+          if (execution.status === "UNKNOWN") {
+            execution.reportedAt = now;
+            execution.result = { outcome: "UNKNOWN", error: "outcome_unknown", receipt: null };
+            current.selectedRun.status = "FAILED";
+            current.selectedRun.completedAt = now;
+            current.selectedRun.error = { code: "execution_outcome_unknown", retryable: false };
+            current.incident.status = "FAILED";
+          }
+          publishLifecycle(record, { id: eventId(), event: "repair.execution_updated", data: {
+            ...lifecycleBase(current), approvalId: current.approval!.id, executionId: execution.id,
+            executionStatus: execution.status, lateResult: false, runStatus: state === "claimed" ? "RUNNING" : "FAILED", incidentStatus: state === "claimed" ? "APPLYING" : "FAILED",
+          } });
+        } else if (state === "observing") recover(record, "observing");
+        else if (state.endsWith("monitoring_unavailable")) recover(record, "monitoring_unavailable");
+        else if (state.endsWith("recovered")) recover(record, "recovered");
+      }
+    }
+    record.metricState = state.endsWith("monitoring_unavailable") ? "monitoring_unavailable" : "ok";
+    incidents.set(record.detail.incident.id, record);
+  }
+  return cases.length;
 }
 
 async function handleRequest(
@@ -973,6 +1273,9 @@ async function handleRequest(
     operatorSessions.clear();
     incidents.clear();
     eventConnections.clear();
+    nextRepair = 100;
+    for (const streams of lifecycleStreams.values()) for (const stream of streams) stream.end();
+    lifecycleStreams.clear();
     json(response, 200, { ok: true });
     return;
   }
@@ -985,53 +1288,59 @@ async function handleRequest(
 
   if (request.method === "POST" && url.pathname === "/__test__/repair") {
     const body = await requestBody(request) as { outcome?: string };
-    const detail = makeWaitingApprovalIncidentDetail();
-    const repair = detail.repair!;
-    detail.incident.target = SCENARIO.target;
-    repair.target = SCENARIO.target;
-    detail.incident.source = { type: "scenario", ref: SCENARIO.scenarioId, revision: "3" };
-    detail.incident.displayName = SCENARIO.displayName;
-    detail.evidence[0].targetRef = { api_version: "apps/v1", kind: "Deployment", namespace: SCENARIO.target.namespace, name: SCENARIO.target.name, uid: repair.targetUid };
-    detail.evidence[1].targetRef = detail.evidence[0].targetRef;
-    detail.evidence[0].payload = { workload: { resource_version: repair.targetResourceVersion, containers: [{ name: repair.containerName, image: repair.currentImage, source_index: repair.containerIndex }] } };
-    detail.evidence[1].payload = { source_workload: { resource_version: repair.targetResourceVersion }, revisions: [
-      { revision: 2, containers: [{ name: repair.containerName, image: repair.currentImage }] },
-      { revision: 1, containers: [{ name: repair.containerName, image: repair.replacementImage }] },
-    ] };
-    const base = { schemaVersion: 5 as const, runKind: "diagnosis" as const, incidentId: detail.incident.id, runId: detail.selectedRun.id };
-    const events: RunEventStreamItem[] = [{
-      id: eventId(), event: "diagnosis.completed", data: { ...base, diagnosisId: detail.diagnosis!.id, outcome: "diagnosed", incidentStatus: "DIAGNOSED", runStatus: "RUNNING", occurredAt: repair.schemaCheckedAt },
-    }, {
-      id: eventId(), event: "repair.patch_ready", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "PATCH_READY", runStatus: "RUNNING", occurredAt: repair.diffCheckedAt },
-    }];
-    if (["repair_schema_invalid", "repair_policy_denied", "repair_diff_invalid"].includes(body.outcome ?? "")) {
-      const code = body.outcome!;
+    const record = repairFixture(body.outcome);
+    incidents.set(record.detail.incident.id, record);
+    json(response, 200, { incidentId: record.detail.incident.id });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/__test__/repair-state") {
+    const body = await requestBody(request) as { incidentId: string; state: string };
+    const record = incidents.get(body.incidentId);
+    if (!record?.detail.repair) { json(response, 404, { ok: false }); return; }
+    const detail = record.detail;
+    if (body.state === "expired") {
+      detail.selectedRun.waitingExpiresAt = new Date(Date.now() - 1000).toISOString();
+      detail.actions.approve = detail.actions.reject = "proposal_expired";
+    } else if (body.state === "preparation-failed") {
       detail.repair = null;
-      detail.incident.status = "FAILED";
-      detail.selectedRun.status = "FAILED";
-      detail.selectedRun.error = { code, retryable: false };
-      if (code === "repair_schema_invalid") {
-        detail.diagnosis = null;
-        events.length = 0;
-      } else {
-        events.splice(1);
-      }
-      events.push({ id: eventId(), event: "run.failed", data: { ...base, errorCode: code, retryable: false, incidentStatus: "FAILED", runStatus: "FAILED", occurredAt: detail.selectedRun.completedAt! } });
-    } else if (body.outcome === "stale") {
-      detail.incident.status = "STALE_RESOURCE";
       detail.selectedRun.status = "FAILED";
       detail.selectedRun.error = { code: "stale_resource", retryable: false };
-      repair.validation = { ...repair.validation, outcome: "failed", error: { code: "stale_resource", retryable: false } };
-      events.push({ id: eventId(), event: "run.failed", data: { ...base, errorCode: "stale_resource", retryable: false, incidentStatus: "STALE_RESOURCE", runStatus: "FAILED", occurredAt: detail.selectedRun.completedAt! } });
-    } else {
-      events.push({ id: eventId(), event: "repair.dry_run_passed", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "DRY_RUN_PASSED", runStatus: "RUNNING", occurredAt: repair.validation.checkedAt } },
-        { id: eventId(), event: "repair.waiting_approval", data: { ...base, proposalId: repair.id, proposalDigest: repair.digest, incidentStatus: "WAITING_APPROVAL", runStatus: "COMPLETED", occurredAt: detail.selectedRun.completedAt! } });
-    }
-    if (body.outcome === "invalid") repair.patch[4].path = "/spec/replicas";
-    detail.eventCursor = events.at(-1)!.id;
-    detail.eventPage = { items: [...events].reverse(), nextCursor: null };
-    incidents.set(detail.incident.id, { detail, events, finished: true, metricState: "ok", mode: "diagnosed" });
-    json(response, 200, { incidentId: detail.incident.id });
+      detail.selectedRun.completedAt = new Date().toISOString();
+      detail.incident.status = "STALE_RESOURCE";
+      detail.actions.approve = detail.actions.reject = detail.actions.edit = "not_applicable";
+      detail.actions.preparationSource!.sourceRunId = detail.selectedRun.sourceRunId!;
+    } else if (body.state === "UNKNOWN" || body.state === "STALE_RESOURCE") {
+      const execution = detail.approval!.execution!;
+      execution.status = body.state;
+      execution.claimedAt = execution.reportedAt = new Date().toISOString();
+      execution.result = body.state === "UNKNOWN" ? { outcome: "UNKNOWN", receipt: null, error: "outcome_unknown" }
+        : { outcome: "STALE_RESOURCE", receipt: null, error: "precondition_failed" };
+      detail.selectedRun.status = "FAILED";
+      detail.selectedRun.completedAt = execution.reportedAt;
+      detail.incident.status = body.state === "UNKNOWN" ? "FAILED" : "STALE_RESOURCE";
+      detail.actions.rerun = body.state === "UNKNOWN" ? "execution_held" : null;
+      publishLifecycle(record, { id: eventId(), event: "repair.execution_updated", data: { ...lifecycleBase(detail),
+        approvalId: detail.approval!.id, executionId: execution.id, executionStatus: execution.status,
+        runStatus: "FAILED", incidentStatus: detail.incident.status, lateResult: false } });
+    } else if (body.state === "observing" || body.state === "recovered" || body.state === "monitoring_unavailable") {
+      const observed = makeRecoveryDetail(body.state);
+      const execution = detail.approval!.execution!;
+      Object.assign(execution, observed.approval!.execution, { id: execution.id });
+      detail.verification = { ...observed.verification!, executionId: execution.id };
+      detail.selectedRun.status = body.state === "observing" ? "RUNNING" : detail.selectedRun.operation === "rollback" ? "COMPLETED" : observed.selectedRun.status;
+      detail.selectedRun.completedAt = observed.selectedRun.completedAt;
+      detail.incident.status = body.state === "observing" ? "VERIFYING" : detail.selectedRun.operation === "rollback" ? "ROLLED_BACK" : body.state === "recovered" ? "RESOLVED" : "FAILED";
+      detail.actions.rerun = body.state === "observing" ? "execution_held" : null;
+      detail.actions.rollback = body.state !== "observing" && detail.selectedRun.operation === "apply" ? null : "not_applicable";
+      publishLifecycle(record, { id: eventId(), event: "repair.verification_updated", data: { ...lifecycleBase(detail),
+        executionId: execution.id, outcome: body.state, reason: detail.verification.reason,
+        sampleCount: detail.verification.sampleCount,
+        runStatus: detail.selectedRun.status as "RUNNING" | "COMPLETED" | "FAILED", incidentStatus: detail.incident.status,
+      } });
+    } else if (body.state !== "reconnect") { json(response, 422, { ok: false }); return; }
+    for (const stream of lifecycleStreams.get(body.incidentId) ?? []) stream.end();
+    json(response, 200, { ok: true });
     return;
   }
 
@@ -1267,10 +1576,9 @@ async function handleRequest(
       runtimeError(response, 404, "incident_not_found", "Incident was not found.", false);
       return;
     }
-    const run = record.detail.selectedRun;
     json(response, 200, {
       schemaVersion: 5,
-      items: [{
+      items: [record.detail, ...(record.history ?? [])].map(({ selectedRun: run }) => ({
         id: run.id,
         kind: run.kind,
         operation: run.operation,
@@ -1279,9 +1587,24 @@ async function handleRequest(
         createdAt: run.createdAt,
         startedAt: run.startedAt,
         completedAt: run.completedAt,
-      }],
+        requestSource: run.requestSource ?? null,
+        sourceRunId: run.sourceRunId ?? null,
+      })),
       nextCursor: null,
     });
+    return;
+  }
+
+  const repairMutationMatch = url.pathname.match(/^\/api\/v1\/incidents\/([0-9a-f-]+)\/(repair-runs|approvals)$/i);
+  if (request.method === "POST" && repairMutationMatch !== null) {
+    const record = incidents.get(repairMutationMatch[1]);
+    if (!record) { runtimeError(response, 404, "incident_not_found", "Incident was not found.", false); return; }
+    const body = await requestBody(request);
+    const preparing = repairMutationMatch[2] === "repair-runs";
+    const succeeded = preparing ? prepareFakeRepair(record, body as components["schemas"]["CreateRepairRunRequest"])
+      : decideFakeRepair(record, body as components["schemas"]["ApprovalRequest"]);
+    if (!succeeded) { runtimeError(response, 409, "approval_conflict", "The saved state changed.", false); return; }
+    json(response, preparing ? 202 : 200, preparing ? { schemaVersion: 5, runId: record.detail.selectedRun.id } : record.detail.approval);
     return;
   }
 
@@ -1290,13 +1613,14 @@ async function handleRequest(
   );
   if (request.method === "GET" && runEventsMatch !== null) {
     const record = incidents.get(runEventsMatch[1]);
-    if (record === undefined || record.detail.selectedRun.id !== runEventsMatch[2]) {
+    const detail = record && selectedFakeDetail(record, runEventsMatch[2]);
+    if (!detail) {
       runtimeError(response, 404, "run_not_found", "Run was not found.", false);
       return;
     }
     json(response, 200, {
       schemaVersion: 5,
-      items: [...record.detail.eventPage.items],
+      items: [...detail.eventPage.items],
       nextCursor: null,
     });
     return;
@@ -1336,11 +1660,12 @@ async function handleRequest(
       return;
     }
     const runId = url.searchParams.get("runId");
-    if (runId !== null && runId !== record.detail.selectedRun.id) {
+    const detail = selectedFakeDetail(record, runId);
+    if (!detail) {
       runtimeError(response, 404, "run_not_found", "Run was not found.", false);
       return;
     }
-    json(response, 200, record.detail);
+    json(response, 200, detail);
     return;
   }
 

@@ -33,7 +33,7 @@ it.each([
   const payload = { schemaVersion: 5, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-14T01:01:02Z", executionId: detail.verification!.executionId,
     outcome, reason: detail.verification!.reason, sampleCount: detail.verification!.sampleCount, runStatus: detail.selectedRun.status, incidentStatus: detail.incident.status };
   const event = parseRunEvent("repair.verification_updated", "999", JSON.stringify(payload), detail.incident.id)!;
-  expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id, true)).toBe(true);
+  expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id)).toBe(true);
   expect(isTerminalRunEvent(event)).toBe(outcome !== "observing");
   const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
   expect(reduceIncidentStream(state, { type: "event", event })).toEqual(state);
@@ -49,7 +49,7 @@ it.each([
   const payload = { schemaVersion: 5, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-13T01:00:00Z", approvalId: OTHER_RUN_ID, executionId: OTHER_INCIDENT_ID, executionStatus, runStatus, incidentStatus, lateResult: false };
   const event = parseRunEvent("repair.execution_updated", "999", JSON.stringify(payload), detail.incident.id)!;
   expect(event).not.toBeNull();
-  expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id, true)).toBe(true);
+  expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id)).toBe(true);
   expect(isTerminalRunEvent(event)).toBe(runStatus === "FAILED");
   const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
   expect(state.detail.incident.status).toBe(incidentStatus);
@@ -425,7 +425,7 @@ describe("reduceIncidentStream", () => {
   it("isolates a selected historical Run while reflecting current Incident status", () => {
     const detail = makeIncidentDetail();
     detail.eventCursor = "1";
-    const historical = createIncidentStreamState(detail, false);
+    const historical = createIncidentStreamState(detail);
     const afterCurrentStart = reduceIncidentStream(historical, {
       type: "event",
       event: runStarted("2", OTHER_RUN_ID),
@@ -438,22 +438,23 @@ describe("reduceIncidentStream", () => {
     expect(afterCurrentStart.detailRefreshEventId).toBeNull();
   });
 
-  it("marks a new queued Run for refresh only in latest mode", () => {
+  it("refreshes action availability for a new Run even when viewing history", () => {
     const detail = makeIncidentDetail();
     detail.eventCursor = "1";
     const event = runQueued("2", OTHER_RUN_ID);
 
-    const latest = reduceIncidentStream(createIncidentStreamState(detail), {
-      type: "event",
-      event,
-    });
     const historical = reduceIncidentStream(
-      createIncidentStreamState(detail, false),
+      createIncidentStreamState(detail),
       { type: "event", event },
     );
 
-    expect(latest.detailRefreshEventId).toBe("2");
-    expect(historical.detailRefreshEventId).toBeNull();
+    expect(historical.detailRefreshEventId).toBe("2");
+    const completed = parseRunEvent("run.failed", "3", JSON.stringify({
+      schemaVersion: 5, incidentId: INCIDENT_ID, runId: OTHER_RUN_ID, runKind: "diagnosis",
+      occurredAt: "2026-08-29T01:00:03Z", incidentStatus: "FAILED", runStatus: "FAILED",
+      errorCode: "diagnosis_failed", retryable: false,
+    }), INCIDENT_ID);
+    expect(reduceIncidentStream(historical, { type: "event", event: completed }).detailRefreshEventId).toBe("3");
   });
 
   it("ignores duplicate and out-of-order global event ids", () => {
@@ -524,10 +525,10 @@ describe("reduceIncidentStream", () => {
     expect(newer.detail.selectedRun.status).toBe("COMPLETED");
   });
 
-  it.each([true, false])("keeps newer streamed statuses when a slow snapshot arrives (latest=%s)", (latestMode) => {
+  it("keeps newer streamed statuses when a slow snapshot arrives", () => {
     const initial = makeIncidentDetail();
     initial.eventCursor = "1";
-    const waiting = reduceIncidentStream(createIncidentStreamState(initial, latestMode), {
+    const waiting = reduceIncidentStream(createIncidentStreamState(initial), {
       type: "event", event: alertResolved("2"),
     });
     const newer = reduceIncidentStream(waiting, {

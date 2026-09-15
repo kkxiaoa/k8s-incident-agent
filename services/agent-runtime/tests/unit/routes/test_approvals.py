@@ -427,14 +427,20 @@ async def test_claim_loss_unknown_remains_occupied_after_late_success(
         assert detail["incident"]["status"] == "FAILED"
         assert detail["approval"]["execution"]["status"] == "UNKNOWN"
         assert detail["selectedRun"]["error"]["retryable"] is False
-        assert detail["runCreationBlocked"] is True
+        assert detail["actions"]["rerun"] == "execution_held"
+        assert detail["actions"]["refresh"] is not None
+        assert detail["actions"]["edit"] is not None
+        assert detail["actions"]["rollback"] is not None
         source = snapshot.source_run_id
         history = (
             await harness.client.get(
                 f"/api/v1/incidents/{harness.incident_id}?runId={source}"
             )
         ).json()
-        assert history["approval"] is None and history["runCreationBlocked"] is True
+        assert (
+            history["approval"] is None
+            and history["actions"]["rerun"] == "execution_held"
+        )
         paths = RuntimePaths.prepare(tmp_path / "runtime")
         artifact = paths.run_artifact_directory(harness.run_id)
         paths.run_artifacts.mkdir(mode=0o700)
@@ -695,7 +701,9 @@ async def test_typed_negative_reports_keep_failure_and_occupancy_semantics(
             await harness.client.get(f"/api/v1/incidents/{harness.incident_id}")
         ).json()
         assert detail["selectedRun"]["status"] == "FAILED"
-        assert detail["runCreationBlocked"] is (result.outcome == "UNKNOWN")
+        assert (detail["actions"]["rerun"] == "execution_held") is (
+            result.outcome == "UNKNOWN"
+        )
 
 
 async def test_cancelled_claim_delivery_cannot_reissue_the_committed_command(

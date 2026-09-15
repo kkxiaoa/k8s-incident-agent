@@ -68,7 +68,10 @@ from k8s_incident_agent.execution.contracts import (
     ExecutionResult,
     ExecutionStatus,
 )
-from k8s_incident_agent.kubernetes.contracts import WorkloadObservation
+from k8s_incident_agent.kubernetes.contracts import (
+    RolloutHistoryPayload,
+    WorkloadObservation,
+)
 from k8s_incident_agent.persistence.canonical import canonical_json, parse_json_object
 from k8s_incident_agent.persistence.models import (
     AlertSignalRow,
@@ -84,6 +87,12 @@ from k8s_incident_agent.persistence.models import (
     RunRow,
     VerificationRow,
 )
+from k8s_incident_agent.repair.actions import (
+    ActionUnavailableReason,
+    IncidentActions,
+    RepairHistoryCandidate,
+    RepairPreparationSource,
+)
 from k8s_incident_agent.repair.compiler import (
     RepairPreparationError,
     require_exact_repair_proposal,
@@ -93,6 +102,7 @@ from k8s_incident_agent.repair.contracts import (
     RepairProposal,
     SetContainerImageIntent,
 )
+from k8s_incident_agent.repair.history import image_history_candidates
 from k8s_incident_agent.repair.records import PreparedRepairRecord, RepairTerminalRecord
 from k8s_incident_agent.repair.rollback import RollbackSource, resolve_rollback_change
 from k8s_incident_agent.repair.verification_contracts import (
@@ -222,6 +232,7 @@ class IncidentDetailRecord:
     has_older_events: bool
     event_cursor: int
     run_creation_blocked: bool = False
+    actions: IncidentActions | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +296,7 @@ class _WorkflowRows:
     start_event: RunEventRow | None
     terminal_event: RunEventRow | None
     managed_events: tuple[RunEventRow, ...]
+    source: RepairProposal | RollbackSource | None
 
 
 class RepositoryError(RuntimeError):
@@ -715,6 +727,7 @@ class IncidentRepository:
         *,
         run_id: UUID | None,
         event_limit: int,
+        now: datetime | None = None,
     ) -> IncidentDetailRecord | None:
         if event_limit < 1 or event_limit > 100:
             raise ValueError("Event page limit must be between 1 and 100")
@@ -798,7 +811,42 @@ class IncidentRepository:
                         )
                     )
                 )
-                return replace(detail, run_creation_blocked=bool(occupied))
+                active_id = await session.scalar(
+                    select(RunRow.id).where(
+                        RunRow.incident_id == incident.id,
+                        RunRow.status.in_(_ACTIVE_RUN_STATUSES),
+                    )
+                )
+                target_occupied = await session.scalar(
+                    select(
+                        exists().where(
+                            ExecutionRow.cluster == incident.cluster,
+                            ExecutionRow.namespace == incident.namespace,
+                            ExecutionRow.kind == incident.kind,
+                            ExecutionRow.resource_name == incident.resource_name,
+                            ExecutionRow.target_released_at.is_(None),
+                        )
+                    )
+                )
+                in_scope = True
+                if rows.repair is not None:
+                    try:
+                        self._require_execution_scope(rows.repair.proposal)
+                    except ApprovalConflictError:
+                        in_scope = False
+                detail = replace(detail, run_creation_blocked=bool(occupied))
+                return replace(
+                    detail,
+                    actions=_incident_actions(
+                        detail,
+                        source=rows.source,
+                        active_id=active_id,
+                        target_occupied=bool(target_occupied),
+                        execution_enabled=self._execution_enabled,
+                        in_scope=in_scope,
+                        now=_require_aware_datetime(now or datetime.now(UTC)),
+                    ),
+                )
         except RepositoryError:
             raise
         except SQLAlchemyError:
@@ -3568,6 +3616,7 @@ async def _load_workflow_rows(
         if repair_proposal is not None
         else None
     )
+    source: RepairProposal | RollbackSource | None = None
     if run.kind is RunKind.REPAIR:
         source = await _repair_source(session, run, incident)
         if repair is not None and repair_proposal is not None:
@@ -3607,6 +3656,7 @@ async def _load_workflow_rows(
         start_event=start_event,
         terminal_event=terminal_event,
         managed_events=managed_events,
+        source=source,
     )
 
 
@@ -3996,6 +4046,125 @@ def _incident_run_detail(
         end_reason=workflow.end_reason
         if isinstance(workflow, RepairWorkflowRunSnapshot)
         else None,
+    )
+
+
+def _incident_actions(
+    detail: IncidentDetailRecord,
+    *,
+    source: RepairProposal | RollbackSource | None,
+    active_id: str | None,
+    target_occupied: bool,
+    execution_enabled: bool,
+    in_scope: bool,
+    now: datetime,
+) -> IncidentActions:
+    run, repair = detail.run, detail.repair
+    waiting = run.kind is RunKind.REPAIR and run.status is RunStatus.WAITING_APPROVAL
+    terminal = run.status in (RunStatus.COMPLETED, RunStatus.FAILED)
+    busy: ActionUnavailableReason | None = None
+    if detail.run_creation_blocked:
+        busy = "execution_held"
+    elif active_id is not None and not (waiting and active_id == str(run.id)):
+        busy = "active_run"
+
+    preparation_source = None
+    if isinstance(source, RollbackSource) and run.source_run_id is not None:
+        preparation_source = RepairPreparationSource(
+            source_run_id=run.source_run_id, source_execution_id=source.execution_id
+        )
+    elif repair is not None:
+        preparation_source = RepairPreparationSource(
+            source_run_id=run.id, source_execution_id=None
+        )
+    elif run.source_run_id is not None:
+        preparation_source = RepairPreparationSource(
+            source_run_id=run.source_run_id, source_execution_id=None
+        )
+
+    prepare = (
+        busy
+        if run.kind is RunKind.DIAGNOSIS and terminal and repair
+        else "not_applicable"
+    )
+    refresh = (
+        busy
+        if run.kind is RunKind.REPAIR
+        and (waiting or terminal)
+        and (
+            repair is None
+            or repair.execution is None
+            or repair.execution.status in ("EXPIRED", "REJECTED", "STALE_RESOURCE")
+        )
+        else "not_applicable"
+    )
+    candidates: list[RepairHistoryCandidate] = []
+    if repair is not None and run.operation is not RepairOperation.ROLLBACK:
+        proposal = repair.proposal
+        for evidence in detail.evidence:
+            if (
+                evidence.id not in proposal.evidence_ids
+                or evidence.evidence_kind != "rollout_history"
+                or evidence.truncated
+                or evidence.redacted
+            ):
+                continue
+            try:
+                history = RolloutHistoryPayload.model_validate(evidence.payload)
+            except ValidationError:
+                continue
+            candidates.extend(
+                RepairHistoryCandidate(
+                    revision=str(revision.revision),
+                    replica_set_uid=revision.replica_set_ref.uid,
+                    image=image,
+                )
+                for revision, image in image_history_candidates(
+                    history, proposal.container_name, proposal.current_image
+                )
+            )
+    edit: ActionUnavailableReason | None = "not_applicable"
+    if run.operation is not RepairOperation.ROLLBACK and (
+        prepare != "not_applicable" or refresh != "not_applicable"
+    ):
+        edit = busy or (None if candidates else "no_history_candidates")
+
+    decision: ActionUnavailableReason | None = "not_applicable"
+    if waiting and repair is not None and repair.approval is None:
+        if not execution_enabled:
+            decision = "execution_disabled"
+        elif not in_scope:
+            decision = "outside_scope"
+        elif (
+            run.waiting_expires_at is None
+            or not repair.validation.checked_at <= now < run.waiting_expires_at
+            or repair.validation.outcome != "passed"
+        ):
+            decision = "proposal_expired"
+        else:
+            decision = None
+
+    rollback: ActionUnavailableReason | None = "not_applicable"
+    if (
+        terminal
+        and run.operation is RepairOperation.APPLY
+        and repair is not None
+        and repair.execution is not None
+        and repair.execution.status == "APPLIED"
+        and repair.execution.result is not None
+        and repair.execution.result.receipt is not None
+    ):
+        rollback = busy
+    return IncidentActions(
+        prepare=prepare,
+        refresh=refresh,
+        edit=edit,
+        approve=decision or ("target_occupied" if target_occupied else None),
+        reject=decision,
+        rerun=busy,
+        rollback=rollback,
+        preparation_source=preparation_source,
+        history_candidates=tuple(candidates),
     )
 
 

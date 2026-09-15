@@ -137,6 +137,9 @@ export type AlertSignalView = Pick<
 >;
 
 export type RepairProposalView = ApiRepairProposal;
+export type IncidentActionsView = components["schemas"]["IncidentActions"];
+export type RepairRunRequest = components["schemas"]["CreateRepairRunRequest"];
+export type ApprovalRequest = components["schemas"]["ApprovalRequest"];
 
 export interface IncidentDetailView {
   incident: IncidentView;
@@ -148,7 +151,7 @@ export interface IncidentDetailView {
   repair: RepairProposalView | null;
   approval?: components["schemas"]["ApprovalResponse"] | null;
   verification?: VerificationView | null;
-  runCreationBlocked: boolean;
+  actions: IncidentActionsView;
   alertSignal: AlertSignalView | null;
 }
 
@@ -493,12 +496,7 @@ function parseSelectedRun(value: unknown): SelectedRunView | null {
   if (value.waitingExpiresAt !== undefined && value.waitingExpiresAt !== null && !isTimestamp(value.waitingExpiresAt)) return null;
   if (value.endReason !== undefined && value.endReason !== null && value.endReason !== "expired" && value.endReason !== "superseded" && value.endReason !== "rejected" && value.endReason !== "execution_expired") return null;
   const selection = value.selection;
-  if (selection !== undefined && selection !== null && (
-    !isObject(selection) || typeof selection.revision !== "string" || !/^[1-9][0-9]{0,18}$/.test(selection.revision)
-    || BigInt(selection.revision) > BigInt("9223372036854775807")
-    || typeof selection.replicaSetUid !== "string" || selection.replicaSetUid.length === 0 || selection.replicaSetUid.length > 253
-    || selection.replicaSetUid.trim() !== selection.replicaSetUid || /[\x00-\x1f\x7f]/.test(selection.replicaSetUid)
-  )) return null;
+  if (selection !== undefined && selection !== null && !isHistorySelection(selection)) return null;
   return {
     ...run, error,
     ...(selection !== undefined ? { selection: selection as SelectedRunView["selection"] } : {}),
@@ -875,7 +873,7 @@ function parseExecutionResult(value: unknown): components["schemas"]["ExecutionR
   return null;
 }
 
-function parseApproval(value: unknown): components["schemas"]["ApprovalResponse"] | null {
+export function parseApprovalResponse(value: unknown): components["schemas"]["ApprovalResponse"] | null {
   if (!isObject(value) || !isUuid(value.id) || !isUuid(value.runId) || !isUuid(value.proposalId) || typeof value.proposalDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.proposalDigest) || typeof value.validationDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.validationDigest) || (value.decision !== "approve" && value.decision !== "reject") || typeof value.actor !== "string" || !value.actor || !isTimestamp(value.decidedAt) || !isTimestamp(value.expiresAt)) return null;
   let execution: components["schemas"]["ExecutionResponse"] | null = null;
   if (value.execution !== null) {
@@ -911,6 +909,42 @@ function parseVerification(value: unknown): VerificationView | null {
     lastObservedAt: value.lastObservedAt, healthySince: value.healthySince };
 }
 
+function isHistorySelection(value: unknown): value is components["schemas"]["RepairHistorySelectionResponse"] {
+  return isObject(value) && typeof value.revision === "string" && /^[1-9][0-9]{0,18}$/.test(value.revision)
+    && BigInt(value.revision) <= BigInt("9223372036854775807")
+    && typeof value.replicaSetUid === "string" && value.replicaSetUid.length > 0 && value.replicaSetUid.length <= 253
+    && value.replicaSetUid.trim() === value.replicaSetUid && !/[\x00-\x1f\x7f]/.test(value.replicaSetUid);
+}
+
+function parseIncidentActions(value: unknown): IncidentActionsView | null {
+  if (!isObject(value) || !Array.isArray(value.historyCandidates)) return null;
+  const reasons: ReadonlyArray<Exclude<IncidentActionsView["approve"], null>> = [
+    "not_applicable", "active_run", "execution_held", "target_occupied", "execution_disabled",
+    "outside_scope", "proposal_expired", "no_history_candidates", "diagnosis_unavailable",
+  ];
+  const keys = ["prepare", "refresh", "edit", "approve", "reject", "rerun", "rollback"] as const;
+  if (keys.some((key) => value[key] !== null && !reasons.some((reason) => reason === value[key]))) return null;
+  const source = value.preparationSource;
+  if (source !== null && (!isObject(source) || !isUuid(source.sourceRunId)
+    || (source.sourceExecutionId !== null && !isUuid(source.sourceExecutionId)))) return null;
+  const candidates: IncidentActionsView["historyCandidates"] = [];
+  for (const candidate of value.historyCandidates) {
+    if (!isObject(candidate) || typeof candidate.image !== "string" || !candidate.image) return null;
+    const image = candidate.image;
+    if (!isHistorySelection(candidate)) return null;
+    candidates.push({ revision: candidate.revision, replicaSetUid: candidate.replicaSetUid, image });
+  }
+  return {
+    prepare: value.prepare as IncidentActionsView["prepare"], refresh: value.refresh as IncidentActionsView["refresh"],
+    edit: value.edit as IncidentActionsView["edit"], approve: value.approve as IncidentActionsView["approve"],
+    reject: value.reject as IncidentActionsView["reject"], rerun: value.rerun as IncidentActionsView["rerun"],
+    rollback: value.rollback as IncidentActionsView["rollback"],
+    preparationSource: source === null ? null : {
+      sourceRunId: source.sourceRunId as string, sourceExecutionId: source.sourceExecutionId as string | null,
+    }, historyCandidates: candidates,
+  };
+}
+
 export function parseIncidentDetailResponse(
   value: unknown,
 ): IncidentDetailView | null {
@@ -919,19 +953,20 @@ export function parseIncidentDetailResponse(
     value.schemaVersion !== 5 ||
     !isValidEventId(value.eventCursor) ||
     !Array.isArray(value.evidence)
-    || typeof value.runCreationBlocked !== "boolean"
   ) {
     return null;
   }
 
   const incident = parseIncident(value.incident);
+  const actions = parseIncidentActions(value.actions);
+  if (actions === null) return null;
   const selectedRun = parseSelectedRun(value.selectedRun);
   const eventPage = parseEventPage(value.eventPage);
   const evidence = value.evidence.map(parseEvidence);
   const diagnosis =
     value.diagnosis === null ? null : parseDiagnosis(value.diagnosis);
   const repair = value.repair === null ? null : parseRepairProposal(value.repair);
-  const approval = value.approval == null ? null : parseApproval(value.approval);
+  const approval = value.approval == null ? null : parseApprovalResponse(value.approval);
   const verification = value.verification == null ? null : parseVerification(value.verification);
   const alertSignal =
     value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
@@ -996,7 +1031,7 @@ export function parseIncidentDetailResponse(
     repair,
     ...(value.approval !== undefined ? { approval } : {}),
     ...(value.verification !== undefined ? { verification } : {}),
-    runCreationBlocked: value.runCreationBlocked,
+    actions,
     alertSignal,
   };
 }

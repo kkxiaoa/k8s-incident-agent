@@ -11,8 +11,8 @@
 - 固定 Kind 与单节点 K3s profile 已使用同一组双架构 Console / Runtime 产物完成安装、真实诊断、网络与身份门禁、持久化恢复和普通卸载验证；这不是任意 Kubernetes 兼容性承诺；
 - development / evaluation 可手动触发版本化场景；online profile 禁止人工创建 Incident，允许认证操作者对已有 Incident 重新诊断或准备修复；
 - Alertmanager intake、managed monitoring、有界 Prometheus 查询、Run-owned Evidence 与 Console 必要指标图表已实现；五个故障族的七个场景已有 fixed Kind/K3s 组合 live 证据，不代表任意 Kubernetes 兼容性或统计准确率、延迟、恢复率基线；
-- Evidence-bound 镜像修复提案、独立 server-side dry-run、持久等待及精确审批/执行账本已实现。`SANDBOX_EXECUTION_ENABLED` 默认 `false`，关闭时不注册审批端点；显式开启后，认证操作者可决定本次 Run 的 exact proposal，批准仅生成一次可领取的执行项。当前尚无独立执行 worker、Kubernetes 持久写、恢复验证或回滚；该链路尚未完成最终镜像与集群 live 验收。
-- 已领取但结果不确定的执行保持 `UNKNOWN` 并占用目标，禁止自动重试、回滚或释放；可信成功回执仅进入 `VERIFYING`，不表示恢复成功。当前 Console 展示账本事实，完整审批交互仍待实现。
+- Evidence-bound 镜像修复提案、独立 server-side dry-run、持久等待、精确审批/执行账本、独立 Executor、确定性恢复验证和另行批准的显式回滚已实现并通过离线验证。`SANDBOX_EXECUTION_ENABLED` 默认 `false`，关闭时不注册审批端点；显式开启后，认证操作者只能批准本次 Run 的 exact proposal，由独立 Executor 执行一次受控写入。该链路尚未完成部署启用、最终镜像与集群 live 验收。
+- 当前 Console 已接通准备、有限历史镜像选择、批准/拒绝、重新准备、重新诊断及显式回滚；JSON Patch 保持只读。已领取但结果不确定的执行保持 `UNKNOWN` 并占用目标，禁止自动重试、回滚或释放；可信写入回执不等于恢复成功，恢复结论须由独立观察证明。UI 的离线浏览器测试不替代真实集群执行验收。
 
 ## 产品边界
 
@@ -66,6 +66,12 @@ AGENT_RUNTIME_URL=http://127.0.0.1:18080 npm run dev -- --hostname 127.0.0.1 --p
 ```
 
 浏览器打开 `http://127.0.0.1:3000`，使用 `operator init` 时设置的密码；此测试入口固定为该 Origin，不要替换为 `localhost`。
+
+手工入口启动时自动加载 14 条带 `T7`–`T10` 标签的走查案例：执行待领取/已领取/UNKNOWN、恢复观察/成功/监控不可用、回滚待审批/成功/无法证明恢复/UNKNOWN，以及诊断准备/待审批/拒绝/过期。可从首页列表进入，并沿“查看来源运行”查看诊断、修复与回滚历史。
+
+这些案例包含与启动时刻对齐的合成监控趋势，可切换图表时间范围。故障、恢复观察和恢复成功分别展示对应快照；两条“监控不可用”案例故意保留空态。图表不是实时集群指标，也不会因点击批准而自动演示恢复。
+
+这些是内存中的 UI 测试快照，不运行 Executor，也不产生 Kubernetes 写入。批准按钮可走到“等待执行领取”，后续执行/恢复展示使用对应预置案例；不要把它当作自动恢复演示。重新准备会生成新的测试提案；重启 fake Runtime 会重建案例并撤销 fake 会话，不影响真实 Runtime 数据。
 
 ### 集群与评估凭据
 

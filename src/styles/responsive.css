@@ -172,11 +172,6 @@
     animation-iteration-count: 1 !important;
   }
 
-  .timeline-waiting__text {
-    color: var(--muted);
-    background: none;
-  }
-
   .timeline__item--running .timeline__dot::after {
     display: none;
   }

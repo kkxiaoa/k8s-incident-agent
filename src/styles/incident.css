@@ -258,32 +258,6 @@
     0 9px 24px rgb(15 143 134 / 9%);
 }
 
-.timeline-waiting__text {
-  color: transparent;
-  background: linear-gradient(
-    105deg,
-    var(--navy) 20%,
-    #087d75 42%,
-    #0aa293 50%,
-    #087d75 58%,
-    var(--navy) 80%
-  );
-  background-clip: text;
-  background-size: 250% 100%;
-  font-weight: 700;
-  animation: timeline-text-scan 1.8s infinite linear;
-}
-
-@keyframes timeline-text-scan {
-  from {
-    background-position: 180% 0;
-  }
-
-  to {
-    background-position: -80% 0;
-  }
-}
-
 .timeline__item {
   position: relative;
   display: grid;
@@ -397,8 +371,6 @@
 .timeline__activity {
   padding: 4px 7px;
   border-radius: 999px;
-  color: #076a63;
-  background: var(--teal-soft);
   font-size: 0.62rem;
   font-weight: 760;
 }

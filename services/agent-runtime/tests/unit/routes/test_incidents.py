@@ -51,6 +51,7 @@ from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import IncidentStatus, RunKind, RunStatus
 from k8s_incident_agent.persistence.repositories import IncidentRepository
+from k8s_incident_agent.repair.actions import IncidentActions
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
 
@@ -259,6 +260,17 @@ class _IncidentService:
         assert incident_id == INCIDENT_ID
         assert run_id in (None, RUN_ID)
         return IncidentDetailResponse(
+            actions=IncidentActions(
+                prepare="not_applicable",
+                refresh="not_applicable",
+                edit="not_applicable",
+                approve="not_applicable",
+                reject="not_applicable",
+                rollback="not_applicable",
+                rerun="active_run",
+                preparation_source=None,
+                history_candidates=(),
+            ),
             incident=IncidentResponse(
                 id=INCIDENT_ID,
                 source=IncidentSourceResponse(

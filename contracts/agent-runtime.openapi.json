@@ -1,6 +1,20 @@
 {
   "components": {
     "schemas": {
+      "ActionUnavailableReason": {
+        "enum": [
+          "not_applicable",
+          "active_run",
+          "execution_held",
+          "target_occupied",
+          "execution_disabled",
+          "outside_scope",
+          "proposal_expired",
+          "no_history_candidates",
+          "diagnosis_unavailable"
+        ],
+        "type": "string"
+      },
       "AlertResolvedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1361,6 +1375,111 @@
         "title": "ExecutionUpdatedStreamEvent",
         "type": "object"
       },
+      "IncidentActions": {
+        "additionalProperties": false,
+        "properties": {
+          "approve": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "edit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "historyCandidates": {
+            "items": {
+              "$ref": "#/components/schemas/RepairHistoryCandidate"
+            },
+            "title": "Historycandidates",
+            "type": "array"
+          },
+          "preparationSource": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepairPreparationSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prepare": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refresh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reject": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rerun": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rollback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "prepare",
+          "refresh",
+          "edit",
+          "approve",
+          "reject",
+          "rerun",
+          "rollback",
+          "preparationSource",
+          "historyCandidates"
+        ],
+        "title": "IncidentActions",
+        "type": "object"
+      },
       "IncidentCreatedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1445,6 +1564,9 @@
       "IncidentDetailResponse": {
         "additionalProperties": false,
         "properties": {
+          "actions": {
+            "$ref": "#/components/schemas/IncidentActions"
+          },
           "alertSignal": {
             "anyOf": [
               {
@@ -1503,11 +1625,6 @@
               }
             ]
           },
-          "runCreationBlocked": {
-            "default": false,
-            "title": "Runcreationblocked",
-            "type": "boolean"
-          },
           "schemaVersion": {
             "const": 5,
             "default": 5,
@@ -1535,6 +1652,7 @@
           "evidence",
           "diagnosis",
           "repair",
+          "actions",
           "alertSignal",
           "eventCursor"
         ],
@@ -2433,6 +2551,31 @@
         "title": "RepairDryRunPassedStreamEvent",
         "type": "object"
       },
+      "RepairHistoryCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "image": {
+            "title": "Image",
+            "type": "string"
+          },
+          "replicaSetUid": {
+            "title": "Replicasetuid",
+            "type": "string"
+          },
+          "revision": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "replicaSetUid",
+          "image"
+        ],
+        "title": "RepairHistoryCandidate",
+        "type": "object"
+      },
       "RepairHistorySelectionResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2574,6 +2717,34 @@
           "data"
         ],
         "title": "RepairPatchReadyStreamEvent",
+        "type": "object"
+      },
+      "RepairPreparationSource": {
+        "additionalProperties": false,
+        "properties": {
+          "sourceExecutionId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceexecutionid"
+          },
+          "sourceRunId": {
+            "format": "uuid",
+            "title": "Sourcerunid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceRunId",
+          "sourceExecutionId"
+        ],
+        "title": "RepairPreparationSource",
         "type": "object"
       },
       "RepairProposalResponse": {

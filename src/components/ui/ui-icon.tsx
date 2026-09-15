@@ -9,6 +9,7 @@ type UiIconName =
   | "close"
   | "copy"
   | "expand"
+  | "exclamation"
   | "external-link"
   | "info"
   | "layers"
@@ -16,6 +17,8 @@ type UiIconName =
 
 function glyph(name: UiIconName) {
   switch (name) {
+    case "exclamation":
+      return <><path d="M12 5v9" /><path d="M12 18h.01" /></>;
     case "activity":
       return <path d="M3 12h4l2.5-7 5 14 2.5-7h4" />;
     case "arrow-down":

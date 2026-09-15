@@ -34,7 +34,6 @@ from k8s_incident_agent.domain.models import (
     RunKind,
     RunStatus,
 )
-from k8s_incident_agent.kubernetes.credentials import DiagnosticCredentialLease
 from k8s_incident_agent.persistence.database import create_business_database
 from k8s_incident_agent.persistence.models import (
     RunRow,
@@ -68,7 +67,7 @@ def _application(repository: IncidentRepository) -> IncidentApplicationService:
         catalog=(),
         repository=repository,
         supervisor=cast(RunScheduler, object()),
-        credential=cast(DiagnosticCredentialLease, object()),
+        credential=credential(),
         model=lambda: None,
         budget=BUDGET,
         now=lambda: NOW,

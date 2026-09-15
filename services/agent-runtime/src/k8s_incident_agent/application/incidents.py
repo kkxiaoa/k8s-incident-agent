@@ -3,6 +3,7 @@ import binascii
 import json
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
@@ -258,11 +259,25 @@ class IncidentApplicationService:
                 incident_id,
                 run_id=run_id,
                 event_limit=100,
+                now=self._now(),
             )
         except RunNotFoundRepositoryError:
             raise RunNotFoundError from None
         if detail is None:
             raise IncidentNotFoundError
+        if detail.actions is None:
+            raise RuntimeNotReadyError
+        try:
+            self._require_diagnostic_readiness()
+        except (RuntimeNotReadyError, DiagnosisUnavailableError):
+            detail = replace(
+                detail,
+                actions=detail.actions.model_copy(
+                    update={
+                        "rerun": detail.actions.rerun or "diagnosis_unavailable",
+                    }
+                ),
+            )
         return _incident_detail_response(detail)
 
     async def list_runs(
@@ -466,6 +481,7 @@ def _approval_response(repair: IncidentRepairDetail | None) -> ApprovalResponse 
 
 
 def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailResponse:
+    assert detail.actions is not None
     incident = detail.incident
     diagnosis = None
     if detail.diagnosis is not None:
@@ -582,7 +598,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
         repair=repair,
         approval=_approval_response(detail.repair),
         verification=detail.repair.verification if detail.repair is not None else None,
-        run_creation_blocked=detail.run_creation_blocked,
+        actions=detail.actions,
         alert_signal=alert_signal,
         event_cursor=str(detail.event_cursor),
     )

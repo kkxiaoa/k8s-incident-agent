@@ -1,4 +1,5 @@
 import type { IncidentStatus, RunStatus } from "@/lib/agent-runtime/view-models";
+import { ShimmerText } from "@/components/ui/shimmer-text";
 import {
   incidentStatusLabel,
   runStatusLabel,
@@ -20,6 +21,9 @@ function tone(status: IncidentStatus | RunStatus): string {
   }
   if (
     status === "TRIAGING" ||
+    status === "QUEUED" ||
+    status === "APPLYING" ||
+    status === "VERIFYING" ||
     status === "PATCH_READY" ||
     status === "RUNNING"
   ) {
@@ -29,9 +33,11 @@ function tone(status: IncidentStatus | RunStatus): string {
 }
 
 export function IncidentStatusBadge({ status }: { status: IncidentStatus }) {
-  return <span className={tone(status)}>{incidentStatusLabel(status)}</span>;
+  const className = tone(status);
+  return <span className={className}><ShimmerText active={className === "status-badge status-badge--active"}>{incidentStatusLabel(status)}</ShimmerText></span>;
 }
 
 export function RunStatusBadge({ status }: { status: RunStatus }) {
-  return <span className={tone(status)}>{runStatusLabel(status)}</span>;
+  const className = tone(status);
+  return <span className={className}><ShimmerText active={className === "status-badge status-badge--active"}>{runStatusLabel(status)}</ShimmerText></span>;
 }

@@ -1,9 +1,10 @@
+import Link from "next/link";
 import { LocalTimestamp } from "@/components/local-timestamp";
+import type { ReactNode } from "react";
 import { UiIcon } from "@/components/ui/ui-icon";
+import { ShimmerText } from "@/components/ui/shimmer-text";
 import type { IncidentDetailView } from "@/lib/agent-runtime/response-contracts";
 import { evidenceSummary, targetLabel } from "@/lib/agent-runtime/view-models";
-
-import { JsonViewer } from "./json-viewer";
 
 const FAILURE_LABELS: Readonly<Record<string, string>> = {
   repair_schema_invalid: "Schema 校验未通过",
@@ -42,10 +43,16 @@ export function RepairPanel({
   detail,
   pending,
   refreshError,
+  children,
+  onRefresh,
+  refreshing = false,
 }: {
   detail: IncidentDetailView;
   pending: boolean;
   refreshError: string | null;
+  children?: ReactNode;
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }) {
   const { repair, selectedRun, evidence } = detail;
   const verification = detail.verification;
@@ -62,6 +69,11 @@ export function RepairPanel({
     REJECTED: "执行被明确拒绝",
     UNKNOWN: "写入结果未知，目标保持占用；禁止重试或自动回滚",
   }[execution.status] : detail.approval?.decision === "reject" ? "修复已被拒绝，未执行" : null;
+  const running = selectedRun.status === "QUEUED" || selectedRun.status === "RUNNING";
+  const expired = selectedRun.endReason === "expired" || detail.actions.approve === "proposal_expired";
+  const ended = detail.approval?.decision === "reject" || selectedRun.endReason != null || expired;
+  const tone = executionFailed || verificationFailed || repair?.validation.outcome === "failed" ? "failed"
+    : ended ? "neutral" : verification?.outcome === "recovered" ? "success" : "neutral";
   const error = repair?.validation.error ?? selectedRun.error;
   const failure = error === null ? undefined : FAILURE_LABELS[error.code];
   const active = selectedRun.status === "QUEUED" || selectedRun.status === "RUNNING" || selectedRun.status === "WAITING_APPROVAL";
@@ -95,26 +107,29 @@ export function RepairPanel({
     <section className="console-section repair-panel" aria-labelledby="repair-heading">
       <div className="section-heading">
         <div>
-          <span className="eyebrow">Repair validation</span>
-          <h2 id="repair-heading">修复验证</h2>
+          <span className="eyebrow">{selectedRun.kind === "diagnosis" ? "Read-only suggestion" : rollback ? "Rollback" : "Repair workflow"}</span>
+          <h2 id="repair-heading">{selectedRun.kind === "diagnosis" ? "修复建议" : rollback ? "回滚处置" : "修复处置"}</h2>
         </div>
-        <span className="repair-run-label">第 {selectedRun.attempt} 次运行 · {selectedRun.kind === "diagnosis" ? "只读建议" : selectedRun.operation === "rollback" ? "回滚提案" : "修复提案"}</span>
+        <div className="repair-panel__tools">{onRefresh ? <button type="button" className="secondary-button" onClick={onRefresh} disabled={refreshing}>检查最新状态</button> : null}
+        <span className="repair-run-label">第 {selectedRun.attempt} 次运行 · {selectedRun.kind === "diagnosis" ? "只读建议" : selectedRun.operation === "rollback" ? "回滚提案" : "修复提案"}</span></div>
       </div>
 
-      {selectedRun.sourceRunId ? <p><Link href={`/incidents/${detail.incident.id}?runId=${selectedRun.sourceRunId}`}>查看来源运行</Link></p> : null}
+      {selectedRun.sourceRunId ? <p className="repair-source">基于已保存的{rollback ? "原修复" : "来源"}记录生成 · {rollback
+        ? <Link href={`/incidents/${detail.incident.id}?runId=${selectedRun.sourceRunId}`}>查看原修复运行</Link>
+        : <a href="#diagnosis-heading">查看诊断依据</a>}</p> : null}
       {selectedRun.endReason ? <p role="status">{{ expired: "提案已过期，需要重新准备。", superseded: "本次等待已被新的运行替换。", rejected: "本次修复申请已被拒绝。", execution_expired: "执行许可已到期，需要重新准备。" }[selectedRun.endReason]}</p> : null}
       {selectedRun.status === "WAITING_APPROVAL" && selectedRun.waitingExpiresAt ? <p>等待期限：<LocalTimestamp timestamp={selectedRun.waitingExpiresAt} /></p> : null}
 
       {refreshError !== null ? (
         <p className="page-alert" role="status">修复详情暂不可用</p>
       ) : pending ? (
-        <p className="empty-state" role="status">正在读取持久化的修复验证结果…</p>
+        <p role="status"><ShimmerText>正在读取持久化的修复验证结果…</ShimmerText></p>
       ) : repair === null ? (
         <>
-          <div className="repair-empty">
+          <div id="repair-preparation" className="repair-empty">
             <UiIcon name={failure === undefined ? "info" : "close"} />
             <div>
-              <p>{failure ?? (active ? "修复验证结果尚未生成。" : "本次运行未生成修复提案。")}</p>
+              <p><ShimmerText active={running}>{failure ?? (active ? "修复验证结果尚未生成。" : "本次运行未生成修复提案。")}</ShimmerText></p>
               {failure === undefined ? (
                 <span>只有 Evidence 支持的镜像变更才会进入修复验证。</span>
               ) : (
@@ -132,11 +147,10 @@ export function RepairPanel({
         </>
       ) : (
         <>
-          <div className={`repair-verdict${executionFailed || verificationFailed || repair.validation.outcome === "failed" ? " repair-verdict--failed" : ""}`}>
-            <span className="repair-verdict__icon"><UiIcon name={verification?.outcome === "observing" ? "activity" : executionFailed || verificationFailed || repair.validation.outcome === "failed" ? "close" : "check"} /></span>
+          <div id="repair-execution" className={`repair-verdict repair-verdict--${tone}`} data-running={running}>
             <div>
               {rollback && execution?.status === "APPLIED" ? <p>批准的逆向写入已完成；恢复结果单独判定。</p> : null}
-              <strong>{verification ? {
+              <strong><ShimmerText active={running}>{verification ? {
                 observing: "写入已确认，正在观察恢复",
                 recovered: "工作负载与告警恢复已验证",
                 workload_failed: "工作负载未恢复，验证已停止",
@@ -144,9 +158,12 @@ export function RepairPanel({
                 insufficient_evidence: "有效观测不足，无法证明恢复",
                 target_drift: "目标已发生后续变化，验证已停止",
                 timeout: "恢复验证已超时",
-              }[verification.outcome] : executionMessage ?? (repair.validation.outcome === "passed"
-                ? "已通过验证，尚未批准或执行"
-                : "验证未通过，尚未批准或执行")}</strong>
+              }[verification.outcome] : executionMessage ?? (expired ? "提案已过期，未执行"
+                : selectedRun.endReason === "superseded" ? "本次提案已被新的运行替换"
+                : repair.validation.outcome === "failed" ? "验证未通过，尚未批准或执行"
+                : selectedRun.kind === "diagnosis" ? "只读建议已保存，需重新准备后才能审批"
+                : selectedRun.status === "WAITING_APPROVAL" ? "提案已准备，等待人工审批"
+                : "检查记录已保存，尚未批准或执行")}</ShimmerText></strong>
               <p>{verification ? "恢复结论仅覆盖已观察的 Kubernetes 工作负载与相关告警，不证明业务请求或数据正确性。" : "本次运行的验证快照，不代表目标当前状态。Dry-run 不证明应用已经恢复。"}</p>
               {verification ? <p>已保存 {verification.sampleCount} 次观测 · 验证截止 <LocalTimestamp timestamp={verification.deadlineAt} />{verification.healthySince ? <> · 本段健康窗口起于 <LocalTimestamp timestamp={verification.healthySince} /></> : null}</p> : null}
               {verification?.reason ? <p>当前判据：{{ rollout_pending: "等待本次 rollout 完成", workload_unhealthy: "工作负载尚未稳定", sample_missing: "缺少有效 Kubernetes 观测", sample_gap: "观测中断，重新累计健康窗口", monitoring_unavailable: "监控链路或规则不可用", metrics_missing_or_stale: "目标原始指标缺失或陈旧", alerts_active: "相关告警仍处于 pending/firing", occurrence_not_resolved: "尚未收到本次告警解除通知", target_drift: "目标 UID、镜像或 generation 已改变", deadline_exceeded: "达到原始验证期限" }[verification.reason]}</p> : null}
@@ -159,7 +176,7 @@ export function RepairPanel({
           <div className="repair-workbench">
             <div className="repair-change">
               <div className="repair-subheading">
-                <h3>镜像变更提案</h3>
+                <h3>{detail.approval?.decision === "reject" ? "本次未执行的提案" : execution ? "本次批准的变更" : "镜像变更提案"}</h3>
                 <span>1 个容器 · 1 个字段</span>
               </div>
               <p className="repair-target">{targetLabel(repair.target)}</p>
@@ -170,7 +187,7 @@ export function RepairPanel({
 
               <div className="repair-diff" aria-label="镜像修改对比">
                 <div className="repair-diff__before">
-                  <span className="repair-diff__label">当前镜像 <span>观察值</span></span>
+                  <span className="repair-diff__label">准备时镜像 <span>观察值</span></span>
                   <code tabIndex={0}>{repair.diff.before}</code>
                 </div>
                 <div className="repair-diff__after">
@@ -178,6 +195,13 @@ export function RepairPanel({
                   <span className="repair-diff__label">{rollback ? "还原镜像" : "建议镜像"} <span>{rollback ? "原执行 before image" : "上一 revision"}</span></span>
                   <code tabIndex={0}>{repair.diff.after}</code>
                 </div>
+              </div>
+
+              <div className="repair-impact">
+                <h3>风险与影响</h3>
+                <p>{rollback
+                  ? "回滚需要单独批准，会触发滚动更新并可能降低可用性。原镜像可能正是故障来源；可变 tag 仅还原引用，不保证相同镜像字节或应用健康。"
+                  : "若未来获批执行，镜像变更会触发 Deployment 滚动更新，可能影响可用性。历史镜像不保证当前配置下的应用健康。"}</p>
               </div>
 
               <div className="repair-evidence">
@@ -197,19 +221,10 @@ export function RepairPanel({
                 </ul>
               </div>
 
-              <div className="repair-impact">
-                <h3>风险与影响</h3>
-                <p>{rollback
-                  ? "回滚需要单独批准，会触发滚动更新并可能降低可用性。原镜像可能正是故障来源；可变 tag 仅还原引用，不保证相同镜像字节或应用健康。"
-                  : "若未来获批执行，镜像变更会触发 Deployment 滚动更新，可能影响可用性。历史镜像不保证当前配置下的应用健康。"}</p>
-              </div>
             </div>
 
-            <div className="repair-receipt">
-              <div className="repair-subheading">
-                <h3>验证记录</h3>
-                <span>只验证，不执行</span>
-              </div>
+            <details id="repair-preparation" className="repair-record" open={repair.validation.outcome === "failed"}>
+              <summary>准备检查记录<span>{repair.validation.outcome === "passed" ? "4 项已通过 · 查看记录" : "检查未通过 · 查看记录"}</span></summary>
               {gateList}
               {repair.validation.outcome === "failed" ? (
                 <div className="repair-failure">
@@ -223,13 +238,30 @@ export function RepairPanel({
               ) : (
                 <p className="repair-receipt__note">以上为已保存的门禁结果，并非恢复证明。</p>
               )}
-            </div>
+            </details>
           </div>
 
+          {detail.approval ? <details className="repair-record">
+            <summary>审批与执行记录<span>查看本次保存的决定和回执</span></summary>
+            <dl className="repair-facts">
+              <div><dt>审批决定</dt><dd>{detail.approval.decision === "approve" ? "已批准" : "已拒绝"}</dd></div>
+              <div><dt>决定时间</dt><dd><LocalTimestamp timestamp={detail.approval.decidedAt} /></dd></div>
+              {execution ? <>
+                <div><dt>执行状态</dt><dd>{execution.status}</dd></div>
+                <div><dt>领取时间</dt><dd>{execution.claimedAt ? <LocalTimestamp timestamp={execution.claimedAt} /> : "尚未领取"}</dd></div>
+                <div><dt>结果回报时间</dt><dd>{execution.reportedAt ? <LocalTimestamp timestamp={execution.reportedAt} /> : "尚无回报"}</dd></div>
+                {execution.result?.receipt ? <>
+                  <div><dt>回执 UID</dt><dd><code>{execution.result.receipt.uid}</code></dd></div>
+                  <div><dt>返回资源版本</dt><dd><code>{execution.result.receipt.resourceVersion}</code></dd></div>
+                  <div><dt>generation</dt><dd>{execution.result.receipt.generation}</dd></div>
+                </> : <div><dt>可信写入回执</dt><dd>未取得，不能据此确认写入</dd></div>}
+              </> : <div><dt>执行记录</dt><dd>未创建</dd></div>}
+            </dl>
+          </details> : null}
           <details className="repair-technical">
             <summary>
               <span><UiIcon name="chevron-right" />目标约束与 JSON Patch</span>
-              <span className="repair-technical__hint">只读技术详情</span>
+
             </summary>
             <div className="repair-technical__body">
               <div>
@@ -245,13 +277,13 @@ export function RepairPanel({
                 </dl>
               </div>
               <div>
-                <JsonViewer title="JSON Patch" json={JSON.stringify(repair.patch, null, 2)} />
+                <pre className="repair-patch" tabIndex={0} aria-label="只读 JSON Patch"><code>{JSON.stringify(repair.patch, null, 2)}</code></pre>
               </div>
             </div>
           </details>
         </>
       )}
+      <div id="repair-decision">{children}</div>
     </section>
   );
 }
-import Link from "next/link";

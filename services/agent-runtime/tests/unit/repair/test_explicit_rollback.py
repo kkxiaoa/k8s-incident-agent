@@ -394,7 +394,10 @@ async def test_failed_inverse_keeps_target_occupied_and_cannot_be_rollback_sourc
         assert response.status_code == 200, response.text
         assert response.json()["selectedRun"]["status"] == "FAILED"
         assert response.json()["verification"] is None
-        assert response.json()["runCreationBlocked"] is True
+        assert response.json()["actions"]["rerun"] == "execution_held"
+        assert response.json()["actions"]["refresh"] is not None
+        assert response.json()["actions"]["edit"] == "not_applicable"
+        assert response.json()["actions"]["rollback"] == "not_applicable"
         assert (
             await harness.repository.list_prune_targets(
                 harness.now() + timedelta(days=8),

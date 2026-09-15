@@ -1,4 +1,5 @@
 import { LocalTimestamp } from "@/components/local-timestamp";
+import { ShimmerText } from "@/components/ui/shimmer-text";
 import type {
   IncidentStreamConnection,
   RunEventStreamItem,
@@ -166,15 +167,11 @@ export function RunTimeline({
         <p
           className={`empty-state empty-state--panel${streamCanBeRunning ? " timeline-waiting" : ""}`}
         >
-          <span
-            className={
-              streamCanBeRunning ? "timeline-waiting__text" : undefined
-            }
-          >
+          <ShimmerText active={streamCanBeRunning}>
             {connection === "invalid"
                 ? "事件流已停止，未收到有效运行事件。"
                 : "正在等待持久化运行事件"}
-          </span>
+          </ShimmerText>
         </p>
       ) : (
         <ol className="timeline">
@@ -197,7 +194,7 @@ export function RunTimeline({
                     <strong>{copy.title}</strong>
                     <div className="timeline__event-meta">
                       {isRunning ? (
-                        <span className="timeline__activity">运行中</span>
+                        <span className="timeline__activity"><ShimmerText>运行中</ShimmerText></span>
                       ) : null}
                       <code>#{event.id}</code>
                     </div>

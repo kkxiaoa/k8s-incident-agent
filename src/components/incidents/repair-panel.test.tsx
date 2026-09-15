@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { parseIncidentDetailResponse } from "@/lib/agent-runtime/response-contracts";
 import { makeWaitingApprovalIncidentDetail, makeRepairRunWaitingDetail, makeRecoveryDetail, makeRollbackRecoveryDetail } from "@/test/agent-runtime-fixtures";
@@ -21,7 +21,8 @@ describe("read-only repair validation", () => {
     expect(screen.getByText("原执行 before image")).toBeVisible();
     expect(screen.queryByText("上一 revision")).toBeNull();
     expect(screen.getByText(outcome === "recovered" ? "工作负载与告警恢复已验证" : "监控链路不可用，无法证明恢复")).toBeVisible();
-    expect(screen.getByRole("link", { name: "查看来源运行" })).toHaveAttribute("href", `/incidents/${value.incident.id}?runId=${value.selectedRun.sourceRunId}`);
+    expect(screen.getByRole("link", { name: "查看原修复运行" })).toHaveAttribute("href", `/incidents/${value.incident.id}?runId=${value.selectedRun.sourceRunId}`);
+    expect(document.querySelector(".repair-verdict__icon")).toBeNull();
   });
   it.each([
     ["observing", "写入已确认，正在观察恢复"],
@@ -50,15 +51,15 @@ describe("read-only repair validation", () => {
       execution: { id: value.repair!.id, status, startBefore: "2026-09-13T01:00:30Z", claimedAt: "2026-09-13T01:00:01Z", reportedAt: status === "APPLIED" ? "2026-09-13T01:00:02Z" : null, result: status === "APPLIED" ? { outcome: "APPLIED", error: null, receipt: { uid: value.repair!.targetUid, resourceVersion: "patched-rv", generation: 4, beforeGeneration: 3 } } : null, lateResult: null },
     };
     render(<RepairPanel detail={value} pending={false} refreshError={null} />);
-    const panel = screen.getByRole("region", { name: "修复验证" });
+    const panel = screen.getByRole("region", { name: "修复处置" });
     expect(panel).toHaveTextContent(label);
     expect(panel).not.toHaveTextContent("尚未批准或执行");
   });
   it("shows the recorded change, gates, impact and owner-bound Evidence without execution controls", async () => {
     const value = detail();
     render(<RepairPanel detail={value} pending={false} refreshError={null} />);
-    const panel = screen.getByRole("region", { name: "修复验证" });
-    expect(panel).toHaveTextContent("已通过验证，尚未批准或执行");
+    const panel = screen.getByRole("region", { name: "修复建议" });
+    expect(panel).toHaveTextContent("只读建议已保存，需重新准备后才能审批");
     expect(panel).toHaveTextContent("不证明应用已经恢复");
     expect(panel).toHaveTextContent(value.repair!.targetResourceVersion);
     expect(panel).toHaveTextContent(value.repair!.diff.before);
@@ -74,33 +75,16 @@ describe("read-only repair validation", () => {
     expect(within(panel).getByLabelText("只读 JSON Patch")).toHaveTextContent('"op": "replace"');
   });
 
-  it("copies the exact saved Patch from the inline and expanded read-only views", async () => {
+  it("shows the exact saved Patch read-only without redundant copy or expand controls", async () => {
     const value = detail();
     const json = JSON.stringify(value.repair!.patch, null, 2);
     const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
     render(<RepairPanel detail={value} pending={false} refreshError={null} />);
-    const panel = screen.getByRole("region", { name: "修复验证" });
+    const panel = screen.getByRole("region", { name: "修复建议" });
     await user.click(within(panel).getByText("目标约束与 JSON Patch"));
     expect(within(panel).getByLabelText("只读 JSON Patch").textContent).toBe(json);
-    await user.click(within(panel).getByRole("button", { name: "复制 JSON" }));
-    expect(writeText).toHaveBeenLastCalledWith(json);
-    expect(within(panel).getByRole("button", { name: "JSON 已复制" })).toBeVisible();
-
-    await user.click(within(panel).getByRole("button", { name: "展开 JSON" }));
-    const dialog = screen.getByRole("dialog", { name: "JSON Patch" });
-    expect(dialog.querySelector("code")?.textContent).toBe(json);
-    expect(dialog.querySelector("input, textarea, [contenteditable]")).toBeNull();
-    await user.click(within(dialog).getByRole("button", { name: "复制 JSON" }));
-    expect(writeText).toHaveBeenCalledTimes(2);
-    expect(writeText).toHaveBeenLastCalledWith(json);
-    expect(within(dialog).getByRole("status")).toHaveTextContent("JSON 已复制");
-    await user.click(within(dialog).getByRole("button", { name: "关闭" }));
-    expect(dialog).not.toHaveAttribute("open");
+    expect(panel.querySelector("input, textarea, [contenteditable]")).toBeNull();
+    expect(within(panel).queryByRole("button", { name: /复制 JSON|展开 JSON/ })).toBeNull();
   });
 
   it.each([
@@ -158,7 +142,7 @@ describe("read-only repair validation", () => {
     const value = detail();
     value.incident.status = "FAILED";
     render(<RepairPanel detail={value} pending={false} refreshError={null} />);
-    expect(screen.getByText("已通过验证，尚未批准或执行")).toBeInTheDocument();
+    expect(screen.getByText("只读建议已保存，需重新准备后才能审批")).toBeInTheDocument();
   });
 
   it("distinguishes no proposal, pending snapshot and unavailable detail", () => {

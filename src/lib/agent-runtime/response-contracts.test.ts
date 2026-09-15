@@ -18,6 +18,17 @@ import {
   parseRuntimeHealthResponse,
 } from "./response-contracts";
 
+it("requires authoritative action availability and preserves int64 candidate identities", () => {
+  const detail = makeWaitingApprovalIncidentDetail();
+  detail.actions.historyCandidates[0].revision = "9223372036854775806";
+  expect(parseIncidentDetailResponse(detail)?.actions.historyCandidates[0].revision).toBe("9223372036854775806");
+  expect(parseIncidentDetailResponse({ ...detail, actions: undefined })).toBeNull();
+  expect(parseIncidentDetailResponse({ ...detail, actions: { ...detail.actions, approve: "unknown_state" } })).toBeNull();
+  for (const revision of [9223372036854775806, "9223372036854775808", "0", "01"]) {
+    expect(parseIncidentDetailResponse({ ...detail, actions: { ...detail.actions, historyCandidates: [{ ...detail.actions.historyCandidates[0], revision }] } })).toBeNull();
+  }
+});
+
 it.each(["observing", "recovered", "monitoring_unavailable"] as const)("keeps rollback %s separate from inverse completion and binds its source", (outcome) => {
   const value = makeRollbackRecoveryDetail(outcome);
   expect(parseIncidentDetailResponse(value)?.verification).toEqual(value.verification);
@@ -53,11 +64,11 @@ it("preserves UNKNOWN and late receipt evidence with exact Run/proposal binding"
     decision: "approve", actor: "sandbox-operator", decidedAt: "2026-09-13T01:00:00Z", expiresAt: "2026-09-13T01:15:00Z",
     execution: { id: value.repair!.id, status: "UNKNOWN", startBefore: "2026-09-13T01:00:30Z", claimedAt: "2026-09-13T01:00:01Z", reportedAt: "2026-09-13T01:01:00Z", result: null, lateResult: { outcome: "APPLIED", receipt, error: null } },
   };
-  const response = { ...value, approval, runCreationBlocked: true, selectedRun: { ...value.selectedRun, status: "FAILED", error: { code: "execution_outcome_unknown", retryable: false } }, incident: { ...value.incident, status: "FAILED" } };
+  const response = { ...value, approval, actions: { ...value.actions, approve: "not_applicable", reject: "not_applicable", refresh: "not_applicable", edit: "not_applicable", rerun: "execution_held" }, selectedRun: { ...value.selectedRun, status: "FAILED", error: { code: "execution_outcome_unknown", retryable: false } }, incident: { ...value.incident, status: "FAILED" } };
   const parsed = parseIncidentDetailResponse(response);
   expect(parsed?.approval).toEqual(approval);
-  expect(parsed?.runCreationBlocked).toBe(true);
-  expect(parseIncidentDetailResponse({ ...response, runCreationBlocked: undefined })).toBeNull();
+  expect(parsed?.actions.rerun).toBe("execution_held");
+  expect(parseIncidentDetailResponse({ ...response, actions: undefined })).toBeNull();
   expect(parseIncidentDetailResponse({ ...response, approval: { ...approval, runId: value.incident.id } })).toBeNull();
   expect(parseIncidentDetailResponse({ ...response, approval: { ...approval, execution: { ...approval.execution, status: "APPLIED" } } })).toBeNull();
 });

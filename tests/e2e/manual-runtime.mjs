@@ -16,12 +16,13 @@ const vite = await createServer({
   appType: "custom",
 });
 try {
-  const { startFakeRuntime } = await vite.ssrLoadModule("/tests/e2e/fake-runtime.ts");
+  const { startFakeRuntime, seedManualRepairShowcase } = await vite.ssrLoadModule("/tests/e2e/fake-runtime.ts");
   const runtime = await startFakeRuntime(18080, {
     verifierFile,
     pythonExecutable: fileURLToPath(new URL("../../services/agent-runtime/.venv/bin/python", import.meta.url)),
     origin: "http://127.0.0.1:3000",
   });
+  const count = seedManualRepairShowcase();
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
@@ -32,6 +33,7 @@ try {
   process.once("SIGINT", () => { void stop(); });
   process.once("SIGTERM", () => { void stop(); });
   console.log("Fake Runtime ready: http://127.0.0.1:18080 (test data only; no cluster access)");
+  console.log(`Manual repair showcase: ${count} Task 7–10 cases available in the Incident list.`);
 } catch {
   await vite.close();
   console.error("Fake Runtime startup failed. Check the verifier file, Runtime virtualenv and port 18080.");

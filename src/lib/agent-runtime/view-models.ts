@@ -15,6 +15,18 @@ export type EvidenceResponse = EvidenceView;
 export type DiagnosisResponse = DiagnosisView;
 export type RunErrorResponse = RunErrorView;
 
+export const ACTION_UNAVAILABLE_LABELS: Record<Exclude<components["schemas"]["IncidentActions"]["approve"], null>, string> = {
+  not_applicable: "当前运行不适用此操作。",
+  active_run: "此 Incident 仍有活跃运行，请等待或查看最新运行。",
+  execution_held: "目标仍被本次执行占用；请核对执行与恢复记录，不要重复执行。",
+  target_occupied: "另一次执行仍占用此目标，暂时不能批准。",
+  execution_disabled: "当前环境未启用审批执行，正式批准与拒绝均不可用。",
+  outside_scope: "目标不在获准的固定执行沙箱内。",
+  proposal_expired: "提案等待期限已失效，请重新准备；这不是登录会话过期。",
+  no_history_candidates: "当前保存的证据中没有可选择的历史镜像，请重新准备或诊断。",
+  diagnosis_unavailable: "模型诊断暂不可用，已保存的诊断与修复操作不受影响。",
+};
+
 const INCIDENT_STATUS_LABELS: Record<IncidentStatus, string> = {
   RECEIVED: "已接收",
   TRIAGING: "诊断中",

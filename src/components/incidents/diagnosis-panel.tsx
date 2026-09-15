@@ -6,6 +6,8 @@ import type {
 } from "@/lib/agent-runtime/view-models";
 import { evidenceSummary } from "@/lib/agent-runtime/view-models";
 import { UiIcon } from "@/components/ui/ui-icon";
+import { LocalTimestamp } from "@/components/local-timestamp";
+import { ShimmerText } from "@/components/ui/shimmer-text";
 
 const CONFIDENCE_LABELS = {
   low: "低置信度",
@@ -18,18 +20,28 @@ export function DiagnosisPanel({
   evidence = [],
   runStatus,
   runError,
+  referenceRunAttempt,
+  runCompletedAt,
 }: {
   diagnosis: DiagnosisResponse | null;
   evidence?: EvidenceResponse[];
   runStatus: RunStatus;
   runError: RunErrorResponse | null;
+  referenceRunAttempt?: number;
+  runCompletedAt?: string | null;
 }) {
+  const provenance = <p className="diagnosis-provenance">
+    {referenceRunAttempt === undefined ? "本次运行产生" : `引用第 ${referenceRunAttempt} 次诊断运行`}
+    {runCompletedAt ? <> · 运行结束于 <LocalTimestamp timestamp={runCompletedAt} /></> : null}
+    {referenceRunAttempt === undefined ? null : <span>历史诊断结论，不代表重新诊断或目标当前状态。</span>}
+  </p>;
   if (diagnosis === null) {
     if (runStatus === "FAILED") {
       return (
         <section className="console-section diagnosis-panel" aria-labelledby="diagnosis-heading">
           <span className="eyebrow eyebrow--danger">Terminal</span>
           <h2 id="diagnosis-heading">诊断运行失败</h2>
+          {provenance}
           <p>Runtime 保留了失败终态，没有生成诊断结论。</p>
           {runError === null ? null : (
             <dl className="failure-detail">
@@ -51,7 +63,8 @@ export function DiagnosisPanel({
       <section className="console-section diagnosis-panel" aria-labelledby="diagnosis-heading">
         <span className="eyebrow">Model inference</span>
         <h2 id="diagnosis-heading">诊断结论</h2>
-        <p className="empty-state empty-state--panel">诊断尚未生成。</p>
+        {provenance}
+        <p className={runStatus === "QUEUED" || runStatus === "RUNNING" ? undefined : "empty-state empty-state--panel"}><ShimmerText active={runStatus === "QUEUED" || runStatus === "RUNNING"}>{runStatus === "COMPLETED" ? "未保存诊断结论。" : "诊断尚未生成。"}</ShimmerText></p>
       </section>
     );
   }
@@ -75,6 +88,8 @@ export function DiagnosisPanel({
           {diagnosis.outcome === "diagnosed" ? "已诊断" : "证据不足"}
         </span>
       </div>
+
+      {provenance}
 
       {diagnosis.redacted ? (
         <p className="safety-callout">诊断文本已脱敏</p>
@@ -117,7 +132,7 @@ export function DiagnosisPanel({
                             )}
                           </span>
                           <a
-                            href={`#evidence-${evidenceId}`}
+                            href={`#${referenceRunAttempt === undefined ? "evidence" : "source-evidence"}-${evidenceId}`}
                             aria-label={`查看证据：${label}`}
                           >
                             查看证据
