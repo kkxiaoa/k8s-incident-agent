@@ -34,7 +34,8 @@ class PreparedRepairRecord:
             return
         if (
             self.proposal.run_id != self.run_id
-            or self.selection is None
+            or (self.selection is None)
+            != (self.proposal.change.source_execution_id is not None)
             or self.validation is None
             or self.validation.proposal_id != self.proposal.id
             or self.validation.run_id != self.run_id

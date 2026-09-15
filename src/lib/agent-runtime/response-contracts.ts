@@ -292,6 +292,7 @@ function isIncidentStatus(
     value === "APPLYING" ||
     value === "VERIFYING" ||
     value === "RESOLVED" ||
+    value === "ROLLED_BACK" ||
     value === "REJECTED" ||
     value === "INSUFFICIENT_EVIDENCE" ||
     value === "STALE_RESOURCE" ||
@@ -690,9 +691,10 @@ function parseRepairProposal(value: unknown): RepairProposalView | null {
     !isTimestamp(value.policyCheckedAt) ||
     !isTimestamp(value.diffCheckedAt) ||
     !Array.isArray(value.evidenceIds) ||
-    value.evidenceIds.length !== 2 ||
+    (value.sourceExecutionId != null && !isUuid(value.sourceExecutionId)) ||
+    value.evidenceIds.length !== (value.sourceExecutionId != null ? 1 : 2) ||
     !value.evidenceIds.every(isUuid) ||
-    new Set(value.evidenceIds).size !== 2 ||
+    new Set(value.evidenceIds).size !== value.evidenceIds.length ||
     !Array.isArray(value.patch) ||
     value.patch.length !== 5 ||
     !isObject(value.target) ||
@@ -764,6 +766,7 @@ function parseRepairProposal(value: unknown): RepairProposalView | null {
     currentImage: value.currentImage,
     replacementImage: value.replacementImage,
     evidenceIds: value.evidenceIds,
+    ...(value.sourceExecutionId !== undefined ? { sourceExecutionId: value.sourceExecutionId as string | null } : {}),
     patch: patch as ApiRepairPatchOperation[],
     digest: value.digest,
     diff: {
@@ -949,7 +952,7 @@ export function parseIncidentDetailResponse(
     (value.approval != null && approval === null) ||
     (value.verification != null && verification === null) ||
     (verification !== null && (selectedRun.kind !== "repair" || approval?.execution?.status !== "APPLIED" ||
-      verification.executionId !== approval.execution.id || approval.execution.reportedAt === null || Date.parse(verification.startedAt) !== Date.parse(approval.execution.reportedAt) || selectedRun.status !== (verification.outcome === "observing" ? "RUNNING" : verification.outcome === "recovered" ? "COMPLETED" : "FAILED"))) ||
+      verification.executionId !== approval.execution.id || approval.execution.reportedAt === null || Date.parse(verification.startedAt) !== Date.parse(approval.execution.reportedAt) || selectedRun.status !== (verification.outcome === "observing" ? "RUNNING" : verification.outcome === "recovered" || selectedRun.operation === "rollback" ? "COMPLETED" : "FAILED"))) ||
     (approval !== null && (selectedRun.kind !== "repair" || approval.runId !== selectedRun.id || approval.proposalId !== repair?.id || approval.proposalDigest !== repair?.digest)) ||
     (value.alertSignal !== null && alertSignal === null) ||
     (incident.source.type === "scenario" && value.alertSignal !== null) ||
@@ -964,6 +967,8 @@ export function parseIncidentDetailResponse(
     const passed = repair.validation.outcome === "passed";
     if (
       (selectedRun.kind === "diagnosis" && diagnosis?.outcome !== "diagnosed") ||
+      (selectedRun.operation === "rollback") !== (repair.sourceExecutionId != null) ||
+      (repair.sourceExecutionId != null && (!selectedRun.sourceRunId || repair.sourceExecutionId === approval?.execution?.id)) ||
       repair.target.kind !== incident.target.kind ||
       repair.target.namespace !== incident.target.namespace ||
       repair.target.name !== incident.target.name ||

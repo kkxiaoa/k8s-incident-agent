@@ -188,6 +188,7 @@ class IncidentApplicationService:
             created = await self._repository.create_repair_run(
                 incident_id,
                 request.source_run_id,
+                source_execution_id=request.source_execution_id,
                 selection=selection,
                 replaces_run_id=request.replaces_run_id,
                 operator_ref=operator_ref,
@@ -515,6 +516,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             current_image=proposal.current_image,
             replacement_image=proposal.replacement_image,
             evidence_ids=proposal.evidence_ids,
+            source_execution_id=proposal.change.source_execution_id,
             patch=tuple(
                 RepairPatchOperationResponse(
                     op=operation.op,

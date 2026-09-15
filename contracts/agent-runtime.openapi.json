@@ -541,6 +541,18 @@
               }
             ]
           },
+          "sourceExecutionId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceexecutionid"
+          },
           "sourceRunId": {
             "format": "uuid",
             "title": "Sourcerunid",
@@ -1737,6 +1749,7 @@
           "APPLYING",
           "VERIFYING",
           "RESOLVED",
+          "ROLLED_BACK",
           "REJECTED",
           "INSUFFICIENT_EVIDENCE",
           "STALE_RESOURCE",
@@ -2604,7 +2617,7 @@
               "type": "string"
             },
             "maxItems": 2,
-            "minItems": 2,
+            "minItems": 1,
             "title": "Evidenceids",
             "type": "array"
           },
@@ -2641,6 +2654,18 @@
             "default": 1,
             "title": "Schemaversion",
             "type": "integer"
+          },
+          "sourceExecutionId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourceexecutionid"
           },
           "target": {
             "$ref": "#/components/schemas/IncidentTargetResponse"
@@ -4045,7 +4070,8 @@
             "enum": [
               "VERIFYING",
               "RESOLVED",
-              "FAILED"
+              "FAILED",
+              "ROLLED_BACK"
             ],
             "title": "Incidentstatus",
             "type": "string"

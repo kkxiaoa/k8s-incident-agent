@@ -169,6 +169,26 @@ export function makeRepairRunWaitingDetail(): IncidentDetailResponse {
   return detail;
 }
 
+export function makeRollbackRecoveryDetail(outcome: "observing" | "recovered" | "monitoring_unavailable"): IncidentDetailResponse {
+  const detail = makeRecoveryDetail(outcome);
+  detail.selectedRun.operation = "rollback";
+  detail.selectedRun.sourceRunId = RUN_ID;
+  detail.selectedRun.error = null;
+  detail.selectedRun.selection = null;
+  detail.selectedRun.status = outcome === "observing" ? "RUNNING" : "COMPLETED";
+  detail.incident.status = outcome === "observing" ? "VERIFYING" : "ROLLED_BACK";
+  detail.repair!.sourceExecutionId = "9c010d34-e10c-4c4a-a29e-83c555a832bd";
+  const repair = detail.repair!;
+  [repair.currentImage, repair.replacementImage] = [repair.replacementImage, repair.currentImage];
+  repair.diff.before = repair.currentImage;
+  repair.diff.after = repair.replacementImage;
+  repair.patch[3].value = repair.currentImage;
+  repair.patch[4].value = repair.replacementImage;
+  detail.repair!.evidenceIds = [detail.repair!.evidenceIds[0]];
+  detail.evidence = detail.evidence.filter((item) => detail.repair!.evidenceIds.includes(item.id));
+  return detail;
+}
+
 export function makeRecoveryDetail(outcome: "observing" | "recovered" | "monitoring_unavailable"): IncidentDetailResponse {
   const detail = makeRepairRunWaitingDetail();
   const appliedAt = "2026-09-14T01:00:02Z";

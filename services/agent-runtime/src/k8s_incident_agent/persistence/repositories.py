@@ -68,6 +68,7 @@ from k8s_incident_agent.execution.contracts import (
     ExecutionResult,
     ExecutionStatus,
 )
+from k8s_incident_agent.kubernetes.contracts import WorkloadObservation
 from k8s_incident_agent.persistence.canonical import canonical_json, parse_json_object
 from k8s_incident_agent.persistence.models import (
     AlertSignalRow,
@@ -83,13 +84,17 @@ from k8s_incident_agent.persistence.models import (
     RunRow,
     VerificationRow,
 )
-from k8s_incident_agent.repair.compiler import require_exact_repair_proposal
+from k8s_incident_agent.repair.compiler import (
+    RepairPreparationError,
+    require_exact_repair_proposal,
+)
 from k8s_incident_agent.repair.contracts import (
     PatchValidationResponse,
     RepairProposal,
     SetContainerImageIntent,
 )
 from k8s_incident_agent.repair.records import PreparedRepairRecord, RepairTerminalRecord
+from k8s_incident_agent.repair.rollback import RollbackSource, resolve_rollback_change
 from k8s_incident_agent.repair.verification_contracts import (
     MAX_OBSERVATION_BYTES,
     VerificationObservation,
@@ -104,7 +109,6 @@ _ACTIVE_RUN_STATUSES: Final = (
     RunStatus.RUNNING,
     RunStatus.WAITING_APPROVAL,
 )
-_OCCUPIED_EXECUTION_STATUSES: Final = ("PENDING", "CLAIMED", "APPLIED", "UNKNOWN")
 _CANONICAL_ALERT_TIMESTAMP = re.compile(CANONICAL_ALERT_TIMESTAMP_PATTERN)
 _OVERVIEW_HOUR = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
 
@@ -790,7 +794,6 @@ class IncidentRepository:
                         exists().where(
                             ExecutionRow.run_id == RunRow.id,
                             RunRow.incident_id == incident.id,
-                            ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
                             ExecutionRow.target_released_at.is_(None),
                         )
                     )
@@ -933,7 +936,6 @@ class IncidentRepository:
                 occupied = exists().where(
                     ExecutionRow.run_id == RunRow.id,
                     RunRow.incident_id == IncidentRow.id,
-                    ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
                     ExecutionRow.target_released_at.is_(None),
                 )
                 incidents = list(
@@ -1380,6 +1382,7 @@ class IncidentRepository:
         incident_id: UUID,
         source_run_id: UUID,
         *,
+        source_execution_id: UUID | None = None,
         selection: RepairHistorySelection | None,
         replaces_run_id: UUID | None,
         operator_ref: str,
@@ -1411,8 +1414,8 @@ class IncidentRepository:
                     )
                 ):
                     raise RepairSourceInvalidError
-                proposal, _ = _repair_contracts_from_row(source_row, source_run_id)
-                if proposal.target != KubernetesTarget(
+                repair = _incident_repair_detail(source_row, source_run_id)
+                if repair.proposal.target != KubernetesTarget(
                     cluster=incident.cluster,
                     namespace=incident.namespace,
                     api_version=incident.api_version,
@@ -1420,6 +1423,14 @@ class IncidentRepository:
                     name=incident.resource_name,
                 ):
                     raise RepairSourceInvalidError
+                if source_execution_id is not None:
+                    if selection is not None:
+                        raise RepairSourceInvalidError
+                    rollback = await _rollback_source(
+                        session, source, incident, repair, source_row.validation_json
+                    )
+                    if rollback.execution_id != source_execution_id:
+                        raise RepairSourceInvalidError
                 if replaces_run_id is not None:
                     await _replace_waiting_run(session, incident, replaces_run_id, now)
                 await _require_no_incident_execution(session, incident.id)
@@ -1448,7 +1459,9 @@ class IncidentRepository:
                     incident_id=incident.id,
                     attempt=previous_attempt + 1,
                     kind=RunKind.REPAIR,
-                    operation=RepairOperation.APPLY,
+                    operation=RepairOperation.ROLLBACK
+                    if source_execution_id is not None
+                    else RepairOperation.APPLY,
                     status=RunStatus.QUEUED,
                     timeout_seconds=60,
                     source_run_id=source.id,
@@ -1487,9 +1500,24 @@ class IncidentRepository:
         try:
             async with self._session_factory() as session:
                 run, incident = await _load_run_context(session, run_id)
-                return await _repair_source_proposal(session, run, incident)
+                source = await _repair_source(session, run, incident)
+                return source.proposal if isinstance(source, RollbackSource) else source
         except RepositoryError:
             raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def get_rollback_source(self, run_id: UUID) -> RollbackSource:
+        try:
+            async with self._session_factory() as session:
+                await session.execute(text("BEGIN"))
+                run, incident = await _load_run_context(session, run_id)
+                if run.operation is not RepairOperation.ROLLBACK:
+                    raise RecoveryConsistencyError
+                source = await _repair_source(session, run, incident)
+                if not isinstance(source, RollbackSource):
+                    raise RecoveryConsistencyError
+                return source
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
@@ -1505,7 +1533,18 @@ class IncidentRepository:
                     raise RecoveryConsistencyError
                 proposal, validation = prepared.proposal, prepared.validation
                 if proposal is not None and validation is not None:
-                    await _require_repair_evidence(session, run, incident, proposal)
+                    source = (
+                        await _repair_source(session, run, incident)
+                        if run.operation is RepairOperation.ROLLBACK
+                        else None
+                    )
+                    await _require_repair_evidence(
+                        session,
+                        run,
+                        incident,
+                        proposal,
+                        source if isinstance(source, RollbackSource) else None,
+                    )
                     session.add(
                         RepairProposalRow(
                             id=str(proposal.id),
@@ -1526,10 +1565,11 @@ class IncidentRepository:
                             created_at=proposal.diff_checked_at,
                         )
                     )
-                    if prepared.selection is None:
-                        raise RecoveryConsistencyError
-                    run.selection_revision = prepared.selection.revision
-                    run.selection_replica_set_uid = prepared.selection.replica_set_uid
+                    if prepared.selection is not None:
+                        run.selection_revision = prepared.selection.revision
+                        run.selection_replica_set_uid = (
+                            prepared.selection.replica_set_uid
+                        )
                 run.updated_at = prepared.recorded_at
                 incident.updated_at = prepared.recorded_at
                 run.error_code = prepared.error_code
@@ -1673,7 +1713,6 @@ class IncidentRepository:
                 self._require_execution_scope(repair.proposal)
                 if (
                     snapshot.run_status is not RunStatus.WAITING_APPROVAL
-                    or snapshot.operation is not RepairOperation.APPLY
                     or snapshot.waiting_expires_at is None
                     or not repair.validation.checked_at
                     <= decided_at
@@ -2070,22 +2109,20 @@ class IncidentRepository:
                     )
                 row.record_json = updated.model_dump_json()
                 if updated.outcome != "observing":
+                    rolled_back = rows.run.operation is RepairOperation.ROLLBACK
+                    completed = rolled_back or updated.outcome == "recovered"
                     rows.run.status = (
-                        RunStatus.COMPLETED
-                        if updated.outcome == "recovered"
-                        else RunStatus.FAILED
+                        RunStatus.COMPLETED if completed else RunStatus.FAILED
                     )
                     rows.run.completed_at = updated.completed_at
                     rows.run.error_code = (
-                        None
-                        if updated.outcome == "recovered"
-                        else f"verification_{updated.outcome}"
+                        None if completed else f"verification_{updated.outcome}"
                     )
-                    rows.run.error_retryable = (
-                        None if updated.outcome == "recovered" else False
-                    )
+                    rows.run.error_retryable = None if completed else False
                     rows.incident.status = (
-                        IncidentStatus.RESOLVED
+                        IncidentStatus.ROLLED_BACK
+                        if rolled_back
+                        else IncidentStatus.RESOLVED
                         if updated.outcome == "recovered"
                         else IncidentStatus.FAILED
                     )
@@ -2923,11 +2960,11 @@ def _require_matching_alert_occurrence(
         raise RecoveryConsistencyError
 
 
-async def _repair_source_proposal(
+async def _repair_source(
     session: AsyncSession,
     run: RunRow,
     incident: IncidentRow,
-) -> RepairProposal:
+) -> RepairProposal | RollbackSource:
     if run.kind is not RunKind.REPAIR or run.source_run_id is None:
         raise RecoveryConsistencyError
     source = await session.get(RunRow, run.source_run_id)
@@ -2945,8 +2982,8 @@ async def _repair_source_proposal(
     row = await _repair_proposal_by_run(session, UUID(source.id))
     if row is None:
         raise RecoveryConsistencyError
-    proposal, _ = _repair_contracts_from_row(row, UUID(source.id))
-    if proposal.target != KubernetesTarget(
+    repair = _incident_repair_detail(row, UUID(source.id))
+    if repair.proposal.target != KubernetesTarget(
         cluster=incident.cluster,
         namespace=incident.namespace,
         api_version=incident.api_version,
@@ -2954,7 +2991,42 @@ async def _repair_source_proposal(
         name=incident.resource_name,
     ):
         raise RecoveryConsistencyError
-    return proposal
+    if run.operation is RepairOperation.ROLLBACK:
+        try:
+            return await _rollback_source(
+                session, source, incident, repair, row.validation_json
+            )
+        except RepairSourceInvalidError:
+            raise RecoveryConsistencyError from None
+    return repair.proposal
+
+
+async def _rollback_source(
+    session: AsyncSession,
+    source: RunRow,
+    incident: IncidentRow,
+    repair: IncidentRepairDetail,
+    validation_json: str,
+) -> RollbackSource:
+    if (
+        source.incident_id != incident.id
+        or source.kind is not RunKind.REPAIR
+        or source.operation is not RepairOperation.APPLY
+        or source.status not in (RunStatus.COMPLETED, RunStatus.FAILED)
+    ):
+        raise RepairSourceInvalidError
+    await _require_repair_evidence(session, source, incident, repair.proposal, None)
+    repair = await _load_repair_ledger(session, source, repair, validation_json)
+    execution = repair.execution
+    if (
+        execution is None
+        or execution.status != "APPLIED"
+        or execution.result is None
+        or execution.result.receipt is None
+        or repair.proposal.change.source_execution_id is not None
+    ):
+        raise RepairSourceInvalidError
+    return RollbackSource(repair.proposal, execution.id, execution.result.receipt)
 
 
 async def _replace_waiting_run(
@@ -3119,7 +3191,6 @@ async def _require_no_incident_execution(
             exists().where(
                 ExecutionRow.run_id == RunRow.id,
                 RunRow.incident_id == incident_id,
-                ExecutionRow.status.in_(_OCCUPIED_EXECUTION_STATUSES),
                 ExecutionRow.target_released_at.is_(None),
             )
         )
@@ -3231,22 +3302,45 @@ async def _load_repair_ledger(
         != (
             None
             if verification.outcome in ("observing", "recovered")
+            or run.operation is RepairOperation.ROLLBACK
             else f"verification_{verification.outcome}"
         )
     ):
         raise RecoveryConsistencyError
+    expected_release = verification.completed_at if verification else None
+    if execution is not None and (
+        execution.status == "EXPIRED"
+        or (
+            run.operation is RepairOperation.APPLY
+            and execution.status in ("REJECTED", "STALE_RESOURCE")
+        )
+    ):
+        expected_release = (
+            _database_datetime(run.completed_at)
+            if run.completed_at is not None
+            else None
+        )
     if execution_row is not None and (
         (
             _database_datetime(execution_row.target_released_at)
             if execution_row.target_released_at is not None
             else None
         )
-        != (verification.completed_at if verification else None)
+        != expected_release
     ):
         raise RecoveryConsistencyError
     expected_run_status = (
         RunStatus.COMPLETED
-        if (verification is not None and verification.outcome == "recovered")
+        if (
+            verification is not None
+            and (
+                verification.outcome == "recovered"
+                or (
+                    run.operation is RepairOperation.ROLLBACK
+                    and verification.completed_at is not None
+                )
+            )
+        )
         or approval.decision == "reject"
         or (execution is not None and execution.status == "EXPIRED")
         else RunStatus.FAILED
@@ -3357,6 +3451,11 @@ async def _advance_execution(
                 if status == "STALE_RESOURCE"
                 else IncidentStatus.FAILED
             )
+        if status == "EXPIRED" or (
+            run.operation is RepairOperation.APPLY
+            and status in ("REJECTED", "STALE_RESOURCE")
+        ):
+            execution.target_released_at = occurred_at
     run.updated_at = incident.updated_at = occurred_at
     payload = _base_payload(
         UUID(incident.id), UUID(run.id), occurred_at, RunKind.REPAIR
@@ -3470,9 +3569,15 @@ async def _load_workflow_rows(
         else None
     )
     if run.kind is RunKind.REPAIR:
-        await _repair_source_proposal(session, run, incident)
+        source = await _repair_source(session, run, incident)
         if repair is not None and repair_proposal is not None:
-            await _require_repair_evidence(session, run, incident, repair.proposal)
+            await _require_repair_evidence(
+                session,
+                run,
+                incident,
+                repair.proposal,
+                source if isinstance(source, RollbackSource) else None,
+            )
             repair = await _load_repair_ledger(
                 session, run, repair, repair_proposal.validation_json
             )
@@ -4253,7 +4358,16 @@ def _repair_workflow_snapshot(
         or (run.status is RunStatus.COMPLETED)
         != (
             run.end_reason in ("expired", "superseded", "rejected", "execution_expired")
-            or (verification is not None and verification.outcome == "recovered")
+            or (
+                verification is not None
+                and (
+                    verification.outcome == "recovered"
+                    or (
+                        run.operation is RepairOperation.ROLLBACK
+                        and verification.completed_at is not None
+                    )
+                )
+            )
         )
         or run.end_reason
         not in (None, "expired", "superseded", "rejected", "execution_expired")
@@ -4264,7 +4378,14 @@ def _repair_workflow_snapshot(
             and expires_at is not None
             and completed_at < expires_at
         )
-        or (proposal is not None and (selection is None or proposal.target != target))
+        or (run.operation is RepairOperation.ROLLBACK and selection is not None)
+        or (
+            proposal is not None
+            and (
+                (run.operation is RepairOperation.APPLY and selection is None)
+                or proposal.target != target
+            )
+        )
     ):
         raise RecoveryConsistencyError
     if approval is not None:
@@ -5327,6 +5448,7 @@ async def _require_repair_evidence(
     run: RunRow,
     incident: IncidentRow,
     proposal: RepairProposal,
+    rollback_source: RollbackSource | None,
 ) -> None:
     evidence_rows = list(
         await session.scalars(
@@ -5347,11 +5469,15 @@ async def _require_repair_evidence(
         await session.scalars(select(RunEventRow).where(RunEventRow.run_id == run.id))
     )
     events = {row.event_key: row for row in event_rows}
-    expected_kinds = {"workload", "rollout_history", "pods", "events"}
+    rollback = run.operation is RepairOperation.ROLLBACK
+    expected_kinds = (
+        {"workload"} if rollback else {"workload", "rollout_history", "pods", "events"}
+    )
     if (
         run.started_at is None
-        or len(evidence_rows) != 4
+        or len(evidence_rows) != len(expected_kinds)
         or {row.evidence_kind for row in evidence_rows} != expected_kinds
+        or rollback != (proposal.change.source_execution_id is not None)
     ):
         raise RecoveryConsistencyError
     if set(proposal.evidence_ids) != {
@@ -5394,6 +5520,31 @@ async def _require_repair_evidence(
             <= proposal.schema_checked_at
         ):
             raise RecoveryConsistencyError
+    if rollback:
+        if rollback_source is None:
+            raise RecoveryConsistencyError
+        try:
+            row = evidence_rows[0]
+            observation = WorkloadObservation.model_validate(
+                {
+                    "evidence_kind": row.evidence_kind,
+                    "target_ref": parse_json_object(row.target_ref_json),
+                    "observed_at": _database_datetime(row.observed_at),
+                    "payload": parse_json_object(row.payload_json),
+                    "truncated": row.truncated,
+                    "redacted": row.redacted,
+                }
+            )
+            expected = resolve_rollback_change(
+                run_id=UUID(run.id),
+                source=rollback_source,
+                workload=observation,
+                evidence_id=UUID(row.id),
+            )
+            if proposal.change != expected:
+                raise RecoveryConsistencyError
+        except (ValueError, RepairPreparationError):
+            raise RecoveryConsistencyError from None
 
 
 def _tool_failure_event_payload(

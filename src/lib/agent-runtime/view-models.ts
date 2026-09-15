@@ -25,6 +25,7 @@ const INCIDENT_STATUS_LABELS: Record<IncidentStatus, string> = {
   APPLYING: "已批准，执行中",
   VERIFYING: "恢复验证中",
   RESOLVED: "恢复已验证",
+  ROLLED_BACK: "逆向写入已完成",
   REJECTED: "已拒绝",
   INSUFFICIENT_EVIDENCE: "证据不足",
   STALE_RESOURCE: "目标资源已变化",

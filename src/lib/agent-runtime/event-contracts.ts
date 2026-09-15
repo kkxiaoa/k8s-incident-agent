@@ -273,6 +273,7 @@ function parseEventData(
       if (!isVerificationOutcome(outcome) || !isVerificationReason(value.reason) ||
           !Number.isInteger(value.sampleCount) || (value.sampleCount as number) < 0 || (value.sampleCount as number) > 120) return invalidEvent();
       const expected = outcome === "observing" ? ["RUNNING", "VERIFYING"] as const :
+        value.incidentStatus === "ROLLED_BACK" ? ["COMPLETED", "ROLLED_BACK"] as const :
         outcome === "recovered" ? ["COMPLETED", "RESOLVED"] as const : ["FAILED", "FAILED"] as const;
       return { ...common, runKind: literalField(value, "runKind", "repair"),
         executionId: uuidField(value, "executionId"), outcome, reason: value.reason,

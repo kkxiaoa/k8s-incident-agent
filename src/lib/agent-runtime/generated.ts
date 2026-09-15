@@ -556,6 +556,8 @@ export interface components {
             /** Replacesrunid */
             replacesRunId?: string | null;
             selection?: components["schemas"]["RepairHistorySelectionResponse"] | null;
+            /** Sourceexecutionid */
+            sourceExecutionId?: string | null;
             /**
              * Sourcerunid
              * Format: uuid
@@ -1111,7 +1113,7 @@ export interface components {
          * IncidentStatus
          * @enum {string}
          */
-        IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "PATCH_READY" | "DRY_RUN_PASSED" | "WAITING_APPROVAL" | "APPLYING" | "VERIFYING" | "RESOLVED" | "REJECTED" | "INSUFFICIENT_EVIDENCE" | "STALE_RESOURCE" | "FAILED";
+        IncidentStatus: "RECEIVED" | "TRIAGING" | "DIAGNOSED" | "PATCH_READY" | "DRY_RUN_PASSED" | "WAITING_APPROVAL" | "APPLYING" | "VERIFYING" | "RESOLVED" | "ROLLED_BACK" | "REJECTED" | "INSUFFICIENT_EVIDENCE" | "STALE_RESOURCE" | "FAILED";
         /** IncidentTargetResponse */
         IncidentTargetResponse: {
             /** Apiversion */
@@ -1500,6 +1502,8 @@ export interface components {
              * @constant
              */
             schemaVersion: 1;
+            /** Sourceexecutionid */
+            sourceExecutionId?: string | null;
             target: components["schemas"]["IncidentTargetResponse"];
             /** Targetresourceversion */
             targetResourceVersion: string;
@@ -2076,7 +2080,7 @@ export interface components {
              * Incidentstatus
              * @enum {string}
              */
-            incidentStatus: "VERIFYING" | "RESOLVED" | "FAILED";
+            incidentStatus: "VERIFYING" | "RESOLVED" | "FAILED" | "ROLLED_BACK";
             /**
              * Occurredat
              * Format: date-time

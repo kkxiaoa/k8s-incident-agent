@@ -10,6 +10,7 @@ import {
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
   makeRecoveryDetail,
+  makeRollbackRecoveryDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import { parseRunEventHistoryResponse } from "./response-contracts";
@@ -24,8 +25,11 @@ import {
 const OTHER_RUN_ID = "55555555-5555-4555-8555-555555555555";
 const OTHER_INCIDENT_ID = "66666666-6666-4666-8666-666666666666";
 
-it.each(["observing", "recovered", "monitoring_unavailable"] as const)("refreshes the durable %s verification and deduplicates its replay", (outcome) => {
-  const detail = makeRecoveryDetail(outcome);
+it.each([
+  ["apply", "observing"], ["apply", "recovered"], ["apply", "monitoring_unavailable"],
+  ["rollback", "observing"], ["rollback", "recovered"], ["rollback", "monitoring_unavailable"],
+] as const)("refreshes %s %s verification and deduplicates its replay", (operation, outcome) => {
+  const detail = operation === "rollback" ? makeRollbackRecoveryDetail(outcome) : makeRecoveryDetail(outcome);
   const payload = { schemaVersion: 5, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-14T01:01:02Z", executionId: detail.verification!.executionId,
     outcome, reason: detail.verification!.reason, sampleCount: detail.verification!.sampleCount, runStatus: detail.selectedRun.status, incidentStatus: detail.incident.status };
   const event = parseRunEvent("repair.verification_updated", "999", JSON.stringify(payload), detail.incident.id)!;

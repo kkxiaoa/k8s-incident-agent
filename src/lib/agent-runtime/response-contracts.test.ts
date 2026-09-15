@@ -5,6 +5,7 @@ import {
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
   makeRecoveryDetail,
+  makeRollbackRecoveryDetail,
 } from "@/test/agent-runtime-fixtures";
 
 import {
@@ -16,6 +17,16 @@ import {
   parseMonitoringPanelListResponse,
   parseRuntimeHealthResponse,
 } from "./response-contracts";
+
+it.each(["observing", "recovered", "monitoring_unavailable"] as const)("keeps rollback %s separate from inverse completion and binds its source", (outcome) => {
+  const value = makeRollbackRecoveryDetail(outcome);
+  expect(parseIncidentDetailResponse(value)?.verification).toEqual(value.verification);
+  expect(parseIncidentDetailResponse({ ...value, selectedRun: { ...value.selectedRun, operation: "apply" } })).toBeNull();
+  for (const sourceExecutionId of [null, "invalid", value.approval!.execution!.id]) {
+    expect(parseIncidentDetailResponse({ ...value, repair: { ...value.repair, sourceExecutionId } })).toBeNull();
+  }
+  expect(parseIncidentDetailResponse({ ...value, selectedRun: { ...value.selectedRun, sourceRunId: null } })).toBeNull();
+});
 
 it.each(["observing", "recovered", "monitoring_unavailable"] as const)("keeps %s bound to its trusted execution and original window", (outcome) => {
   const value = makeRecoveryDetail(outcome);

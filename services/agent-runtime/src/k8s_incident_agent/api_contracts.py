@@ -162,8 +162,15 @@ class RepairHistorySelectionResponse(_ApiContract):
 
 class CreateRepairRunRequest(_ApiContract):
     source_run_id: UUID = Field(strict=False)
+    source_execution_id: Annotated[UUID, Field(strict=False)] | None = None
     selection: RepairHistorySelectionResponse | None = None
     replaces_run_id: Annotated[UUID, Field(strict=False)] | None = None
+
+    @model_validator(mode="after")
+    def require_source_selection(self) -> "CreateRepairRunRequest":
+        if self.source_execution_id is not None and self.selection is not None:
+            raise ValueError("Rollback uses the exact execution before image")
+        return self
 
 
 class ApprovalRequest(_ApiContract):
@@ -346,7 +353,8 @@ class RepairProposalResponse(_ApiContract):
     container_name: str
     current_image: str
     replacement_image: str
-    evidence_ids: tuple[UUID, ...] = Field(min_length=2, max_length=2)
+    evidence_ids: tuple[UUID, ...] = Field(min_length=1, max_length=2)
+    source_execution_id: UUID | None = None
     patch: tuple[RepairPatchOperationResponse, ...] = Field(
         min_length=5,
         max_length=5,
@@ -583,7 +591,7 @@ class VerificationUpdatedEventPayload(_TypedRunEventPayload):
     outcome: VerificationOutcome
     reason: VerificationReason | None
     sample_count: int = Field(ge=0, le=120)
-    incident_status: Literal["VERIFYING", "RESOLVED", "FAILED"]
+    incident_status: Literal["VERIFYING", "RESOLVED", "FAILED", "ROLLED_BACK"]
     run_status: Literal["RUNNING", "COMPLETED", "FAILED"]
 
     @model_validator(mode="after")
@@ -591,6 +599,8 @@ class VerificationUpdatedEventPayload(_TypedRunEventPayload):
         expected = (
             ("RUNNING", "VERIFYING")
             if self.outcome == "observing"
+            else ("COMPLETED", "ROLLED_BACK")
+            if self.incident_status == "ROLLED_BACK"
             else ("COMPLETED", "RESOLVED")
             if self.outcome == "recovered"
             else ("FAILED", "FAILED")

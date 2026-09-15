@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { parseIncidentDetailResponse } from "@/lib/agent-runtime/response-contracts";
-import { makeWaitingApprovalIncidentDetail, makeRepairRunWaitingDetail, makeRecoveryDetail } from "@/test/agent-runtime-fixtures";
+import { makeWaitingApprovalIncidentDetail, makeRepairRunWaitingDetail, makeRecoveryDetail, makeRollbackRecoveryDetail } from "@/test/agent-runtime-fixtures";
 
 import { RepairPanel } from "./repair-panel";
 
@@ -12,6 +12,17 @@ function detail() {
 }
 
 describe("read-only repair validation", () => {
+  it.each(["recovered", "monitoring_unavailable"] as const)("separates the completed inverse from %s and displays before-image risks", (outcome) => {
+    const value = parseIncidentDetailResponse(makeRollbackRecoveryDetail(outcome))!;
+    render(<RepairPanel detail={value} pending={false} refreshError={null} />);
+    expect(screen.getByText("ROLLED_BACK")).toBeVisible();
+    expect(screen.getByText("批准的逆向写入已完成；恢复结果单独判定。")).toBeVisible();
+    expect(screen.getByText(/原镜像可能正是故障来源/)).toHaveTextContent("不保证相同镜像字节或应用健康");
+    expect(screen.getByText("原执行 before image")).toBeVisible();
+    expect(screen.queryByText("上一 revision")).toBeNull();
+    expect(screen.getByText(outcome === "recovered" ? "工作负载与告警恢复已验证" : "监控链路不可用，无法证明恢复")).toBeVisible();
+    expect(screen.getByRole("link", { name: "查看来源运行" })).toHaveAttribute("href", `/incidents/${value.incident.id}?runId=${value.selectedRun.sourceRunId}`);
+  });
   it.each([
     ["observing", "写入已确认，正在观察恢复"],
     ["recovered", "工作负载与告警恢复已验证"],

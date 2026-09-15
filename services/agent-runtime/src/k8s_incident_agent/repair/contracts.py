@@ -93,7 +93,11 @@ class EvidenceBoundImageChange(_RepairContract):
     container_name: str = Field(min_length=1, max_length=253)
     current_image: str = Field(min_length=1, max_length=2048)
     replacement_image: str = Field(min_length=1, max_length=2048)
-    evidence_ids: list[UUID] = Field(min_length=2, max_length=2)
+    evidence_ids: list[UUID] = Field(min_length=1, max_length=2)
+    # Omit absent provenance so retained apply proposal digests stay unchanged.
+    source_execution_id: UUID | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
 
     @field_validator(
         "target_uid",
@@ -113,7 +117,8 @@ class EvidenceBoundImageChange(_RepairContract):
             or self.target.api_version != "apps/v1"
             or self.target.kind != "Deployment"
             or self.current_image == self.replacement_image
-            or len(set(self.evidence_ids)) != 2
+            or len(self.evidence_ids) != (1 if self.source_execution_id else 2)
+            or len(set(self.evidence_ids)) != len(self.evidence_ids)
             or self.evidence_ids != sorted(self.evidence_ids, key=str)
         ):
             raise ValueError("Evidence-bound image change is invalid")
@@ -205,9 +210,8 @@ class RepairProposal(_RepairContract):
         return self.change.replacement_image
 
     @property
-    def evidence_ids(self) -> tuple[UUID, UUID]:
-        first, second = self.change.evidence_ids
-        return first, second
+    def evidence_ids(self) -> tuple[UUID, ...]:
+        return tuple(self.change.evidence_ids)
 
 
 class PatchValidationChange(_RepairContract):
@@ -226,7 +230,10 @@ class PatchValidationChange(_RepairContract):
     container_name: str = Field(min_length=1, max_length=253)
     current_image: str = Field(min_length=1, max_length=2048)
     replacement_image: str = Field(min_length=1, max_length=2048)
-    evidence_ids: list[UUID] = Field(min_length=2, max_length=2)
+    evidence_ids: list[UUID] = Field(min_length=1, max_length=2)
+    source_execution_id: UUID | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
 
     @field_validator(
         "target_uid",
@@ -246,7 +253,8 @@ class PatchValidationChange(_RepairContract):
             or self.target.api_version != "apps/v1"
             or self.target.kind != "Deployment"
             or self.current_image == self.replacement_image
-            or len(set(self.evidence_ids)) != 2
+            or len(self.evidence_ids) != (1 if self.source_execution_id else 2)
+            or len(set(self.evidence_ids)) != len(self.evidence_ids)
             or self.evidence_ids != sorted(self.evidence_ids, key=str)
         ):
             raise ValueError("Patch validation change is invalid")
@@ -265,6 +273,7 @@ class PatchValidationChange(_RepairContract):
             current_image=change.current_image,
             replacement_image=change.replacement_image,
             evidence_ids=change.evidence_ids,
+            source_execution_id=change.source_execution_id,
         )
 
 

@@ -51,6 +51,8 @@ export function RepairPanel({
   const verification = detail.verification;
   const verificationFailed = verification && verification.outcome !== "observing" && verification.outcome !== "recovered";
   const execution = detail.approval?.execution;
+  const rollback = selectedRun.operation === "rollback";
+  const executionFailed = execution && ["REJECTED", "STALE_RESOURCE", "UNKNOWN"].includes(execution.status);
   const executionMessage = execution ? {
     PENDING: "已批准，等待执行领取",
     CLAIMED: "执行已领取，等待可信结果",
@@ -130,9 +132,10 @@ export function RepairPanel({
         </>
       ) : (
         <>
-          <div className={`repair-verdict${verificationFailed || repair.validation.outcome === "failed" ? " repair-verdict--failed" : ""}`}>
-            <span className="repair-verdict__icon"><UiIcon name={verification?.outcome === "observing" ? "activity" : verificationFailed || repair.validation.outcome === "failed" ? "close" : "check"} /></span>
+          <div className={`repair-verdict${executionFailed || verificationFailed || repair.validation.outcome === "failed" ? " repair-verdict--failed" : ""}`}>
+            <span className="repair-verdict__icon"><UiIcon name={verification?.outcome === "observing" ? "activity" : executionFailed || verificationFailed || repair.validation.outcome === "failed" ? "close" : "check"} /></span>
             <div>
+              {rollback && execution?.status === "APPLIED" ? <p>批准的逆向写入已完成；恢复结果单独判定。</p> : null}
               <strong>{verification ? {
                 observing: "写入已确认，正在观察恢复",
                 recovered: "工作负载与告警恢复已验证",
@@ -148,8 +151,9 @@ export function RepairPanel({
               {verification ? <p>已保存 {verification.sampleCount} 次观测 · 验证截止 <LocalTimestamp timestamp={verification.deadlineAt} />{verification.healthySince ? <> · 本段健康窗口起于 <LocalTimestamp timestamp={verification.healthySince} /></> : null}</p> : null}
               {verification?.reason ? <p>当前判据：{{ rollout_pending: "等待本次 rollout 完成", workload_unhealthy: "工作负载尚未稳定", sample_missing: "缺少有效 Kubernetes 观测", sample_gap: "观测中断，重新累计健康窗口", monitoring_unavailable: "监控链路或规则不可用", metrics_missing_or_stale: "目标原始指标缺失或陈旧", alerts_active: "相关告警仍处于 pending/firing", occurrence_not_resolved: "尚未收到本次告警解除通知", target_drift: "目标 UID、镜像或 generation 已改变", deadline_exceeded: "达到原始验证期限" }[verification.reason]}</p> : null}
               {execution?.lateResult ? <p>迟到成功回执已保留；未知状态与目标占用未自动解除。</p> : null}
+              {rollback && executionFailed ? <p>回滚写入失败或结果未知，目标保持占用；停止后续写入，需另行核查。</p> : null}
             </div>
-            <span className="repair-verdict__boundary">{execution?.status ?? "未执行"}</span>
+            <span className="repair-verdict__boundary">{rollback && execution?.status === "APPLIED" ? "ROLLED_BACK" : execution?.status ?? "未执行"}</span>
           </div>
 
           <div className="repair-workbench">
@@ -171,13 +175,14 @@ export function RepairPanel({
                 </div>
                 <div className="repair-diff__after">
                   <span className="repair-diff__arrow" aria-hidden="true"><UiIcon name="chevron-right" /></span>
-                  <span className="repair-diff__label">建议镜像 <span>上一 revision</span></span>
+                  <span className="repair-diff__label">{rollback ? "还原镜像" : "建议镜像"} <span>{rollback ? "原执行 before image" : "上一 revision"}</span></span>
                   <code tabIndex={0}>{repair.diff.after}</code>
                 </div>
               </div>
 
               <div className="repair-evidence">
                 <h3>提案依据</h3>
+                {repair.sourceExecutionId ? <p>来源 execution：<code>{repair.sourceExecutionId}</code>。原执行前的镜像引用来自可信执行账本，不是历史修订 Evidence。</p> : null}
                 <ul>
                   {repair.evidenceIds.map((id) => {
                     const item = evidence.find((entry) => entry.id === id);
@@ -194,7 +199,9 @@ export function RepairPanel({
 
               <div className="repair-impact">
                 <h3>风险与影响</h3>
-                <p>若未来获批执行，镜像变更会触发 Deployment 滚动更新，可能影响可用性。历史镜像不保证当前配置下的应用健康。</p>
+                <p>{rollback
+                  ? "回滚需要单独批准，会触发滚动更新并可能降低可用性。原镜像可能正是故障来源；可变 tag 仅还原引用，不保证相同镜像字节或应用健康。"
+                  : "若未来获批执行，镜像变更会触发 Deployment 滚动更新，可能影响可用性。历史镜像不保证当前配置下的应用健康。"}</p>
               </div>
             </div>
 

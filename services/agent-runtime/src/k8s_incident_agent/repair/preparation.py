@@ -13,6 +13,7 @@ from k8s_incident_agent.domain.models import (
     EvidenceRecord,
     JsonValue,
     PersistedEvidence,
+    RepairOperation,
     RepairWorkflowRunSnapshot,
     ToolFailureRecord,
 )
@@ -42,6 +43,7 @@ from k8s_incident_agent.repair.compiler import (
 )
 from k8s_incident_agent.repair.contracts import EvidenceBoundImageChange, RepairProposal
 from k8s_incident_agent.repair.records import PreparedRepairRecord
+from k8s_incident_agent.repair.rollback import resolve_rollback_change
 
 
 def resolve_fresh_change(
@@ -171,7 +173,6 @@ async def prepare_repair(
         if remaining <= 0:
             raise TimeoutError
         async with asyncio.timeout(remaining):
-            source = await repository.get_repair_source_proposal(run.id)
             workload, workload_id = await _read_evidence(
                 run,
                 repository,
@@ -182,51 +183,28 @@ async def prepare_repair(
                 adapter.read_workload,
                 WorkloadObservation,
             )
-            history, history_id = await _read_evidence(
-                run,
-                repository,
-                credential,
-                deadline,
-                now,
-                "get_rollout_history",
-                adapter.read_rollout_history,
-                RolloutHistoryObservation,
-            )
-            pods, _ = await _read_evidence(
-                run,
-                repository,
-                credential,
-                deadline,
-                now,
-                "get_pods",
-                adapter.read_pods,
-                PodsObservation,
-            )
-            events, _ = await _read_evidence(
-                run,
-                repository,
-                credential,
-                deadline,
-                now,
-                "get_events",
-                adapter.read_events,
-                EventsObservation,
-            )
-            if any(
-                not run.started_at <= observation.observed_at <= now() < deadline
-                for observation in (workload, history, pods, events)
-            ):
-                raise RecoveryConsistencyError
-            change, selection = resolve_fresh_change(
-                run_id=run.id,
-                source=source,
-                selection=run.selection,
-                workload=workload,
-                history=history,
-                pods=pods,
-                events=events,
-                evidence_ids=[workload_id, history_id],
-            )
+            if run.operation is RepairOperation.ROLLBACK:
+                source = await repository.get_rollback_source(run.id)
+                if not run.started_at <= workload.observed_at <= now() < deadline:
+                    raise RecoveryConsistencyError
+                change = resolve_rollback_change(
+                    run_id=run.id,
+                    source=source,
+                    workload=workload,
+                    evidence_id=workload_id,
+                )
+                selection = None
+            else:
+                change, selection = await _prepare_apply_change(
+                    run,
+                    workload,
+                    workload_id,
+                    repository=repository,
+                    adapter=adapter,
+                    credential=credential,
+                    deadline=deadline,
+                    now=now,
+                )
             checked_at = now()
             proposal = compile_repair_proposal(
                 change,
@@ -265,6 +243,66 @@ async def prepare_repair(
         selection=None,
         error_code=code,
         error_retryable=retryable,
+    )
+
+
+async def _prepare_apply_change(
+    run: RepairWorkflowRunSnapshot,
+    workload: WorkloadObservation,
+    workload_id: UUID,
+    *,
+    repository: IncidentRepository,
+    adapter: KubernetesEvidenceAdapter,
+    credential: DiagnosticCredentialLease,
+    deadline: datetime,
+    now: Callable[[], datetime],
+) -> tuple[EvidenceBoundImageChange, RepairHistorySelection]:
+    assert run.started_at is not None
+    source = await repository.get_repair_source_proposal(run.id)
+    history, history_id = await _read_evidence(
+        run,
+        repository,
+        credential,
+        deadline,
+        now,
+        "get_rollout_history",
+        adapter.read_rollout_history,
+        RolloutHistoryObservation,
+    )
+    pods, _ = await _read_evidence(
+        run,
+        repository,
+        credential,
+        deadline,
+        now,
+        "get_pods",
+        adapter.read_pods,
+        PodsObservation,
+    )
+    events, _ = await _read_evidence(
+        run,
+        repository,
+        credential,
+        deadline,
+        now,
+        "get_events",
+        adapter.read_events,
+        EventsObservation,
+    )
+    if any(
+        not run.started_at <= observation.observed_at <= now() < deadline
+        for observation in (workload, history, pods, events)
+    ):
+        raise RecoveryConsistencyError
+    return resolve_fresh_change(
+        run_id=run.id,
+        source=source,
+        selection=run.selection,
+        workload=workload,
+        history=history,
+        pods=pods,
+        events=events,
+        evidence_ids=[workload_id, history_id],
     )
 
 

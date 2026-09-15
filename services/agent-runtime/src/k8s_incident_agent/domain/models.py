@@ -34,6 +34,7 @@ class IncidentStatus(StrEnum):
     APPLYING = "APPLYING"
     VERIFYING = "VERIFYING"
     RESOLVED = "RESOLVED"
+    ROLLED_BACK = "ROLLED_BACK"
     REJECTED = "REJECTED"
     INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
     STALE_RESOURCE = "STALE_RESOURCE"
@@ -334,9 +335,10 @@ _INCIDENT_TRANSITIONS: Final[dict[IncidentStatus, frozenset[IncidentStatus]]] = 
         {IncidentStatus.VERIFYING, IncidentStatus.FAILED, IncidentStatus.STALE_RESOURCE}
     ),
     IncidentStatus.VERIFYING: frozenset(
-        {IncidentStatus.FAILED, IncidentStatus.RESOLVED}
+        {IncidentStatus.FAILED, IncidentStatus.RESOLVED, IncidentStatus.ROLLED_BACK}
     ),
     IncidentStatus.RESOLVED: frozenset({IncidentStatus.TRIAGING}),
+    IncidentStatus.ROLLED_BACK: frozenset({IncidentStatus.TRIAGING}),
     IncidentStatus.REJECTED: frozenset({IncidentStatus.TRIAGING}),
     IncidentStatus.INSUFFICIENT_EVIDENCE: frozenset(
         {IncidentStatus.TRIAGING, IncidentStatus.FAILED}

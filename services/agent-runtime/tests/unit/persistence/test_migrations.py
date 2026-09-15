@@ -7,11 +7,13 @@ from typing import Any
 import pytest
 from alembic import command, op
 from alembic.config import Config
+from alembic.operations import BatchOperations
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 from tests.unit.routes.test_approvals import applied_result, approval_harness
 from tests.unit.routes.test_operator import credential as credential
 
+from k8s_incident_agent.execution.contracts import ExecutionReceipt, ExecutionResult
 from k8s_incident_agent.persistence.database import (
     DatabaseSchemaNotCurrentError,
     create_business_database,
@@ -24,6 +26,109 @@ from k8s_incident_agent.runtime.lock import (
 from k8s_incident_agent.runtime.paths import FilesystemIdentity, RuntimePaths
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize("fail_ddl", [False, True])
+async def test_rollback_migration_preserves_ledger_and_releases_only_known_apply_failures(
+    tmp_path: Path,
+    credential: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_ddl: bool,
+) -> None:
+    async with approval_harness(tmp_path, credential) as harness:
+        await harness.approve()
+        first = await harness.repository.claim_execution(now=harness.now)
+        assert first
+        await harness.repository.report_execution(
+            first.execution_id,
+            ExecutionResult(outcome="REJECTED", error="permission_denied"),
+            now=harness.now,
+        )
+        other_incident, body = await harness.another_proposal()
+        response = await harness.client.post(
+            f"/api/v1/incidents/{other_incident}/approvals",
+            json=body,
+            headers=harness.headers,
+        )
+        assert response.status_code == 200
+        second = await harness.repository.claim_execution(now=harness.now)
+        assert second
+        await harness.repository.report_execution(
+            second.execution_id,
+            ExecutionResult(
+                outcome="APPLIED",
+                receipt=ExecutionReceipt(
+                    uid=second.change.target_uid,
+                    resource_version="after-rv",
+                    generation=4,
+                    before_generation=3,
+                ),
+            ),
+            now=harness.now,
+        )
+        context = await harness.repository.get_verification_context(
+            second.change.run_id
+        )
+        assert context
+        paths = RuntimePaths.prepare(tmp_path / "runtime")
+        config = _alembic_config(paths)
+        command.downgrade(config, "20260914_0010")
+        schema = _schema_snapshot(paths.business_database)
+        tables = (*schema["tables"], "alembic_version")
+        with sqlite3.connect(paths.business_database) as connection:
+            before = {
+                table: connection.execute(
+                    f'SELECT * FROM "{table}" ORDER BY rowid'
+                ).fetchall()
+                for table in tables
+            }
+            assert connection.execute(
+                "SELECT target_released_at FROM executions WHERE id = ?",
+                (str(first.execution_id),),
+            ).fetchone() == (None,)
+        original = BatchOperations.create_index
+
+        def interrupted_index(
+            self: BatchOperations, name: str, *args: Any, **kwargs: Any
+        ) -> Any:
+            if name == "uq_executions_occupied_target":
+                raise RuntimeError("test rollback DDL interruption")
+            return original(self, name, *args, **kwargs)
+
+        if fail_ddl:
+            monkeypatch.setattr(BatchOperations, "create_index", interrupted_index)
+            with pytest.raises(RuntimeError, match="test rollback DDL interruption"):
+                command.upgrade(config, "head")
+            assert _schema_snapshot(paths.business_database) == schema
+        else:
+            command.upgrade(config, "head")
+        with sqlite3.connect(paths.business_database) as connection:
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            for table in tables:
+                if not fail_ddl and table in ("executions", "alembic_version"):
+                    continue
+                assert (
+                    connection.execute(
+                        f'SELECT * FROM "{table}" ORDER BY rowid'
+                    ).fetchall()
+                    == before[table]
+                )
+            assert connection.execute(
+                "SELECT target_released_at IS NULL FROM executions WHERE id = ?",
+                (str(first.execution_id),),
+            ).fetchone() == (int(fail_ddl),)
+            assert connection.execute(
+                "SELECT target_released_at FROM executions WHERE id = ?",
+                (str(second.execution_id),),
+            ).fetchone() == (None,)
+        if not fail_ddl:
+            assert (
+                await harness.repository.get_verification_context(second.change.run_id)
+                == context
+            )
+            assert await harness.repository.get_incident_detail(
+                harness.incident_id, run_id=harness.run_id, event_limit=100
+            )
 
 
 @pytest.mark.parametrize("fail_ddl", [False, True])
@@ -140,7 +245,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
             } == before
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260913_0008" if fail_ddl else "20260914_0010",)
+            ).fetchone() == ("20260913_0008" if fail_ddl else "20260914_0011",)
             if fail_ddl:
                 assert (
                     connection.execute(
@@ -707,7 +812,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260914_0010",)
+        ).fetchone() == ("20260914_0011",)
 
 
 def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(

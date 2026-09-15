@@ -388,7 +388,8 @@ class ExecutionRow(Base):
             name="status",
         ),
         CheckConstraint(
-            "target_released_at IS NULL OR (status = 'APPLIED' AND reported_at IS NOT NULL)",
+            "target_released_at IS NULL OR status = 'EXPIRED' OR "
+            "(status IN ('APPLIED', 'REJECTED', 'STALE_RESOURCE') AND reported_at IS NOT NULL)",
             name="target_release",
         ),
         Index(
@@ -398,9 +399,7 @@ class ExecutionRow(Base):
             "kind",
             "resource_name",
             unique=True,
-            sqlite_where=text(
-                "target_released_at IS NULL AND status IN ('PENDING', 'CLAIMED', 'APPLIED', 'UNKNOWN')"
-            ),
+            sqlite_where=text("target_released_at IS NULL"),
         ),
     )
 

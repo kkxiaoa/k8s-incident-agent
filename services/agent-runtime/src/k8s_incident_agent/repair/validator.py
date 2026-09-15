@@ -190,6 +190,7 @@ class PatchValidationService:
                 current_image=change.current_image,
                 replacement_image=change.replacement_image,
                 evidence_ids=change.evidence_ids,
+                source_execution_id=change.source_execution_id,
             )
             expected = compile_repair_proposal(
                 bound_change,
