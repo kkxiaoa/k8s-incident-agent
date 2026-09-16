@@ -1,18 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
+    EventsV1Event,
+    EventsV1EventList,
+    EventsV1EventSeries,
+    V1Container,
     V1ContainerState,
+    V1ContainerStateRunning,
+    V1ContainerStateTerminated,
     V1ContainerStateWaiting,
     V1ContainerStatus,
     V1ListMeta,
+    V1ObjectMeta,
+    V1ObjectReference,
     V1Pod,
     V1PodList,
     V1PodStatus,
+    V1Probe,
     V1ReplicaSetList,
+    V1TCPSocketAction,
+)
+from tests.unit.kubernetes.test_adapter_events import (
+    _EventsApi,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.unit.kubernetes.test_adapter_pods import (
     OBSERVED_AT,
@@ -105,6 +120,9 @@ def _crash_loop_pod(*, uid: str = "pod-uid") -> V1Pod:
 
 def _adapter(
     core_api: _CoreApi,
+    events_api: _EventsApi | None = None,
+    *,
+    clock: Callable[[], datetime] = lambda: OBSERVED_AT,
 ) -> tuple[KubernetesEvidenceAdapter, _AppsApi]:
     apps_api = _AppsApi(
         {
@@ -120,14 +138,14 @@ def _adapter(
             apps_api=apps_api,
             core_api=core_api,
             discovery_api=object(),
-            events_api=object(),
+            events_api=events_api or object(),
             storage_api=object(),
             timeout_seconds=10.0,
             cluster_id=TARGET.cluster,
             diagnostic_namespace=TARGET.namespace,
         ),
     )
-    return KubernetesEvidenceAdapter(clients, clock=lambda: OBSERVED_AT), apps_api
+    return KubernetesEvidenceAdapter(clients, clock=clock), apps_api
 
 
 @pytest.mark.asyncio
@@ -354,3 +372,249 @@ async def test_read_container_logs_rejects_pod_identity_drift() -> None:
         await adapter.read_container_logs(TARGET)
 
     assert error.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
+def _running_pod(*, probes: bool = False) -> V1Pod:
+    container_status = _container_status(
+        "app",
+        V1ContainerState(
+            running=V1ContainerStateRunning(
+                started_at=OBSERVED_AT - timedelta(minutes=5)
+            )
+        ),
+    )
+    container_status.restart_count = 0
+    container_status.container_id = "containerd://current"
+    pod = _pod(
+        "running-pod", "pod-uid", "rs-uid", container_statuses=[container_status]
+    )
+    if probes:
+        spec: Any = cast(Any, pod).spec
+        spec.containers[0].readiness_probe = V1Probe(
+            tcp_socket=V1TCPSocketAction(port=8080)
+        )
+    return pod
+
+
+def _probe_event(
+    *,
+    field_path: str | None = "spec.containers{app}",
+    age: int = 30,
+    uid: str = "pod-uid",
+) -> EventsV1Event:
+    return EventsV1Event(
+        metadata=V1ObjectMeta(
+            namespace=TARGET.namespace,
+            name="probe-failure",
+            uid="event-uid",
+            resource_version="3",
+        ),
+        regarding=V1ObjectReference(
+            api_version="v1",
+            kind="Pod",
+            namespace=TARGET.namespace,
+            name="running-pod",
+            uid=uid,
+            field_path=field_path,
+        ),
+        event_time=OBSERVED_AT - timedelta(seconds=age),
+        reason="Unhealthy",
+        type="Warning",
+        reporting_controller="kubelet",
+        note="Readiness probe failed: token=event-secret",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("previous", "reason", "exit_code", "age", "selected"),
+    [
+        (False, "OOMKilled", 137, 30, True),
+        (False, None, 137, 30, True),
+        (False, "Completed", 0, 30, False),
+        (True, "Error", 1, 30, True),
+        (True, "OOMKilled", 137, 601, False),
+        (True, "Error", 1, -1, False),
+    ],
+)
+async def test_logs_require_current_or_recent_abnormal_termination(
+    previous: bool,
+    reason: str | None,
+    exit_code: int,
+    age: int,
+    selected: bool,
+) -> None:
+    pod = _running_pod()
+    status: Any = cast(Any, pod).status.container_statuses[0]
+    terminated = V1ContainerState(
+        terminated=V1ContainerStateTerminated(
+            reason=reason,
+            exit_code=exit_code,
+            finished_at=OBSERVED_AT - timedelta(seconds=age),
+        )
+    )
+    if previous:
+        status.last_state = terminated
+        status.restart_count = 1
+    else:
+        status.state = terminated
+    core = _CoreApi(
+        [pod],
+        {
+            False: _LogResponse(200, b"2026-08-21T09:14:50Z token=private\n"),
+            True: _LogResponse(400),
+        },
+    )
+    adapter, _ = _adapter(core)
+    observation = await adapter.read_container_logs(TARGET)
+    assert bool(observation.payload.containers) is selected
+    assert bool(core.log_calls) is selected
+    if selected:
+        container = observation.payload.containers[0]
+        assert container.selection_reason == (
+            "recent_termination" if previous else "current_termination"
+        )
+        assert container.snapshots[1].status == "previous_unavailable"
+        assert "private" not in observation.model_dump_json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_path", "age", "uid", "selected"),
+    [
+        ("spec.containers{app}", 30, "pod-uid", True),
+        ("spec.containers{app}", 601, "pod-uid", False),
+        ("spec.containers{app}", -1, "pod-uid", False),
+        ("spec.containers{app}", 30, "other-pod", False),
+        ("spec.containers{other}", 30, "pod-uid", False),
+        ("spec.initContainers{app}", 30, "pod-uid", False),
+        ("spec.ephemeralContainers{app}", 30, "pod-uid", False),
+        (None, 30, "pod-uid", False),
+    ],
+)
+async def test_probe_logs_require_fresh_exact_regular_container_event(
+    field_path: str | None,
+    age: int,
+    uid: str,
+    selected: bool,
+) -> None:
+    core = _CoreApi(
+        [_running_pod(probes=True)],
+        {
+            False: _LogResponse(200, b"2026-08-21T09:14:50Z password=log-secret\n"),
+            True: _LogResponse(400),
+        },
+    )
+    event = _probe_event(field_path=field_path, age=age, uid=uid)
+    events_api = _EventsApi(
+        {None: EventsV1EventList(metadata=V1ListMeta(), items=[event])}
+    )
+    adapter, _ = _adapter(core, events_api)
+    observation = await adapter.read_container_logs(TARGET)
+    assert bool(observation.payload.containers) is selected
+    assert bool(core.log_calls) is selected
+    if selected:
+        assert observation.payload.containers[0].selection_reason == "probe_failure"
+        assert observation.payload.containers[0].restart_count == 0
+        assert "log-secret" not in observation.model_dump_json()
+    assert "event-secret" not in observation.model_dump_json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_probe_event_uses_latest_series_or_legacy_observation(
+    legacy: bool,
+) -> None:
+    event = _probe_event(age=3600)
+    if legacy:
+        event.deprecated_last_timestamp = OBSERVED_AT
+    else:
+        event.series = EventsV1EventSeries(count=8, last_observed_time=OBSERVED_AT)
+    core = _CoreApi(
+        [_running_pod(probes=True)],
+        {
+            False: _LogResponse(200),
+            True: _LogResponse(400),
+        },
+    )
+    adapter, _ = _adapter(
+        core,
+        _EventsApi({None: EventsV1EventList(metadata=V1ListMeta(), items=[event])}),
+    )
+    observation = await adapter.read_container_logs(TARGET)
+    assert observation.payload.containers[0].selection_reason == "probe_failure"
+
+
+@pytest.mark.asyncio
+async def test_probe_event_occurring_during_the_request_is_not_future() -> None:
+    now = OBSERVED_AT
+
+    class AdvancingEventsApi(_EventsApi):
+        async def list_namespaced_event(
+            self,
+            namespace: str,
+            **kwargs: object,
+        ) -> EventsV1EventList:
+            nonlocal now
+            result = await super().list_namespaced_event(namespace, **kwargs)
+            now += timedelta(seconds=2)
+            return result
+
+    events_api = AdvancingEventsApi(
+        {None: EventsV1EventList(metadata=V1ListMeta(), items=[_probe_event(age=-1)])}
+    )
+    core = _CoreApi(
+        [_running_pod(probes=True)],
+        {
+            False: _LogResponse(200, b"2026-08-21T09:15:01Z probe failed\n"),
+            True: _LogResponse(400),
+        },
+    )
+    adapter, _ = _adapter(core, events_api, clock=lambda: now)
+    observation = await adapter.read_container_logs(TARGET)
+    container = observation.payload.containers[0]
+    assert container.selection_reason == "probe_failure"
+    assert container.snapshots[0].lines[0].message == "probe failed"
+    assert observation.observed_at == OBSERVED_AT + timedelta(seconds=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["restart", "container", "spec", "owner"])
+async def test_logs_discard_snapshots_after_container_or_owner_drift(
+    change: str,
+) -> None:
+    pod = _crash_loop_pod()
+    rebound = _crash_loop_pod()
+    rebound_view: Any = rebound
+    if change == "restart":
+        rebound_view.status.container_statuses[0].restart_count += 1
+    elif change == "container":
+        rebound_view.status.container_statuses[
+            0
+        ].container_id = "containerd://replacement"
+    elif change == "spec":
+        rebound_view.spec.containers = [V1Container(name="other", image="app:v1")]
+    else:
+        rebound_view.metadata.owner_references[0].uid = "other-rs"
+    core = _CoreApi(
+        [pod],
+        {False: _LogResponse(200), True: _LogResponse(200)},
+        rebound_pods=[rebound],
+    )
+    adapter, _ = _adapter(core)
+    with pytest.raises(KubernetesBoundaryError) as failure:
+        await adapter.read_container_logs(TARGET)
+    assert failure.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
+@pytest.mark.asyncio
+async def test_abnormal_log_container_budget_is_not_silently_truncated() -> None:
+    pods = [_crash_loop_pod(uid=f"uid-{index}") for index in range(5)]
+    for index, pod in enumerate(pods):
+        cast(Any, pod).metadata.name = f"pod-{index}"
+    core = _CoreApi(pods)
+    adapter, _ = _adapter(core)
+    with pytest.raises(KubernetesBoundaryError) as failure:
+        await adapter.read_container_logs(TARGET)
+    assert failure.value.code is KubernetesErrorCode.RESULT_BUDGET_EXCEEDED
+    assert core.log_calls == []

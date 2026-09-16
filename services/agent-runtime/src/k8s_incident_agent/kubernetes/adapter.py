@@ -47,6 +47,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1ReplicaSet,
     V1ReplicaSetList,
     V1ReplicaSetSpec,
+    V1ResourceRequirements,
     V1Service,
     V1ServiceSpec,
     V1StorageClass,
@@ -54,6 +55,9 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
 )
 from kubernetes.aio.client.exceptions import (  # pyright: ignore[reportMissingTypeStubs]
     ApiException,
+)
+from kubernetes.utils.quantity import (  # pyright: ignore[reportMissingTypeStubs]
+    parse_quantity,  # pyright: ignore[reportUnknownVariableType]
 )
 
 from k8s_incident_agent.domain.models import JsonValue
@@ -68,6 +72,7 @@ from k8s_incident_agent.kubernetes.contracts import (
     ContainerLogsPayload,
     ContainerLogSummary,
     ContainerProbe,
+    ContainerResources,
     ContainerStateSummary,
     DiagnosticTarget,
     EndpointSliceSummary,
@@ -77,6 +82,7 @@ from k8s_incident_agent.kubernetes.contracts import (
     ExecProbeHandler,
     GrpcProbeHandler,
     HttpGetProbeHandler,
+    LogSelectionReason,
     OwnerSummary,
     PersistentVolumeClaimDetail,
     PodContainer,
@@ -92,6 +98,7 @@ from k8s_incident_agent.kubernetes.contracts import (
     RegardingSummary,
     ReplicaSummary,
     RequestedStorageClass,
+    ResourceValues,
     RolloutContainer,
     RolloutHistoryObservation,
     RolloutHistoryPayload,
@@ -284,6 +291,8 @@ class _ConditionView(Protocol):
     type: object
     status: object
     reason: object
+    message: object
+    last_transition_time: object
 
 
 class _WorkloadContainerView(Protocol):
@@ -295,6 +304,12 @@ class _WorkloadContainerView(Protocol):
     liveness_probe: object
     readiness_probe: object
     startup_probe: object
+    resources: object
+
+
+class _ResourcesView(Protocol):
+    requests: object
+    limits: object
 
 
 class _ProbeView(Protocol):
@@ -420,6 +435,8 @@ class _ContainerStatusView(Protocol):
     image_id: object
     restart_count: object
     state: object
+    last_state: object
+    container_id: object
 
 
 class _ContainerStateView(Protocol):
@@ -431,6 +448,15 @@ class _ContainerStateView(Protocol):
 class _ContainerStateDetailView(Protocol):
     reason: object
     message: object
+
+
+class _RunningStateView(Protocol):
+    started_at: object
+
+
+class _TerminatedStateView(_ContainerStateDetailView, _RunningStateView, Protocol):
+    finished_at: object
+    exit_code: object
 
 
 class _LogResponseView(Protocol):
@@ -457,10 +483,12 @@ class _EventView(Protocol):
     series: object
     deprecated_count: object
     reporting_controller: object
+    deprecated_last_timestamp: object
 
 
 class _EventSeriesView(Protocol):
     count: object
+    last_observed_time: object
 
 
 class _ObjectReferenceView(Protocol):
@@ -469,6 +497,7 @@ class _ObjectReferenceView(Protocol):
     namespace: object
     name: object
     uid: object
+    field_path: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,6 +523,8 @@ class _ContainerLogTarget:
     owner: OwnerSummary
     container_name: str
     restart_count: int
+    container_id: str | None = None
+    selection_reason: LogSelectionReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,6 +533,13 @@ class _Associations:
     replica_sets: tuple[V1ReplicaSet, ...]
     pods: tuple[_AssociatedPod, ...]
     references_by_uid: dict[str, RegardingSummary]
+
+
+type _PodContainerBindings = list[
+    tuple[
+        _AssociatedPod, list[tuple[_WorkloadContainerView, _ContainerStatusView | None]]
+    ]
+]
 
 
 @dataclass(slots=True)
@@ -821,24 +859,7 @@ class KubernetesEvidenceAdapter:
             associations = await self._read_associations(target, state)
             namespace = cast(str, target.namespace)
             events = await self._list_events(namespace)
-            projected_events: list[EventSummary] = []
-            for event in events:
-                regarding = _event_regarding(event)
-                expected_regarding = associations.references_by_uid.get(regarding.uid)
-                if expected_regarding is None:
-                    continue
-                if regarding != expected_regarding:
-                    raise _contract_error()
-                projected_events.append(
-                    _project_event(
-                        event,
-                        regarding,
-                        expected_namespace=namespace,
-                        state=state,
-                    )
-                )
-                if len(projected_events) > EVENT_LIMIT:
-                    raise _budget_error()
+            projected_events = _project_associated_events(associations, events, state)
             projected_events.sort(
                 key=lambda event: (
                     event.event_time or "",
@@ -874,7 +895,34 @@ class KubernetesEvidenceAdapter:
         try:
             state = _SanitizationState()
             associations = await self._read_associations(target, state)
-            log_targets = _crash_loop_log_targets(associations)
+            bindings = [
+                (associated, _pod_containers(associated.pod))
+                for associated in associations.pods
+            ]
+            has_probes = any(
+                probe is not None
+                for _, containers in bindings
+                for spec, _ in containers
+                for probe in (
+                    spec.startup_probe,
+                    spec.readiness_probe,
+                    spec.liveness_probe,
+                )
+            )
+            events = (
+                await self._list_events(cast(str, target.namespace))
+                if has_probes
+                else []
+            )
+            observed_at = _observation_time(self._clock)
+            probe_failures = _probe_failure_targets(
+                bindings,
+                _project_associated_events(associations, events, state),
+                observed_at,
+            )
+            log_targets = _abnormal_log_targets(
+                bindings, probe_failures, observed_at, state
+            )
             if len(log_targets) > LOG_CONTAINER_LIMIT:
                 raise _budget_error()
             containers: list[ContainerLogSummary] = []
@@ -900,6 +948,7 @@ class KubernetesEvidenceAdapter:
                         owner=log_target.owner,
                         container=log_target.container_name,
                         restart_count=log_target.restart_count,
+                        selection_reason=log_target.selection_reason,
                         snapshots=snapshots,
                     )
                 )
@@ -907,9 +956,12 @@ class KubernetesEvidenceAdapter:
             if log_targets:
                 rebound = await self._read_associations(target, state)
                 rebound_identities = _associated_container_identities(rebound)
-                if any(
-                    _log_target_identity(item) not in rebound_identities
-                    for item in log_targets
+                if (
+                    rebound.workload.target_ref != associations.workload.target_ref
+                    or any(
+                        _log_target_identity(item) not in rebound_identities
+                        for item in log_targets
+                    )
                 ):
                     raise _contract_error()
 
@@ -2270,6 +2322,51 @@ def _project_workload_container(
         args=arguments,
         probes=probes,
         source_index=source_index,
+        resources=_container_resources(container_view.resources),
+    )
+
+
+def _container_resources(value: object) -> ContainerResources:
+    if value is not None and not isinstance(value, V1ResourceRequirements):
+        raise _contract_error()
+    resources = None if value is None else cast(_ResourcesView, value)
+    return ContainerResources(
+        requests=_resource_values(None if resources is None else resources.requests),
+        limits=_resource_values(None if resources is None else resources.limits),
+    )
+
+
+def _resource_values(value: object) -> ResourceValues:
+    if value is None:
+        return ResourceValues()
+    if not isinstance(value, dict):
+        raise _contract_error()
+    quantities = cast(dict[object, object], value)
+    normalized: dict[str, float | None] = {}
+    for resource in ("cpu", "memory"):
+        raw = quantities.get(resource)
+        if raw is None:
+            normalized[resource] = None
+            continue
+        if (
+            not isinstance(raw, str)
+            or re.fullmatch(
+                r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)"
+                r"(?:[eE][+-]?[0-9]+|[numkKMGTPE]|[KMGTPE]i)?",
+                raw,
+            )
+            is None
+        ):
+            raise _contract_error()
+        try:
+            quantity = parse_quantity(raw)
+            if not quantity.is_finite() or not 0 <= quantity <= 2**63 - 1:
+                raise _contract_error()
+            normalized[resource] = float(quantity)
+        except (ArithmeticError, ValueError):
+            raise _contract_error() from None
+    return ResourceValues(
+        cpu_cores=normalized["cpu"], memory_bytes=normalized["memory"]
     )
 
 
@@ -2503,26 +2600,12 @@ def _project_pod(
         if status_view is None or status_view.conditions is None
         else status_view.conditions
     )
-    raw_container_statuses: object = (
-        []
-        if status_view is None or status_view.container_statuses is None
-        else status_view.container_statuses
-    )
-    if not isinstance(raw_conditions, list) or not isinstance(
-        raw_container_statuses, list
-    ):
+    if not isinstance(raw_conditions, list):
         raise _contract_error()
     condition_values = cast(list[object], raw_conditions)
-    container_status_values = cast(list[object], raw_container_statuses)
     if not all(isinstance(condition, V1PodCondition) for condition in condition_values):
         raise _contract_error()
-    if not all(
-        isinstance(container_status, V1ContainerStatus)
-        for container_status in container_status_values
-    ):
-        raise _contract_error()
     conditions = cast(list[V1PodCondition], condition_values)
-    container_statuses = cast(list[V1ContainerStatus], container_status_values)
     projected_conditions = sorted(
         (_project_sdk_condition(condition, state) for condition in conditions),
         key=lambda condition: (
@@ -2532,7 +2615,10 @@ def _project_pod(
         ),
     )
     containers = sorted(
-        (_project_pod_container(container, state) for container in container_statuses),
+        (
+            _project_pod_container(container, status, state)
+            for container, status in _pod_containers(pod)
+        ),
         key=lambda container: container.name,
     )
     owner = associated.owner
@@ -2556,27 +2642,16 @@ def _project_pod(
     )
 
 
-def _crash_loop_log_targets(
-    associations: _Associations,
+def _abnormal_log_targets(
+    bindings: _PodContainerBindings,
+    probe_failures: set[tuple[str, str]],
+    observed_at: datetime,
+    state: _SanitizationState,
 ) -> list[_ContainerLogTarget]:
     targets: list[_ContainerLogTarget] = []
-    for associated in associations.pods:
-        pod_view = cast(_PodView, associated.pod)
-        metadata = _metadata(pod_view.metadata)
-        status = pod_view.status
-        if status is None:
-            continue
-        if not isinstance(status, V1PodStatus):
-            raise _contract_error()
-        raw_statuses = cast(_PodStatusView, status).container_statuses
-        if raw_statuses is None:
-            continue
-        if not isinstance(raw_statuses, list) or not all(
-            isinstance(item, V1ContainerStatus)
-            for item in cast(list[object], raw_statuses)
-        ):
-            raise _contract_error()
-        spec_names = _pod_container_names(associated.pod)
+    for associated, containers in bindings:
+        metadata = _metadata(cast(_PodView, associated.pod).metadata)
+        pod_uid = _required_string(metadata.uid)
         owner = associated.owner
         owner_summary = OwnerSummary(
             api_version=_required_string(owner.api_version),
@@ -2585,96 +2660,188 @@ def _crash_loop_log_targets(
             uid=_required_string(owner.uid),
             controller=owner.controller is True,
         )
-        for container_status in cast(list[V1ContainerStatus], raw_statuses):
-            container_view = cast(_ContainerStatusView, container_status)
-            name = _required_string(container_view.name)
-            if name not in spec_names:
-                raise _contract_error()
-            state = container_view.state
-            if not isinstance(state, V1ContainerState):
+        for spec, status in containers:
+            if status is None:
                 continue
-            waiting = cast(_ContainerStateView, state).waiting
-            if not isinstance(waiting, V1ContainerStateWaiting):
-                continue
-            reason = cast(_ContainerStateDetailView, waiting).reason
-            restart_count = _nonnegative_int(container_view.restart_count)
-            if reason == "CrashLoopBackOff" and restart_count > 0:
+            name = _required_string(spec.name)
+            current = _container_state(status.state, state)
+            previous = _container_state(status.last_state, state)
+            restart_count = _nonnegative_int(status.restart_count)
+            reason: LogSelectionReason | None = None
+            if (
+                current.status == "waiting"
+                and current.reason == "CrashLoopBackOff"
+                and restart_count > 0
+            ):
+                reason = "crash_loop"
+            elif _abnormal_termination(current):
+                reason = "current_termination"
+            elif _abnormal_termination(previous) and _within_log_window(
+                previous.finished_at, observed_at
+            ):
+                reason = "recent_termination"
+            elif (pod_uid, name) in probe_failures:
+                reason = "probe_failure"
+            if reason is not None:
                 targets.append(
                     _ContainerLogTarget(
                         pod_name=_required_string(metadata.name),
-                        pod_uid=_required_string(metadata.uid),
+                        pod_uid=pod_uid,
                         owner=owner_summary,
                         container_name=name,
                         restart_count=restart_count,
+                        container_id=_optional_container_id(status.container_id),
+                        selection_reason=reason,
                     )
                 )
-    targets.sort(
-        key=lambda target: (
-            target.pod_name,
-            target.pod_uid,
-            target.container_name,
-        )
-    )
+    targets.sort(key=lambda item: (item.pod_name, item.pod_uid, item.container_name))
     return targets
 
 
-def _pod_container_names(pod: V1Pod) -> frozenset[str]:
+def _abnormal_termination(state: ContainerStateSummary) -> bool:
+    return state.status == "terminated" and (
+        state.exit_code not in (None, 0) or state.reason not in (None, "", "Completed")
+    )
+
+
+def _within_log_window(timestamp: str | None, observed_at: datetime) -> bool:
+    return timestamp is not None and (
+        0
+        <= (observed_at - datetime.fromisoformat(timestamp)).total_seconds()
+        <= LOG_SINCE_SECONDS
+    )
+
+
+def _pod_containers(
+    pod: V1Pod,
+) -> list[tuple[_WorkloadContainerView, _ContainerStatusView | None]]:
     pod_view = cast(_PodView, pod)
-    spec = pod_view.spec
-    if not isinstance(spec, V1PodSpec):
+    if not isinstance(pod_view.spec, V1PodSpec):
         raise _contract_error()
-    raw_containers = cast(_PodSpecView, spec).containers
+    raw_containers = cast(_PodSpecView, pod_view.spec).containers
     if not isinstance(raw_containers, list) or not all(
         isinstance(item, V1Container) for item in cast(list[object], raw_containers)
     ):
         raise _contract_error()
-    names = [
-        _required_string(cast(_WorkloadContainerView, container).name)
-        for container in cast(list[V1Container], raw_containers)
-    ]
-    if len(set(names)) != len(names):
+    specs: dict[str, _WorkloadContainerView] = {}
+    for container in cast(list[V1Container], raw_containers):
+        spec = cast(_WorkloadContainerView, container)
+        name = _required_string(spec.name)
+        if name in specs:
+            raise _contract_error()
+        specs[name] = spec
+    status = pod_view.status
+    if status is not None and not isinstance(status, V1PodStatus):
         raise _contract_error()
-    return frozenset(names)
+    raw_statuses = (
+        None if status is None else cast(_PodStatusView, status).container_statuses
+    )
+    if raw_statuses is None:
+        return [(spec, None) for spec in specs.values()]
+    if not isinstance(raw_statuses, list) or not all(
+        isinstance(item, V1ContainerStatus) for item in cast(list[object], raw_statuses)
+    ):
+        raise _contract_error()
+    statuses: dict[str, _ContainerStatusView] = {}
+    for item in cast(list[V1ContainerStatus], raw_statuses):
+        container_status = cast(_ContainerStatusView, item)
+        name = _required_string(container_status.name)
+        if name not in specs or name in statuses:
+            raise _contract_error()
+        statuses[name] = container_status
+    return [(spec, statuses.get(name)) for name, spec in specs.items()]
+
+
+def _probe_failure_targets(
+    bindings: _PodContainerBindings,
+    events: list[EventSummary],
+    observed_at: datetime,
+) -> set[tuple[str, str]]:
+    candidates = {
+        (
+            _required_string(_metadata(cast(_PodView, associated.pod).metadata).uid),
+            _required_string(spec.name),
+        )
+        for associated, containers in bindings
+        for spec, _ in containers
+        if any(
+            probe is not None
+            for probe in (spec.startup_probe, spec.readiness_probe, spec.liveness_probe)
+        )
+    }
+    failures: set[tuple[str, str]] = set()
+    for event in events:
+        if (
+            event.regarding.kind == "Pod"
+            and event.container is not None
+            and (event.regarding.uid, event.container) in candidates
+            and event.type == "Warning"
+            and event.reason == "Unhealthy"
+            and event.reporting_controller == "kubelet"
+            and _within_log_window(event.last_observed_time, observed_at)
+        ):
+            failures.add((event.regarding.uid, event.container))
+    return failures
+
+
+def _optional_container_id(value: object) -> str | None:
+    return None if value is None else _required_string(value, allow_empty=True)
 
 
 def _associated_container_identities(
     associations: _Associations,
-) -> frozenset[tuple[str, str, str, str]]:
-    identities: set[tuple[str, str, str, str]] = set()
+) -> frozenset[tuple[str, str, str, str, int, str | None]]:
+    identities: set[tuple[str, str, str, str, int, str | None]] = set()
     for associated in associations.pods:
         metadata = _metadata(cast(_PodView, associated.pod).metadata)
-        pod_name = _required_string(metadata.name)
-        pod_uid = _required_string(metadata.uid)
-        owner_uid = _required_string(associated.owner.uid)
-        for container_name in _pod_container_names(associated.pod):
-            identity = (pod_name, pod_uid, owner_uid, container_name)
+        for spec, status in _pod_containers(associated.pod):
+            if status is None:
+                continue
+            identity = (
+                _required_string(metadata.name),
+                _required_string(metadata.uid),
+                _required_string(associated.owner.uid),
+                _required_string(spec.name),
+                _nonnegative_int(status.restart_count),
+                _optional_container_id(status.container_id),
+            )
             if identity in identities:
                 raise _contract_error()
             identities.add(identity)
     return frozenset(identities)
 
 
-def _log_target_identity(target: _ContainerLogTarget) -> tuple[str, str, str, str]:
+def _log_target_identity(
+    target: _ContainerLogTarget,
+) -> tuple[str, str, str, str, int, str | None]:
     return (
         target.pod_name,
         target.pod_uid,
         target.owner.uid,
         target.container_name,
+        target.restart_count,
+        target.container_id,
     )
 
 
 def _project_pod_container(
-    container: V1ContainerStatus,
+    spec: _WorkloadContainerView,
+    container: _ContainerStatusView | None,
     state: _SanitizationState,
 ) -> PodContainer:
-    container_view = cast(_ContainerStatusView, container)
-    image_id = container_view.image_id
+    image_id = None if container is None else container.image_id
     return PodContainer(
-        name=_required_string(container_view.name),
-        image=state.required(container_view.image),
+        name=_required_string(spec.name),
+        image=state.required(spec.image if container is None else container.image),
         image_id=(None if image_id in (None, "") else state.optional(image_id)),
-        restart_count=_nonnegative_int(container_view.restart_count),
-        state=_container_state(container_view.state, state),
+        restart_count=None
+        if container is None
+        else _nonnegative_int(container.restart_count),
+        state=_container_state(None if container is None else container.state, state),
+        last_state=None
+        if container is None or container.last_state is None
+        else _container_state(container.last_state, state),
+        configured_resources=_container_resources(spec.resources),
     )
 
 
@@ -2709,15 +2876,26 @@ def _container_state(
     if running is not None:
         if not isinstance(running, V1ContainerStateRunning):
             raise _contract_error()
-        return ContainerStateSummary(status="running", reason=None, message=None)
+        return ContainerStateSummary(
+            status="running",
+            reason=None,
+            message=None,
+            started_at=_optional_rfc3339(cast(_RunningStateView, running).started_at),
+        )
     if terminated is not None:
         if not isinstance(terminated, V1ContainerStateTerminated):
             raise _contract_error()
-        terminated_view = cast(_ContainerStateDetailView, terminated)
+        terminated_view = cast(_TerminatedStateView, terminated)
+        exit_code = terminated_view.exit_code
+        if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+            raise _contract_error()
         return ContainerStateSummary(
             status="terminated",
             reason=state.optional(terminated_view.reason),
             message=state.optional(terminated_view.message),
+            started_at=_optional_rfc3339(terminated_view.started_at),
+            finished_at=_optional_rfc3339(terminated_view.finished_at),
+            exit_code=exit_code,
         )
     return ContainerStateSummary(status="unknown", reason=None, message=None)
 
@@ -2735,6 +2913,32 @@ def _event_regarding(event: EventsV1Event) -> RegardingSummary:
         name=_required_string(regarding_view.name),
         uid=_required_string(regarding_view.uid),
     )
+
+
+def _project_associated_events(
+    associations: _Associations,
+    events: list[EventsV1Event],
+    state: _SanitizationState,
+) -> list[EventSummary]:
+    projected: list[EventSummary] = []
+    for event in events:
+        regarding = _event_regarding(event)
+        expected = associations.references_by_uid.get(regarding.uid)
+        if expected is None:
+            continue
+        if regarding != expected:
+            raise _contract_error()
+        projected.append(
+            _project_event(
+                event,
+                regarding,
+                expected_namespace=associations.workload.target_ref.namespace,
+                state=state,
+            )
+        )
+        if len(projected) > EVENT_LIMIT:
+            raise _budget_error()
+    return projected
 
 
 def _project_event(
@@ -2755,6 +2959,26 @@ def _project_event(
     namespace = _required_string(metadata.namespace)
     if namespace != expected_namespace:
         raise _contract_error()
+    reference = cast(_ObjectReferenceView, event_view.regarding)
+    field_path = reference.field_path
+    if field_path is not None and not isinstance(field_path, str):
+        raise _contract_error()
+    container_match = re.fullmatch(
+        r"spec\.containers\{([a-z0-9](?:[-a-z0-9]*[a-z0-9])?)\}", field_path or ""
+    )
+    last_observed = event_view.deprecated_last_timestamp or event_view.event_time
+    if event_view.series is not None:
+        if not isinstance(event_view.series, EventsV1EventSeries):
+            raise _contract_error()
+        series = cast(_EventSeriesView, event_view.series)
+        last_observed = series.last_observed_time
+        count = _positive_int(series.count)
+    else:
+        count = (
+            1
+            if event_view.deprecated_count is None
+            else _positive_int(event_view.deprecated_count)
+        )
     return EventSummary(
         api_version="events.k8s.io/v1",
         kind="Event",
@@ -2768,21 +2992,11 @@ def _project_event(
         action=state.optional(event_view.action),
         note=state.optional(event_view.note),
         event_time=_optional_rfc3339(event_view.event_time),
-        series_count=_event_series_count(event),
+        series_count=count,
         reporting_controller=state.optional(event_view.reporting_controller),
+        last_observed_time=_optional_rfc3339(last_observed),
+        container=None if container_match is None else container_match.group(1),
     )
-
-
-def _event_series_count(event: EventsV1Event) -> int:
-    event_view = cast(_EventView, event)
-    if event_view.series is not None:
-        if not isinstance(event_view.series, EventsV1EventSeries):
-            raise _contract_error()
-        series_view = cast(_EventSeriesView, event_view.series)
-        return _positive_int(series_view.count)
-    if event_view.deprecated_count is not None:
-        return _positive_int(event_view.deprecated_count)
-    return 1
 
 
 def _project_sdk_condition(
@@ -2795,6 +3009,8 @@ def _project_sdk_condition(
         condition_view.status,
         condition_view.reason,
         state,
+        message=condition_view.message,
+        last_transition_time=condition_view.last_transition_time,
     )
 
 
@@ -2803,11 +3019,16 @@ def _project_condition(
     status: object,
     reason: object,
     state: _SanitizationState,
+    *,
+    message: object = None,
+    last_transition_time: object = None,
 ) -> ConditionSummary:
     return ConditionSummary(
         type=state.required(condition_type),
         status=state.required(status),
         reason=state.optional(reason),
+        message=state.optional(message),
+        last_transition_time=_optional_rfc3339(last_transition_time),
     )
 
 

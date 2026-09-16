@@ -128,7 +128,7 @@ async def _get_events(
 async def _get_container_logs(
     runtime: ToolRuntime[DiagnosticToolContext, object],
 ) -> dict[str, JsonValue]:
-    """Observe bounded current and previous logs for target CrashLoop containers."""
+    """Observe bounded logs for owned regular containers with abnormal evidence."""
     return await _execute_tool(
         runtime,
         tool_name="get_container_logs",

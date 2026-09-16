@@ -58,6 +58,18 @@ class ConditionSummary(_EvidenceContract):
     type: str = Field(min_length=1)
     status: str = Field(min_length=1)
     reason: str | None
+    message: str | None = None
+    last_transition_time: str | None = None
+
+
+class ResourceValues(_EvidenceContract):
+    cpu_cores: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    memory_bytes: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class ContainerResources(_EvidenceContract):
+    requests: ResourceValues
+    limits: ResourceValues
 
 
 class ExecProbeHandler(_EvidenceContract):
@@ -105,6 +117,7 @@ class WorkloadContainer(_EvidenceContract):
     args: list[str]
     probes: list[ContainerProbe] = Field(default_factory=list[ContainerProbe])
     source_index: int | None = Field(default=None, ge=0, le=255)
+    resources: ContainerResources | None = None
 
 
 class WorkloadDetail(_EvidenceContract):
@@ -189,14 +202,19 @@ class ContainerStateSummary(_EvidenceContract):
     status: Literal["waiting", "running", "terminated", "unknown"]
     reason: str | None
     message: str | None
+    started_at: str | None = None
+    finished_at: str | None = None
+    exit_code: int | None = None
 
 
 class PodContainer(_EvidenceContract):
     name: str = Field(min_length=1)
     image: str
     image_id: str | None
-    restart_count: int = Field(ge=0)
+    restart_count: int | None = Field(ge=0)
     state: ContainerStateSummary
+    last_state: ContainerStateSummary | None = None
+    configured_resources: ContainerResources | None = None
 
 
 class PodSummary(_EvidenceContract):
@@ -268,6 +286,8 @@ class EventSummary(_EvidenceContract):
     event_time: str | None
     series_count: int = Field(ge=1)
     reporting_controller: str | None
+    last_observed_time: str | None = None
+    container: str | None = None
 
 
 class EventsPayload(_EvidenceContract):
@@ -317,11 +337,17 @@ class ContainerLogSnapshot(_EvidenceContract):
         return self
 
 
+type LogSelectionReason = Literal[
+    "crash_loop", "current_termination", "recent_termination", "probe_failure"
+]
+
+
 class ContainerLogSummary(_EvidenceContract):
     pod_ref: TargetRef
     owner: OwnerSummary
     container: str = Field(min_length=1)
-    restart_count: int = Field(ge=1)
+    restart_count: int = Field(ge=0)
+    selection_reason: LogSelectionReason | None = None
     snapshots: list[ContainerLogSnapshot] = Field(min_length=2, max_length=2)
 
     @field_validator("snapshots")

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -9,6 +11,9 @@ from typing import cast
 import pytest
 from alembic import command
 from alembic.config import Config
+from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
+    V1ResourceRequirements,
+)
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool
 from sqlalchemy import select
@@ -16,6 +21,13 @@ from tests.factories import (
     agent_run_snapshot,
     normalized_trigger,
     prometheus_query_service_stub,
+)
+from tests.unit.kubernetes.test_adapter_workload import (
+    _adapter as workload_adapter,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.kubernetes.test_adapter_workload import (
+    _deployment,  # pyright: ignore[reportPrivateUsage]
+    _deployment_containers,  # pyright: ignore[reportPrivateUsage]
 )
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
@@ -305,7 +317,54 @@ async def test_workload_replay_accepts_the_pre_probe_container_shape(
         workload = cast(dict[str, object], payload["workload"])
         containers = cast(list[dict[str, object]], workload["containers"])
         assert containers[0]["probes"] == []
+        assert containers[0]["resources"] is None
         assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resource_evidence_roundtrips_through_real_tool_and_sqlite_replay(
+    tmp_path: Path,
+) -> None:
+    deployment = _deployment(args=["--token=private-value"])
+    _deployment_containers(deployment)[1].resources = V1ResourceRequirements(
+        requests={"cpu": "250m"}, limits={"memory": "128Mi"}
+    )
+    adapter, api = workload_adapter(deployment, clock=lambda: NOW)
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        context = replace(
+            await _context(repository, _SequencedAdapter()), adapter=adapter
+        )
+        first = await _invoke(
+            build_diagnostic_tools(), context, "get_workload", "resources"
+        )
+        observation = WorkloadObservation.model_validate_json(
+            json.dumps(
+                {
+                    key: first[key]
+                    for key in (
+                        "evidenceKind",
+                        "targetRef",
+                        "observedAt",
+                        "payload",
+                        "truncated",
+                        "redacted",
+                    )
+                }
+            )
+        )
+        resources = observation.payload.workload.containers[0].resources
+        assert resources is not None
+        assert resources.requests.cpu_cores == 0.25
+        assert resources.limits.memory_bytes == 134217728.0
+        assert "private-value" not in str(first)
+        assert first["redacted"] is True
+        api.deployment = None
+        replayed = await _invoke(
+            build_diagnostic_tools(), context, "get_workload", "resources"
+        )
+        assert replayed == first
+        assert len(api.calls) == 1
 
 
 @pytest.mark.asyncio

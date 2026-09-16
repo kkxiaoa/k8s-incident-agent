@@ -26,6 +26,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1PodTemplateSpec,
     V1ReplicaSet,
     V1ReplicaSetList,
+    V1ResourceRequirements,
 )
 
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
@@ -130,7 +131,14 @@ def _pod(
             resource_version=f"rv-{uid}",
             owner_references=[_owner("ReplicaSet", "rs-owned", owner_uid)],
         ),
-        spec=V1PodSpec(containers=[V1Container(name="app")]),
+        spec=V1PodSpec(
+            containers=[
+                V1Container(name=cast(Any, item).name, image=cast(Any, item).image)
+                for item in container_statuses
+            ]
+            if container_statuses
+            else [V1Container(name="app", image="app:v1")]
+        ),
         status=V1PodStatus(
             phase="Pending",
             conditions=[V1PodCondition(type="PodScheduled", status="True")],
@@ -327,7 +335,11 @@ async def test_read_pods_normalizes_empty_and_missing_optional_collections() -> 
 
     assert normalized.phase is None
     assert normalized.conditions == []
-    assert normalized.containers == []
+    assert len(normalized.containers) == 1
+    assert normalized.containers[0].state.status == "unknown"
+    assert normalized.containers[0].restart_count is None
+    assert normalized.containers[0].configured_resources is not None
+    assert normalized.containers[0].configured_resources.requests.cpu_cores is None
 
 
 @pytest.mark.asyncio
@@ -397,3 +409,66 @@ async def test_read_pods_marks_truncated_container_messages() -> None:
 
     assert len(observation.payload.pods[0].containers[0].state.message or "") == 2048
     assert observation.truncated is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination_reason", ["OOMKilled", None])
+async def test_pod_resources_and_last_termination_do_not_invent_a_current_cause(
+    termination_reason: str | None,
+) -> None:
+    container_status = _container_status(
+        "app", V1ContainerState(running=V1ContainerStateRunning(started_at=OBSERVED_AT))
+    )
+    container_status.last_state = V1ContainerState(
+        terminated=V1ContainerStateTerminated(
+            exit_code=137,
+            reason=termination_reason,
+            message="token=private",
+            started_at=OBSERVED_AT.replace(minute=0),
+            finished_at=OBSERVED_AT.replace(minute=14),
+        )
+    )
+    pod = _pod("owned", "pod-uid", "rs-uid", container_statuses=[container_status])
+    spec: Any = cast(Any, pod).spec
+    spec.containers[0].resources = V1ResourceRequirements(
+        requests={"cpu": "100m"}, limits={"memory": "512Mi"}
+    )
+    status: Any = cast(Any, pod).status
+    status.conditions = [
+        V1PodCondition(
+            type="PodScheduled",
+            status="False",
+            reason="Unschedulable",
+            message="Insufficient cpu; token=private",
+            last_transition_time=OBSERVED_AT,
+        )
+    ]
+    adapter = _adapter(
+        _AppsApi(
+            {
+                None: V1ReplicaSetList(
+                    metadata=V1ListMeta(),
+                    items=[_replica_set("rs-owned", "rs-uid", "deployment-uid")],
+                )
+            }
+        ),
+        _CoreApi({None: V1PodList(metadata=V1ListMeta(), items=[pod])}),
+    )
+    observation = await adapter.read_pods(TARGET)
+    projected = observation.payload.pods[0]
+    container = projected.containers[0]
+    assert container.state.status == "running"
+    assert container.state.reason is None
+    assert container.state.started_at == "2026-08-21T09:15:00Z"
+    assert container.last_state is not None
+    assert container.last_state.reason == termination_reason
+    assert container.last_state.exit_code == 137
+    assert container.last_state.finished_at == "2026-08-21T09:14:00Z"
+    assert container.configured_resources is not None
+    assert container.configured_resources.requests.cpu_cores == 0.1
+    assert container.configured_resources.requests.memory_bytes is None
+    assert container.configured_resources.limits.memory_bytes == 536870912.0
+    assert projected.conditions[0].last_transition_time == "2026-08-21T09:15:00Z"
+    assert projected.conditions[0].message == "Insufficient cpu; token=[REDACTED]"
+    assert "private" not in observation.model_dump_json()
+    assert observation.redacted is True

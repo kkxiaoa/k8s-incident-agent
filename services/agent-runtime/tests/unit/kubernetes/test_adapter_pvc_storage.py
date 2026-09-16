@@ -273,6 +273,8 @@ async def test_read_pvc_storage_projects_only_exact_referenced_resources() -> No
                     "type": "FileSystemResizePending",
                     "status": "False",
                     "reason": "WaitingForConsumer",
+                    "message": None,
+                    "lastTransitionTime": None,
                 }
             ],
         },

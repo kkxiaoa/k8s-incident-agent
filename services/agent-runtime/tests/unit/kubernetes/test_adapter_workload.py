@@ -20,6 +20,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1PodSpec,
     V1PodTemplateSpec,
     V1Probe,
+    V1ResourceRequirements,
     V1TCPSocketAction,
 )
 
@@ -163,6 +164,56 @@ def _adapter(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cpu", "memory", "cores", "byte_count"),
+    [
+        ("250m", "128Mi", 0.25, 134217728.0),
+        ("1e-3", "2G", 0.001, 2e9),
+        ("0", "0", 0.0, 0.0),
+        ("100n", "1.5Gi", 1e-7, 1610612736.0),
+    ],
+)
+async def test_workload_resources_normalize_only_cpu_and_memory(
+    cpu: str,
+    memory: str,
+    cores: float,
+    byte_count: float,
+) -> None:
+    deployment = _deployment()
+    _deployment_containers(deployment)[1].resources = V1ResourceRequirements(
+        requests={"cpu": cpu, "memory": memory, "example.invalid/device": "private"},
+        limits={"memory": "256Mi"},
+    )
+    adapter, _ = _adapter(deployment)
+    observation = await adapter.read_workload(TARGET)
+    resources = observation.payload.workload.containers[0].resources
+    assert resources is not None
+    assert resources.requests.cpu_cores == cores
+    assert resources.requests.memory_bytes == byte_count
+    assert resources.limits.cpu_cores is None
+    assert resources.limits.memory_bytes == 268435456.0
+    assert "private" not in observation.model_dump_json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "quantity", ["NaN", "Inf", "-1", "1_000", "bad", "1e100", "1ki"]
+)
+async def test_workload_rejects_invalid_resources_without_echoing_values(
+    quantity: str,
+) -> None:
+    deployment = _deployment()
+    _deployment_containers(deployment)[1].resources = V1ResourceRequirements(
+        requests={"cpu": quantity},
+    )
+    adapter, _ = _adapter(deployment)
+    with pytest.raises(KubernetesBoundaryError) as failure:
+        await adapter.read_workload(TARGET)
+    assert failure.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+    assert quantity not in str(failure.value)
+
+
+@pytest.mark.asyncio
 async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> None:
     adapter, apps_api = _adapter(_deployment())
 
@@ -206,6 +257,10 @@ async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> No
                         "args": ["invalid-command"],
                         "probes": [],
                         "sourceIndex": 1,
+                        "resources": {
+                            "requests": {"cpuCores": None, "memoryBytes": None},
+                            "limits": {"cpuCores": None, "memoryBytes": None},
+                        },
                     },
                     {
                         "name": "z-sidecar",
@@ -215,14 +270,26 @@ async def test_read_workload_projects_and_sorts_only_the_approved_fields() -> No
                         "args": [],
                         "probes": [],
                         "sourceIndex": 0,
+                        "resources": {
+                            "requests": {"cpuCores": None, "memoryBytes": None},
+                            "limits": {"cpuCores": None, "memoryBytes": None},
+                        },
                     },
                 ],
                 "conditions": [
-                    {"type": "Available", "status": "False", "reason": None},
+                    {
+                        "type": "Available",
+                        "status": "False",
+                        "reason": None,
+                        "message": None,
+                        "lastTransitionTime": None,
+                    },
                     {
                         "type": "Progressing",
                         "status": "False",
                         "reason": "ProgressDeadlineExceeded",
+                        "message": None,
+                        "lastTransitionTime": None,
                     },
                 ],
             }

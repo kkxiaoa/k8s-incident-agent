@@ -257,6 +257,8 @@ async def test_read_events_rebuilds_associations_filters_and_sorts() -> None:
         series_count=7,
         deprecated_count=5,
     )
+    cast(Any, later).regarding.field_path = "spec.containers{app}"
+    cast(Any, later).series.last_observed_time = OBSERVED_AT
     earlier = _event(
         "a-event",
         "event-a",
@@ -308,6 +310,8 @@ async def test_read_events_rebuilds_associations_filters_and_sorts() -> None:
     assert observation.payload.events[0].series_count == 3
     assert observation.payload.events[1].series_count == 7
     assert observation.payload.events[1].event_time == "2026-08-21T08:00:00Z"
+    assert observation.payload.events[1].last_observed_time == "2026-08-21T09:30:00Z"
+    assert observation.payload.events[1].container == "app"
     assert observation.payload.events[1].note == "token=[REDACTED]"
     assert observation.redacted is True
 
