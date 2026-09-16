@@ -18,6 +18,7 @@ from pydantic import PrivateAttr
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
+from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
 from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
@@ -58,7 +59,10 @@ REPAIR_POLICY = DiagnosticPolicy(
         "query_prometheus",
     ),
     required_evidence=frozenset({"workload", "rollout_history", "pods", "events"}),
-    prometheus_panel_ids=("image-pull-affected-pods",),
+    prometheus_panels=(
+        DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+    ),
+    trigger_panel_id="image-pull-affected-pods",
     repair_action="set_container_image",
 )
 

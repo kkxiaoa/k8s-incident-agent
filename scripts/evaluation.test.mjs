@@ -119,7 +119,7 @@ test("the committed scenario catalog exposes seven entries across five families"
   const imagePull = scenarios.find(
     (scenario) => scenario.scenarioId === "image-pull-backoff",
   );
-  assert.equal(imagePull.scenarioVersion, 3);
+  assert.equal(imagePull.scenarioVersion, 4);
   assert.equal(imagePull.requiredEvidence.includes("rollout_history"), true);
   assert.equal(imagePull.allowedTools.includes("get_rollout_history"), true);
   assert.deepEqual(imagePull.expectedPatchConstraints, {

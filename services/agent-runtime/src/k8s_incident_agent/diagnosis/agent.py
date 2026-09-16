@@ -17,10 +17,14 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     hook_config,
 )
+from langchain.agents.middleware.model_call_limit import (
+    ModelCallLimitExceededError,
+)
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langchain.agents.middleware.types import OmitFromInput
 from langchain.agents.structured_output import StructuredOutputError, ToolStrategy
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
     CompiledStateGraph,
@@ -31,13 +35,21 @@ from langgraph.types import Command
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
-from k8s_incident_agent.diagnosis.policy_contracts import DIAGNOSTIC_TOOL_NAMES
+from k8s_incident_agent.diagnosis.policy_contracts import (
+    DIAGNOSTIC_TOOL_NAMES,
+    DiagnosticPanel,
+)
 from k8s_incident_agent.diagnosis.prompt import build_diagnostic_system_prompt
 from k8s_incident_agent.domain.models import JsonValue
 from k8s_incident_agent.repair.contracts import RepairAction
 
-_DEFAULT_MAX_MODEL_CALLS = 8
-_DEFAULT_MAX_TOOL_CALLS = 6
+_DEFAULT_MAX_MODEL_CALLS = 12
+_DEFAULT_MAX_TOOL_CALLS = 12
+_FINAL_RESPONSE_TOOL_NAME = DiagnosisCandidate.__name__
+_FINAL_ONLY_HINT = (
+    "Budget notice: only the final structured response remains. Deliver the "
+    "diagnosis from the Evidence already collected; further tool calls are refused."
+)
 type _DiagnosisPayload = dict[str, JsonValue]
 
 
@@ -76,7 +88,21 @@ class DiagnosticDeadlineExceededError(RuntimeError):
 class _CheckpointSafeDiagnosisMiddleware(
     AgentMiddleware[_CheckpointSafeDiagnosisState, DiagnosticToolContext]
 ):
+    """Deadline, checkpoint-safe output and the deterministic final-response reserve.
+
+    The SDK limit middlewares count attempts and fail the Run once a batch exceeds
+    the thread limit. This middleware runs before them: it keeps the last tool call
+    and the last model call for the structured response so a legal investigation can
+    still be delivered, and refuses any batch that would spend that reserve on
+    evidence reads.
+    """
+
     state_schema = _CheckpointSafeDiagnosisState
+
+    def __init__(self, *, max_model_calls: int, max_tool_calls: int) -> None:
+        super().__init__()
+        self._max_model_calls = max_model_calls
+        self._max_tool_calls = max_tool_calls
 
     @hook_config(can_jump_to=["end"])
     def before_agent(
@@ -104,7 +130,7 @@ class _CheckpointSafeDiagnosisMiddleware(
     ) -> ModelResponse[Any]:
         try:
             _require_remaining_time(request.runtime.context)
-            return _checkpoint_safe_response(handler(request))
+            return _checkpoint_safe_response(handler(self._reserve_final(request)))
         except DiagnosticDeadlineExceededError:
             raise
         except (StructuredDiagnosisError, StructuredOutputError):
@@ -120,9 +146,10 @@ class _CheckpointSafeDiagnosisMiddleware(
         ],
     ) -> ModelResponse[Any]:
         try:
+            reserved = self._reserve_final(request)
             response = await _run_before_deadline(
                 request.runtime.context,
-                lambda: handler(request),
+                lambda: handler(reserved),
             )
             return _checkpoint_safe_response(response)
         except DiagnosticDeadlineExceededError:
@@ -131,6 +158,74 @@ class _CheckpointSafeDiagnosisMiddleware(
             raise StructuredDiagnosisError from None
         except Exception:
             raise ModelUpstreamError from None
+
+    def after_model(
+        self,
+        state: _CheckpointSafeDiagnosisState,
+        runtime: Runtime[DiagnosticToolContext],
+    ) -> None:
+        del runtime
+        self._require_batch_within_reserve(state)
+
+    async def aafter_model(
+        self,
+        state: _CheckpointSafeDiagnosisState,
+        runtime: Runtime[DiagnosticToolContext],
+    ) -> None:
+        del runtime
+        self._require_batch_within_reserve(state)
+
+    def _reserve_final(
+        self,
+        request: ModelRequest[DiagnosticToolContext],
+    ) -> ModelRequest[DiagnosticToolContext]:
+        state = cast(dict[str, object], request.state)
+        if (
+            self._max_tool_calls - _tool_calls_used(state) > 1
+            and self._max_model_calls - _model_calls_used(state) > 1
+        ):
+            return request
+        system = request.system_message
+        content = system.text if system is not None else ""
+        return request.override(
+            tools=[],
+            system_message=SystemMessage(content=f"{content}\n\n{_FINAL_ONLY_HINT}"),
+        )
+
+    def _require_batch_within_reserve(
+        self,
+        state: _CheckpointSafeDiagnosisState,
+    ) -> None:
+        values = cast(dict[str, object], state)
+        message = _last_ai_message(values)
+        if message is None:
+            return
+        evidence_calls = [
+            call
+            for call in message.tool_calls
+            if call["name"] != _FINAL_RESPONSE_TOOL_NAME
+        ]
+        if not evidence_calls:
+            return
+        tool_calls_used = _tool_calls_used(values)
+        attempted = tool_calls_used + len(message.tool_calls)
+        # Evidence reads may never spend the last tool call reserved for the final
+        # response, whether or not the same batch also carries that response.
+        if len(evidence_calls) > self._max_tool_calls - tool_calls_used - 1:
+            raise ToolCallLimitExceededError(
+                thread_count=attempted,
+                run_count=attempted,
+                thread_limit=self._max_tool_calls,
+                run_limit=None,
+            )
+        model_calls_used = _model_calls_used(values) + 1
+        if model_calls_used >= self._max_model_calls:
+            raise ModelCallLimitExceededError(
+                thread_count=model_calls_used + 1,
+                run_count=model_calls_used + 1,
+                thread_limit=self._max_model_calls,
+                run_limit=None,
+            )
 
     def wrap_tool_call(
         self,
@@ -206,6 +301,29 @@ def _checkpoint_safe_response(response: ModelResponse[Any]) -> ModelResponse[Any
     )
 
 
+def _tool_calls_used(state: dict[str, object]) -> int:
+    counts = state.get("thread_tool_call_count")
+    if not isinstance(counts, dict):
+        return 0
+    used = cast(dict[object, object], counts).get("__all__", 0)
+    return used if isinstance(used, int) and not isinstance(used, bool) else 0
+
+
+def _model_calls_used(state: dict[str, object]) -> int:
+    used = state.get("thread_model_call_count", 0)
+    return used if isinstance(used, int) and not isinstance(used, bool) else 0
+
+
+def _last_ai_message(state: dict[str, object]) -> AIMessage | None:
+    messages = state.get("messages")
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(cast(list[object], messages)):
+        if isinstance(message, AIMessage):
+            return message
+    return None
+
+
 def _remaining_time(context: DiagnosticToolContext) -> float:
     deadline = context.run.started_at + timedelta(seconds=context.run.timeout_seconds)
     return (deadline - context.now()).total_seconds()
@@ -239,7 +357,8 @@ def build_diagnostic_agent(
     max_model_calls: int = _DEFAULT_MAX_MODEL_CALLS,
     max_tool_calls: int = _DEFAULT_MAX_TOOL_CALLS,
     required_evidence: Sequence[str],
-    prometheus_panel_ids: Sequence[str],
+    prometheus_panels: Sequence[DiagnosticPanel],
+    trigger_panel_id: str | None,
     repair_action: RepairAction | None = None,
 ) -> _DiagnosticAgentGraph:
     """Build the one-shot read-only diagnosis graph embedded by the orchestrator."""
@@ -258,7 +377,8 @@ def build_diagnostic_agent(
         max_tool_calls=max_tool_calls,
         allowed_tool_names=tool_names,
         required_evidence=required_evidence,
-        prometheus_panel_ids=prometheus_panel_ids,
+        prometheus_panels=prometheus_panels,
+        trigger_panel_id=trigger_panel_id,
         repair_action=repair_action,
     )
     agent_factory = cast(Callable[..., object], create_agent)
@@ -275,7 +395,10 @@ def build_diagnostic_agent(
                 thread_limit=max_model_calls,
                 exit_behavior="error",
             ),
-            _CheckpointSafeDiagnosisMiddleware(),
+            _CheckpointSafeDiagnosisMiddleware(
+                max_model_calls=max_model_calls,
+                max_tool_calls=max_tool_calls,
+            ),
         ),
         response_format=ToolStrategy(
             DiagnosisCandidate,

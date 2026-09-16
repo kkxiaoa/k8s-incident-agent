@@ -39,6 +39,7 @@ from k8s_incident_agent.diagnosis.agent import build_diagnostic_agent
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
+from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
 from k8s_incident_agent.domain.contracts import IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
@@ -61,7 +62,10 @@ EVIDENCE_ID = "00000000-0000-0000-0000-000000000001"
 TEST_POLICY = DiagnosticPolicy(
     tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
     required_evidence=frozenset({"workload"}),
-    prometheus_panel_ids=("image-pull-affected-pods",),
+    prometheus_panels=(
+        DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+    ),
+    trigger_panel_id="image-pull-affected-pods",
 )
 
 
@@ -171,7 +175,10 @@ def _budget_graph(
         max_model_calls=max_model_calls,
         max_tool_calls=max_tool_calls,
         required_evidence=("workload",),
-        prometheus_panel_ids=("image-pull-affected-pods",),
+        prometheus_panels=(
+            DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+        ),
+        trigger_panel_id="image-pull-affected-pods",
     )
     builder = StateGraph(_BudgetState, context_schema=DiagnosticToolContext)
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
@@ -289,8 +296,11 @@ async def test_tool_call_counter_survives_checkpoint_reopen(tmp_path: Path) -> N
             "missing_information": [],
         }
     )
+    # Two tool calls: one evidence read plus the final response. A second evidence
+    # read would spend the reserved final slot, so the runtime refuses it.
     responses: list[BaseMessage] = [
         _tool_call("get_workload", "call-workload"),
+        _tool_call("get_pods", "call-pods"),
         _structured_response(candidate),
     ]
     first_model = _ToolCallingFakeModel(responses=responses)
@@ -298,8 +308,8 @@ async def test_tool_call_counter_survives_checkpoint_reopen(tmp_path: Path) -> N
         graph = _budget_graph(
             saver,
             first_model,
-            max_model_calls=2,
-            max_tool_calls=1,
+            max_model_calls=4,
+            max_tool_calls=2,
         )
         with pytest.raises(ToolCallLimitExceededError):
             await graph.ainvoke(  # pyright: ignore[reportUnknownMemberType]
@@ -315,8 +325,8 @@ async def test_tool_call_counter_survives_checkpoint_reopen(tmp_path: Path) -> N
         rebuilt_graph = _budget_graph(
             saver,
             rebuilt_model,
-            max_model_calls=2,
-            max_tool_calls=1,
+            max_model_calls=4,
+            max_tool_calls=2,
         )
         with pytest.raises(ToolCallLimitExceededError):
             await rebuilt_graph.ainvoke(  # pyright: ignore[reportUnknownMemberType]

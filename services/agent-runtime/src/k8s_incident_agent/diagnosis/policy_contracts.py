@@ -1,4 +1,4 @@
-from collections.abc import Collection
+from dataclasses import dataclass
 from typing import Final, Literal
 
 type DiagnosticToolName = Literal[
@@ -36,40 +36,59 @@ DIAGNOSTIC_TOOL_NAMES: Final[tuple[DiagnosticToolName, ...]] = (
     *KUBERNETES_DIAGNOSTIC_TOOL_NAMES,
     PROMETHEUS_TOOL_NAME,
 )
-DIAGNOSTIC_EVIDENCE_TOOL_NAMES: Final[
-    tuple[tuple[DiagnosticEvidenceKind, DiagnosticToolName], ...]
-] = (
-    ("workload", "get_workload"),
-    ("rollout_history", "get_rollout_history"),
-    ("pods", "get_pods"),
-    ("events", "get_events"),
-    ("container_logs", "get_container_logs"),
-    ("service_network", "get_service_network"),
-    ("pvc_storage", "get_pvc_storage"),
-    ("metrics", "query_prometheus"),
-)
-DIAGNOSTIC_EVIDENCE_KINDS: Final[frozenset[DiagnosticEvidenceKind]] = frozenset(
-    evidence_kind for evidence_kind, _ in DIAGNOSTIC_EVIDENCE_TOOL_NAMES
-)
 
 
-def validate_diagnostic_policy_contract(
-    tool_names: Collection[str],
-    required_evidence: Collection[str],
-) -> None:
-    tools = set(tool_names)
-    evidence = set(required_evidence)
-    if (
-        not tools
-        or len(tools) != len(tool_names)
-        or not tools.issubset(DIAGNOSTIC_TOOL_NAMES)
-        or not evidence
-        or len(evidence) != len(required_evidence)
-        or not evidence.issubset(DIAGNOSTIC_EVIDENCE_KINDS)
-        or any(
-            required_tool not in tools
-            for evidence_kind, required_tool in DIAGNOSTIC_EVIDENCE_TOOL_NAMES
-            if evidence_kind in evidence
-        )
-    ):
-        raise ValueError("Diagnostic policy contract is invalid")
+@dataclass(frozen=True, slots=True)
+class DiagnosticPanel:
+    """Catalog panel the model may query, with the meaning it needs to choose it."""
+
+    panel_id: str
+    title: str
+    unit: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetInvestigationCapability:
+    """Read-only capability the Runtime grants to one Incident target kind.
+
+    The alert that discovered the symptom no longer bounds the tool set; the
+    target's resource kind and its fixed authorised scope do. ``identity_evidence``
+    is the one Evidence kind every diagnosed conclusion must cite so it is anchored
+    to the exact target the Run observed.
+    """
+
+    tool_names: tuple[DiagnosticToolName, ...]
+    identity_evidence: DiagnosticEvidenceKind
+
+
+_TARGET_CAPABILITIES: Final[dict[tuple[str, str], TargetInvestigationCapability]] = {
+    ("apps/v1", "Deployment"): TargetInvestigationCapability(
+        tool_names=(
+            "get_workload",
+            "get_rollout_history",
+            "get_pods",
+            "get_events",
+            "get_container_logs",
+            "query_prometheus",
+        ),
+        identity_evidence="workload",
+    ),
+    ("v1", "Service"): TargetInvestigationCapability(
+        tool_names=("get_service_network", "query_prometheus"),
+        identity_evidence="service_network",
+    ),
+    ("v1", "PersistentVolumeClaim"): TargetInvestigationCapability(
+        tool_names=("get_pvc_storage", "query_prometheus"),
+        identity_evidence="pvc_storage",
+    ),
+}
+
+
+def investigation_capability(
+    api_version: str,
+    kind: str,
+) -> TargetInvestigationCapability:
+    capability = _TARGET_CAPABILITIES.get((api_version, kind))
+    if capability is None:
+        raise ValueError("Target kind has no diagnostic investigation capability")
+    return capability

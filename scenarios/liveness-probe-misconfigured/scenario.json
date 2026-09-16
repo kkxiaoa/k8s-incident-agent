@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "liveness-probe-misconfigured",
-  "scenario_version": 1,
+  "scenario_version": 2,
   "monitoring_alert_id": "K8sIncidentLivenessProbeRestart",
   "display_name": "Liveness probe misconfiguration",
   "description": "A healthy Deployment process is repeatedly restarted because its liveness probe targets the wrong numeric port.",
@@ -30,12 +30,13 @@
   ],
   "allowed_tools": [
     "get_workload",
+    "get_rollout_history",
     "get_pods",
     "get_events",
+    "get_container_logs",
     "query_prometheus"
   ],
   "forbidden_tools": [
-    "get_container_logs",
     "execute_shell"
   ],
   "deterministic_verifier": {

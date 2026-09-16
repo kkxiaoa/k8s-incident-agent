@@ -9,6 +9,7 @@ from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.tool_execution import (
     PROMETHEUS_TOOL_NAME,
     DiagnosticToolFatalError,
+    observation_limit_output,
 )
 from k8s_incident_agent.domain.models import (
     EvidenceRecord,
@@ -28,7 +29,10 @@ from k8s_incident_agent.monitoring.errors import (
     validate_monitoring_failure_contract,
 )
 from k8s_incident_agent.persistence.canonical import canonical_json
-from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
+from k8s_incident_agent.persistence.repositories import (
+    ObservationLimitExceededError,
+    RecoveryConsistencyError,
+)
 
 
 class MonitoringToolFailureEnvelope(BaseModel):
@@ -86,6 +90,8 @@ async def _query_prometheus(
             PROMETHEUS_TOOL_NAME,
             call_identity,
         )
+    except ObservationLimitExceededError:
+        return observation_limit_output(PROMETHEUS_TOOL_NAME)
     except RecoveryConsistencyError:
         raise _recovery_error() from None
 

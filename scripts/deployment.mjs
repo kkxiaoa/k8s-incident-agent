@@ -588,7 +588,7 @@ function normalizeMonitoringContract(rawVersions, rawImages, rawAlertCatalog) {
 function normalizeAlertRuleCatalog(rawAlertCatalog) {
   const document = parseJsonObject(rawAlertCatalog, "alert catalog");
   if (
-    document.schemaVersion !== 8 ||
+    document.schemaVersion !== 9 ||
     typeof document.catalogVersion !== "string" ||
     document.catalogVersion === "" ||
     !Array.isArray(document.alerts) ||

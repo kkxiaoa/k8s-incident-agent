@@ -1,13 +1,36 @@
 import pytest
 
-from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyCatalog
-from k8s_incident_agent.diagnosis.policy_contracts import (
-    validate_diagnostic_policy_contract,
+from k8s_incident_agent.diagnosis.policy import (
+    DiagnosticPolicy,
+    DiagnosticPolicyCatalog,
 )
-from k8s_incident_agent.domain.contracts import IncidentSource
+from k8s_incident_agent.diagnosis.policy_contracts import investigation_capability
+from k8s_incident_agent.domain.contracts import IncidentSource, KubernetesTarget
 from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 from k8s_incident_agent.scenarios.catalog import load_scenario_catalog
+
+DEPLOYMENT_TOOLS = (
+    "get_workload",
+    "get_rollout_history",
+    "get_pods",
+    "get_events",
+    "get_container_logs",
+    "query_prometheus",
+)
+DEPLOYMENT_PANELS = (
+    "image-pull-affected-pods",
+    "image-pull-available-replicas",
+    "crash-loop-restarts",
+    "crash-loop-waiting-containers",
+    "deployment-replica-deficit",
+    "readiness-probe-unready-containers",
+    "liveness-probe-restarts",
+)
+
+
+def _panel_ids(policy: DiagnosticPolicy) -> tuple[str, ...]:
+    return tuple(panel.panel_id for panel in policy.prometheus_panels)
 
 
 def _policies() -> tuple[DiagnosticPolicyCatalog, str]:
@@ -16,53 +39,77 @@ def _policies() -> tuple[DiagnosticPolicyCatalog, str]:
     return DiagnosticPolicyCatalog(scenarios=scenarios, alerts=alerts), alerts.version
 
 
-def test_resolves_exact_alert_and_scenario_diagnostic_policies() -> None:
+def _target(api_version: str, kind: str, name: str) -> KubernetesTarget:
+    return KubernetesTarget(
+        cluster="k8s-incident-agent",
+        namespace="k8s-incident-scenarios",
+        api_version=api_version,
+        kind=kind,
+        name=name,
+    )
+
+
+def _deployment(name: str) -> KubernetesTarget:
+    return _target("apps/v1", "Deployment", name)
+
+
+@pytest.mark.parametrize(
+    ("alert_id", "scenario", "trigger_panel_id", "repair_action"),
+    [
+        (
+            "K8sIncidentImagePullBackOff",
+            ("image-pull-backoff", "4"),
+            "image-pull-affected-pods",
+            "set_container_image",
+        ),
+        (
+            "K8sIncidentCrashLoopBackOff",
+            ("crash-loop-backoff", "2"),
+            "crash-loop-waiting-containers",
+            None,
+        ),
+        (
+            "K8sIncidentReadinessProbeFailure",
+            ("readiness-probe-misconfigured", "2"),
+            "readiness-probe-unready-containers",
+            None,
+        ),
+        (
+            "K8sIncidentLivenessProbeRestart",
+            ("liveness-probe-misconfigured", "2"),
+            "liveness-probe-restarts",
+            None,
+        ),
+    ],
+)
+def test_every_deployment_entry_grants_the_same_target_capability(
+    alert_id: str,
+    scenario: tuple[str, str],
+    trigger_panel_id: str,
+    repair_action: str | None,
+) -> None:
     policies, revision = _policies()
+    scenario_id, scenario_version = scenario
 
     alert_policy = policies.resolve(
-        IncidentSource(
-            type="alertmanager",
-            ref="K8sIncidentCrashLoopBackOff",
-            revision=revision,
-        )
+        IncidentSource(type="alertmanager", ref=alert_id, revision=revision),
+        _deployment(scenario_id),
     )
     scenario_policy = policies.resolve(
-        IncidentSource(
-            type="scenario",
-            ref="crash-loop-backoff",
-            revision="1",
-        )
-    )
-    image_pull_policy = policies.resolve(
-        IncidentSource(
-            type="scenario",
-            ref="image-pull-backoff",
-            revision="3",
-        )
+        IncidentSource(type="scenario", ref=scenario_id, revision=scenario_version),
+        _deployment(scenario_id),
     )
 
     assert alert_policy == scenario_policy
-    assert alert_policy.tool_names == (
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "get_container_logs",
-        "query_prometheus",
-    )
-    assert alert_policy.required_evidence == frozenset(
-        {"workload", "pods", "events", "container_logs"}
-    )
-    assert alert_policy.prometheus_panel_ids == ("crash-loop-waiting-containers",)
-    assert "get_container_logs" not in image_pull_policy.tool_names
-    assert "container_logs" not in image_pull_policy.required_evidence
-    assert "get_rollout_history" in image_pull_policy.tool_names
-    assert "rollout_history" in image_pull_policy.required_evidence
-    assert image_pull_policy.prometheus_panel_ids == ("image-pull-affected-pods",)
+    assert alert_policy.tool_names == DEPLOYMENT_TOOLS
+    assert alert_policy.required_evidence == frozenset({"workload"})
+    assert _panel_ids(alert_policy) == DEPLOYMENT_PANELS
+    assert all(panel.title and panel.unit for panel in alert_policy.prometheus_panels)
+    assert alert_policy.trigger_panel_id == trigger_panel_id
+    assert alert_policy.repair_action == repair_action
 
 
-def test_resolves_generic_deployment_availability_policy_without_inventing_logs() -> (
-    None
-):
+def test_generic_deployment_alert_shares_the_deployment_capability() -> None:
     policies, revision = _policies()
 
     policy = policies.resolve(
@@ -70,165 +117,114 @@ def test_resolves_generic_deployment_availability_policy_without_inventing_logs(
             type="alertmanager",
             ref="K8sIncidentDeploymentReplicasUnavailable",
             revision=revision,
-        )
+        ),
+        _deployment("any-deployment"),
     )
 
-    assert policy.tool_names == (
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "query_prometheus",
-    )
-    assert policy.required_evidence == frozenset({"workload", "pods", "events"})
-    assert policy.prometheus_panel_ids == ("deployment-replica-deficit",)
+    assert policy.tool_names == DEPLOYMENT_TOOLS
+    assert policy.trigger_panel_id == "deployment-replica-deficit"
+    assert policy.repair_action is None
 
 
-def test_resolves_service_network_policy_without_deployment_tools() -> None:
+def test_service_and_pvc_targets_keep_their_own_bounded_capabilities() -> None:
     policies, revision = _policies()
 
-    alert_policy = policies.resolve(
+    service_policy = policies.resolve(
         IncidentSource(
             type="alertmanager",
             ref="K8sIncidentServiceEndpointsUnavailable",
             revision=revision,
-        )
+        ),
+        _target("v1", "Service", "service-selector-mismatch"),
     )
-    scenario_policy = policies.resolve(
-        IncidentSource(
-            type="scenario",
-            ref="service-selector-mismatch",
-            revision="1",
-        )
+    pvc_policy = policies.resolve(
+        IncidentSource(type="scenario", ref="pvc-binding-pending", revision="1"),
+        _target("v1", "PersistentVolumeClaim", "pvc-binding-pending"),
     )
 
-    assert alert_policy == scenario_policy
-    assert alert_policy.tool_names == ("get_service_network", "query_prometheus")
-    assert alert_policy.required_evidence == frozenset({"service_network"})
-    assert alert_policy.prometheus_panel_ids == ("service-ready-endpoints",)
+    assert service_policy.tool_names == ("get_service_network", "query_prometheus")
+    assert service_policy.required_evidence == frozenset({"service_network"})
+    assert _panel_ids(service_policy) == ("service-ready-endpoints",)
+    assert service_policy.trigger_panel_id == "service-ready-endpoints"
+    assert pvc_policy.tool_names == ("get_pvc_storage", "query_prometheus")
+    assert pvc_policy.required_evidence == frozenset({"pvc_storage"})
+    assert _panel_ids(pvc_policy) == ("pvc-pending-state", "pvc-pending-age-seconds")
+    for policy in (service_policy, pvc_policy):
+        assert not set(policy.tool_names).intersection(
+            {"get_workload", "get_rollout_history", "get_container_logs"}
+        )
+        assert policy.repair_action is None
 
 
-@pytest.mark.parametrize(
-    ("alert_id", "scenario_id", "panel_id"),
-    [
-        (
-            "K8sIncidentReadinessProbeFailure",
-            "readiness-probe-misconfigured",
-            "readiness-probe-unready-containers",
-        ),
-        (
-            "K8sIncidentLivenessProbeRestart",
-            "liveness-probe-misconfigured",
-            "liveness-probe-restarts",
-        ),
-    ],
-)
-def test_probe_alerts_and_scenarios_share_the_minimal_existing_tools(
-    alert_id: str,
-    scenario_id: str,
-    panel_id: str,
-) -> None:
+def test_policy_panels_match_the_server_side_admission_set() -> None:
+    alerts = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
     policies, revision = _policies()
 
-    alert_policy = policies.resolve(
-        IncidentSource(type="alertmanager", ref=alert_id, revision=revision)
-    )
-    scenario_policy = policies.resolve(
-        IncidentSource(type="scenario", ref=scenario_id, revision="1")
-    )
-
-    assert alert_policy == scenario_policy
-    assert alert_policy.tool_names == (
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "query_prometheus",
-    )
-    assert alert_policy.required_evidence == frozenset({"workload", "pods", "events"})
-    assert alert_policy.prometheus_panel_ids == (panel_id,)
-
-
-@pytest.mark.parametrize(
-    "scenario_id",
-    ["pvc-binding-pending", "pvc-storage-class-missing"],
-)
-def test_pvc_alert_and_scenarios_share_the_storage_evidence_policy(
-    scenario_id: str,
-) -> None:
-    policies, revision = _policies()
-
-    alert_policy = policies.resolve(
-        IncidentSource(
-            type="alertmanager",
-            ref="K8sIncidentPersistentVolumeClaimPending",
-            revision=revision,
-        )
-    )
-    scenario_policy = policies.resolve(
-        IncidentSource(type="scenario", ref=scenario_id, revision="1")
-    )
-
-    assert alert_policy == scenario_policy
-    assert alert_policy.tool_names == ("get_pvc_storage", "query_prometheus")
-    assert alert_policy.required_evidence == frozenset({"pvc_storage"})
-    assert alert_policy.prometheus_panel_ids == ("pvc-pending-state",)
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
+    policy = policies.resolve(
         IncidentSource(
             type="alertmanager",
             ref="K8sIncidentCrashLoopBackOff",
-            revision="stale-catalog",
+            revision=revision,
         ),
-        IncidentSource(
-            type="scenario",
-            ref="crash-loop-backoff",
-            revision="2",
-        ),
-        IncidentSource(
-            type="scenario",
-            ref="unknown-scenario",
-            revision="1",
-        ),
-    ],
-)
-def test_rejects_sources_without_an_exact_policy(source: IncidentSource) -> None:
-    policies, _ = _policies()
-
-    with pytest.raises(ValueError, match="policy"):
-        policies.resolve(source)
-
-
-def test_rejects_scenario_policy_drift_from_its_alert() -> None:
-    alerts = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
-    scenarios = load_scenario_catalog(REPOSITORY_ROOT / "scenarios")
-    drifted = scenarios[0].model_copy(
-        update={
-            "allowed_tools": ("get_workload",),
-            "required_evidence": ("workload",),
-        }
+        _deployment("crash-loop-backoff"),
     )
 
-    with pytest.raises(ValueError, match="does not match"):
-        DiagnosticPolicyCatalog(
-            scenarios=(drifted, *scenarios[1:]),
-            alerts=alerts,
-        )
+    assert _panel_ids(policy) == tuple(
+        panel.panel_id for _, panel in alerts.panels_for_target("apps/v1", "Deployment")
+    )
+    assert not alerts.panels_for_target("v1", "Node")
 
 
 @pytest.mark.parametrize(
-    ("tool_names", "required_evidence"),
+    ("source", "target"),
     [
-        (("unknown_tool",), ("workload",)),
-        (("get_workload",), ("unknown_evidence",)),
-        (("get_workload",), ("pods",)),
-        (("get_workload", "get_workload"), ("workload",)),
+        (
+            IncidentSource(
+                type="alertmanager",
+                ref="K8sIncidentCrashLoopBackOff",
+                revision="stale-catalog",
+            ),
+            _deployment("crash-loop-backoff"),
+        ),
+        (
+            IncidentSource(type="scenario", ref="crash-loop-backoff", revision="1"),
+            _deployment("crash-loop-backoff"),
+        ),
+        (
+            IncidentSource(type="scenario", ref="unknown-scenario", revision="1"),
+            _deployment("unknown-scenario"),
+        ),
+        (
+            IncidentSource(
+                type="alertmanager",
+                ref="K8sIncidentServiceEndpointsUnavailable",
+                revision="2026-09-16.1",
+            ),
+            _deployment("service-selector-mismatch"),
+        ),
     ],
 )
-def test_rejects_invalid_or_uncovered_policy_contracts(
-    tool_names: tuple[str, ...],
-    required_evidence: tuple[str, ...],
+def test_rejects_sources_without_an_exact_policy_or_mismatched_target(
+    source: IncidentSource,
+    target: KubernetesTarget,
 ) -> None:
-    with pytest.raises(ValueError, match="policy contract"):
-        validate_diagnostic_policy_contract(tool_names, required_evidence)
+    policies, _ = _policies()
+
+    with pytest.raises(ValueError, match="policy"):
+        policies.resolve(source, target)
+
+
+def test_rejects_scenarios_whose_target_kind_drifts_from_their_alert() -> None:
+    alerts = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
+    scenarios = load_scenario_catalog(REPOSITORY_ROOT / "scenarios")
+    drifted = scenarios[0].model_copy(
+        update={"monitoring_alert_id": "K8sIncidentPersistentVolumeClaimPending"}
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        DiagnosticPolicyCatalog(scenarios=(drifted, *scenarios[1:]), alerts=alerts)
+
+
+def test_unsupported_target_kinds_have_no_capability() -> None:
+    with pytest.raises(ValueError, match="capability"):
+        investigation_capability("v1", "Node")

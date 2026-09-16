@@ -42,6 +42,7 @@ from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
 from k8s_incident_agent.diagnosis.tool_execution import DiagnosticToolFatalError
 from k8s_incident_agent.diagnosis.validation import (
     DiagnosisValidationError,
+    RepairIntentUnsupportedError,
     UnresolvedToolFailuresError,
     validate_diagnosis,
 )
@@ -233,7 +234,8 @@ def build_incident_graph(
             max_model_calls=run.budget.max_model_calls,
             max_tool_calls=run.budget.max_tool_calls,
             required_evidence=tuple(sorted(policy.required_evidence)),
-            prometheus_panel_ids=policy.prometheus_panel_ids,
+            prometheus_panels=policy.prometheus_panels,
+            trigger_panel_id=policy.trigger_panel_id,
             repair_action=policy.repair_action,
         )
     )
@@ -454,6 +456,8 @@ def _validate_diagnosis_node(
             )
         except (DiagnosisValidationError, StructuredDiagnosisError):
             return _terminal_error("structured_output_invalid", retryable=False)
+        except RepairIntentUnsupportedError as error:
+            return _terminal_error(error.code, retryable=False)
         except UnresolvedToolFailuresError as error:
             failure = next(
                 (candidate for candidate in error.failures if not candidate.retryable),

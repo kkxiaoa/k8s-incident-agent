@@ -8,7 +8,10 @@ from langchain.tools import BaseTool, ToolRuntime, tool
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
-from k8s_incident_agent.diagnosis.tool_execution import DiagnosticToolFatalError
+from k8s_incident_agent.diagnosis.tool_execution import (
+    DiagnosticToolFatalError,
+    observation_limit_output,
+)
 from k8s_incident_agent.domain.models import (
     EvidenceRecord,
     JsonValue,
@@ -32,7 +35,10 @@ from k8s_incident_agent.kubernetes.errors import (
     validate_kubernetes_failure_contract,
 )
 from k8s_incident_agent.persistence.canonical import canonical_json
-from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
+from k8s_incident_agent.persistence.repositories import (
+    ObservationLimitExceededError,
+    RecoveryConsistencyError,
+)
 
 type DiagnosticObservation = (
     WorkloadObservation
@@ -215,6 +221,8 @@ async def _execute_tool(
             tool_call_id,
             tool_name,
         )
+    except ObservationLimitExceededError:
+        return observation_limit_output(tool_name)
     except RecoveryConsistencyError:
         raise FatalDiagnosticToolError(
             KubernetesErrorCode.RECOVERY_CONSISTENCY_ERROR

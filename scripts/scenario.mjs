@@ -23,7 +23,10 @@ const NAMESPACE = "k8s-incident-scenarios";
 const SCENARIO_SCHEMA_VERSION = 3;
 const DEFAULT_SCENARIO_VERSION = 1;
 const SCENARIO_VERSION_OVERRIDES = new Map([
-  ["image-pull-backoff", 3],
+  ["crash-loop-backoff", 2],
+  ["image-pull-backoff", 4],
+  ["liveness-probe-misconfigured", 2],
+  ["readiness-probe-misconfigured", 2],
 ]);
 const MAX_FILE_BYTES = 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;

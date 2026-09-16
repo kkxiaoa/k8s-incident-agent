@@ -29,6 +29,7 @@ from k8s_incident_agent.diagnosis.agent import (
 )
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
+from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
 )
@@ -40,7 +41,10 @@ from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 TOOL_NAMES = ("get_workload", "get_pods", "get_events", "query_prometheus")
-PANEL_IDS = ("image-pull-affected-pods", "image-pull-available-replicas")
+PANELS = (
+    DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+    DiagnosticPanel("image-pull-available-replicas", "Available replicas", "replicas"),
+)
 REQUIRED_EVIDENCE = ("workload",)
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 
@@ -295,7 +299,8 @@ async def test_agent_executes_different_read_tool_trajectories_and_returns_schem
             model,
             tools,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=PANEL_IDS,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
         )
     )
 
@@ -329,7 +334,8 @@ async def test_fatal_tool_failure_propagates_without_model_retry() -> None:
             model,
             tools,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=PANEL_IDS,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
         )
     )
 
@@ -383,7 +389,8 @@ async def test_absolute_deadline_cancels_inflight_tool_call() -> None:
             model,
             (get_workload, get_pods, get_events, query_prometheus),
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=PANEL_IDS,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
         )
     )
 
@@ -418,7 +425,8 @@ async def test_retryable_failure_can_use_a_new_call_before_structured_output() -
             model,
             tools,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=PANEL_IDS,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
         )
     )
 
@@ -451,7 +459,8 @@ async def test_model_call_limit_raises_instead_of_returning_fallback_text() -> N
             tools,
             max_model_calls=1,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=PANEL_IDS,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
         )
     )
 
@@ -460,7 +469,10 @@ async def test_model_call_limit_raises_instead_of_returning_fallback_text() -> N
             {"messages": [{"role": "user", "content": "Diagnose the target."}]}
         )
 
-    assert calls == ["get_workload"]
+    # The last model round only offers the final response; an evidence call it
+    # still emits is refused before any read happens.
+    assert calls == []
+    assert model.capture.bound_tool_names == [("DiagnosisCandidate",)]
 
 
 @pytest.mark.asyncio
@@ -480,7 +492,8 @@ async def test_locked_tool_limit_counts_the_structured_response_call() -> None:
             max_model_calls=2,
             max_tool_calls=2,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=PANEL_IDS,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
         )
     )
     result = await accepted.ainvoke(
@@ -495,7 +508,8 @@ async def test_locked_tool_limit_counts_the_structured_response_call() -> None:
             max_model_calls=2,
             max_tool_calls=1,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=PANEL_IDS,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
         )
     )
     with pytest.raises(ToolCallLimitExceededError):
@@ -516,7 +530,8 @@ def test_agent_rejects_tools_outside_registry_order() -> None:
             model,
             (tools[1], tools[0]),
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=(),
+            prometheus_panels=(),
+            trigger_panel_id=None,
         )
 
 
@@ -530,7 +545,8 @@ async def test_plain_model_answer_fails_closed_without_structured_response() -> 
             model,
             tools,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=PANEL_IDS,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
         )
     )
 
@@ -541,3 +557,144 @@ async def test_plain_model_answer_fails_closed_without_structured_response() -> 
 
     assert error.value.code == "structured_output_invalid"
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_final_reserve_narrows_tools_when_one_tool_call_remains() -> None:
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    candidate = _diagnosed_candidate("00000000-0000-0000-0000-000000000001")
+    model = _ToolCallingFakeModel(
+        responses=[
+            _tool_call("get_workload", "call-workload"),
+            _structured_response(candidate),
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            max_model_calls=8,
+            max_tool_calls=2,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+    )
+
+    assert calls == ["get_workload"]
+    assert result["structured_response"] == candidate.model_dump(mode="json")
+    assert result["tool_calls"] == 2
+    assert set(model.capture.bound_tool_names[0]) == {*TOOL_NAMES, "DiagnosisCandidate"}
+    assert model.capture.bound_tool_names[1] == ("DiagnosisCandidate",)
+    first_system, second_system = (
+        str(request[0].content) for request in model.capture.requests
+    )
+    assert "Budget notice" not in first_system
+    assert second_system.startswith(first_system)
+    assert "Budget notice" in second_system
+
+
+@pytest.mark.asyncio
+async def test_parallel_evidence_batch_that_spends_the_final_reserve_fails_closed() -> (
+    None
+):
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    model = _ToolCallingFakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": name,
+                        "args": {},
+                        "id": f"call-{name}",
+                        "type": "tool_call",
+                    }
+                    for name in ("get_workload", "get_pods", "get_events")
+                ],
+            )
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            max_model_calls=8,
+            max_tool_calls=3,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    with pytest.raises(ToolCallLimitExceededError):
+        await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+        )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("max_tool_calls", "expected_calls"),
+    [(2, ["get_workload"]), (1, [])],
+)
+async def test_mixed_final_and_evidence_batch_is_checked_as_a_whole(
+    max_tool_calls: int,
+    expected_calls: list[str],
+) -> None:
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    candidate = _diagnosed_candidate("00000000-0000-0000-0000-000000000001")
+    model = _ToolCallingFakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_workload",
+                        "args": {},
+                        "id": "call-workload",
+                        "type": "tool_call",
+                    },
+                    {
+                        "name": "DiagnosisCandidate",
+                        "args": candidate.model_dump(mode="json"),
+                        "id": "call-structured",
+                        "type": "tool_call",
+                    },
+                ],
+            )
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            max_model_calls=8,
+            max_tool_calls=max_tool_calls,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    if expected_calls:
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+        )
+        assert result["structured_response"] == candidate.model_dump(mode="json")
+        assert result["tool_calls"] == 2
+    else:
+        with pytest.raises(ToolCallLimitExceededError):
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+            )
+    assert calls == expected_calls

@@ -23,7 +23,10 @@ from sqlalchemy import func, select
 from tests.factories import agent_run_snapshot, normalized_trigger
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
-from k8s_incident_agent.diagnosis.tool_execution import DiagnosticToolFatalError
+from k8s_incident_agent.diagnosis.tool_execution import (
+    DiagnosticToolFatalError,
+    observation_limit_output,
+)
 from k8s_incident_agent.domain.models import AgentRunSnapshot, ModelSnapshot, RunBudget
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
@@ -414,3 +417,33 @@ async def test_nonretryable_failure_is_terminal_and_replayed_without_requery(
             assert error.value.code is MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
 
         assert len(prometheus.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_third_query_of_the_same_panel_and_window_is_refused(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        prometheus = _Prometheus()
+        context = await _context(repository, prometheus)
+        tools = (build_prometheus_tool(),)
+
+        first = await _invoke(tools, context, tool_call_id="call-1")
+        second = await _invoke(tools, context, tool_call_id="call-2")
+        refused = await _invoke(tools, context, tool_call_id="call-3")
+        other_window = await _invoke(tools, context, tool_call_id="call-4", window="1h")
+
+        assert first["evidenceId"] != second["evidenceId"]
+        assert refused == observation_limit_output("query_prometheus")
+        assert "evidenceId" in other_window
+        assert [call[2].value for call in prometheus.calls] == ["15m", "15m", "1h"]
+        assert (
+            await repository.get_tool_outcome(
+                context.run.id,
+                "call-3",
+                "query_prometheus",
+                {"panelId": PANEL_ID, "window": "15m"},
+            )
+            is None
+        )

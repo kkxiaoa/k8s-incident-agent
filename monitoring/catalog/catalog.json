@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 8,
-  "catalogVersion": "2026-09-10.2",
+  "schemaVersion": 9,
+  "catalogVersion": "2026-09-16.1",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -17,19 +17,6 @@
         "namespaceLabel": "namespace",
         "nameLabel": "deployment"
       },
-      "allowedTools": [
-        "get_workload",
-        "get_rollout_history",
-        "get_pods",
-        "get_events",
-        "query_prometheus"
-      ],
-      "requiredEvidence": [
-        "workload",
-        "rollout_history",
-        "pods",
-        "events"
-      ],
       "repairAction": "set_container_image",
       "panels": [
         {
@@ -74,19 +61,6 @@
         "namespaceLabel": "namespace",
         "nameLabel": "deployment"
       },
-      "allowedTools": [
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "get_container_logs",
-        "query_prometheus"
-      ],
-      "requiredEvidence": [
-        "workload",
-        "pods",
-        "events",
-        "container_logs"
-      ],
       "panels": [
         {
           "panelId": "crash-loop-restarts",
@@ -129,17 +103,6 @@
         "namespaceLabel": "namespace",
         "nameLabel": "deployment"
       },
-      "allowedTools": [
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "query_prometheus"
-      ],
-      "requiredEvidence": [
-        "workload",
-        "pods",
-        "events"
-      ],
       "panels": [
         {
           "panelId": "deployment-replica-deficit",
@@ -170,13 +133,6 @@
         "namespaceLabel": "namespace",
         "nameLabel": "service"
       },
-      "allowedTools": [
-        "get_service_network",
-        "query_prometheus"
-      ],
-      "requiredEvidence": [
-        "service_network"
-      ],
       "panels": [
         {
           "panelId": "service-ready-endpoints",
@@ -207,17 +163,6 @@
         "namespaceLabel": "namespace",
         "nameLabel": "deployment"
       },
-      "allowedTools": [
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "query_prometheus"
-      ],
-      "requiredEvidence": [
-        "workload",
-        "pods",
-        "events"
-      ],
       "panels": [
         {
           "panelId": "readiness-probe-unready-containers",
@@ -248,17 +193,6 @@
         "namespaceLabel": "namespace",
         "nameLabel": "deployment"
       },
-      "allowedTools": [
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "query_prometheus"
-      ],
-      "requiredEvidence": [
-        "workload",
-        "pods",
-        "events"
-      ],
       "panels": [
         {
           "panelId": "liveness-probe-restarts",
@@ -289,13 +223,6 @@
         "namespaceLabel": "namespace",
         "nameLabel": "persistentvolumeclaim"
       },
-      "allowedTools": [
-        "get_pvc_storage",
-        "query_prometheus"
-      ],
-      "requiredEvidence": [
-        "pvc_storage"
-      ],
       "panels": [
         {
           "panelId": "pvc-pending-state",

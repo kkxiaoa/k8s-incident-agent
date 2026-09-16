@@ -17,6 +17,7 @@ from pydantic import (
 from k8s_incident_agent.diagnosis.policy_contracts import (
     DiagnosticEvidenceKind,
     DiagnosticToolName,
+    investigation_capability,
 )
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 from k8s_incident_agent.scenarios.contracts import (
@@ -28,6 +29,14 @@ from k8s_incident_agent.scenarios.contracts import (
 
 _MAX_FILE_BYTES = 1024 * 1024
 _SCENARIO_ID = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
+# Must match each scenario.json; bump the version whenever its evaluator contract
+# (tools, evidence, expectations) changes so results remain traceable by revision.
+_SCENARIO_VERSIONS = {
+    "crash-loop-backoff": 2,
+    "image-pull-backoff": 4,
+    "liveness-probe-misconfigured": 2,
+    "readiness-probe-misconfigured": 2,
+}
 
 
 class _StrictContract(BaseModel):
@@ -75,7 +84,7 @@ class _ExpectedPatchConstraints(_StrictContract):
 class _ScenarioDefinition(_StrictContract):
     schema_version: Literal[3]
     scenario_id: str = Field(min_length=1)
-    scenario_version: Literal[1, 3]
+    scenario_version: Literal[1, 2, 4]
     monitoring_alert_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -111,13 +120,21 @@ class _ScenarioDefinition(_StrictContract):
         return normalized
 
     def validate_relationships(self, directory_name: str) -> Self:
-        expected_version = 3 if self.scenario_id == "image-pull-backoff" else 1
+        expected_version = _SCENARIO_VERSIONS.get(self.scenario_id, 1)
         if (
             not _SCENARIO_ID.fullmatch(self.scenario_id)
             or self.scenario_id != directory_name
             or self.scenario_version != expected_version
             or self.target.name != self.scenario_id
             or set(self.allowed_tools).intersection(self.forbidden_tools)
+            # The evaluator's tool allow-list must mirror the Runtime capability so
+            # the two never become independent authorisation sources.
+            or set(self.allowed_tools)
+            != set(
+                investigation_capability(
+                    self.target.api_version, self.target.kind
+                ).tool_names
+            )
             or (self.expected_patch_constraints is not None)
             != (self.scenario_id == "image-pull-backoff")
         ):
@@ -134,8 +151,6 @@ class _ScenarioDefinition(_StrictContract):
             description=self.description,
             trigger=self.trigger,
             target=self.target,
-            allowed_tools=self.allowed_tools,
-            required_evidence=self.required_evidence,
         )
 
 

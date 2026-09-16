@@ -52,8 +52,8 @@ class Settings(BaseSettings):
         gt=0,
         allow_inf_nan=False,
     )
-    agent_max_model_calls: int = Field(default=8, ge=1)
-    agent_max_tool_calls: int = Field(default=6, ge=1)
+    agent_max_model_calls: int = Field(default=12, ge=1)
+    agent_max_tool_calls: int = Field(default=12, ge=1)
     agent_timeout_seconds: int = Field(default=180, ge=1)
     deepseek_api_key: SecretStr | None = Field(default=None, repr=False)
     deepseek_base_url: HttpUrl = HttpUrl("https://api.deepseek.com")

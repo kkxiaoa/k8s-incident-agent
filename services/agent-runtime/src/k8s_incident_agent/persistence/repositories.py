@@ -29,6 +29,7 @@ from k8s_incident_agent.auth.sessions import (
 )
 from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
 from k8s_incident_agent.diagnosis.tool_execution import (
+    OBSERVATION_LIMIT,
     normalize_diagnostic_tool_call_identity,
 )
 from k8s_incident_agent.domain.contracts import (
@@ -350,6 +351,13 @@ class ExecutionDisabledError(RepositoryError):
 
 class ExecutionReportConflictError(RepositoryError):
     code = "execution_report_conflict"
+
+
+class ObservationLimitExceededError(RepositoryError):
+    code = "observation_limit_exceeded"
+
+    def __init__(self) -> None:
+        super().__init__("The tool already holds its bounded observations for this Run")
 
 
 class RunNotFoundRepositoryError(RepositoryError):
@@ -2476,6 +2484,9 @@ class IncidentRepository:
     ) -> RunEvent:
         event_key = f"tool:{tool_call_id}:started"
         async with self._session_factory() as session, session.begin():
+            # Parallel tool calls in one model batch must see each other's start
+            # rows, so the observation count is taken under the write lock.
+            await session.execute(text("BEGIN IMMEDIATE"))
             run, incident = await _load_run_context(session, run_id)
             incident_id = UUID(incident.id)
             existing = await _event_by_key(session, run_id, event_key)
@@ -2494,6 +2505,10 @@ class IncidentRepository:
                     expected_incident_id=incident_id,
                 )
             _require_active_run(run, incident)
+            if run.kind is RunKind.DIAGNOSIS:
+                await _require_observation_capacity(
+                    session, run_id, tool_name, call_identity
+                )
             occurred_at = datetime.now(UTC)
             event_row = _new_event_row(
                 run_id=run_id,
@@ -5674,6 +5689,48 @@ def _diagnosis_validation_snapshot(
         tool_failures=tuple(failure for _, failure, _ in failures),
         unresolved_tool_failures=unresolved,
     )
+
+
+async def _require_observation_capacity(
+    session: AsyncSession,
+    run_id: UUID,
+    tool_name: str,
+    call_identity: dict[str, JsonValue] | None,
+) -> None:
+    """Admit at most OBSERVATION_LIMIT non-retryable-failure attempts per tool.
+
+    An attempt counts once its start row exists unless its only outcome is a
+    retryable failure, so in-flight parallel calls and non-retryable failures
+    occupy capacity while a timed-out read may be tried again.
+    """
+    started_rows = await session.scalars(
+        select(RunEventRow).where(
+            RunEventRow.run_id == str(run_id),
+            RunEventRow.event_type == "tool.started",
+        )
+    )
+    attempts = 0
+    for row in started_rows:
+        payload = _event_payload(row)
+        if payload.get("toolName") != tool_name:
+            continue
+        try:
+            identity = normalize_diagnostic_tool_call_identity(
+                tool_name, payload.get("callIdentity")
+            )
+        except ValueError:
+            raise RecoveryConsistencyError from None
+        if identity != call_identity:
+            continue
+        started_call_id = payload.get("toolCallId")
+        if not isinstance(started_call_id, str):
+            raise RecoveryConsistencyError
+        failure = await _event_by_key(session, run_id, f"tool:{started_call_id}:failed")
+        if failure is not None and _event_payload(failure).get("retryable") is True:
+            continue
+        attempts += 1
+    if attempts >= OBSERVATION_LIMIT:
+        raise ObservationLimitExceededError
 
 
 def _is_evidence_outcome_event(event_row: RunEventRow) -> bool:

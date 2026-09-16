@@ -16,6 +16,7 @@ from tests.factories import normalized_trigger
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
 from k8s_incident_agent.diagnosis.validation import (
     DiagnosisValidationError,
+    RepairIntentUnsupportedError,
     UnresolvedToolFailuresError,
     validate_diagnosis,
 )
@@ -36,6 +37,7 @@ from k8s_incident_agent.persistence.repositories import (
     PersistenceOperationError,
     RecoveryConsistencyError,
 )
+from k8s_incident_agent.repair.contracts import SetContainerImageIntent
 from k8s_incident_agent.runtime.paths import RuntimePaths
 
 SERVICE_ROOT = Path(__file__).resolve().parents[3]
@@ -971,3 +973,93 @@ async def test_snapshot_database_failure_has_static_error(tmp_path: Path) -> Non
         assert str(error.value) == "Persistence operation failed"
         assert "must-not-leak" not in repr(error.value)
         assert "/private/database/path" not in repr(error.value)
+
+
+def _repair_intent(evidence_ids: tuple[UUID, ...]) -> SetContainerImageIntent:
+    return SetContainerImageIntent(
+        action="set_container_image",
+        target=_scenario("image-pull-backoff").target,
+        container_name="workload",
+        replacement_image="registry.k8s.io/e2e-test-images/agnhost:2.53",
+        evidence_ids=list(evidence_ids[:2]),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("image", "recorded_tools", "expected"),
+    [
+        (
+            "registry.invalid/k8s-incident-agent/missing:v1",
+            ("get_workload", "get_pods", "get_events"),
+            "accepted",
+        ),
+        (
+            "registry.example.com/private/workload:v1",
+            ("get_workload", "get_pods", "get_events"),
+            "denied",
+        ),
+        (
+            "registry.invalid/k8s-incident-agent/missing:v1",
+            ("get_workload",),
+            "denied",
+        ),
+    ],
+)
+async def test_repair_intent_requires_the_proven_invalid_registry_fact(
+    tmp_path: Path,
+    image: str,
+    recorded_tools: tuple[str, ...],
+    expected: str,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        run_id = await _running_run(repository, "image-pull-backoff")
+        payloads = _image_pull_payloads(image)
+        evidence_ids = tuple(
+            [
+                await _record_evidence(
+                    repository,
+                    run_id,
+                    tool_call_id=f"call-{tool_name}",
+                    tool_name=tool_name,
+                    payload=payloads[tool_name],
+                )
+                for tool_name in recorded_tools
+            ]
+            + [
+                await _record_evidence(
+                    repository,
+                    run_id,
+                    tool_call_id="call-get_rollout_history",
+                    tool_name="get_rollout_history",
+                )
+            ]
+        )
+        # The model self-reports the reserved code; only proven facts may back a repair.
+        candidate = _diagnosed_with_evidence(
+            evidence_ids, code="image_invalid_registry"
+        ).model_copy(
+            update={
+                "repair_intent": _repair_intent((evidence_ids[0], evidence_ids[-1]))
+            }
+        )
+
+        if expected == "accepted":
+            validated = await validate_diagnosis(
+                candidate,
+                run_id,
+                repository,
+                required_evidence=frozenset({"workload"}),
+            )
+            assert validated.repair_intent is not None
+            assert validated.root_causes[0].code == "image_invalid_registry"
+        else:
+            with pytest.raises(RepairIntentUnsupportedError) as error:
+                await validate_diagnosis(
+                    candidate,
+                    run_id,
+                    repository,
+                    required_evidence=frozenset({"workload"}),
+                )
+            assert error.value.code == "repair_policy_denied"

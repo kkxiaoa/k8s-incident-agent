@@ -323,18 +323,23 @@ class PrometheusQueryService:
         target: KubernetesTarget,
         panel_id: str,
     ) -> MetricPanelContract:
-        match = self._catalog.find_panel(panel_id)
-        if match is None:
+        if self._catalog.find_panel(panel_id) is None:
             raise MonitoringBoundaryError(MonitoringErrorCode.PANEL_NOT_FOUND)
-        entry, panel = match
-        if (
-            target.cluster != self._cluster_id
-            or target.namespace is None
-            or target.api_version != entry.target.api_version
-            or target.kind != entry.target.kind
-        ):
+        if target.cluster != self._cluster_id or target.namespace is None:
             raise MonitoringBoundaryError(MonitoringErrorCode.TARGET_UNSUPPORTED)
-        return panel
+        admitted = next(
+            (
+                panel
+                for _, panel in self._catalog.panels_for_target(
+                    target.api_version, target.kind
+                )
+                if panel.panel_id == panel_id
+            ),
+            None,
+        )
+        if admitted is None:
+            raise MonitoringBoundaryError(MonitoringErrorCode.TARGET_UNSUPPORTED)
+        return admitted
 
 
 def _empty_panel_result(

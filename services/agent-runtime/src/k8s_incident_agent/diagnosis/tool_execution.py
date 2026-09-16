@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import cast
+from typing import Final, cast
 
 from k8s_incident_agent.diagnosis.policy_contracts import (
     KUBERNETES_DIAGNOSTIC_TOOL_NAMES,
@@ -9,6 +9,11 @@ from k8s_incident_agent.domain.models import JsonValue
 from k8s_incident_agent.kubernetes.errors import validate_kubernetes_failure_contract
 from k8s_incident_agent.monitoring.contracts import MetricWindow
 from k8s_incident_agent.monitoring.errors import validate_monitoring_failure_contract
+
+# Bounded successful observations per Kubernetes tool, or per Prometheus panel and
+# window, within one diagnosis Run. Shared by the repository gate and the Prompt so
+# the model is told exactly what the server enforces.
+OBSERVATION_LIMIT: Final = 2
 
 
 def normalize_diagnostic_tool_call_identity(
@@ -37,6 +42,23 @@ def normalize_diagnostic_tool_call_identity(
     except ValueError:
         raise ValueError("Prometheus tool call identity is invalid") from None
     return {"panelId": panel_id, "window": normalized_window.value}
+
+
+def observation_limit_output(tool_name: str) -> dict[str, JsonValue]:
+    """Model-facing refusal when a tool already holds its bounded observations.
+
+    Nothing is persisted for the refused call; the attempt still consumes the
+    LangChain tool budget, so a replayed Run reaches the same refusal.
+    """
+    return {
+        "code": "observation_limit_reached",
+        "retryable": False,
+        "message": (
+            f"{tool_name} already holds its bounded observations for this Run; "
+            "this refusal is not a tool failure. Reason from the persisted Evidence "
+            "instead of reading again."
+        ),
+    }
 
 
 class DiagnosticToolFatalError(RuntimeError):

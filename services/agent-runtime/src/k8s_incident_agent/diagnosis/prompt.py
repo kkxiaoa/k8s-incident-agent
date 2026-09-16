@@ -1,8 +1,10 @@
 from collections.abc import Sequence
 
+from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
+from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 from k8s_incident_agent.repair.contracts import RepairAction
 
-DIAGNOSTIC_PROMPT_VERSION = "stage2-evidence-structured-v5"
+DIAGNOSTIC_PROMPT_VERSION = "stage3-dc2-target-investigation-v7"
 
 
 def build_diagnostic_system_prompt(
@@ -11,7 +13,8 @@ def build_diagnostic_system_prompt(
     max_tool_calls: int,
     allowed_tool_names: Sequence[str],
     required_evidence: Sequence[str],
-    prometheus_panel_ids: Sequence[str],
+    prometheus_panels: Sequence[DiagnosticPanel],
+    trigger_panel_id: str | None,
     repair_action: RepairAction | None,
 ) -> str:
     _require_positive_integer(max_model_calls, "Model call limit")
@@ -22,20 +25,47 @@ def build_diagnostic_system_prompt(
         raise ValueError("Allowed diagnostic tools must be non-empty and unique")
     if not required_evidence or len(set(required_evidence)) != len(required_evidence):
         raise ValueError("Required evidence kinds must be non-empty and unique")
-    if len(set(prometheus_panel_ids)) != len(prometheus_panel_ids):
+    panel_ids = [panel.panel_id for panel in prometheus_panels]
+    if len(set(panel_ids)) != len(panel_ids):
         raise ValueError("Prometheus panel identifiers must be unique")
-    if ("query_prometheus" in allowed_tool_names) is not bool(prometheus_panel_ids):
+    if ("query_prometheus" in allowed_tool_names) is not bool(prometheus_panels):
         raise ValueError("Prometheus panels must match the allowed tool set")
+    if bool(prometheus_panels) is not (trigger_panel_id is not None) or (
+        trigger_panel_id is not None and trigger_panel_id not in panel_ids
+    ):
+        raise ValueError("Trigger panel must be one of the admitted panels")
     tool_list = ", ".join(allowed_tool_names)
     evidence_list = ", ".join(required_evidence)
-    panel_list = ", ".join(prometheus_panel_ids)
+    panel_lines = "\n".join(
+        f"  - {panel.panel_id} — {panel.title} ({panel.unit})"
+        for panel in prometheus_panels
+    )
+    trigger_instruction = (
+        f"- {trigger_panel_id} is the registered signal of the alert rule this incident "
+        "is mapped to. Its values approximate that rule's condition; they are not the "
+        "alert's firing or resolved state. Query it first. A value back on the "
+        "non-alerting side of its threshold (see the result's riskDirection) does not "
+        "mean the alert or incident has resolved: describe when samples were on the "
+        "alerting side and use current Kubernetes Evidence to judge whether the "
+        "symptom persists.\n"
+        "- The other panels are context for the same target and never show that this "
+        "alert's condition held; query one only when a specific question needs it.\n"
+    )
     prometheus_tool_instruction = (
-        f"- Use query_prometheus only with one of these fixed panel IDs: {panel_list}.\n"
-        "- Its window must be 15m, 1h, 6h, 7d, or 15d. Choose the single panel and "
-        "window most relevant to the trigger.\n"
-        "- A successful query completes the Prometheus Evidence: do not query "
-        "another panel or window."
-        if prometheus_panel_ids
+        f"- Use query_prometheus only with these admitted panels:\n{panel_lines}\n"
+        f"{trigger_instruction}"
+        "- Its window must be 15m, 1h, 6h, 7d, or 15d. After a panel and window "
+        "succeeds, query the same pair again only to check a specific contradiction or "
+        "an expected change; the runtime counts every attempt other than a retryable "
+        f"failure and admits at most {OBSERVATION_LIMIT} per panel and window, then "
+        "refuses further calls. A different window is counted separately. Do not sweep "
+        "every panel or window.\n"
+        "- If no sample in the window is on the alerting side of the threshold, one "
+        "longer window may be queried; if it still shows none, record that in "
+        "missing_information rather than inferring the symptom is absent. Never "
+        "conclude from panel values alone that the alert has resolved or is still "
+        "firing."
+        if prometheus_panels
         else "- Prometheus queries are not available for this incident."
     )
     prometheus_evidence_instruction = (
@@ -48,7 +78,7 @@ def build_diagnostic_system_prompt(
         "- Interpret each value using the panel title and unit; preserve "
         "any stated rolling interval and estimate semantics, and do not sum "
         "overlapping rolling values."
-        if prometheus_panel_ids
+        if prometheus_panels
         else ""
     )
     repair_instruction = (
@@ -79,17 +109,25 @@ def build_diagnostic_system_prompt(
 
 ## Read-only tools and budget
 
-- The only tools available for this incident are: {tool_list}.
-- Before returning diagnosed, collect every required Evidence kind: {evidence_list}.
-- Each successful Kubernetes tool call completes that tool's Evidence for this fixed
-  target. Do not call the same Kubernetes tool again after it succeeds.
+- The tools registered for this target kind are: {tool_list}. The alert only located
+  the target; choose the tools the observed symptoms call for, not every tool.
+- Every diagnosed conclusion must cite this target's identity Evidence: {evidence_list}.
+  Cite whatever other Evidence supports each explanation.
+- Each Kubernetes tool reads this fixed target. After a tool succeeds, call it again
+  only to check a specific contradiction or a change you expect since the first read;
+  the runtime counts every attempt other than a retryable failure and admits at most
+  {OBSERVATION_LIMIT} per tool, then refuses further calls. A refused call still spends
+  budget and adds no Evidence; it is not a tool failure and does not by itself make the
+  diagnosis insufficient.
 {prometheus_tool_instruction}
 - Retry a tool only when its returned error says it is retryable and the remaining
   budget permits a new call. A non-retryable tool failure is terminal and must not be
   rewritten as missing evidence.
 - The runtime enforces at most {max_model_calls} model calls and {max_tool_calls} total
-  LangChain tool calls. The tool-call limit includes the final structured response,
-  so reserve capacity for it. The runtime also enforces an external wall-clock deadline.
+  LangChain tool calls. The tool-call limit includes the final structured response;
+  the runtime keeps the last tool call and the last model call for that response, so
+  plan the investigation to finish before them. The runtime also enforces an
+  external wall-clock deadline.
 
 ## Evidence interpretation
 

@@ -14,7 +14,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_supported_alert_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-10.2"
+    assert catalog.version == "2026-09-16.1"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
@@ -32,19 +32,10 @@ def test_production_catalog_has_supported_alert_entries() -> None:
         "name_label": "deployment",
     }
     assert catalog.entries[0].rule.for_duration == "30s"
-    assert catalog.entries[0].allowed_tools == [
-        "get_workload",
-        "get_rollout_history",
-        "get_pods",
-        "get_events",
-        "query_prometheus",
-    ]
-    assert catalog.entries[0].required_evidence == [
-        "workload",
-        "rollout_history",
-        "pods",
-        "events",
-    ]
+    assert all(
+        not hasattr(entry, "allowed_tools") and not hasattr(entry, "required_evidence")
+        for entry in catalog.entries
+    )
     assert catalog.entries[0].repair_action == "set_container_image"
     assert all(entry.repair_action is None for entry in catalog.entries[1:])
     assert "kube_pod_container_status_waiting_reason" in (
@@ -87,12 +78,6 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     crash_loop = catalog.entries[1]
     assert "kube_pod_container_status_restarts_total" in crash_loop.rule.expression
     assert crash_loop.rule.keep_firing_for == "2m"
-    assert crash_loop.required_evidence == [
-        "workload",
-        "pods",
-        "events",
-        "container_logs",
-    ]
     assert crash_loop.panels[0].unit == "restarts"
     for panel in [catalog.entries[0].panels[0], *crash_loop.panels]:
         assert " or (max(kube_replicaset_owner{" in panel.query_template
@@ -101,13 +86,6 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     assert availability.rule.for_duration == "5m"
     assert "kube_deployment_spec_replicas" in availability.rule.expression
     assert "kube_deployment_status_replicas_available" in (availability.rule.expression)
-    assert availability.allowed_tools == [
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "query_prometheus",
-    ]
-    assert availability.required_evidence == ["workload", "pods", "events"]
     deficit = availability.panels[0]
     assert deficit.panel_id == "deployment-replica-deficit"
     assert deficit.threshold == 1.0
@@ -117,8 +95,6 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     service = catalog.entries[3]
     assert service.target.kind == "Service"
     assert service.target.name_label == "service"
-    assert service.allowed_tools == ["get_service_network", "query_prometheus"]
-    assert service.required_evidence == ["service_network"]
     assert "kube_service_labels" in service.rule.expression
     assert "kube_endpointslice_endpoints" in service.rule.expression
     assert 'kube_endpointslice_endpoints{ready="true"} > 0' in (service.rule.expression)
@@ -143,7 +119,6 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     assert 'label_k8s_incident_agent_io_readiness_slo="2m"' in (
         readiness.rule.expression
     )
-    assert readiness.required_evidence == ["workload", "pods", "events"]
     readiness_panel = readiness.panels[0]
     assert readiness_panel.panel_id == "readiness-probe-unready-containers"
     assert readiness_panel.unit == "containers"
@@ -160,7 +135,6 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     assert "label_k8s_incident_agent_io_liveness_container" in (
         liveness.rule.expression
     )
-    assert liveness.required_evidence == ["workload", "pods", "events"]
     liveness_panel = liveness.panels[0]
     assert liveness_panel.panel_id == "liveness-probe-restarts"
     assert liveness_panel.unit == "restarts"
@@ -177,8 +151,6 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     assert pvc.rule.for_duration == "5m"
     assert "kube_persistentvolumeclaim_status_phase" in pvc.rule.expression
     assert "label_k8s_incident_agent_io_pending_policy" in pvc.rule.expression
-    assert pvc.allowed_tools == ["get_pvc_storage", "query_prometheus"]
-    assert pvc.required_evidence == ["pvc_storage"]
     pending_state, pending_age = pvc.panels
     assert pending_state.panel_id == "pvc-pending-state"
     assert pending_state.unit == "claims"
@@ -196,15 +168,14 @@ def test_production_catalog_has_supported_alert_entries() -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        '{"schemaVersion":8,"catalogVersion":"v1","alerts":[]}',
+        '{"schemaVersion":9,"catalogVersion":"v1","alerts":[]}',
         (
-            '{"schemaVersion":8,"catalogVersion":"v1","alerts":['
+            '{"schemaVersion":9,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
             '"clusterLabel":"same","namespaceLabel":"same",'
-            '"nameLabel":"name"},"allowedTools":["get_workload"],'
-            '"requiredEvidence":["workload"],"panels":[{"panelId":"panel-a",'
+            '"nameLabel":"name"},"panels":[{"panelId":"panel-a",'
             '"title":"Panel A","unit":"pods","threshold":1.0,'
             '"riskDirection":"higher_is_worse","signalRole":"trigger",'
             '"thresholdDuration":"1s",'
@@ -213,7 +184,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             'name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schemaVersion":8,"schemaVersion":8,"catalogVersion":"v1",'
+            '{"schemaVersion":9,"schemaVersion":9,"catalogVersion":"v1",'
             '"alerts":[{"alertId":"A","displayName":"A",'
             '"triggerSummary":"A","rule":{"expression":"vector(1)",'
             '"for":"1s"},"target":{"apiVersion":"v1",'
@@ -228,7 +199,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             '"metric{namespace="{{namespace}}",name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schema_version":8,"catalogVersion":"v1","alerts":['
+            '{"schema_version":9,"catalogVersion":"v1","alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -257,7 +228,7 @@ def test_catalog_rejects_empty_ambiguous_or_duplicate_key_contracts(
 
 def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     document = {
-        "schemaVersion": 8,
+        "schemaVersion": 9,
         "catalogVersion": "v1",
         "alerts": [
             {
@@ -272,8 +243,6 @@ def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
                     "namespaceLabel": "namespace",
                     "nameLabel": "name",
                 },
-                "allowedTools": ["get_workload"],
-                "requiredEvidence": ["workload"],
                 "panels": [
                     {
                         "panelId": "panel-a",
@@ -325,14 +294,15 @@ def test_alert_entry_rejects_an_ambiguous_trigger_panel(
         AlertCatalogEntry.model_validate(entry)
 
 
-def test_repair_action_requires_deployment_rollout_evidence() -> None:
+def test_repair_action_requires_a_deployment_target() -> None:
     document = json.loads(
         (REPOSITORY_ROOT / "monitoring" / "catalog" / "catalog.json").read_text()
     )
     entry = document["alerts"][0]
-    entry["requiredEvidence"].remove("rollout_history")
+    entry["target"]["apiVersion"] = "v1"
+    entry["target"]["kind"] = "Service"
 
-    with pytest.raises(ValueError, match="rollout Evidence"):
+    with pytest.raises(ValueError, match="Deployment target"):
         AlertCatalogEntry.model_validate(entry)
 
 
@@ -360,7 +330,7 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     document = {
-        "schemaVersion": 8,
+        "schemaVersion": 9,
         "catalogVersion": "v1",
         "alerts": [
             {
@@ -375,8 +345,6 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
                     "namespaceLabel": "namespace",
                     "nameLabel": "name",
                 },
-                "allowedTools": ["get_workload"],
-                "requiredEvidence": ["workload"],
                 "panels": [
                     {
                         "panelId": "panel-a",

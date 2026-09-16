@@ -12,11 +12,6 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
-from k8s_incident_agent.diagnosis.policy_contracts import (
-    DiagnosticEvidenceKind,
-    DiagnosticToolName,
-    validate_diagnostic_policy_contract,
-)
 from k8s_incident_agent.monitoring.json import load_unique_json
 from k8s_incident_agent.repair.contracts import RepairAction
 
@@ -124,8 +119,6 @@ class AlertCatalogEntry(_CatalogContract):
     trigger_summary: str = Field(min_length=1, max_length=512)
     rule: AlertRuleContract
     target: AlertTargetMapping
-    allowed_tools: list[DiagnosticToolName] = Field(min_length=1, max_length=5)
-    required_evidence: list[DiagnosticEvidenceKind] = Field(min_length=1, max_length=5)
     repair_action: RepairAction | None = None
     panels: list[MetricPanelContract] = Field(min_length=1, max_length=8)
 
@@ -135,11 +128,7 @@ class AlertCatalogEntry(_CatalogContract):
         return _require_normalized(value)
 
     @model_validator(mode="after")
-    def require_diagnostic_policy_consistency(self) -> Self:
-        validate_diagnostic_policy_contract(
-            self.allowed_tools,
-            self.required_evidence,
-        )
+    def require_trigger_and_repair_consistency(self) -> Self:
         trigger_panels = [
             panel for panel in self.panels if panel.signal_role == "trigger"
         ]
@@ -148,17 +137,14 @@ class AlertCatalogEntry(_CatalogContract):
         if trigger_panels[0].threshold_duration != self.rule.for_duration:
             raise ValueError("Trigger panel duration must match the alert rule")
         if self.repair_action is not None and (
-            self.target.api_version != "apps/v1"
-            or self.target.kind != "Deployment"
-            or not {"workload", "rollout_history"}.issubset(self.required_evidence)
-            or "get_rollout_history" not in self.allowed_tools
+            self.target.api_version != "apps/v1" or self.target.kind != "Deployment"
         ):
-            raise ValueError("Repair action requires Deployment rollout Evidence")
+            raise ValueError("Repair action requires a Deployment target")
         return self
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[8]
+    schema_version: Literal[9]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,
@@ -190,6 +176,23 @@ class AlertCatalog:
     @property
     def panel_ids(self) -> tuple[str, ...]:
         return tuple(panel.panel_id for entry in self.entries for panel in entry.panels)
+
+    def panels_for_target(
+        self,
+        api_version: str,
+        kind: str,
+    ) -> tuple[tuple[AlertCatalogEntry, MetricPanelContract], ...]:
+        """Registered panels the Runtime admits for one target kind.
+
+        Diagnostic policy and the Prometheus query boundary must share this set so
+        the Prompt never lists a panel the server would refuse, and vice versa.
+        """
+        return tuple(
+            (entry, panel)
+            for entry in self.entries
+            if entry.target.api_version == api_version and entry.target.kind == kind
+            for panel in entry.panels
+        )
 
 
 def load_alert_catalog(directory: Path) -> AlertCatalog:

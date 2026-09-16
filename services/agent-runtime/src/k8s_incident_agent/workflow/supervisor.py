@@ -181,7 +181,7 @@ class RunSupervisor:
                 return
 
             try:
-                policy = self._policies.resolve(snapshot.source)
+                policy = self._policies.resolve(snapshot.source, snapshot.target)
             except ValueError:
                 await self._persist_failure(
                     run_id,

@@ -53,7 +53,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     )
     assert scenario.model_dump(mode="json") == {
         "scenario_id": "image-pull-backoff",
-        "scenario_version": 3,
+        "scenario_version": 4,
         "monitoring_alert_id": "K8sIncidentImagePullBackOff",
         "display_name": "Image pull failure",
         "description": "A Deployment cannot pull its configured image.",
@@ -68,15 +68,10 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
             "kind": "Deployment",
             "name": "image-pull-backoff",
         },
-        "allowed_tools": [
-            "get_workload",
-            "get_rollout_history",
-            "get_pods",
-            "get_events",
-            "query_prometheus",
-        ],
-        "required_evidence": ["workload", "rollout_history", "pods", "events"],
     }
+    assert "allowed_tools" not in scenario.model_dump()
+    assert "required_evidence" not in scenario.model_dump()
+    assert "forbidden_tools" not in scenario.model_dump()
     assert "expected_root_causes" not in scenario.model_dump()
     assert "deterministic_verifier" not in scenario.model_dump()
     assert "expected_patch_constraints" not in scenario.model_dump()
@@ -84,35 +79,21 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
         item for item in scenarios if item.scenario_id == "crash-loop-backoff"
     )
     assert crash_loop.monitoring_alert_id == "K8sIncidentCrashLoopBackOff"
-    assert crash_loop.allowed_tools == (
-        "get_workload",
-        "get_pods",
-        "get_events",
-        "get_container_logs",
-        "query_prometheus",
-    )
-    assert crash_loop.required_evidence[-1] == "container_logs"
+    assert crash_loop.scenario_version == 2
     for scenario_id, alert_id in (
         ("readiness-probe-misconfigured", "K8sIncidentReadinessProbeFailure"),
         ("liveness-probe-misconfigured", "K8sIncidentLivenessProbeRestart"),
     ):
         probe = next(item for item in scenarios if item.scenario_id == scenario_id)
         assert probe.monitoring_alert_id == alert_id
-        assert probe.allowed_tools == (
-            "get_workload",
-            "get_pods",
-            "get_events",
-            "query_prometheus",
-        )
-        assert probe.required_evidence == ("workload", "pods", "events")
+        assert probe.scenario_version == 2
 
     for scenario_id in ("pvc-binding-pending", "pvc-storage-class-missing"):
         pvc = next(item for item in scenarios if item.scenario_id == scenario_id)
         assert pvc.monitoring_alert_id == ("K8sIncidentPersistentVolumeClaimPending")
         assert pvc.target.api_version == "v1"
         assert pvc.target.kind == "PersistentVolumeClaim"
-        assert pvc.allowed_tools == ("get_pvc_storage", "query_prometheus")
-        assert pvc.required_evidence == ("pvc_storage",)
+        assert pvc.scenario_version == 1
 
 
 @pytest.mark.parametrize(
@@ -127,6 +108,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
         "verifier_timeout",
         "missing_patch_constraints",
         "invalid_patch_constraints",
+        "capability_drift",
     ],
 )
 def test_rejects_documents_outside_the_node_producer_contract(
@@ -155,6 +137,8 @@ def test_rejects_documents_outside_the_node_producer_contract(
         cast(dict[object, object], verifier)["timeout_seconds"] = 300
     elif mutation == "missing_patch_constraints":
         del value["expected_patch_constraints"]
+    elif mutation == "capability_drift":
+        value["allowed_tools"] = ["get_workload", "query_prometheus"]
     else:
         constraints = value["expected_patch_constraints"]
         assert isinstance(constraints, dict)
@@ -167,7 +151,7 @@ def test_rejects_documents_outside_the_node_producer_contract(
 
 @pytest.mark.parametrize(
     ("scenario_id", "scenario_version"),
-    [("image-pull-backoff", 2), ("crash-loop-backoff", 3)],
+    [("image-pull-backoff", 3), ("crash-loop-backoff", 1), ("pvc-binding-pending", 2)],
 )
 def test_rejects_versions_not_owned_by_the_exact_scenario(
     tmp_path: Path,

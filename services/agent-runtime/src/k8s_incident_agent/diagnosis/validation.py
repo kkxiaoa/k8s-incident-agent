@@ -44,6 +44,15 @@ class DiagnosisValidationError(RuntimeError):
         super().__init__("The structured diagnosis is invalid")
 
 
+class RepairIntentUnsupportedError(RuntimeError):
+    code = "repair_policy_denied"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The repair intent is not backed by the proven invalid-registry facts"
+        )
+
+
 class UnresolvedToolFailuresError(RuntimeError):
     def __init__(self, failures: tuple[ToolFailureRecord, ...]) -> None:
         self.failures = failures
@@ -108,6 +117,15 @@ async def validate_diagnosis(
             validated,
             snapshot.evidence_by_id,
         )
+        if validated.repair_intent is not None and not any(
+            _proves_reserved_invalid_registry(
+                tuple(
+                    snapshot.evidence_by_id[value] for value in root_cause.evidence_ids
+                )
+            )
+            for root_cause in validated.root_causes
+        ):
+            raise RepairIntentUnsupportedError
 
     return validated
 

@@ -73,8 +73,8 @@ def test_settings_use_certified_runtime_defaults(tmp_path: Path) -> None:
     assert settings.kubernetes_cluster_id == "k8s-incident-agent"
     assert settings.kubernetes_diagnostic_namespace == "k8s-incident-scenarios"
     assert settings.kubernetes_timeout_seconds == 10
-    assert settings.agent_max_model_calls == 8
-    assert settings.agent_max_tool_calls == 6
+    assert settings.agent_max_model_calls == 12
+    assert settings.agent_max_tool_calls == 12
     assert settings.agent_timeout_seconds == 180
     assert settings.deepseek_api_key is None
     assert str(settings.deepseek_base_url) == "https://api.deepseek.com/"

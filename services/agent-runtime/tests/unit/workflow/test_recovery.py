@@ -28,7 +28,8 @@ from tests.factories import normalized_trigger, prometheus_query_service_stub
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
-from k8s_incident_agent.domain.contracts import IncidentSource
+from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
+from k8s_incident_agent.domain.contracts import IncidentSource, KubernetesTarget
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     DiagnosisWorkflowRunSnapshot,
@@ -65,13 +66,19 @@ NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
 TEST_POLICY = DiagnosticPolicy(
     tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
     required_evidence=frozenset({"workload"}),
-    prometheus_panel_ids=("image-pull-affected-pods",),
+    prometheus_panels=(
+        DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+    ),
+    trigger_panel_id="image-pull-affected-pods",
 )
 
 
 class _PolicyResolver:
-    def resolve(self, source: IncidentSource) -> DiagnosticPolicy:
+    def resolve(
+        self, source: IncidentSource, target: KubernetesTarget
+    ) -> DiagnosticPolicy:
         assert source.ref == "image-pull-backoff"
+        assert target.kind == "Deployment"
         return TEST_POLICY
 
 

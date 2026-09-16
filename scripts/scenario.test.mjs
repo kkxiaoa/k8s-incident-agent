@@ -228,7 +228,7 @@ function validScenario() {
   return {
     schema_version: 3,
     scenario_id: SCENARIO_ID,
-    scenario_version: 3,
+    scenario_version: 4,
     monitoring_alert_id: "K8sIncidentImagePullBackOff",
     display_name: "Image pull failure",
     description: "A Deployment cannot pull its configured image.",
@@ -254,9 +254,10 @@ function validScenario() {
       "get_rollout_history",
       "get_pods",
       "get_events",
+      "get_container_logs",
       "query_prometheus",
     ],
-    forbidden_tools: ["get_container_logs", "apply_patch", "execute_shell"],
+    forbidden_tools: ["apply_patch", "execute_shell"],
     expected_patch_constraints: {
       action: "set_container_image",
       container_index: 0,
@@ -1404,7 +1405,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
   assert.deepEqual(publicItems, [
     {
       scenario_id: "crash-loop-backoff",
-      scenario_version: 1,
+      scenario_version: 2,
       display_name: "Container restart loop",
       description:
         "A Deployment container repeatedly exits because its startup arguments are invalid.",
@@ -1422,7 +1423,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: SCENARIO_ID,
-      scenario_version: 3,
+      scenario_version: 4,
       display_name: "Image pull failure",
       description: "A Deployment cannot pull its configured image.",
       trigger: {
@@ -1439,7 +1440,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: "liveness-probe-misconfigured",
-      scenario_version: 1,
+      scenario_version: 2,
       display_name: "Liveness probe misconfiguration",
       description:
         "A healthy Deployment process is repeatedly restarted because its liveness probe targets the wrong numeric port.",
@@ -1496,7 +1497,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: "readiness-probe-misconfigured",
-      scenario_version: 1,
+      scenario_version: 2,
       display_name: "Readiness probe misconfiguration",
       description:
         "A running Deployment container remains unready because its readiness probe references an undeclared named port.",

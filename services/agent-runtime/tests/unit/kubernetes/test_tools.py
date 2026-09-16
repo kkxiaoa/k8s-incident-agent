@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -28,10 +29,12 @@ from tests.factories import (
 )
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
+from k8s_incident_agent.diagnosis.tool_execution import observation_limit_output
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     ModelSnapshot,
     RunBudget,
+    ToolFailureRecord,
 )
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.contracts import (
@@ -76,6 +79,7 @@ from k8s_incident_agent.persistence.database import (
 from k8s_incident_agent.persistence.models import EvidenceRow, RunEventRow
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
+    ObservationLimitExceededError,
     evidence_id,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
@@ -806,7 +810,94 @@ async def test_new_tool_call_reobserves_without_cross_call_cache(
 
         first = await _invoke(tools, context, "get_workload", "call-1")
         second = await _invoke(tools, context, "get_workload", "call-2")
+        refused = await _invoke(tools, context, "get_workload", "call-3")
+        pods = await _invoke(tools, context, "get_pods", "call-pods")
 
-        assert adapter.calls == ["get_workload", "get_workload"]
+        assert adapter.calls == ["get_workload", "get_workload", "get_pods"]
         assert first["payload"] != second["payload"]
         assert first["evidenceId"] != second["evidenceId"]
+        assert refused == observation_limit_output("get_workload")
+        assert "evidenceId" in pods
+        async with database.session_factory() as session:
+            started_keys = set(
+                await session.scalars(
+                    select(RunEventRow.event_key).where(
+                        RunEventRow.run_id == str(context.run.id),
+                        RunEventRow.event_type == "tool.started",
+                    )
+                )
+            )
+            evidence_rows = list(
+                await session.scalars(
+                    select(EvidenceRow.tool_call_id).where(
+                        EvidenceRow.run_id == str(context.run.id)
+                    )
+                )
+            )
+        # The refused third read leaves no start, failure or Evidence row behind.
+        assert started_keys == {
+            "tool:call-1:started",
+            "tool:call-2:started",
+            "tool:call-pods:started",
+        }
+        assert sorted(evidence_rows) == ["call-1", "call-2", "call-pods"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_reads_past_the_observation_limit_admit_exactly_one(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        adapter = _ObservationAdapter()
+        context = await _context(repository, adapter)
+        tools = build_diagnostic_tools()
+
+        await _invoke(tools, context, "get_workload", "call-1")
+        outputs = await asyncio.gather(
+            _invoke(tools, context, "get_workload", "call-2"),
+            _invoke(tools, context, "get_workload", "call-3"),
+        )
+
+        assert adapter.calls == ["get_workload", "get_workload"]
+        assert sum("evidenceId" in output for output in outputs) == 1
+        assert (
+            sum(
+                output == observation_limit_output("get_workload") for output in outputs
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_retryable_failures_do_not_consume_observation_capacity(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        adapter = _ObservationAdapter()
+        context = await _context(repository, adapter)
+        run_id = context.run.id
+
+        async def fail(call_id: str, *, retryable: bool) -> None:
+            await repository.record_tool_started(run_id, call_id, "get_workload")
+            await repository.record_tool_failure(
+                ToolFailureRecord(
+                    run_id=run_id,
+                    tool_call_id=call_id,
+                    tool_name="get_workload",
+                    error_code="request_timeout" if retryable else "permission_denied",
+                    retryable=retryable,
+                    occurred_at=NOW,
+                )
+            )
+
+        await fail("call-timeout-1", retryable=True)
+        await fail("call-timeout-2", retryable=True)
+        await _invoke(build_diagnostic_tools(), context, "get_workload", "call-ok")
+        await fail("call-denied", retryable=False)
+
+        with pytest.raises(ObservationLimitExceededError):
+            await repository.record_tool_started(run_id, "call-4", "get_workload")
+        # Capacity is per tool: a different tool for the same target is unaffected.
+        await repository.record_tool_started(run_id, "call-pods", "get_pods")

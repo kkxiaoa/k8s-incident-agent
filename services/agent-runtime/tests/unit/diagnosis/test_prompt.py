@@ -1,9 +1,15 @@
 import pytest
 
+from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
 from k8s_incident_agent.diagnosis.prompt import build_diagnostic_system_prompt
+from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 
 ALLOWED_TOOLS = ("get_workload", "get_pods", "get_events", "query_prometheus")
-REQUIRED_EVIDENCE = ("workload", "pods", "events")
+REQUIRED_EVIDENCE = ("workload",)
+PANELS = (
+    DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+    DiagnosticPanel("crash-loop-restarts", "Container restarts", "restarts"),
+)
 
 
 def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
@@ -12,7 +18,8 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
         max_tool_calls=6,
         allowed_tool_names=ALLOWED_TOOLS,
         required_evidence=REQUIRED_EVIDENCE,
-        prometheus_panel_ids=("image-pull-affected-pods",),
+        prometheus_panels=PANELS,
+        trigger_panel_id="image-pull-affected-pods",
         repair_action="set_container_image",
     )
     normalized = " ".join(prompt.split())
@@ -24,9 +31,38 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     assert "get_pods" in prompt
     assert "get_events" in prompt
     assert "query_prometheus" in prompt
-    assert "image-pull-affected-pods" in prompt
-    assert "single panel and window" in prompt
-    assert "do not query another panel or window" in prompt
+    assert "image-pull-affected-pods — Affected pods (pods)" in prompt
+    assert "crash-loop-restarts — Container restarts (restarts)" in prompt
+    assert "image-pull-affected-pods is the registered signal of the alert rule" in (
+        normalized
+    )
+    assert "not the alert's firing or resolved state" in normalized
+    assert "Query it first" in normalized
+    assert "does not mean the alert or incident has resolved" in normalized
+    # Direction-neutral: Service panels alert when the value is low.
+    assert "non-alerting side of its threshold (see the result's riskDirection)" in (
+        normalized
+    )
+    assert "below its threshold" not in normalized
+    assert "describe when samples were on the alerting side" in normalized
+    assert "use current Kubernetes Evidence to judge whether the symptom persists" in (
+        normalized
+    )
+    assert "never show that this alert's condition held" in normalized
+    assert "one longer window may be queried" in normalized
+    assert "record that in missing_information rather than inferring the symptom" in (
+        normalized
+    )
+    assert "Never conclude from panel values alone" in normalized
+    assert "Do not sweep every panel or window" in normalized
+    # The stated caps must be the ones the repository enforces, and the counting
+    # rule must match it: every attempt counts except a retryable failure.
+    assert (
+        f"counts every attempt other than a retryable failure and admits at most "
+        f"{OBSERVATION_LIMIT} per tool"
+    ) in normalized
+    assert f"admits at most {OBSERVATION_LIMIT} per panel and window" in normalized
+    assert "A different window is counted separately" in normalized
     assert "requested query range" in prompt
     assert "actual samples' timestamps" in prompt
     assert "absent points are unknown" in prompt
@@ -38,12 +74,14 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     assert "continuing causal impact" in normalized
     assert "not every unperformed check" in normalized
     assert "Missing observations do not prove absence" in normalized
-    assert "Do not call the same Kubernetes" in prompt
-    assert "tool again after it succeeds" in prompt
+    assert "A refused call still spends budget" in normalized
+    assert "it is not a tool failure" in normalized
+    assert "keeps the last tool call and the last model call" in normalized
+    assert "The alert only located the target" in normalized
+    assert "identity Evidence: workload" in normalized
     assert "read-only" in lowered
     assert "insufficient_evidence" in prompt
-    assert "8" in prompt
-    assert "6" in prompt
+    assert "at most 8 model calls and 6 total" in normalized
     assert "structured response" in lowered
     assert "set_container_image" in prompt
     assert "immediately preceding revision" in prompt
@@ -72,7 +110,8 @@ def test_prompt_does_not_leak_private_expectations_or_write_capabilities(
         max_tool_calls=6,
         allowed_tool_names=ALLOWED_TOOLS,
         required_evidence=REQUIRED_EVIDENCE,
-        prometheus_panel_ids=("image-pull-affected-pods",),
+        prometheus_panels=PANELS,
+        trigger_panel_id="image-pull-affected-pods",
         repair_action="set_container_image",
     )
 
@@ -93,20 +132,21 @@ def test_prompt_rejects_invalid_runtime_budgets(
             max_tool_calls=max_tool_calls,
             allowed_tool_names=ALLOWED_TOOLS,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=("image-pull-affected-pods",),
+            prometheus_panels=(PANELS[0],),
+            trigger_panel_id=PANELS[0].panel_id,
             repair_action="set_container_image",
         )
 
 
 @pytest.mark.parametrize(
-    ("panel_ids", "message"),
+    ("panels", "message"),
     [
         ((), "match the allowed tool set"),
-        (("duplicate", "duplicate"), "must be unique"),
+        ((PANELS[0], PANELS[0]), "must be unique"),
     ],
 )
 def test_prompt_rejects_empty_or_duplicate_panel_identifiers(
-    panel_ids: tuple[str, ...],
+    panels: tuple[DiagnosticPanel, ...],
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
@@ -115,6 +155,33 @@ def test_prompt_rejects_empty_or_duplicate_panel_identifiers(
             max_tool_calls=6,
             allowed_tool_names=ALLOWED_TOOLS,
             required_evidence=REQUIRED_EVIDENCE,
-            prometheus_panel_ids=panel_ids,
+            prometheus_panels=panels,
+            trigger_panel_id=None,
             repair_action="set_container_image",
+        )
+
+
+def test_prompt_rejects_a_trigger_panel_outside_the_admitted_set() -> None:
+    with pytest.raises(ValueError, match="Trigger panel"):
+        build_diagnostic_system_prompt(
+            max_model_calls=8,
+            max_tool_calls=6,
+            allowed_tool_names=ALLOWED_TOOLS,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=(PANELS[0],),
+            trigger_panel_id="crash-loop-restarts",
+            repair_action=None,
+        )
+
+
+def test_prompt_requires_a_trigger_panel_whenever_panels_are_admitted() -> None:
+    with pytest.raises(ValueError, match="Trigger panel"):
+        build_diagnostic_system_prompt(
+            max_model_calls=8,
+            max_tool_calls=6,
+            allowed_tool_names=ALLOWED_TOOLS,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=(PANELS[0],),
+            trigger_panel_id=None,
+            repair_action=None,
         )

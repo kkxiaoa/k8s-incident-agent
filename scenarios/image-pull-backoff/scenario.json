@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "image-pull-backoff",
-  "scenario_version": 3,
+  "scenario_version": 4,
   "monitoring_alert_id": "K8sIncidentImagePullBackOff",
   "display_name": "Image pull failure",
   "description": "A Deployment cannot pull its configured image.",
@@ -34,10 +34,10 @@
     "get_rollout_history",
     "get_pods",
     "get_events",
+    "get_container_logs",
     "query_prometheus"
   ],
   "forbidden_tools": [
-    "get_container_logs",
     "apply_patch",
     "execute_shell"
   ],
