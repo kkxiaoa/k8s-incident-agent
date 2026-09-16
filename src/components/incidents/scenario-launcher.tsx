@@ -7,12 +7,16 @@ import { createIncidentFromBrowser } from "@/lib/agent-runtime/browser-client";
 import type { ScenarioResponse } from "@/lib/agent-runtime/view-models";
 import { targetLabel } from "@/lib/agent-runtime/view-models";
 
+import { ActionButton } from "@/components/ui/action-button";
+
 import { ScenarioDropdown } from "./scenario-dropdown";
 
 export function ScenarioLauncher({
   scenarios,
+  canOperate,
 }: {
   scenarios: ScenarioResponse[];
+  canOperate: boolean | null;
 }) {
   const router = useRouter();
   const [scenarioId, setScenarioId] = useState(scenarios[0]?.scenarioId ?? "");
@@ -28,6 +32,7 @@ export function ScenarioLauncher({
     scenarios[0];
 
   async function createIncident() {
+    if (!canOperate || submitting) return;
     setSubmitting(true);
     setError(null);
     const result = await createIncidentFromBrowser(selected.scenarioId);
@@ -38,6 +43,8 @@ export function ScenarioLauncher({
           ? "所选诊断场景已不存在，请刷新页面。"
           : result.failure === "diagnosis_unavailable"
           ? "模型诊断暂不可用，未创建 Incident。请在模型服务恢复后重试。"
+          : result.failure === "public_demo_limited"
+          ? "公开读取暂时达到容量上限，请稍后重试。"
           : "暂时无法创建 Incident，请稍后重试。",
       );
       setSubmitting(false);
@@ -65,14 +72,15 @@ export function ScenarioLauncher({
         <span>{targetLabel(selected.target)}</span>
       </div>
 
-      <button
+      <ActionButton
         className="primary-button"
         type="button"
-        disabled={submitting}
+        disabled={!canOperate || submitting}
+        disabledReason={canOperate === null ? "暂时无法核对登录状态，请稍后重试。" : !canOperate ? "登录后可创建 Incident 并发起诊断。" : "正在创建 Incident，请稍候。"}
         onClick={createIncident}
       >
         {submitting ? "正在创建…" : "创建 Incident"}
-      </button>
+      </ActionButton>
 
       {error === null ? null : (
         <p className="inline-error" role="alert">

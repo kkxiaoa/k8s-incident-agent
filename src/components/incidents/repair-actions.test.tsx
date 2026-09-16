@@ -12,6 +12,55 @@ function setup(detail = makeRepairRunWaitingDetail()) {
 }
 
 describe("repair lifecycle actions", () => {
+  it.each([
+    ["PENDING", "等待执行", "等待执行器自动领取", "领取后仍须通过执行前检查"],
+    ["CLAIMED", "等待执行结果", "正在等待执行结果回报", "领取不代表写入成功"],
+  ] as const)("explains automatic progression for %s without another execution action", (status, heading, message, boundary) => {
+    const detail = makeRecoveryDetail("observing");
+    detail.incident.status = "APPLYING";
+    detail.verification = null;
+    const execution = detail.approval!.execution!;
+    execution.status = status;
+    execution.claimedAt = status === "PENDING" ? null : execution.claimedAt;
+    execution.reportedAt = null;
+    execution.result = null;
+    setup(detail);
+    expect(screen.getByRole("heading", { name: heading })).toBeVisible();
+    expect(screen.getByText(new RegExp(message))).toHaveTextContent("无需再次操作");
+    expect(screen.getByText(new RegExp(message))).toHaveTextContent(boundary);
+    expect(screen.queryByRole("heading", { name: "下一步" })).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it.each([
+    ["authentication_required", "登录后可审阅并批准"],
+    ["proposal_expired", "提案等待期限已失效"],
+    ["target_occupied", "另一次执行仍占用此目标"],
+  ] as const)("explains disabled approval on hover and keyboard focus: %s", async (reason, message) => {
+    const detail = makeRepairRunWaitingDetail();
+    detail.actions.approve = reason;
+    const { user, onAction } = setup(detail);
+    const button = screen.getByRole("button", { name: "审阅并批准" });
+    expect(button).toBeDisabled();
+    await user.hover(button);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(message);
+    await user.unhover(button);
+    await user.tab();
+    expect(screen.getByRole("group", { name: "审阅并批准" })).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toHaveTextContent(message);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    await user.click(button);
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("explains a failed state read without presenting it as a submission in progress", async () => {
+    const { props, rerender, user } = setup();
+    rerender(<RepairActions {...props} busy busyReason="无法核对最新保存状态，请检查最新状态后再操作。" />);
+    await user.hover(screen.getByRole("button", { name: "审阅并批准" }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("无法核对最新保存状态");
+  });
+
   it("can only prepare a historical diagnostic proposal, never approve it", async () => {
     const detail = makeWaitingApprovalIncidentDetail();
     const { user, onAction } = setup(detail);

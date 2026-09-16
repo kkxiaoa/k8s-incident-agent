@@ -79,6 +79,18 @@ function documents(rawYaml) {
   return result;
 }
 
+test("fixed profiles keep public demo disabled with access controls only in Runtime", () => {
+  for (const profile of ["kind-evaluation", "k3s-evaluation", "k3s-online"]) {
+    const rendered = documents(render(`overlays/${profile}`));
+    const runtime = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "agent-runtime-config");
+    const consoleConfig = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "incident-console-config");
+    for (const [key, value] of Object.entries({ CONSOLE_ACCESS_MODE: "private", PUBLIC_DEMO_DATA_APPROVED: "false" })) {
+      assert.equal(runtime.data[key], value);
+      assert.equal(Object.hasOwn(consoleConfig.data, key), false);
+    }
+  }
+});
+
 function identity(document) {
   return [
     document.kind,

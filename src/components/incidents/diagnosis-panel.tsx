@@ -30,8 +30,8 @@ export function DiagnosisPanel({
   referenceRunAttempt?: number;
   runCompletedAt?: string | null;
 }) {
-  const provenance = <p className="diagnosis-provenance">
-    {referenceRunAttempt === undefined ? "本次运行产生" : `引用第 ${referenceRunAttempt} 次诊断运行`}
+  const provenance = <p className={referenceRunAttempt === undefined ? "diagnosis-provenance" : "diagnosis-provenance diagnosis-provenance--referenced"}>
+    <strong>{referenceRunAttempt === undefined ? "本次运行产生" : `引用第 ${referenceRunAttempt} 次诊断运行`}</strong>
     {runCompletedAt ? <> · 运行结束于 <LocalTimestamp timestamp={runCompletedAt} /></> : null}
     {referenceRunAttempt === undefined ? null : <span>历史诊断结论，不代表重新诊断或目标当前状态。</span>}
   </p>;

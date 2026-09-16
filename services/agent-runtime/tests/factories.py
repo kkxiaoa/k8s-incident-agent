@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import cast
 from uuid import UUID
 
@@ -106,6 +107,32 @@ def diagnostic_model_stub() -> DiagnosticModelAvailability:
 
 
 class _OperatorSessionsStub:
+    @property
+    def access(self) -> "_OperatorSessionsStub":
+        return self
+
+    @property
+    def operator(self) -> "_OperatorSessionsStub":
+        return self
+
+    async def resolve(
+        self, cookies: list[str], *, mutation: bool = False
+    ) -> OperatorSession:
+        return await self.authenticate(cookies)
+
+    @asynccontextmanager
+    async def reading(self, _requester: object) -> AsyncGenerator[None]:
+        yield
+
+    @asynccontextmanager
+    async def stream_slot(self, _requester: object) -> AsyncGenerator[None]:
+        yield
+
+    def open_stream(
+        self, _requester: object, source: AsyncGenerator[bytes]
+    ) -> AsyncGenerator[bytes]:
+        return source
+
     async def authenticate(self, _cookies: list[str]) -> OperatorSession:
         return OperatorSession("sandbox-operator", 2**31, "", "", "")
 

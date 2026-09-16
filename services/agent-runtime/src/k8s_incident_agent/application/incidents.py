@@ -49,6 +49,7 @@ from k8s_incident_agent.application.scheduling import (
     RunScheduler,
     schedule_committed_run,
 )
+from k8s_incident_agent.auth.sessions import OperatorSession
 from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
@@ -133,6 +134,7 @@ class IncidentApplicationService:
         request: CreateIncidentRequest,
         *,
         operator_ref: str | None = None,
+        requester: OperatorSession | None = None,
     ) -> CreateIncidentResponse:
         scenario = self._scenarios.get(request.scenario_id)
         if scenario is None:
@@ -143,6 +145,7 @@ class IncidentApplicationService:
             model,
             self._budget,
             operator_ref=operator_ref,
+            requester=requester,
         )
         await schedule_committed_run(self._supervisor, created.run_id)
         return CreateIncidentResponse(incident_id=created.incident_id)
@@ -153,6 +156,7 @@ class IncidentApplicationService:
         *,
         replaces_run_id: UUID | None = None,
         operator_ref: str | None = None,
+        requester: OperatorSession | None = None,
     ) -> CreateRunResponse:
         model = self._require_diagnostic_readiness()
         try:
@@ -162,6 +166,7 @@ class IncidentApplicationService:
                 self._budget,
                 replaces_run_id=replaces_run_id,
                 operator_ref=operator_ref,
+                requester=requester,
             )
         except ActiveRunExistsError:
             raise ActiveRunConflictError from None
@@ -175,7 +180,8 @@ class IncidentApplicationService:
         incident_id: UUID,
         request: CreateRepairRunRequest,
         *,
-        operator_ref: str,
+        operator_ref: str | None,
+        requester: OperatorSession | None = None,
     ) -> CreateRunResponse:
         selection = (
             None
@@ -194,6 +200,7 @@ class IncidentApplicationService:
                 replaces_run_id=request.replaces_run_id,
                 operator_ref=operator_ref,
                 now=self._now(),
+                requester=requester,
             )
         except ActiveRunExistsError:
             raise ActiveRunConflictError from None
@@ -253,6 +260,7 @@ class IncidentApplicationService:
         incident_id: UUID,
         *,
         run_id: UUID | None,
+        requester: OperatorSession | None = None,
     ) -> IncidentDetailResponse:
         try:
             detail = await self._repository.get_incident_detail(
@@ -260,6 +268,7 @@ class IncidentApplicationService:
                 run_id=run_id,
                 event_limit=100,
                 now=self._now(),
+                requester=requester,
             )
         except RunNotFoundRepositoryError:
             raise RunNotFoundError from None
@@ -286,6 +295,8 @@ class IncidentApplicationService:
         *,
         limit: int,
         cursor: str | None,
+        requester: OperatorSession | None = None,
+        mine: bool = False,
     ) -> RunHistoryResponse:
         before_attempt = (
             _decode_run_cursor(cursor, incident_id) if cursor is not None else None
@@ -294,6 +305,8 @@ class IncidentApplicationService:
             incident_id,
             limit=limit,
             before_attempt=before_attempt,
+            requester=requester,
+            mine=mine,
         )
         if page is None:
             raise IncidentNotFoundError
@@ -309,6 +322,14 @@ class IncidentApplicationService:
             items=tuple(_run_summary(item) for item in page.items),
             next_cursor=next_cursor,
         )
+
+    async def withdraw_run(
+        self, incident_id: UUID, run_id: UUID, requester: OperatorSession
+    ) -> None:
+        try:
+            await self._repository.withdraw_run(incident_id, run_id, requester)
+        except ActiveRunExistsError:
+            raise ActiveRunConflictError from None
 
     async def list_run_events(
         self,
@@ -441,6 +462,7 @@ def _run_summary(run: IncidentRunDetail) -> RunSummaryResponse:
         started_at=run.started_at,
         completed_at=run.completed_at,
         request_source=run.request_source,
+        initiated_by_you=run.initiated_by_you,
         source_run_id=run.source_run_id,
     )
 

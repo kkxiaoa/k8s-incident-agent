@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -33,7 +32,11 @@ from tests.unit.routes.test_operator import credential as credential
 from tests.unit.workflow.test_repair_preparation import dependencies
 
 from k8s_incident_agent.api import RuntimeContainer, create_app
-from k8s_incident_agent.application.events import IncidentEventService
+from k8s_incident_agent.application.events import (
+    EventDependencies,
+    IncidentEventService,
+    RunEventNotifier,
+)
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.auth.sessions import OperatorSessions
 from k8s_incident_agent.auth.verifier import PasswordVerifier
@@ -129,6 +132,7 @@ async def approval_harness(
     enabled: bool = True,
     executor_key: bytes | None = None,
     occurrence: NormalizedAlertOccurrence | None = None,
+    public_demo: bool = False,
 ) -> AsyncGenerator[ApprovalHarness]:
     password, encoded = credential
     clock = [FRESH_NOW]
@@ -142,6 +146,7 @@ async def approval_harness(
             database.session_factory,
             sandbox_execution_enabled=enabled,
             execution_cluster="k8s-incident-agent",
+            now=lambda: clock[0],
         )
         incident_id, source_id = await seed_source(repository, occurrence)
         run = await create_preparation(repository, incident_id, source_id)
@@ -171,6 +176,7 @@ async def approval_harness(
             verifier=PasswordVerifier(encoded),
             origin=ORIGIN,
             now=lambda: clock[0].timestamp(),
+            access_mode="public_demo" if public_demo else "private",
         )
         await sessions.start()
 
@@ -178,7 +184,11 @@ async def approval_harness(
         async def context(_settings: Settings) -> AsyncGenerator[RuntimeContainer]:
             yield RuntimeContainer(
                 incidents=service,
-                events=cast(IncidentEventService, object()),
+                events=IncidentEventService(
+                    EventDependencies(
+                        repository=repository, notifier=RunEventNotifier()
+                    )
+                ),
                 alerts=None,
                 monitoring=monitoring_health_service_stub(),
                 diagnostic_model=diagnostic_model_stub(),
@@ -198,6 +208,8 @@ async def approval_harness(
         settings = Settings(
             RUNTIME_DATA_DIR=RuntimePaths.prepare(tmp_path / "api"),  # pyright: ignore[reportCallIssue]
             sandbox_execution_enabled=enabled,
+            console_access_mode="public_demo" if public_demo else "private",
+            public_demo_data_approved=public_demo,
             executor_hmac_key_file=(
                 tmp_path / "executor-key" if executor_key is not None else None
             ),

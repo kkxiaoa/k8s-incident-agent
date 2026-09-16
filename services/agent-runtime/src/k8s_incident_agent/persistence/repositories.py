@@ -18,7 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.dml import Delete
 
-from k8s_incident_agent.auth.sessions import OperatorAuthenticationError
+from k8s_incident_agent.auth.public_demo import (
+    RunOwnershipError,
+    owns_run,
+    require_operator_current,
+)
+from k8s_incident_agent.auth.sessions import (
+    OperatorAuthenticationError,
+    OperatorSession,
+)
 from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
 from k8s_incident_agent.diagnosis.tool_execution import (
     normalize_diagnostic_tool_call_identity,
@@ -173,7 +181,11 @@ class IncidentRunDetail:
     source_run_id: UUID | None
     selection: RepairHistorySelection | None
     waiting_expires_at: datetime | None
-    end_reason: Literal["expired", "superseded", "rejected", "execution_expired"] | None
+    end_reason: (
+        Literal["expired", "superseded", "rejected", "execution_expired", "withdrawn"]
+        | None
+    )
+    initiated_by_you: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,11 +420,13 @@ class IncidentRepository:
         on_event_committed: Callable[[UUID], Awaitable[None]] | None = None,
         sandbox_execution_enabled: bool = False,
         execution_cluster: str | None = None,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._session_factory = session_factory
         self._on_event_committed = on_event_committed
         self._execution_enabled = sandbox_execution_enabled
         self._execution_cluster = execution_cluster
+        self._now = now
 
     async def incident_exists(self, incident_id: UUID) -> bool:
         try:
@@ -728,6 +742,7 @@ class IncidentRepository:
         run_id: UUID | None,
         event_limit: int,
         now: datetime | None = None,
+        requester: OperatorSession | None = None,
     ) -> IncidentDetailRecord | None:
         if event_limit < 1 or event_limit > 100:
             raise ValueError("Event page limit must be between 1 and 100")
@@ -835,8 +850,9 @@ class IncidentRepository:
                     except ApprovalConflictError:
                         in_scope = False
                 detail = replace(detail, run_creation_blocked=bool(occupied))
-                return replace(
+                projected = replace(
                     detail,
+                    run=replace(detail.run, initiated_by_you=owns_run(run, requester)),
                     actions=_incident_actions(
                         detail,
                         source=rows.source,
@@ -847,6 +863,37 @@ class IncidentRepository:
                         now=_require_aware_datetime(now or datetime.now(UTC)),
                     ),
                 )
+                assert projected.actions is not None
+                actions = projected.actions
+                if (
+                    run.kind is RunKind.REPAIR
+                    and run.status is RunStatus.WAITING_APPROVAL
+                ):
+                    actions = actions.model_copy(
+                        update={
+                            "withdraw": None
+                            if owns_run(run, requester)
+                            else "not_owner"
+                        }
+                    )
+                if requester is None:
+                    actions = actions.model_copy(
+                        update={
+                            name: "authentication_required"
+                            for name in (
+                                "prepare",
+                                "refresh",
+                                "edit",
+                                "approve",
+                                "reject",
+                                "rerun",
+                                "rollback",
+                                "withdraw",
+                            )
+                            if getattr(actions, name) != "not_applicable"
+                        }
+                    )
+                return replace(projected, actions=actions)
         except RepositoryError:
             raise
         except SQLAlchemyError:
@@ -858,6 +905,8 @@ class IncidentRepository:
         *,
         limit: int,
         before_attempt: int | None,
+        requester: OperatorSession | None = None,
+        mine: bool = False,
     ) -> RunListPage | None:
         if limit < 1 or limit > 50:
             raise ValueError("Run list limit must be between 1 and 50")
@@ -870,6 +919,14 @@ class IncidentRepository:
                 if incident is None:
                     return None
                 statement = select(RunRow).where(RunRow.incident_id == incident.id)
+                if mine:
+                    if requester is not None:
+                        statement = statement.where(
+                            RunRow.request_source == "operator",
+                            RunRow.operator_ref == requester.operator_ref,
+                        )
+                    else:
+                        return RunListPage(items=(), has_more=False)
                 if before_attempt is not None:
                     statement = statement.where(RunRow.attempt < before_attempt)
                 runs = list(
@@ -878,7 +935,10 @@ class IncidentRepository:
                     )
                 )
                 details = [
-                    await _run_detail_from_row(session, incident, run)
+                    replace(
+                        await _run_detail_from_row(session, incident, run),
+                        initiated_by_you=owns_run(run, requester),
+                    )
                     for run in runs[:limit]
                 ]
                 return RunListPage(
@@ -1212,9 +1272,15 @@ class IncidentRepository:
         budget: RunBudget,
         *,
         operator_ref: str | None = None,
+        requester: OperatorSession | None = None,
     ) -> CreatedIncident:
         try:
             async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                if requester is not None:
+                    await require_operator_current(
+                        session, requester, int(self._now().timestamp())
+                    )
                 created = await _create_initial_incident(
                     session,
                     trigger,
@@ -1333,6 +1399,7 @@ class IncidentRepository:
         *,
         replaces_run_id: UUID | None = None,
         operator_ref: str | None = None,
+        requester: OperatorSession | None = None,
     ) -> CreatedRun | None:
         run_id = uuid4()
         occurred_at = datetime.now(UTC)
@@ -1342,6 +1409,10 @@ class IncidentRepository:
                 incident = await session.get(IncidentRow, str(incident_id))
                 if incident is None:
                     return None
+                if requester is not None:
+                    await require_operator_current(
+                        session, requester, int(self._now().timestamp())
+                    )
                 if replaces_run_id is not None:
                     await _replace_waiting_run(
                         session, incident, replaces_run_id, occurred_at
@@ -1433,8 +1504,9 @@ class IncidentRepository:
         source_execution_id: UUID | None = None,
         selection: RepairHistorySelection | None,
         replaces_run_id: UUID | None,
-        operator_ref: str,
+        operator_ref: str | None,
         now: datetime,
+        requester: OperatorSession | None = None,
     ) -> CreatedRun | None:
         now = _require_aware_datetime(now)
         run_id = uuid4()
@@ -1444,6 +1516,10 @@ class IncidentRepository:
                 incident = await session.get(IncidentRow, str(incident_id))
                 if incident is None:
                     return None
+                if requester is not None:
+                    await require_operator_current(
+                        session, requester, int(self._now().timestamp())
+                    )
                 source = await session.get(RunRow, str(source_run_id))
                 source_row = await _repair_proposal_by_run(session, source_run_id)
                 if (
@@ -1543,6 +1619,30 @@ class IncidentRepository:
             raise PersistenceOperationError from None
         await self._notify_committed_event(event)
         return CreatedRun(run_id=run_id)
+
+    async def withdraw_run(
+        self, incident_id: UUID, run_id: UUID, requester: OperatorSession
+    ) -> None:
+        async with self._session_factory.begin() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            now = self._now()
+            await require_operator_current(session, requester, int(now.timestamp()))
+            incident = await session.get(IncidentRow, str(incident_id))
+            run = await session.get(RunRow, str(run_id))
+            if (
+                incident is None
+                or run is None
+                or run.incident_id != incident.id
+                or run.status is not RunStatus.WAITING_APPROVAL
+            ):
+                raise ActiveRunExistsError
+            if not owns_run(run, requester):
+                raise RunOwnershipError
+            await _require_no_incident_execution(session, incident.id)
+            event = await _end_waiting_run(session, run, incident, now, "withdrawn")
+            await session.flush()
+            committed = _event_from_row(event, expected_incident_id=incident_id)
+        await self._notify_committed_event(committed)
 
     async def get_repair_source_proposal(self, run_id: UUID) -> RepairProposal:
         try:
@@ -3105,7 +3205,7 @@ async def _end_waiting_run(
     run: RunRow,
     incident: IncidentRow,
     now: datetime,
-    reason: Literal["expired", "superseded"],
+    reason: Literal["expired", "superseded", "withdrawn"],
 ) -> RunEventRow:
     rows = await _load_workflow_rows(session, UUID(run.id))
     snapshot = _workflow_run_snapshot(
@@ -4526,7 +4626,8 @@ def _repair_workflow_snapshot(
         )
         or (run.status is RunStatus.COMPLETED)
         != (
-            run.end_reason in ("expired", "superseded", "rejected", "execution_expired")
+            run.end_reason
+            in ("expired", "superseded", "rejected", "execution_expired", "withdrawn")
             or (
                 verification is not None
                 and (
@@ -4539,7 +4640,14 @@ def _repair_workflow_snapshot(
             )
         )
         or run.end_reason
-        not in (None, "expired", "superseded", "rejected", "execution_expired")
+        not in (
+            None,
+            "expired",
+            "superseded",
+            "rejected",
+            "execution_expired",
+            "withdrawn",
+        )
         or (run.end_reason is not None and (expires_at is None or completed_at is None))
         or (
             run.end_reason == "expired"

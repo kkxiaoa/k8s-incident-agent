@@ -109,7 +109,13 @@ async def test_rollback_migration_preserves_ledger_and_releases_only_known_apply
                     continue
                 assert (
                     connection.execute(
-                        f'SELECT * FROM "{table}" ORDER BY rowid'
+                        "SELECT "
+                        + (
+                            ",".join(schema["columns"][table])
+                            if table != "alembic_version"
+                            else "version_num"
+                        )
+                        + f' FROM "{table}" ORDER BY rowid'
                     ).fetchall()
                     == before[table]
                 )
@@ -215,6 +221,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
             "evidence",
             "operator_sessions",
         )
+        schema = _schema_snapshot(paths.business_database)
         with sqlite3.connect(paths.business_database) as connection:
             before = {
                 table: connection.execute(
@@ -239,13 +246,15 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
             assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
             assert {
                 table: connection.execute(
-                    f'SELECT * FROM "{table}" ORDER BY rowid'
+                    "SELECT "
+                    + ",".join(schema["columns"][table])
+                    + f' FROM "{table}" ORDER BY rowid'
                 ).fetchall()
                 for table in tables
             } == before
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260913_0008" if fail_ddl else "20260914_0011",)
+            ).fetchone() == ("20260913_0008" if fail_ddl else "20260915_0012",)
             if fail_ddl:
                 assert (
                     connection.execute(
@@ -258,6 +267,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
 
 
 EXPECTED_COLUMNS = {
+    "public_demo_budgets": ("category", "used", "window_started_at"),
     "verifications": ("execution_id", "record_json"),
     "approvals": (
         "id",
@@ -394,6 +404,7 @@ EXPECTED_COLUMNS = {
 }
 
 EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
+    "public_demo_budgets": set(),
     "verifications": {("execution_id", "executions", "id")},
     "approvals": {
         ("run_id", "agent_runs", "id"),
@@ -415,6 +426,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
 }
 
 EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
+    "public_demo_budgets": set(),
     "verifications": set(),
     "approvals": {("run_id",), ("proposal_id",)},
     "executions": {
@@ -434,6 +446,7 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
 }
 
 EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
+    "public_demo_budgets": set(),
     "verifications": set(),
     "approvals": set(),
     "executions": set(),
@@ -521,6 +534,8 @@ def test_migration_round_trip_produces_the_exact_typed_run_schema(
     assert stat.S_IMODE(paths.runtime_lock.stat().st_mode) == 0o600
     command.check(config)
 
+    with sqlite3.connect(paths.business_database) as connection:
+        connection.execute("INSERT INTO public_demo_budgets VALUES ('reads', 24, 0)")
     command.downgrade(config, "base")
     assert _schema_snapshot(paths.business_database)["tables"] == set()
 
@@ -812,7 +827,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260914_0011",)
+        ).fetchone() == ("20260915_0012",)
 
 
 def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(

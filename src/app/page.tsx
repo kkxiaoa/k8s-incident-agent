@@ -1,3 +1,5 @@
+import { fetchOperatorSession } from "@/lib/agent-runtime/server-client";
+import { parseConsoleSession } from "@/lib/agent-runtime/operator-contracts";
 import { Suspense } from "react";
 import { headers } from "next/headers";
 
@@ -18,7 +20,10 @@ async function RuntimeOverview({
   intakeMode: IncidentIntakeMode;
 }) {
   const incoming = new Headers({ cookie: (await headers()).get("cookie") ?? "" });
-  const overview = await loadIncidentConsoleOverview(intakeMode, incoming);
+  const [overview, sessionResult] = await Promise.all([
+    loadIncidentConsoleOverview(intakeMode, incoming), fetchOperatorSession(incoming),
+  ]);
+  const session = parseConsoleSession(sessionResult.value);
   const manualIntake = intakeMode === "manual";
 
   return (
@@ -66,7 +71,7 @@ async function RuntimeOverview({
               暂时无法加载诊断场景，请稍后重试。
             </p>
           ) : (
-            <ScenarioLauncher scenarios={overview.scenarios.items} />
+            <ScenarioLauncher scenarios={overview.scenarios.items} canOperate={session === null ? null : session.role === "operator"} />
           )}
         </section>
       ) : null}

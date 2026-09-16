@@ -5,10 +5,10 @@ test("login and header actions remain usable on narrow screens", async ({ page }
   await page.goto("/login");
   for (const width of [320, 390, 1280]) {
     await page.setViewportSize({ width, height: 800 });
-    await expect(page.getByRole("textbox", { name: "操作者口令" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "登录口令" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
-  await page.getByRole("textbox", { name: "操作者口令" }).focus();
+  await page.getByRole("textbox", { name: "登录口令" }).focus();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "进入 Incident Console" })).toBeFocused();
   await login(page);
@@ -28,7 +28,7 @@ test("login and header actions remain usable on narrow screens", async ({ page }
   }
   await header.getByRole("link", { name: "YAML 编写助手" }).focus();
   await page.keyboard.press("Tab");
-  await expect(header.getByRole("button", { name: "退出登录" })).toBeFocused();
+  await expect(header.getByRole("button", { name: "登出" })).toBeFocused();
 });
 
 test("only user activity renews the session and renewal is throttled", async ({ page, context }) => {
@@ -51,7 +51,7 @@ test("only user activity renews the session and renewal is throttled", async ({ 
   await page.keyboard.press("Shift");
   const renewed = await renewedResponse;
   expect(renewed.status()).toBe(200);
-  expect(await renewed.headerValue("set-cookie")).toContain("Max-Age=1800");
+  expect(await renewed.headerValue("set-cookie")).toContain("Max-Age=3600");
   expect(renewals).toHaveLength(1);
   const cookieAfter = (await context.cookies()).find(cookie => cookie.name === "__Host-k8s-incident-session");
   expect(cookieAfter?.value === cookieBefore?.value).toBe(true);
@@ -87,7 +87,7 @@ test("operator cookie protects SSR and API, survives reload, and is cleared on l
     await other.goto(new URL("/", page.url()).href);
     await expect(other).toHaveURL(/\/login$/);
   } finally { await independent.close(); }
-  await page.getByRole("button", { name: "退出登录" }).click();
+  await page.getByRole("button", { name: "登出" }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect((await context.cookies()).some(value => value.name === "__Host-k8s-incident-session")).toBe(false);
   expect((await page.request.get("/api/runtime/incidents")).status()).toBe(401);

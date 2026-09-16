@@ -197,7 +197,7 @@ function alertResolved(id: string, runId = RUN_ID) {
 }
 
 describe("parseRunEvent", () => {
-  it.each(["expired", "superseded"])("ends a %s repair wait and refreshes the authoritative detail", (reason) => {
+  it.each(["expired", "superseded", "withdrawn"])("ends a %s repair wait and refreshes the authoritative detail", (reason) => {
     const detail = makeRepairRunWaitingDetail();
     const payload = {
       schemaVersion: 5, incidentId: INCIDENT_ID, runId: detail.selectedRun.id,

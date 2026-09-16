@@ -119,14 +119,19 @@ async def test_login_cookie_csrf_logout_and_private_boundary(
             "Secure",
             "SameSite=strict",
             "Path=/",
-            "Max-Age=1800",
+            "Max-Age=3600",
         ):
             assert attribute in cookie
         assert "Domain=" not in cookie
         assert response.headers["cache-control"] == "no-store"
         assert password not in response.text and encoded not in response.text
         session = response.json()
-        assert (await client.get("/api/v1/operator/session")).json() == session
+        assert (await client.get("/api/v1/operator/session")).json() == {
+            "accessMode": "private",
+            "role": "operator",
+            "expiresAt": session["expiresAt"],
+            "csrfToken": session["csrfToken"],
+        }
         assert (
             await client.post("/api/v1/operator/logout", headers={"Origin": ORIGIN})
         ).status_code == 403
@@ -197,9 +202,9 @@ async def test_sliding_session_requires_csrf_and_cannot_resurrect(
         stream = sessions.stream(principal, source())
         headers = {"Origin": ORIGIN, "X-CSRF-Token": initial["csrfToken"]}
         for _ in range(20):
-            clock[0] += 1700
+            clock[0] += 3500
             read = await client.get("/api/v1/operator/session")
-            assert read.json()["expiresAt"] < int(clock[0]) + 1800
+            assert read.json()["expiresAt"] < int(clock[0]) + 3600
             assert "set-cookie" not in read.headers
             for rejected in (
                 {},
@@ -211,8 +216,13 @@ async def test_sliding_session_requires_csrf_and_cannot_resurrect(
                 ).status_code == 403
             renewed = await client.post("/api/v1/operator/session", headers=headers)
             assert renewed.status_code == 200
-            assert renewed.json() == {**initial, "expiresAt": int(clock[0]) + 1800}
-            assert "Max-Age=1800" in renewed.headers["set-cookie"]
+            assert renewed.json() == {
+                "accessMode": "private",
+                "role": "operator",
+                "csrfToken": initial["csrfToken"],
+                "expiresAt": int(clock[0]) + 3600,
+            }
+            assert "Max-Age=3600" in renewed.headers["set-cookie"]
             assert client.cookies.get(SESSION_COOKIE) == token
             assert token not in renewed.text
             assert await anext(stream) == b": keepalive\n\n"
@@ -232,7 +242,7 @@ async def test_sliding_session_requires_csrf_and_cannot_resurrect(
         )
         token = client.cookies.get(SESSION_COOKIE)
         principal = await sessions.authenticate([f"{SESSION_COOKIE}={token}"])
-        clock[0] += 1800
+        clock[0] += 3600
         with pytest.raises(OperatorAuthenticationError):
             await sessions.renew(principal)
         assert (await client.get("/api/v1/operator/session")).status_code == 401
@@ -379,7 +389,7 @@ async def test_expiry_restart_and_stream_revocation(
             json={"password": password},
             headers={"Origin": ORIGIN},
         )
-        clock[0] += 1800
+        clock[0] += 3600
         assert (await client.get("/api/v1/operator/session")).status_code == 401
         await client.post(
             "/api/v1/operator/login",

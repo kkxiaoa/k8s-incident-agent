@@ -240,7 +240,7 @@ function parseEventData(
         ...common,
         runKind: literalField(value, "runKind", "repair"),
         reason:
-          value.reason === "expired" || value.reason === "superseded"
+          value.reason === "expired" || value.reason === "superseded" || value.reason === "withdrawn"
             ? value.reason
             : invalidEvent(),
         incidentStatus: literalField(value, "incidentStatus", "DIAGNOSED"),

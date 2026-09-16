@@ -176,6 +176,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/incidents/{incident_id}/withdrawals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Withdraw Run */
+        post: operations["withdraw_run_api_v1_incidents__incident_id__withdrawals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/monitoring/health": {
         parameters: {
             query?: never;
@@ -301,7 +318,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        ActionUnavailableReason: "not_applicable" | "active_run" | "execution_held" | "target_occupied" | "execution_disabled" | "outside_scope" | "proposal_expired" | "no_history_candidates" | "diagnosis_unavailable";
+        ActionUnavailableReason: "not_applicable" | "active_run" | "execution_held" | "target_occupied" | "execution_disabled" | "outside_scope" | "proposal_expired" | "no_history_candidates" | "diagnosis_unavailable" | "authentication_required" | "not_owner";
         /** AlertResolvedEventPayload */
         AlertResolvedEventPayload: {
             /**
@@ -533,6 +550,23 @@ export interface components {
             runId: string;
             /** Validationdigest */
             validationDigest: string;
+        };
+        /** ConsoleSessionResponse */
+        ConsoleSessionResponse: {
+            /**
+             * Accessmode
+             * @enum {string}
+             */
+            accessMode: "private" | "public_demo";
+            /** Csrftoken */
+            csrfToken: string | null;
+            /** Expiresat */
+            expiresAt: number | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "anonymous" | "operator";
         };
         /** CreateIncidentRequest */
         CreateIncidentRequest: {
@@ -959,6 +993,8 @@ export interface components {
             reject: components["schemas"]["ActionUnavailableReason"] | null;
             rerun: components["schemas"]["ActionUnavailableReason"] | null;
             rollback: components["schemas"]["ActionUnavailableReason"] | null;
+            /** @default not_applicable */
+            withdraw: components["schemas"]["ActionUnavailableReason"] | null;
         };
         /** IncidentCreatedEventPayload */
         IncidentCreatedEventPayload: {
@@ -1582,7 +1618,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "expired" | "superseded";
+            reason: "expired" | "superseded" | "withdrawn";
             /**
              * Runid
              * Format: uuid
@@ -1876,6 +1912,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Initiatedbyyou
+             * @default false
+             */
+            initiatedByYou: boolean;
             kind: components["schemas"]["RunKind"];
             operation: components["schemas"]["RepairOperation"] | null;
             /** Requestsource */
@@ -1955,13 +1996,18 @@ export interface components {
              */
             createdAt: string;
             /** Endreason */
-            endReason?: ("expired" | "superseded" | "rejected" | "execution_expired") | null;
+            endReason?: ("expired" | "superseded" | "rejected" | "execution_expired" | "withdrawn") | null;
             error: components["schemas"]["RunErrorResponse"] | null;
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /**
+             * Initiatedbyyou
+             * @default false
+             */
+            initiatedByYou: boolean;
             kind: components["schemas"]["RunKind"];
             operation: components["schemas"]["RepairOperation"] | null;
             /** Requestsource */
@@ -2148,6 +2194,14 @@ export interface components {
             /** Id */
             id: string;
         };
+        /** WithdrawRunRequest */
+        WithdrawRunRequest: {
+            /**
+             * Runid
+             * Format: uuid
+             */
+            runId: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -2281,6 +2335,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -2359,6 +2422,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -2430,6 +2502,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2604,6 +2685,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -2673,6 +2763,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2752,6 +2851,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2848,6 +2956,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -2871,6 +2988,7 @@ export interface operations {
     list_runs_api_v1_incidents__incident_id__runs_get: {
         parameters: {
             query?: {
+                mine?: boolean;
                 limit?: number;
                 cursor?: string | null;
             };
@@ -2929,6 +3047,15 @@ export interface operations {
             };
             /** @description Unprocessable Content */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3025,6 +3152,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -3114,6 +3250,102 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    withdraw_run_api_v1_incidents__incident_id__withdrawals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WithdrawRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -3170,6 +3402,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -3219,6 +3460,15 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3399,11 +3649,20 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OperatorSessionResponse"];
+                    "application/json": components["schemas"]["ConsoleSessionResponse"];
                 };
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3446,7 +3705,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OperatorSessionResponse"];
+                    "application/json": components["schemas"]["ConsoleSessionResponse"];
                 };
             };
             /** @description Unauthorized */
@@ -3460,6 +3719,15 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3516,6 +3784,15 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

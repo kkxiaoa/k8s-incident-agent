@@ -120,6 +120,7 @@ export function makeIncidentDetail(): IncidentDetailResponse {
   return {
     schemaVersion: 5,
     actions: {
+      withdraw: "not_applicable",
       prepare: "not_applicable", refresh: "not_applicable", edit: "not_applicable",
       approve: "not_applicable", reject: "not_applicable", rerun: "active_run", rollback: "not_applicable",
       preparationSource: null, historyCandidates: [],
@@ -144,6 +145,7 @@ export function makeIncidentDetail(): IncidentDetailResponse {
       createdAt: "2026-08-29T01:00:00Z",
     },
     selectedRun: {
+      initiatedByYou: false,
       id: RUN_ID,
       kind: "diagnosis",
       operation: null,

@@ -3,6 +3,7 @@ import { LocalTimestamp } from "@/components/local-timestamp";
 import type { ReactNode } from "react";
 import { UiIcon } from "@/components/ui/ui-icon";
 import { ShimmerText } from "@/components/ui/shimmer-text";
+import { ActionButton } from "@/components/ui/action-button";
 import type { IncidentDetailView } from "@/lib/agent-runtime/response-contracts";
 import { evidenceSummary, targetLabel } from "@/lib/agent-runtime/view-models";
 
@@ -110,14 +111,14 @@ export function RepairPanel({
           <span className="eyebrow">{selectedRun.kind === "diagnosis" ? "Read-only suggestion" : rollback ? "Rollback" : "Repair workflow"}</span>
           <h2 id="repair-heading">{selectedRun.kind === "diagnosis" ? "修复建议" : rollback ? "回滚处置" : "修复处置"}</h2>
         </div>
-        <div className="repair-panel__tools">{onRefresh ? <button type="button" className="secondary-button" onClick={onRefresh} disabled={refreshing}>检查最新状态</button> : null}
+        <div className="repair-panel__tools">{onRefresh ? <ActionButton type="button" className="secondary-button" onClick={onRefresh} disabled={refreshing} disabledReason="正在读取最新保存状态，请稍候。">检查最新状态</ActionButton> : null}
         <span className="repair-run-label">第 {selectedRun.attempt} 次运行 · {selectedRun.kind === "diagnosis" ? "只读建议" : selectedRun.operation === "rollback" ? "回滚提案" : "修复提案"}</span></div>
       </div>
 
       {selectedRun.sourceRunId ? <p className="repair-source">基于已保存的{rollback ? "原修复" : "来源"}记录生成 · {rollback
         ? <Link href={`/incidents/${detail.incident.id}?runId=${selectedRun.sourceRunId}`}>查看原修复运行</Link>
         : <a href="#diagnosis-heading">查看诊断依据</a>}</p> : null}
-      {selectedRun.endReason ? <p role="status">{{ expired: "提案已过期，需要重新准备。", superseded: "本次等待已被新的运行替换。", rejected: "本次修复申请已被拒绝。", execution_expired: "执行许可已到期，需要重新准备。" }[selectedRun.endReason]}</p> : null}
+      {selectedRun.endReason ? <p role="status">{{ expired: "提案已过期，需要重新准备。", superseded: "本次等待已被新的运行替换。", rejected: "本次修复申请已被拒绝。", execution_expired: "执行许可已到期，需要重新准备。", withdrawn: "发起者已撤回申请，未批准或执行。" }[selectedRun.endReason]}</p> : null}
       {selectedRun.status === "WAITING_APPROVAL" && selectedRun.waitingExpiresAt ? <p>等待期限：<LocalTimestamp timestamp={selectedRun.waitingExpiresAt} /></p> : null}
 
       {refreshError !== null ? (
@@ -160,6 +161,7 @@ export function RepairPanel({
                 timeout: "恢复验证已超时",
               }[verification.outcome] : executionMessage ?? (expired ? "提案已过期，未执行"
                 : selectedRun.endReason === "superseded" ? "本次提案已被新的运行替换"
+                : selectedRun.endReason === "withdrawn" ? "申请已撤回，未执行"
                 : repair.validation.outcome === "failed" ? "验证未通过，尚未批准或执行"
                 : selectedRun.kind === "diagnosis" ? "只读建议已保存，需重新准备后才能审批"
                 : selectedRun.status === "WAITING_APPROVAL" ? "提案已准备，等待人工审批"
@@ -187,12 +189,12 @@ export function RepairPanel({
 
               <div className="repair-diff" aria-label="镜像修改对比">
                 <div className="repair-diff__before">
-                  <span className="repair-diff__label">准备时镜像 <span>观察值</span></span>
+                  <span className="repair-diff__label">变更前镜像 <span>准备时观察值</span></span>
                   <code tabIndex={0}>{repair.diff.before}</code>
                 </div>
                 <div className="repair-diff__after">
                   <span className="repair-diff__arrow" aria-hidden="true"><UiIcon name="chevron-right" /></span>
-                  <span className="repair-diff__label">{rollback ? "还原镜像" : "建议镜像"} <span>{rollback ? "原执行 before image" : "上一 revision"}</span></span>
+                  <span className="repair-diff__label">目标镜像 <span>{rollback ? "原执行 before image" : "上一 revision"}</span></span>
                   <code tabIndex={0}>{repair.diff.after}</code>
                 </div>
               </div>

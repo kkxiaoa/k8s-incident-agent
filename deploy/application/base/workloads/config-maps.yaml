@@ -29,3 +29,5 @@ data:
   PATCH_VALIDATOR_BASE_URL: http://patch-validator.k8s-incident-agent.svc.cluster.local:8081
   PATCH_VALIDATOR_HMAC_KEY_FILE: /var/run/secrets/k8s-incident-agent/patch-validator/hmac-key
   OPERATOR_VERIFIER_FILE: /var/run/secrets/k8s-incident-agent/operator/password-verifier
+  CONSOLE_ACCESS_MODE: private
+  PUBLIC_DEMO_DATA_APPROVED: "false"

@@ -9,6 +9,8 @@ import {
   EVIDENCE_ID,
   INCIDENT_ID,
   RUN_ID,
+  REPAIR_PROPOSAL_ID,
+  REPAIR_PROPOSAL_DIGEST,
   makeIncidentDetail,
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
@@ -108,6 +110,7 @@ function detailResponse(detail = makeIncidentDetail()): Response {
 function renderIncidentStream(detail = makeIncidentDetail()) {
   return render(
     <IncidentStream
+      authenticated
       initialDetail={detail}
       initialRuns={{
         items: [
@@ -124,7 +127,6 @@ function renderIncidentStream(detail = makeIncidentDetail()) {
         ],
         nextCursor: null,
       }}
-      latestMode
       manualActions
     />,
   );
@@ -137,7 +139,7 @@ it.each(["apply", "rollback"] as const)("labels a waiting %s Run and allows oper
   renderIncidentStream(detail);
   const label = operation === "apply" ? "修复" : "回滚";
   await userEvent.setup().click(screen.getByText("选择运行记录"));
-  expect(screen.getByRole("link", { name: `第 2 次 · ${label} · 等待审批` })).toBeVisible();
+  expect(screen.getByRole("link", { name: new RegExp(`第 2 次 · ${label} · 等待审批.*历史来源未记录`) })).toBeVisible();
   expect(screen.getByRole("button", { name: "重新诊断" })).toBeEnabled();
   expect(screen.getByRole("heading", { name: "诊断结论" })).toBeVisible();
   expect(screen.getByText(/来源诊断暂不可用/)).toBeVisible();
@@ -152,7 +154,90 @@ afterEach(() => {
   FakeEventSource.current = null;
 });
 
+it.each([false, true])("announces a newer Run from SSE without changing selection, including mine filter=%s", async (onlyMine) => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const detail = makeIncidentDetail();
+  detail.selectedRun.initiatedByYou = true;
+  const newer = makeRepairRunWaitingDetail();
+  stubSessionFetch("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).includes("/runs?")) return Response.json({
+      schemaVersion: 5, items: String(input).includes("mine=true") ? [detail.selectedRun] : [newer.selectedRun, detail.selectedRun], nextCursor: null,
+    });
+    return detailResponse(detail);
+  }));
+  renderIncidentStream(detail);
+  const user = userEvent.setup();
+  const history = screen.getByRole("region", { name: "运行记录" });
+  expect(within(history).queryByRole("link", { name: "最新运行" })).toBeNull();
+  if (onlyMine) {
+    await user.click(screen.getByText("选择运行记录", { exact: true }));
+    await user.click(screen.getByRole("checkbox", { name: "仅看我发起的" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "仅看我发起的" })).toBeEnabled());
+    await user.click(within(history).getByRole("heading", { name: "运行记录" }));
+  }
+  act(() => FakeEventSource.current!.emit("run.queued", "900", {
+    schemaVersion: 5, incidentId: INCIDENT_ID, runId: newer.selectedRun.id,
+    runKind: "repair", attempt: 2, runStatus: "QUEUED", occurredAt: "2026-09-16T01:00:00Z",
+  }));
+  await waitFor(() => expect(within(history).getByRole("link", { name: "最新运行" })).toHaveAttribute("href", `/incidents/${INCIDENT_ID}?runId=${newer.selectedRun.id}`));
+  expect(within(history).getByText(/正在查看第 1 次 · 诊断/)).toBeVisible();
+  await user.click(screen.getByText("选择运行记录", { exact: true }));
+  const list = screen.getByRole("navigation", { name: "运行选择" });
+  expect(within(list).getAllByRole("link")).toHaveLength(onlyMine ? 1 : 2);
+  if (onlyMine) expect(within(list).queryByText("最新", { exact: true })).toBeNull();
+  else expect(within(list).getByRole("link", { name: /第 2 次/ })).toHaveTextContent("最新");
+  expect(within(list).getByRole("link", { name: /第 1 次/ })).toHaveAttribute("aria-current", "page");
+  await user.click(within(history).getByRole("heading", { name: "运行记录" }));
+  expect(list).not.toBeVisible();
+});
+
 describe("repair detail refresh", () => {
+  it.each(["mine retry", "reconnect pagination"])("keeps older Runs reachable across the global first page: %s", async (mode) => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const detail = makeIncidentDetail();
+    detail.selectedRun.status = "COMPLETED";
+    const records = Array.from({ length: 23 }, (_, index) => ({
+      ...detail.selectedRun,
+      id: index === 22 ? detail.selectedRun.id : `a0000000-0000-4000-8000-${String(23 - index).padStart(12, "0")}`,
+      attempt: 23 - index,
+      initiatedByYou: 23 - index === 2,
+    }));
+    let failMine = true;
+    stubSessionFetch("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://localhost");
+      if (!url.pathname.endsWith("/runs")) return detailResponse(detail);
+      if (url.searchParams.get("mine") === "true") return failMine
+        ? new Response(null, { status: 503 })
+        : Response.json({ schemaVersion: 5, items: [records[21]], nextCursor: null });
+      return Response.json({ schemaVersion: 5,
+        items: url.searchParams.has("cursor") ? records.slice(20) : records.slice(0, 20),
+        nextCursor: url.searchParams.has("cursor") ? null : "older-runs",
+      });
+    }));
+    renderIncidentStream(detail);
+    const user = userEvent.setup();
+    act(() => FakeEventSource.current!.onopen?.(new Event("open")));
+    await screen.findByRole("link", { name: "最新运行" });
+    if (mode === "mine retry") {
+      await user.click(screen.getByText("选择运行记录", { exact: true }));
+      await user.click(screen.getByRole("checkbox", { name: "仅看我发起的" }));
+      await screen.findByText("暂时无法筛选运行记录，请稍后重试。");
+      failMine = false;
+      await user.click(screen.getByRole("heading", { name: "运行记录" }));
+      await user.click(screen.getByText("选择运行记录", { exact: true }));
+      await screen.findByRole("link", { name: /第 2 次 · 诊断/ });
+      expect(screen.queryByText(/当前会话没有发起过运行/)).toBeNull();
+      const list = screen.getByRole("navigation", { name: "运行选择" });
+      expect(within(list).getAllByRole("link")).toHaveLength(1);
+      expect(within(list).queryByText("最新", { exact: true })).toBeNull();
+    } else {
+      await user.click(await screen.findByRole("button", { name: "加载更早记录" }));
+      await user.click(screen.getByText("选择运行记录", { exact: true }));
+      await screen.findByRole("link", { name: /第 2 次 · 诊断/ });
+      expect(screen.getByRole("link", { name: /第 3 次 · 诊断/ })).toBeVisible();
+    }
+  });
+
   it.each(["passed", "unavailable", "invalid"])("waits for the persisted repair snapshot: %s", async (outcome) => {
     vi.stubGlobal("EventSource", FakeEventSource);
     let resolveRequest!: (response: Response) => void;
@@ -193,13 +278,13 @@ describe("repair detail refresh", () => {
       expect(screen.queryByText("只读建议已保存，需重新准备后才能审批")).not.toBeInTheDocument();
       if (outcome === "invalid") expect(screen.getByText("持久化详情不符合数据契约，未采用该响应。")).toBeInTheDocument();
     }
-    expect(fetchMock).toHaveBeenCalledWith(`/api/runtime/incidents/${INCIDENT_ID}`, expect.objectContaining({ method: "GET", cache: "no-store" }));
+    expect(fetchMock).toHaveBeenCalledWith(`/api/runtime/incidents/${INCIDENT_ID}?runId=${initial.selectedRun.id}`, expect.objectContaining({ method: "GET", cache: "no-store" }));
   });
 });
 
 describe("ScenarioLauncher", () => {
   it("renders the empty state without an inert create control", () => {
-    render(<ScenarioLauncher scenarios={[]} />);
+    render(<ScenarioLauncher canOperate={true} scenarios={[]} />);
 
     expect(screen.getByText("当前没有可启动的诊断场景。")).toBeVisible();
     expect(screen.queryByRole("button", { name: "创建 Incident" })).toBeNull();
@@ -214,7 +299,7 @@ describe("ScenarioLauncher", () => {
     stubSessionFetch("fetch", fetchMock);
     const user = userEvent.setup();
 
-    render(<ScenarioLauncher scenarios={[SCENARIO]} />);
+    render(<ScenarioLauncher canOperate={true} scenarios={[SCENARIO]} />);
     await user.click(screen.getByRole("button", { name: "创建 Incident" }));
 
     expect(screen.getByRole("button", { name: "正在创建…" })).toBeDisabled();
@@ -254,7 +339,7 @@ describe("ScenarioLauncher", () => {
     stubSessionFetch("fetch", fetchMock);
     const user = userEvent.setup();
 
-    render(<ScenarioLauncher scenarios={[SCENARIO, SECOND_SCENARIO]} />);
+    render(<ScenarioLauncher canOperate={true} scenarios={[SCENARIO, SECOND_SCENARIO]} />);
 
     const dropdown = screen.getByRole("combobox", { name: "诊断场景" });
     expect(screen.queryByRole("listbox")).toBeNull();
@@ -285,7 +370,7 @@ describe("ScenarioLauncher", () => {
       code: "diagnosis_unavailable", message: "Model diagnosis is unavailable.", retryable: true,
     } }), { status: 503, headers: { "content-type": "application/json" } })));
     const user = userEvent.setup();
-    render(<ScenarioLauncher scenarios={[SCENARIO]} />);
+    render(<ScenarioLauncher canOperate={true} scenarios={[SCENARIO]} />);
     await user.click(screen.getByRole("button", { name: "创建 Incident" }));
     expect(await screen.findByText(/模型诊断暂不可用，未创建 Incident/)).toBeVisible();
     expect(navigation.push).not.toHaveBeenCalled();
@@ -309,7 +394,7 @@ describe("ScenarioLauncher", () => {
     );
     const user = userEvent.setup();
 
-    render(<ScenarioLauncher scenarios={[SCENARIO]} />);
+    render(<ScenarioLauncher canOperate={true} scenarios={[SCENARIO]} />);
     await user.click(screen.getByRole("button", { name: "创建 Incident" }));
 
     expect(
@@ -473,20 +558,25 @@ describe("read-only incident presentation", () => {
     const detail = makeRepairRunWaitingDetail();
     const expired = structuredClone(detail);
     expired.actions.approve = expired.actions.reject = "proposal_expired";
-    const reads = vi.fn(async () => Response.json(expired));
+    let snapshot = expired;
+    const reads = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/runs?")
+      ? Response.json({ schemaVersion: 5, items: [snapshot.selectedRun], nextCursor: null })
+      : Response.json(snapshot));
     stubSessionFetch("fetch", reads);
     vi.stubGlobal("EventSource", FakeEventSource);
     renderIncidentStream(detail);
     act(() => FakeEventSource.current!.onopen?.(new Event("open")));
     expect(await screen.findByText(/这不是登录会话过期/)).toBeVisible();
     expect(screen.getByRole("button", { name: "审阅并批准" })).toBeDisabled();
+    snapshot = detail;
     act(() => {
       FakeEventSource.current!.onerror?.(new Event("error"));
       FakeEventSource.current!.onopen?.(new Event("open"));
     });
-    await waitFor(() => expect(reads).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: "审阅并批准" })).toBeEnabled());
+    snapshot = expired;
     act(() => window.dispatchEvent(new Event("focus")));
-    await waitFor(() => expect(reads).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.getByRole("button", { name: "审阅并批准" })).toBeDisabled());
   });
 
   it("does not treat an approval response as execution or recovery before detail is read", async () => {
@@ -525,9 +615,9 @@ describe("read-only incident presentation", () => {
 
     render(
       <IncidentStream
+      authenticated
         initialDetail={detail}
         initialRuns={{ items: [], nextCursor: null }}
-        latestMode
         manualActions={false}
       />,
     );
@@ -794,6 +884,30 @@ describe("read-only incident presentation", () => {
     );
   });
 
+  it("sorts the current incident list by update time and status without mutating input", async () => {
+    const user = userEvent.setup();
+    const target = makeIncidentDetail().incident.target;
+    const incidents = [
+      { id: "a", displayName: "失败 · 较旧", status: "FAILED", updatedAt: "2026-09-16T01:00:00Z", target },
+      { id: "b", displayName: "已诊断 · 最新", status: "DIAGNOSED", updatedAt: "2026-09-16T03:00:00Z", target },
+      { id: "c", displayName: "失败 · 较新", status: "FAILED", updatedAt: "2026-09-16T02:00:00Z", target },
+    ] satisfies Parameters<typeof IncidentList>[0]["incidents"];
+    const original = structuredClone(incidents);
+    render(<IncidentList incidents={incidents} />);
+    const order = () => screen.getAllByRole("link").map(link => link.textContent);
+    expect(order()).toEqual(["已诊断 · 最新", "失败 · 较新", "失败 · 较旧"]);
+    await user.click(screen.getByRole("button", { name: "按更新时间升序排列" }));
+    expect(order()).toEqual(["失败 · 较旧", "失败 · 较新", "已诊断 · 最新"]);
+    expect(document.querySelector("#incident-column-updated")).toHaveAttribute("aria-sort", "ascending");
+    await user.click(screen.getByRole("button", { name: "按状态降序排列" }));
+    expect(order()).toEqual(["已诊断 · 最新", "失败 · 较新", "失败 · 较旧"]);
+    await user.click(screen.getByRole("button", { name: "按状态升序排列" }));
+    expect(order()).toEqual(["失败 · 较新", "失败 · 较旧", "已诊断 · 最新"]);
+    expect(document.querySelector("#incident-column-status")).toHaveAttribute("aria-sort", "ascending");
+    expect(document.querySelector("#incident-column-updated")).toHaveAttribute("aria-sort", "none");
+    expect(incidents).toEqual(original);
+  });
+
   it("shows normalized evidence with safe JSON copy and expansion actions", async () => {
     const detail = makeIncidentDetail();
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -903,6 +1017,29 @@ describe("read-only incident presentation", () => {
     expect(
       within(dialog).getByRole("button", { name: "JSON 复制失败" }),
     ).toHaveAttribute("data-feedback", "复制失败");
+  });
+
+  it.each([
+    ["repair.approval_decided", { decision: "approve", incidentStatus: "APPLYING", runStatus: "RUNNING" }, "success", "尚无写入成功回执"],
+    ["repair.approval_decided", { decision: "reject", incidentStatus: "REJECTED", runStatus: "COMPLETED" }, "neutral", "未执行修复"],
+    ["repair.execution_updated", { executionStatus: "APPLIED", incidentStatus: "VERIFYING", runStatus: "RUNNING", lateResult: false }, "success", "恢复尚未验证"],
+    ["repair.execution_updated", { executionStatus: "PENDING", incidentStatus: "APPLYING", runStatus: "RUNNING", lateResult: false }, "neutral", "执行账本已更新"],
+    ["repair.execution_updated", { executionStatus: "CLAIMED", incidentStatus: "APPLYING", runStatus: "RUNNING", lateResult: false }, "active", "执行账本已更新"],
+    ["repair.execution_updated", { executionStatus: "UNKNOWN", incidentStatus: "FAILED", runStatus: "FAILED", lateResult: true }, "danger", "目标继续占用"],
+    ["repair.execution_updated", { executionStatus: "STALE_RESOURCE", incidentStatus: "STALE_RESOURCE", runStatus: "FAILED", lateResult: false }, "warning", "执行账本已更新"],
+    ["repair.verification_updated", { outcome: "recovered", incidentStatus: "RESOLVED", runStatus: "COMPLETED", reason: null, sampleCount: 3 }, "success", "恢复验证通过"],
+    ["repair.verification_updated", { outcome: "observing", incidentStatus: "VERIFYING", runStatus: "RUNNING", reason: null, sampleCount: 1 }, "active", "恢复观测已保存"],
+    ["repair.verification_updated", { outcome: "monitoring_unavailable", incidentStatus: "FAILED", runStatus: "FAILED", reason: "monitoring_unavailable", sampleCount: 3 }, "warning", "恢复验证已停止"],
+  ] as const)("colors the recorded outcome of %s without claiming later success: %j", (name, payload, tone, boundary) => {
+    const event = parseRunEvent(name, "1", JSON.stringify({
+      schemaVersion: 5, incidentId: INCIDENT_ID, runId: RUN_ID, runKind: "repair",
+      occurredAt: "2026-09-16T01:00:00Z", proposalId: REPAIR_PROPOSAL_ID,
+      proposalDigest: REPAIR_PROPOSAL_DIGEST, approvalId: REPAIR_PROPOSAL_ID,
+      executionId: REPAIR_PROPOSAL_ID, ...payload,
+    }), INCIDENT_ID);
+    render(<RunTimeline events={[event]} connection="live" />);
+    expect(screen.getByRole("listitem")).toHaveClass(`timeline__item--${tone}`);
+    expect(screen.getByRole("listitem")).toHaveTextContent(boundary);
   });
 
   it("marks only unresolved tool calls as running", () => {
@@ -1161,6 +1298,6 @@ describe("read-only incident presentation", () => {
 function stubSessionFetch(name: string, handler: typeof fetch) {
   vi.stubGlobal(name, vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
     input === "/api/runtime/operator/session"
-      ? Promise.resolve(Response.json({ operatorRef: "sandbox-operator", expiresAt: 2000000000, csrfToken: "a".repeat(64) }))
+      ? Promise.resolve(Response.json({ accessMode: "private", role: "operator", expiresAt: 2000000000, csrfToken: "a".repeat(64) }))
       : handler(input, init)));
 }

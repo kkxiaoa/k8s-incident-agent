@@ -27,7 +27,7 @@ type BrowserRuntimeResult<T, Failure = BrowserRuntimeFailure> =
   | { ok: true; data: T }
   | { ok: false; failure: Failure };
 
-type CreateFailure = BrowserRuntimeFailure | "diagnosis_unavailable";
+type CreateFailure = BrowserRuntimeFailure | "diagnosis_unavailable" | "public_demo_limited";
 
 async function jsonBody(response: Response): Promise<unknown | null> {
   if (
@@ -49,6 +49,7 @@ function failureForStatus(status: number): BrowserRuntimeFailure {
 }
 
 async function createFailure(response: Response): Promise<CreateFailure> {
+  if (response.status === 429) return "public_demo_limited";
   const body = await jsonBody(response);
   if (
     response.status === 503 && body !== null && typeof body === "object" &&
@@ -87,10 +88,10 @@ export async function createIncidentFromBrowser(
     : { ok: false, failure: "invalid_response" };
 }
 
-type RepairActionFailure = BrowserRuntimeFailure | "conflict" | "forbidden";
+type RepairActionFailure = BrowserRuntimeFailure | "conflict" | "forbidden" | "public_demo_limited";
 
 async function postRepairAction<T>(
-  incidentId: string, endpoint: "repair-runs" | "approvals", request: RepairRunRequest | ApprovalRequest,
+  incidentId: string, endpoint: "repair-runs" | "approvals" | "withdrawals", request: RepairRunRequest | ApprovalRequest | { runId: string },
   parse: (body: unknown) => T | null,
 ): Promise<BrowserRuntimeResult<T, RepairActionFailure>> {
   try {
@@ -98,8 +99,9 @@ async function postRepairAction<T>(
       `/api/runtime/incidents/${encodeURIComponent(incidentId)}/${endpoint}`,
       { method: "POST", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify(request) },
     );
-    if (!response.ok) return { ok: false, failure: response.status === 409 ? "conflict" : response.status === 403 ? "forbidden" : failureForStatus(response.status) };
-    const data = parse(await jsonBody(response));
+    if (!response.ok) return { ok: false, failure: response.status === 429 ? "public_demo_limited" : response.status === 409 ? "conflict" : response.status === 403 ? "forbidden" : failureForStatus(response.status) };
+    if (endpoint === "withdrawals" && response.status !== 204) return { ok: false, failure: "invalid_response" };
+    const data = parse(response.status === 204 ? null : await jsonBody(response));
     return data === null ? { ok: false, failure: "invalid_response" } : { ok: true, data };
   } catch {
     return { ok: false, failure: "unavailable" };
@@ -108,6 +110,10 @@ async function postRepairAction<T>(
 
 export function prepareRepairFromBrowser(incidentId: string, request: RepairRunRequest) {
   return postRepairAction(incidentId, "repair-runs", request, parseCreateRunResponse);
+}
+
+export function withdrawRunFromBrowser(incidentId: string, request: { runId: string }) {
+  return postRepairAction(incidentId, "withdrawals", request, (): void => undefined);
 }
 
 export function decideRepairFromBrowser(incidentId: string, request: ApprovalRequest) {
@@ -200,8 +206,10 @@ export async function createRunFromBrowser(
 export async function fetchRunHistoryFromBrowser(
   incidentId: string,
   cursor?: string,
+  mine = false,
 ): Promise<BrowserRuntimeResult<RunHistoryView>> {
   const query = new URLSearchParams({ limit: "20" });
+  if (mine) query.set("mine", "true");
   if (cursor !== undefined) {
     query.set("cursor", cursor);
   }

@@ -14,6 +14,8 @@ type ActionUnavailableReason = Literal[
     "proposal_expired",
     "no_history_candidates",
     "diagnosis_unavailable",
+    "authentication_required",
+    "not_owner",
 ]
 
 
@@ -48,5 +50,6 @@ class IncidentActions(_ActionProjection):
     reject: ActionUnavailableReason | None
     rerun: ActionUnavailableReason | None
     rollback: ActionUnavailableReason | None
+    withdraw: ActionUnavailableReason | None = "not_applicable"
     preparation_source: RepairPreparationSource | None
     history_candidates: tuple[RepairHistoryCandidate, ...]

@@ -91,10 +91,11 @@ export interface SelectedRunView {
   completedAt: string | null;
   error: RunErrorView | null;
   requestSource?: "system" | "operator" | null;
+  initiatedByYou?: boolean;
   sourceRunId?: string | null;
   selection?: components["schemas"]["RepairHistorySelectionResponse"] | null;
   waitingExpiresAt?: string | null;
-  endReason?: "expired" | "superseded" | "rejected" | "execution_expired" | null;
+  endReason?: "expired" | "superseded" | "rejected" | "execution_expired" | "withdrawn" | null;
 }
 
 export type RunSummaryView = Omit<SelectedRunView, "error" | "selection" | "waitingExpiresAt" | "endReason">;
@@ -466,6 +467,7 @@ function parseRunBase(value: unknown): RunSummaryView | null {
     (value.startedAt !== null && !isTimestamp(value.startedAt)) ||
     (value.completedAt !== null && !isTimestamp(value.completedAt))
     || (value.requestSource !== undefined && value.requestSource !== null && value.requestSource !== "system" && value.requestSource !== "operator")
+    || (value.initiatedByYou !== undefined && typeof value.initiatedByYou !== "boolean")
     || (value.sourceRunId !== undefined && value.sourceRunId !== null && !isUuid(value.sourceRunId))
   ) {
     return null;
@@ -481,6 +483,7 @@ function parseRunBase(value: unknown): RunSummaryView | null {
     startedAt: value.startedAt,
     completedAt: value.completedAt,
     ...(value.requestSource !== undefined ? { requestSource: value.requestSource as SelectedRunView["requestSource"] } : {}),
+    ...(value.initiatedByYou !== undefined ? { initiatedByYou: value.initiatedByYou as boolean } : {}),
     ...(value.sourceRunId !== undefined ? { sourceRunId: value.sourceRunId as string | null } : {}),
   };
 }
@@ -494,7 +497,7 @@ function parseSelectedRun(value: unknown): SelectedRunView | null {
   const error = value.error === null ? null : parseRunError(value.error);
   if (value.error !== null && error === null) return null;
   if (value.waitingExpiresAt !== undefined && value.waitingExpiresAt !== null && !isTimestamp(value.waitingExpiresAt)) return null;
-  if (value.endReason !== undefined && value.endReason !== null && value.endReason !== "expired" && value.endReason !== "superseded" && value.endReason !== "rejected" && value.endReason !== "execution_expired") return null;
+  if (value.endReason !== undefined && value.endReason !== null && value.endReason !== "expired" && value.endReason !== "superseded" && value.endReason !== "rejected" && value.endReason !== "execution_expired" && value.endReason !== "withdrawn") return null;
   const selection = value.selection;
   if (selection !== undefined && selection !== null && !isHistorySelection(selection)) return null;
   return {
@@ -921,9 +924,11 @@ function parseIncidentActions(value: unknown): IncidentActionsView | null {
   const reasons: ReadonlyArray<Exclude<IncidentActionsView["approve"], null>> = [
     "not_applicable", "active_run", "execution_held", "target_occupied", "execution_disabled",
     "outside_scope", "proposal_expired", "no_history_candidates", "diagnosis_unavailable",
+    "authentication_required", "not_owner",
   ];
   const keys = ["prepare", "refresh", "edit", "approve", "reject", "rerun", "rollback"] as const;
   if (keys.some((key) => value[key] !== null && !reasons.some((reason) => reason === value[key]))) return null;
+  if (value.withdraw !== undefined && value.withdraw !== null && !reasons.some((reason) => reason === value.withdraw)) return null;
   const source = value.preparationSource;
   if (source !== null && (!isObject(source) || !isUuid(source.sourceRunId)
     || (source.sourceExecutionId !== null && !isUuid(source.sourceExecutionId)))) return null;
@@ -939,6 +944,7 @@ function parseIncidentActions(value: unknown): IncidentActionsView | null {
     edit: value.edit as IncidentActionsView["edit"], approve: value.approve as IncidentActionsView["approve"],
     reject: value.reject as IncidentActionsView["reject"], rerun: value.rerun as IncidentActionsView["rerun"],
     rollback: value.rollback as IncidentActionsView["rollback"],
+    withdraw: value.withdraw === undefined ? "not_applicable" : value.withdraw as IncidentActionsView["withdraw"],
     preparationSource: source === null ? null : {
       sourceRunId: source.sourceRunId as string, sourceExecutionId: source.sourceExecutionId as string | null,
     }, historyCandidates: candidates,

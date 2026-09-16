@@ -20,6 +20,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from pydantic import PrivateAttr
 from tests.factories import prometheus_query_service_stub
+from tests.unit.routes.test_operator import credential as credential
 
 from k8s_incident_agent.diagnosis.agent import (
     DiagnosticDeadlineExceededError,
@@ -28,7 +29,9 @@ from k8s_incident_agent.diagnosis.agent import (
 )
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
-from k8s_incident_agent.domain.models import AgentRunSnapshot
+from k8s_incident_agent.domain.models import (
+    AgentRunSnapshot,
+)
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
 from k8s_incident_agent.kubernetes.errors import KubernetesErrorCode

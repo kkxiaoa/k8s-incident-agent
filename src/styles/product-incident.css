@@ -169,7 +169,11 @@
 .run-history-menu { position: relative; min-width: 0; }
 .run-history-menu summary { padding: 10px 14px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); cursor: pointer; font-size: 0.75rem; }
 .run-history-menu .run-selector { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: min(420px, 80vw); max-height: 310px; overflow: auto; flex-direction: column; padding: 8px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 12px 30px rgb(17 53 75 / 12%); }
-.run-history-menu .run-selector__item { white-space: normal; }
+.run-history-menu .run-selector__item { display: flex; align-items: center; justify-content: space-between; gap: 12px; white-space: normal; }
+.run-selector__latest { flex-shrink: 0; padding: 2px 7px; border-radius: 5px; background: var(--teal-soft); color: var(--teal); font-size: 0.65rem; }
+.run-history-filter { display: flex; align-items: center; gap: 8px; padding: 8px; color: var(--navy-deep); font-size: 0.75rem; }
+.run-history-filter input { accent-color: var(--teal); }
+.run-history-menu .run-context { padding-inline: 8px; }
 
 .incident-progress { margin-block: 24px 28px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
 .incident-progress ol { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px; margin: 0; padding: 0; list-style: none; }
@@ -198,6 +202,10 @@
 #repair-decision:target { outline: 2px solid var(--line-strong); outline-offset: 8px; border-radius: 8px; }
 .diagnosis-provenance { margin: 12px 0 20px; color: var(--muted); font-size: 0.7rem; line-height: 1.8; }
 .diagnosis-provenance span { display: block; }
+.diagnosis-provenance--referenced { padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.diagnosis-provenance--referenced strong { color: var(--navy-deep); font-weight: 700; }
+.evidence-section + .evidence-section { margin-top: 28px; }
+.evidence-context { margin: 14px 0 0; color: var(--muted); font-size: 0.72rem; line-height: 1.8; }
 .run-event-records { margin-block: 28px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
 .run-event-records > summary { padding: 20px 24px; cursor: pointer; color: var(--navy-deep); font-size: 0.82rem; font-weight: 700; }
 .run-event-records > summary span { margin-left: 16px; color: var(--muted); font-size: 0.69rem; font-weight: 400; }
@@ -484,7 +492,8 @@
   margin-top: 14px;
 }
 
-.repair-actions__buttons > button { width: auto; min-height: 40px; padding-inline: 18px; }
+.repair-actions__buttons > button,
+.repair-actions__buttons > .action-button > button { width: auto; min-height: 40px; padding-inline: 18px; }
 
 .repair-confirmation {
   margin-top: 18px;

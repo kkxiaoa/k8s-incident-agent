@@ -11,7 +11,9 @@
           "outside_scope",
           "proposal_expired",
           "no_history_candidates",
-          "diagnosis_unavailable"
+          "diagnosis_unavailable",
+          "authentication_required",
+          "not_owner"
         ],
         "type": "string"
       },
@@ -492,6 +494,56 @@
           "execution"
         ],
         "title": "ApprovalResponse",
+        "type": "object"
+      },
+      "ConsoleSessionResponse": {
+        "properties": {
+          "accessMode": {
+            "enum": [
+              "private",
+              "public_demo"
+            ],
+            "title": "Accessmode",
+            "type": "string"
+          },
+          "csrfToken": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Csrftoken"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expiresat"
+          },
+          "role": {
+            "enum": [
+              "anonymous",
+              "operator"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accessMode",
+          "role",
+          "expiresAt",
+          "csrfToken"
+        ],
+        "title": "ConsoleSessionResponse",
         "type": "object"
       },
       "CreateIncidentRequest": {
@@ -1464,6 +1516,17 @@
                 "type": "null"
               }
             ]
+          },
+          "withdraw": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "not_applicable"
           }
         },
         "required": [
@@ -2949,7 +3012,8 @@
           "reason": {
             "enum": [
               "expired",
-              "superseded"
+              "superseded",
+              "withdrawn"
             ],
             "title": "Reason",
             "type": "string"
@@ -3594,6 +3658,11 @@
             "title": "Id",
             "type": "string"
           },
+          "initiatedByYou": {
+            "default": false,
+            "title": "Initiatedbyyou",
+            "type": "boolean"
+          },
           "kind": {
             "$ref": "#/components/schemas/RunKind"
           },
@@ -3828,7 +3897,8 @@
                   "expired",
                   "superseded",
                   "rejected",
-                  "execution_expired"
+                  "execution_expired",
+                  "withdrawn"
                 ],
                 "type": "string"
               },
@@ -3852,6 +3922,11 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "initiatedByYou": {
+            "default": false,
+            "title": "Initiatedbyyou",
+            "type": "boolean"
           },
           "kind": {
             "$ref": "#/components/schemas/RunKind"
@@ -4334,6 +4409,21 @@
         ],
         "title": "VerificationUpdatedStreamEvent",
         "type": "object"
+      },
+      "WithdrawRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "format": "uuid",
+            "title": "Runid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "title": "WithdrawRunRequest",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -4515,6 +4605,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4536,11 +4636,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "List Incidents"
       },
       "post": {
@@ -4605,6 +4700,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "500": {
             "content": {
@@ -4718,6 +4823,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4739,11 +4854,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "Get Incident"
       }
     },
@@ -4944,6 +5054,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -4965,11 +5085,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "Get Incident Events"
       }
     },
@@ -5039,6 +5154,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5060,11 +5185,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "List Incident Monitoring Panels"
       }
     },
@@ -5154,6 +5274,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5175,11 +5305,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "Get Incident Monitoring Panel"
       }
     },
@@ -5269,6 +5394,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5310,6 +5445,16 @@
               "format": "uuid",
               "title": "Incident Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mine",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Mine",
+              "type": "boolean"
             }
           },
           {
@@ -5402,6 +5547,16 @@
             },
             "description": "Unprocessable Content"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5423,11 +5578,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "List Runs"
       },
       "post": {
@@ -5521,6 +5671,16 @@
               }
             },
             "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "500": {
             "content": {
@@ -5665,6 +5825,119 @@
             },
             "description": "Unprocessable Content"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "List Run Events"
+      }
+    },
+    "/api/v1/incidents/{incident_id}/withdrawals": {
+      "post": {
+        "operationId": "withdraw_run_api_v1_incidents__incident_id__withdrawals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5691,7 +5964,7 @@
             "APIKeyCookie": []
           }
         ],
-        "summary": "List Run Events"
+        "summary": "Withdraw Run"
       }
     },
     "/api/v1/monitoring/health": {
@@ -5728,6 +6001,16 @@
             },
             "description": "Forbidden"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5749,11 +6032,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "Get Monitoring Health"
       }
     },
@@ -5791,6 +6069,16 @@
             },
             "description": "Forbidden"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -5812,11 +6100,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "Get Monitoring Overview"
       }
     },
@@ -5987,7 +6270,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OperatorSessionResponse"
+                  "$ref": "#/components/schemas/ConsoleSessionResponse"
                 }
               }
             },
@@ -6002,6 +6285,16 @@
               }
             },
             "description": "Unauthorized"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "500": {
             "content": {
@@ -6024,11 +6317,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "Get Session"
       },
       "post": {
@@ -6038,7 +6326,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OperatorSessionResponse"
+                  "$ref": "#/components/schemas/ConsoleSessionResponse"
                 }
               }
             },
@@ -6063,6 +6351,16 @@
               }
             },
             "description": "Forbidden"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "500": {
             "content": {
@@ -6127,6 +6425,16 @@
             },
             "description": "Forbidden"
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/json": {
@@ -6148,11 +6456,6 @@
             "description": "Service Unavailable"
           }
         },
-        "security": [
-          {
-            "APIKeyCookie": []
-          }
-        ],
         "summary": "List Scenarios"
       }
     },

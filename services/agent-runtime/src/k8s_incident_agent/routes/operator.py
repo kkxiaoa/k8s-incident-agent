@@ -1,12 +1,20 @@
 import asyncio
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
 from k8s_incident_agent.api_contracts import error_responses
-from k8s_incident_agent.auth.http import operator_sessions, require_operator
+from k8s_incident_agent.auth.http import (
+    console_access,
+    operator_sessions,
+    require_operator,
+)
+from k8s_incident_agent.auth.public_demo import (
+    PublicDemoAccess,
+    has_cookie,
+)
 from k8s_incident_agent.auth.sessions import (
     SESSION_COOKIE,
     SESSION_SECONDS,
@@ -16,7 +24,8 @@ from k8s_incident_agent.auth.sessions import (
 
 router = APIRouter(prefix="/api/v1/operator")
 _Sessions = Annotated[OperatorSessions, Depends(operator_sessions)]
-_Session = Annotated[OperatorSession, Depends(require_operator)]
+_Access = Annotated[PublicDemoAccess, Depends(console_access)]
+_Operator = Annotated[OperatorSession, Depends(require_operator)]
 
 
 class OperatorLoginRequest(BaseModel):
@@ -28,6 +37,24 @@ class OperatorSessionResponse(BaseModel):
     operatorRef: str
     expiresAt: int
     csrfToken: str = Field(repr=False)
+
+
+class ConsoleSessionResponse(BaseModel):
+    accessMode: Literal["private", "public_demo"]
+    role: Literal["anonymous", "operator"]
+    expiresAt: int | None
+    csrfToken: str | None = Field(repr=False)
+
+
+def _access_projection(
+    access: PublicDemoAccess, session: OperatorSession | None
+) -> ConsoleSessionResponse:
+    return ConsoleSessionResponse(
+        accessMode=access.mode,
+        role="operator" if session else "anonymous",
+        expiresAt=session.expires_at if session else None,
+        csrfToken=session.csrf_token if session else None,
+    )
 
 
 def _projection(session: OperatorSession) -> OperatorSessionResponse:
@@ -93,24 +120,34 @@ def _set_session_cookie(response: Response, session: OperatorSession) -> None:
 
 @router.get(
     "/session",
-    response_model=OperatorSessionResponse,
-    responses=error_responses(401, 500, 503),
+    response_model=ConsoleSessionResponse,
+    responses=error_responses(401, 429, 500, 503),
 )
-async def get_session(session: _Session) -> OperatorSessionResponse:
-    return _projection(session)
+async def get_session(
+    request: Request, response: Response, access: _Access
+) -> ConsoleSessionResponse:
+    session = await access.resolve(request.headers.getlist("cookie"))
+    async with access.reading(session):
+        if session is None and has_cookie(
+            request.headers.getlist("cookie"), SESSION_COOKIE
+        ):
+            response.delete_cookie(
+                SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict"
+            )
+        return _access_projection(access, session)
 
 
 @router.post(
     "/session",
-    response_model=OperatorSessionResponse,
-    responses=error_responses(401, 403, 500, 503),
+    response_model=ConsoleSessionResponse,
+    responses=error_responses(401, 403, 429, 500, 503),
 )
 async def renew_session(
-    response: Response, session: _Session, sessions: _Sessions
-) -> OperatorSessionResponse:
-    renewed = await sessions.renew(session)
+    response: Response, access: _Access, session: _Operator
+) -> ConsoleSessionResponse:
+    renewed = await access.operator.renew(session)
     _set_session_cookie(response, renewed)
-    return _projection(renewed)
+    return _access_projection(access, renewed)
 
 
 @router.post(
@@ -119,7 +156,7 @@ async def renew_session(
     response_class=Response,
     responses=error_responses(401, 403, 500, 503),
 )
-async def logout(session: _Session, sessions: _Sessions) -> Response:
+async def logout(session: _Operator, sessions: _Sessions) -> Response:
     await sessions.logout(session)
     response = Response(status_code=204)
     response.delete_cookie(

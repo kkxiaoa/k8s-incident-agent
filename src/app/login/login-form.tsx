@@ -37,7 +37,7 @@ export function LoginForm() {
   }
 
   return <form className={styles.form} onSubmit={submit}>
-    <label className="field-label" htmlFor="operator-password">操作者口令</label>
+    <label className="field-label" htmlFor="operator-password">登录口令</label>
     <input id="operator-password" name="password" className={styles.input} type="password" autoComplete="current-password" required maxLength={1024} value={password} onChange={event => setPassword(event.target.value)} disabled={pending} />
     <button className={`primary-button ${styles.submit}`} type="submit" disabled={pending}>{pending ? "正在验证…" : "进入 Incident Console"}</button>
     {error ? <p className="inline-error" role="alert">{error}</p> : null}

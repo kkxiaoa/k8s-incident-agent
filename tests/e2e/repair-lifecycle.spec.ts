@@ -47,6 +47,34 @@ async function captureWorkbench(page: Page, name: string) {
   await test.info().attach(name, { path, contentType: "image/png" });
 }
 
+test("a new Run arriving over SSE is offered without changing the current selection", async ({ page, context }) => {
+  const incidentId = await seed(page);
+  const history = page.getByRole("region", { name: "运行记录", exact: true });
+  await expect(history.getByRole("link", { name: "最新运行", exact: true })).toHaveCount(0);
+  const creator = await context.newPage();
+  try {
+    await creator.goto(`/incidents/${incidentId}`);
+    const newerUrl = await prepare(creator);
+    await expect(history.getByRole("link", { name: "最新运行", exact: true })).toBeVisible();
+    await expect(history).toContainText("正在查看第 1 次 · 诊断");
+    await page.getByText("选择运行记录", { exact: true }).click();
+    const list = page.getByRole("navigation", { name: "运行选择" });
+    await expect(list.getByRole("link")).toHaveCount(2);
+    await expect(list.getByRole("link", { name: /第 2 次/ })).toContainText("最新");
+    await history.getByRole("heading", { name: "运行记录" }).click();
+    await expect(list).not.toBeVisible();
+    await page.getByText("选择运行记录", { exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(list).not.toBeVisible();
+    await history.getByRole("link", { name: "最新运行", exact: true }).click();
+    await expect(page).toHaveURL(newerUrl);
+    await expect(history).toContainText("正在查看第 2 次 · 修复");
+    await expect(history.getByRole("link", { name: "最新运行", exact: true })).toHaveCount(0);
+  } finally {
+    await creator.close();
+  }
+});
+
 test("approval deadline stays synchronized across stage and action anchors", async ({ page }) => {
   await page.clock.install();
   const incidentId = await seed(page);
@@ -87,20 +115,26 @@ test("processing uses the shared shimmer while saved success and waiting remain 
   await expect(steps.first().locator(".incident-progress__mark")).toHaveCSS("background-color", "rgb(11, 129, 118)");
   await expect(steps.nth(3).locator(".text-shimmer")).toHaveCount(0);
   await approve(page);
+  const approvedEvent = page.getByRole("region", { name: "运行时间线" }).getByRole("listitem").filter({ hasText: "修复已批准" });
+  await expect(approvedEvent.locator(".timeline__dot")).toHaveCSS("background-color", "rgb(36, 123, 97)");
+  await expect(approvedEvent).toContainText("尚无写入成功回执");
   await expect(steps.nth(4)).toHaveAttribute("data-running", "false");
   await setState(incidentId, "observing");
   await page.getByRole("button", { name: "检查最新状态" }).click();
   await expect(steps.nth(4)).toHaveAttribute("data-running", "true");
   await expect(steps.nth(4).locator(".incident-progress__mark")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await expect(steps.nth(4).locator(".incident-progress__mark")).toHaveCSS("border-color", "rgb(15, 143, 134)");
-  const overlay = steps.nth(4).locator(".text-shimmer__highlight");
-  await expect(overlay).toHaveCSS("mask-size", "80px 100%");
-  await expect(overlay).toHaveCSS("animation-name", "text-shimmer-scan");
-  await expect(overlay).toHaveCSS("color", "rgb(8, 166, 166)");
+  const runningText = steps.nth(4).getByText("恢复观察中", { exact: true });
+  await expect(runningText).toHaveCSS("background-size", "80px 100%, 100% 100%");
+  await expect(runningText).toHaveCSS("animation-name", "text-shimmer-scan");
+  await expect(runningText).toHaveCSS("background-image", /rgb\(8, 166, 166\)/);
   await page.screenshot({ path: test.info().outputPath("processing-shimmer.png"), fullPage: true });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect(overlay).toHaveCSS("display", "none");
+  await expect(runningText).toHaveCSS("animation-name", "none");
   await expect(steps.nth(4).getByText("恢复观察中", { exact: true })).toBeVisible();
+  await setState(incidentId, "recovered");
+  const recoveredEvent = page.getByRole("region", { name: "运行时间线" }).getByRole("listitem").filter({ hasText: "恢复验证通过" });
+  await expect(recoveredEvent.locator(".timeline__dot")).toHaveCSS("background-color", "rgb(36, 123, 97)");
 });
 
 test("historical diagnosis prepares a new Run; editing preserves exact source and old proposal", async ({ page }) => {
@@ -108,6 +142,19 @@ test("historical diagnosis prepares a new Run; editing preserves exact source an
   const requests: unknown[] = [];
   page.on("request", (request) => { if (request.url().endsWith("/repair-runs")) requests.push(request.postDataJSON()); });
   const firstUrl = await prepare(page);
+  const currentEvidence = page.getByRole("region", { name: "本次运行证据 · 第 2 次运行", exact: true });
+  const sourceEvidenceSection = page.getByRole("region", { name: "来源诊断证据 · 第 1 次运行", exact: true });
+  await expect(currentEvidence).toBeVisible();
+  await expect(sourceEvidenceSection).toContainText("历史引用");
+  const currentBox = await currentEvidence.boundingBox();
+  const sourceBox = await sourceEvidenceSection.boundingBox();
+  expect(sourceBox!.y - currentBox!.y - currentBox!.height).toBeGreaterThanOrEqual(24);
+  await expect(page.getByRole("region", { name: "运行记录", exact: true }).getByRole("link", { name: "最新运行", exact: true })).toHaveCount(0);
+  await page.getByText("选择运行记录", { exact: true }).click();
+  await expect(page.getByRole("navigation", { name: "运行选择" }).getByRole("link", { name: /第 2 次 · 修复/ })).toContainText("最新");
+  await page.getByRole("navigation", { name: "运行选择" }).getByRole("link", { name: /第 2 次 · 修复/ }).click();
+  await expect(page).toHaveURL(firstUrl);
+  await expect(page.getByRole("navigation", { name: "运行选择" })).not.toBeVisible();
   await captureWorkbench(page, "awaiting-approval");
   await page.getByRole("link", { name: /修复准备/ }).click();
   await expect(page.getByRole("list", { name: "修复验证门禁" })).toBeVisible();
@@ -188,6 +235,7 @@ test("rejection is explicit and replayed from saved detail", async ({ page }) =>
   await page.getByRole("button", { name: "确认拒绝提案", exact: true }).click();
   await expect(page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toContainText("修复已被拒绝，未执行");
   await expect(page.locator(".repair-verdict")).toHaveClass(/repair-verdict--neutral/);
+  await expect(page.getByRole("region", { name: "运行时间线" }).getByRole("listitem").filter({ hasText: "修复已拒绝" }).locator(".timeline__dot")).toHaveCSS("background-color", "rgb(135, 153, 165)");
   await captureWorkbench(page, "rejected");
   await page.reload();
   await expect(page.getByText("本次修复申请已被拒绝。", { exact: true })).toBeVisible();

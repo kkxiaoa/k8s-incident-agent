@@ -22,7 +22,7 @@ function eventCopy(event: RunEventStreamItem): {
       return {
         title: "Incident 已创建",
         detail: `第 ${event.data.attempt} 次诊断已排队`,
-        tone: "neutral",
+        tone: "success",
       };
     case "run.queued":
       return {
@@ -64,7 +64,7 @@ function eventCopy(event: RunEventStreamItem): {
       return {
         title: "修复 Patch 已生成",
         detail: "Patch 已绑定当前资源与 Evidence",
-        tone: "active",
+        tone: "success",
       };
     case "repair.dry_run_passed":
       return {
@@ -88,19 +88,27 @@ function eventCopy(event: RunEventStreamItem): {
       return {
         title: event.data.decision === "approve" ? "修复已批准" : "修复已拒绝",
         detail: event.data.decision === "approve" ? "已提交唯一执行项，尚无写入成功回执" : "本次申请结束，未执行修复",
-        tone: "neutral",
+        tone: event.data.decision === "approve" ? "success" : "neutral",
       };
     case "repair.execution_updated":
       return {
         title: event.data.lateResult ? "收到迟到成功回执，目标继续占用" : `执行状态：${event.data.executionStatus}`,
         detail: event.data.executionStatus === "APPLIED" ? "API 写入已确认，恢复尚未验证" : event.data.executionStatus === "UNKNOWN" ? "无法确定写入归属，禁止重试或自动回滚" : "执行账本已更新",
-        tone: event.data.executionStatus === "UNKNOWN" ? "danger" : "neutral",
+        tone: {
+          PENDING: "neutral",
+          CLAIMED: "active",
+          APPLIED: "success",
+          EXPIRED: "warning",
+          STALE_RESOURCE: "warning",
+          REJECTED: "danger",
+          UNKNOWN: "danger",
+        }[event.data.executionStatus],
       };
     case "repair.verification_updated":
       return {
         title: event.data.outcome === "recovered" ? "恢复验证通过" : event.data.outcome === "observing" ? "恢复观测已保存" : "恢复验证已停止",
         detail: `${event.data.incidentStatus === "ROLLED_BACK" ? "逆向写入已完成；恢复结果单列 · " : ""}${event.data.sampleCount} 次观测 · ${event.data.reason ?? "工作负载与告警判据"}`,
-        tone: event.data.outcome === "observing" || event.data.outcome === "recovered" ? "neutral" : "warning",
+        tone: event.data.outcome === "recovered" ? "success" : event.data.outcome === "observing" ? "active" : "warning",
       };
     case "diagnosis.insufficient":
       return { title: "诊断已结束", detail: "现有证据不足", tone: "warning" };

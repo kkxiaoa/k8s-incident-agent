@@ -26,7 +26,12 @@ from k8s_incident_agent.application.incidents import (
     RuntimeNotReadyError,
 )
 from k8s_incident_agent.application.monitoring import MonitoringApplicationService
-from k8s_incident_agent.auth.http import PublicApiNoStore, require_operator
+from k8s_incident_agent.auth.http import (
+    BusinessRequestBounds,
+    PublicApiNoStore,
+    require_operator,
+    require_reader,
+)
 from k8s_incident_agent.auth.sessions import OperatorSessions
 from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
@@ -169,6 +174,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.ready = False
+    app.add_middleware(BusinessRequestBounds)
     app.add_middleware(PublicApiNoStore)
     install_exception_handlers(app)
 
@@ -194,30 +200,28 @@ def create_app(
     if route_intake_mode == "manual":
         app.include_router(
             scenarios_router,
-            dependencies=[Depends(require_operator)],
-            responses=error_responses(401, 403),
+            dependencies=[Depends(require_reader, scope="function")],
+            responses=error_responses(401, 403, 429),
         )
         app.include_router(
             manual_incidents_router,
-            dependencies=[Depends(require_operator)],
-            responses=error_responses(401, 403),
+            responses=error_responses(401, 403, 429),
         )
     if route_alertmanager_enabled:
         app.include_router(alertmanager_router)
     app.include_router(
         incidents_router,
-        dependencies=[Depends(require_operator)],
-        responses=error_responses(401, 403),
+        responses=error_responses(401, 403, 429),
     )
     app.include_router(
         events_router,
-        dependencies=[Depends(require_operator)],
-        responses=error_responses(401, 403),
+        dependencies=[Depends(require_reader, scope="function")],
+        responses=error_responses(401, 403, 429),
     )
     app.include_router(
         monitoring_router,
-        dependencies=[Depends(require_operator)],
-        responses=error_responses(401, 403),
+        dependencies=[Depends(require_reader, scope="function")],
+        responses=error_responses(401, 403, 429),
     )
     app.include_router(operator_router)
     if route_execution_enabled:
@@ -259,6 +263,7 @@ async def build_runtime_container(
             sessions=database.session_factory,
             verifier=PasswordVerifier.from_file(settings.operator_verifier_file),
             origin=settings.operator_origin,
+            access_mode=settings.console_access_mode,
         )
         await operator.start()
         resources.push_async_callback(operator.close)
@@ -354,6 +359,7 @@ async def build_runtime_container(
             on_event_committed=event_notifier.notify,
             sandbox_execution_enabled=settings.sandbox_execution_enabled,
             execution_cluster=settings.kubernetes_cluster_id,
+            now=now,
         )
         adapter = KubernetesEvidenceAdapter(kubernetes_clients)
         prometheus = PrometheusQueryService(

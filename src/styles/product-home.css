@@ -477,6 +477,37 @@
   table-layout: fixed;
 }
 
+.incident-list-sort {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 0.69rem;
+}
+
+.incident-list-sort__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.incident-list-sort__button[aria-pressed="true"] {
+  color: var(--navy-deep);
+  background: var(--surface-soft);
+  border-color: var(--line-strong);
+}
+
+.incident-list-sort__button .ui-icon { width: 12px; height: 12px; }
+
 .incident-table th {
   padding: 10px 12px;
   color: var(--faint);
@@ -645,11 +676,14 @@
   grid-area: error;
 }
 
+.developer-intake .scenario-launcher > .action-button {
+  grid-area: action;
+}
+
 .developer-intake .primary-button {
   min-height: 64px;
   width: auto;
   min-width: 154px;
-  grid-area: action;
 }
 
 .developer-intake .scenario-dropdown__trigger {

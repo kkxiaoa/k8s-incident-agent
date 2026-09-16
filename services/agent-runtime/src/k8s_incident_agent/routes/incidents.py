@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from k8s_incident_agent.api_contracts import (
     ApprovalRequest,
@@ -15,11 +15,17 @@ from k8s_incident_agent.api_contracts import (
     IncidentListResponse,
     RunEventHistoryResponse,
     RunHistoryResponse,
+    WithdrawRunRequest,
     error_responses,
 )
 from k8s_incident_agent.application.incidents import IncidentApplicationService
-from k8s_incident_agent.auth.http import require_operator
-from k8s_incident_agent.auth.sessions import OperatorSession
+from k8s_incident_agent.auth.http import (
+    require_operator,
+    require_reader,
+)
+from k8s_incident_agent.auth.sessions import (
+    OperatorSession,
+)
 from k8s_incident_agent.routes import incident_service
 
 manual_router = APIRouter(prefix="/api/v1")
@@ -31,6 +37,7 @@ _IncidentService = Annotated[
     Depends(incident_service),
 ]
 _Operator = Annotated[OperatorSession, Depends(require_operator)]
+_Reader = Annotated[OperatorSession | None, Depends(require_reader, scope="function")]
 
 
 @approval_router.post(
@@ -63,7 +70,11 @@ async def create_incident(
     service: _IncidentService,
     operator: _Operator,
 ) -> CreateIncidentResponse:
-    return await service.create_incident(request, operator_ref=operator.operator_ref)
+    return await service.create_incident(
+        request,
+        operator_ref=operator.operator_ref,
+        requester=operator,
+    )
 
 
 @router.post(
@@ -82,6 +93,7 @@ async def create_run(
         incident_id,
         replaces_run_id=request.replaces_run_id if request else None,
         operator_ref=operator.operator_ref,
+        requester=operator,
     )
 
 
@@ -98,12 +110,32 @@ async def create_repair_run(
     operator: _Operator,
 ) -> CreateRunResponse:
     return await service.create_repair_run(
-        incident_id, request, operator_ref=operator.operator_ref
+        incident_id,
+        request,
+        operator_ref=operator.operator_ref,
+        requester=operator,
     )
+
+
+@router.post(
+    "/incidents/{incident_id}/withdrawals",
+    status_code=204,
+    response_class=Response,
+    responses=error_responses(401, 403, 409, 422, 429, 500, 503),
+)
+async def withdraw_run(
+    incident_id: UUID,
+    request: WithdrawRunRequest,
+    service: _IncidentService,
+    requester: _Operator,
+) -> Response:
+    await service.withdraw_run(incident_id, request.run_id, requester)
+    return Response(status_code=204)
 
 
 @router.get(
     "/incidents",
+    dependencies=[Depends(require_reader, scope="function")],
     response_model=IncidentListResponse,
     responses=error_responses(400, 422, 500, 503),
 )
@@ -123,9 +155,10 @@ async def list_incidents(
 async def get_incident(
     incident_id: UUID,
     service: _IncidentService,
+    requester: _Reader,
     run_id: Annotated[UUID | None, Query(alias="runId")] = None,
 ) -> IncidentDetailResponse:
-    return await service.get_incident(incident_id, run_id=run_id)
+    return await service.get_incident(incident_id, run_id=run_id, requester=requester)
 
 
 @router.get(
@@ -136,14 +169,19 @@ async def get_incident(
 async def list_runs(
     incident_id: UUID,
     service: _IncidentService,
+    requester: _Reader,
+    mine: bool = False,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     cursor: Annotated[str | None, Query()] = None,
 ) -> RunHistoryResponse:
-    return await service.list_runs(incident_id, limit=limit, cursor=cursor)
+    return await service.list_runs(
+        incident_id, limit=limit, cursor=cursor, requester=requester, mine=mine
+    )
 
 
 @router.get(
     "/incidents/{incident_id}/runs/{run_id}/events",
+    dependencies=[Depends(require_reader, scope="function")],
     response_model=RunEventHistoryResponse,
     responses=error_responses(400, 404, 422, 500, 503),
 )

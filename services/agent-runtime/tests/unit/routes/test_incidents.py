@@ -221,12 +221,18 @@ class _IncidentService:
         request: CreateIncidentRequest,
         *,
         operator_ref: str,
+        requester: object,
     ) -> CreateIncidentResponse:
         assert request.scenario_id == "image-pull-backoff"
         return CreateIncidentResponse(incident_id=INCIDENT_ID)
 
     async def create_run(
-        self, incident_id: UUID, *, replaces_run_id: UUID | None, operator_ref: str
+        self,
+        incident_id: UUID,
+        *,
+        replaces_run_id: UUID | None,
+        operator_ref: str,
+        requester: object,
     ) -> CreateRunResponse:
         assert incident_id == INCIDENT_ID
         return CreateRunResponse(run_id=RUN_ID)
@@ -256,6 +262,7 @@ class _IncidentService:
         incident_id: UUID,
         *,
         run_id: UUID | None,
+        requester: object,
     ) -> IncidentDetailResponse:
         assert incident_id == INCIDENT_ID
         assert run_id in (None, RUN_ID)
@@ -309,6 +316,8 @@ class _IncidentService:
         *,
         limit: int,
         cursor: str | None,
+        requester: object,
+        mine: bool,
     ) -> RunHistoryResponse:
         assert incident_id == INCIDENT_ID
         assert (limit, cursor) == (20, None)

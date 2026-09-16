@@ -33,7 +33,7 @@ export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun.
         : run.status === "FAILED" ? "准备未通过" : running ? "准备处理中" : "未形成可用提案", href: diagnostic ? null : "#repair-preparation", done: !diagnostic && repair?.validation.outcome === "passed" },
     { title: "人工审批", caption: approval ? approval.decision === "approve" ? "已批准" : "已拒绝"
       : run.endReason === "expired" || detail.actions.approve === "proposal_expired" ? "提案已过期" : run.endReason === "superseded" ? "已被替换"
-        : run.status === "WAITING_APPROVAL" ? "等待决定" : "尚未审批", href: stage >= 3 ? "#repair-decision" : null, done: approval?.decision === "approve" },
+        : run.endReason === "withdrawn" ? "已撤回" : run.status === "WAITING_APPROVAL" ? "等待决定" : "尚未审批", href: stage >= 3 ? "#repair-decision" : null, done: approval?.decision === "approve" },
     { title: "执行与恢复", caption: execution?.status === "UNKNOWN" ? "结果未知"
       : verification?.outcome === "recovered" ? "恢复已验证"
         : verification?.outcome === "observing" ? "恢复观察中"

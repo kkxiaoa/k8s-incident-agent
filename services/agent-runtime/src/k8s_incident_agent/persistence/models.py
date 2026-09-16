@@ -60,6 +60,15 @@ class OperatorSessionRow(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
 
+class PublicDemoBudgetRow(Base):
+    __tablename__ = "public_demo_budgets"
+    __table_args__ = (CheckConstraint("used >= 0", name="used"),)
+
+    category: Mapped[str] = mapped_column(String, primary_key=True)
+    used: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_started_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class IncidentRow(Base):
     __tablename__ = "incidents"
     __table_args__ = (

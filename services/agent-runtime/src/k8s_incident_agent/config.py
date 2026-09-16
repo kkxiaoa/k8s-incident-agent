@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     model_max_retries: int = Field(default=2, ge=0)
     runtime_retention_days: int = Field(default=7, ge=1, le=30)
     incident_intake_mode: Literal["manual", "online"] = "manual"
+    console_access_mode: Literal["private", "public_demo"] = "private"
+    public_demo_data_approved: bool = False
     sandbox_execution_enabled: bool = False
     executor_hmac_key_file: Path | None = Field(default=None, repr=False)
     operator_verifier_file: Path | None = Field(default=None, repr=False)
@@ -86,6 +88,17 @@ class Settings(BaseSettings):
         exclude=True,
         repr=False,
     )
+
+    @model_validator(mode="after")
+    def require_public_data_approval(self) -> Self:
+        if (
+            self.console_access_mode == "public_demo"
+            and not self.public_demo_data_approved
+        ):
+            raise ValueError(
+                "Public demo requires approval of retained and continuing data"
+            )
+        return self
 
     @field_validator("runtime_paths", mode="before")
     @classmethod

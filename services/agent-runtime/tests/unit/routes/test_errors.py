@@ -33,7 +33,11 @@ class _FailingService:
         raise RuntimeError("unused")
 
     async def create_incident(
-        self, request: CreateIncidentRequest, *, operator_ref: str | None = None
+        self,
+        request: CreateIncidentRequest,
+        *,
+        operator_ref: str | None = None,
+        requester: object = None,
     ) -> object:
         if request.scenario_id == "database":
             raise PersistenceOperationError
@@ -50,6 +54,7 @@ class _FailingService:
         incident_id: UUID,
         *,
         run_id: UUID | None,
+        requester: object,
     ) -> object:
         del incident_id, run_id
         raise IncidentNotFoundError

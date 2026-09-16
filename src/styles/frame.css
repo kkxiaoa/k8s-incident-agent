@@ -37,6 +37,8 @@
   min-width: 0;
 }
 
+.operator-access__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+
 .operator-logout,
 .product-link {
   display: inline-flex;

@@ -174,8 +174,7 @@
   cursor: pointer;
 }
 
-.timeline-history-button:disabled,
-.run-controls button:disabled {
+.timeline-history-button:disabled {
   cursor: wait;
   opacity: 0.6;
 }

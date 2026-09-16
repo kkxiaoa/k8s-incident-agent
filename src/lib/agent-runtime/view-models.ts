@@ -16,6 +16,8 @@ export type DiagnosisResponse = DiagnosisView;
 export type RunErrorResponse = RunErrorView;
 
 export const ACTION_UNAVAILABLE_LABELS: Record<Exclude<components["schemas"]["IncidentActions"]["approve"], null>, string> = {
+  authentication_required: "登录后可执行此操作。",
+  not_owner: "仅申请的发起人可撤回；历史与进展仍可查看。",
   not_applicable: "当前运行不适用此操作。",
   active_run: "此 Incident 仍有活跃运行，请等待或查看最新运行。",
   execution_held: "目标仍被本次执行占用；请核对执行与恢复记录，不要重复执行。",

@@ -173,6 +173,28 @@ const RESOLVED_QUERY_AT = "2026-08-29T02:00:16Z";
 let checkOperatorPassword: ((password: string) => Promise<boolean>) | undefined;
 let operatorOrigin = "";
 const operatorSessions = new Map<string, components["schemas"]["OperatorSessionResponse"]>();
+let accessMode: "private" | "public_demo" = "private";
+
+type FakeRequester = { role: "operator"; key: string } | null;
+
+function ownsFakeRun(run: IncidentDetailResponse["selectedRun"], requester: FakeRequester): boolean {
+  return requester?.role === "operator" && run.requestSource === "operator";
+}
+
+function projectFakeRequester(detail: IncidentDetailResponse, requester: FakeRequester): IncidentDetailResponse {
+  detail.selectedRun.initiatedByYou = ownsFakeRun(detail.selectedRun, requester);
+  detail.actions.withdraw = detail.selectedRun.kind === "repair" && detail.selectedRun.status === "WAITING_APPROVAL"
+    ? detail.selectedRun.initiatedByYou ? null : "not_owner" : "not_applicable";
+  if (requester === null) {
+    for (const action of ["prepare", "refresh", "edit", "approve", "reject", "rerun", "rollback", "withdraw"] as const)
+      if (detail.actions[action] !== "not_applicable") detail.actions[action] = "authentication_required";
+  }
+  return detail;
+}
+
+function bindFakeRequester(record: FakeIncident, requester: FakeRequester) {
+  record.detail.selectedRun.requestSource = requester?.role ?? "system";
+}
 
 let mode: RuntimeMode = "diagnosed";
 let nextIncident = 1;
@@ -537,6 +559,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
         createdAt: CREATED_AT,
       },
       selectedRun: {
+        initiatedByYou: false,
         kind: "diagnosis",
         operation: null,
         id: runId,
@@ -1271,6 +1294,7 @@ async function handleRequest(
     nextEventId = 1;
     showcaseEnabled = false;
     operatorSessions.clear();
+    accessMode = "private";
     incidents.clear();
     eventConnections.clear();
     nextRepair = 100;
@@ -1278,6 +1302,13 @@ async function handleRequest(
     lifecycleStreams.clear();
     json(response, 200, { ok: true });
     return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/__test__/access") {
+    const body = await requestBody(request) as { mode?: string; expireOperator?: boolean };
+    if (body.mode === "private" || body.mode === "public_demo") accessMode = body.mode;
+    if (body.expireOperator) for (const session of operatorSessions.values()) session.expiresAt = 0;
+    json(response, 200, { ok: true }); return;
   }
 
   if (request.method === "POST" && url.pathname === "/__test__/showcase") {
@@ -1386,43 +1417,55 @@ async function handleRequest(
       runtimeError(response, 401, "operator_authentication_required", "Operator authentication is required.", false); return;
     }
     const token = randomBytes(32).toString("base64url");
-    const session = { operatorRef: "sandbox-operator", csrfToken: randomBytes(32).toString("hex"), expiresAt: Math.floor(Date.now() / 1000) + 1800 };
+    const session = { operatorRef: "sandbox-operator", csrfToken: randomBytes(32).toString("hex"), expiresAt: Math.floor(Date.now() / 1000) + 3600 };
     operatorSessions.set(token, session);
-    response.setHeader("set-cookie", `${OPERATOR_COOKIE}=${token}; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=1800`);
+    response.setHeader("set-cookie", `${OPERATOR_COOKIE}=${token}; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=3600`);
     json(response, 200, session); return;
   }
 
+  let requester: FakeRequester = null;
   if (url.pathname.startsWith("/api/v1/")) {
-    const cookies = (request.headers.cookie ?? "").split(";").map(part => part.trim()).filter(part => part.split("=", 1)[0] === OPERATOR_COOKIE);
-    const token = cookies.length === 1 ? cookies[0].slice(OPERATOR_COOKIE.length + 1) : "";
-    const session = operatorSessions.get(token);
-    if (!session || session.expiresAt <= Date.now() / 1000) {
+    const cookies = new Map((request.headers.cookie ?? "").split(";").map(part => {
+      const [name, value] = part.trim().split("="); return [name, value];
+    }));
+    const operatorToken = cookies.get(OPERATOR_COOKIE);
+    const token = operatorToken ?? "";
+    let session = operatorSessions.get(token);
+    if (session && session.expiresAt > Date.now() / 1000) requester = { role: "operator", key: token };
+    else session = undefined;
+    const mutation = !["GET", "HEAD"].includes(request.method ?? "");
+    if (!requester && (accessMode === "private" || mutation)) {
       runtimeError(response, 401, "operator_authentication_required", "Operator authentication is required.", false); return;
     }
-    if (!["GET", "HEAD"].includes(request.method ?? "")) {
+    if (mutation) {
       if (request.headers.origin !== operatorOrigin) {
         runtimeError(response, 403, "operator_origin_rejected", "Request origin is not permitted.", false); return;
       }
-      if (request.headers[OPERATOR_CSRF_HEADER.toLowerCase()] !== session.csrfToken) {
+      if (session && request.headers[OPERATOR_CSRF_HEADER.toLowerCase()] !== session.csrfToken) {
         runtimeError(response, 403, "operator_csrf_rejected", "Request verification failed.", false); return;
       }
     }
+    const view = () => ({ accessMode, role: requester?.role ?? "anonymous", expiresAt: session?.expiresAt ?? null, csrfToken: session?.csrfToken ?? null });
     if (url.pathname === "/api/v1/operator/session" && request.method === "GET") {
-      json(response, 200, session); return;
+      if (!session && operatorToken) response.setHeader("set-cookie", `${OPERATOR_COOKIE}=""; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=0`);
+      json(response, 200, view()); return;
     }
-    if (url.pathname === "/api/v1/operator/session" && request.method === "POST") {
-      session.expiresAt = Math.max(session.expiresAt, Math.floor(Date.now() / 1000) + 1800);
-      response.setHeader("set-cookie", `${OPERATOR_COOKIE}=${token}; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=1800`);
-      json(response, 200, session); return;
+    if (url.pathname === "/api/v1/operator/session" && request.method === "POST" && session) {
+      session.expiresAt = Math.max(session.expiresAt, Math.floor(Date.now() / 1000) + 3600);
+      response.setHeader("set-cookie", `${OPERATOR_COOKIE}=${token}; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=3600`);
+      json(response, 200, view()); return;
     }
     if (url.pathname === "/api/v1/operator/logout" && request.method === "POST") {
-      operatorSessions.delete(token);
+      if (operatorToken) operatorSessions.delete(operatorToken);
       response.setHeader("set-cookie", `${OPERATOR_COOKIE}=""; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=0`);
       response.writeHead(204, { "cache-control": "no-store" }); response.end(); return;
     }
     if (request.headers.accept === "text/event-stream") {
+      const deadline = Date.now() + 300_000;
+      const streamRequester = requester;
       const expiry = setInterval(() => {
-        if (!operatorSessions.has(token) || session.expiresAt <= Date.now() / 1000) response.end();
+        if (session && (!operatorSessions.has(token) || session.expiresAt <= Date.now() / 1000)) response.end();
+        if (streamRequester?.role !== "operator" && (accessMode !== "public_demo" || Date.now() >= deadline)) response.end();
       }, 100);
       response.once("close", () => clearInterval(expiry));
     }
@@ -1505,6 +1548,7 @@ async function handleRequest(
     }
 
     const record = createIncident(mode);
+    bindFakeRequester(record, requester);
     incidents.set(record.detail.incident.id, record);
     json(response, 202, {
       schemaVersion: 5,
@@ -1578,7 +1622,8 @@ async function handleRequest(
     }
     json(response, 200, {
       schemaVersion: 5,
-      items: [record.detail, ...(record.history ?? [])].map(({ selectedRun: run }) => ({
+      items: [record.detail, ...(record.history ?? [])].filter(({ selectedRun: run }) => url.searchParams.get("mine") !== "true" || ownsFakeRun(run, requester)).map(({ selectedRun: run }) => ({
+        initiatedByYou: ownsFakeRun(run, requester),
         id: run.id,
         kind: run.kind,
         operation: run.operation,
@@ -1595,15 +1640,32 @@ async function handleRequest(
     return;
   }
 
-  const repairMutationMatch = url.pathname.match(/^\/api\/v1\/incidents\/([0-9a-f-]+)\/(repair-runs|approvals)$/i);
+  const repairMutationMatch = url.pathname.match(/^\/api\/v1\/incidents\/([0-9a-f-]+)\/(repair-runs|approvals|withdrawals)$/i);
   if (request.method === "POST" && repairMutationMatch !== null) {
     const record = incidents.get(repairMutationMatch[1]);
     if (!record) { runtimeError(response, 404, "incident_not_found", "Incident was not found.", false); return; }
     const body = await requestBody(request);
+    if (record.detail.selectedRun.status === "WAITING_APPROVAL" && requester?.role !== "operator" && !ownsFakeRun(record.detail.selectedRun, requester)) {
+      runtimeError(response, 403, "run_ownership_required", "This run is not controlled by the current session.", false); return;
+    }
+    if (repairMutationMatch[2] === "withdrawals") {
+      const run = record.detail.selectedRun;
+      if (!ownsFakeRun(run, requester) || run.status !== "WAITING_APPROVAL" || (body as { runId?: string }).runId !== run.id) {
+        runtimeError(response, 409, "active_run_exists", "An active run already exists.", true); return;
+      }
+      run.status = "COMPLETED";
+      run.completedAt = new Date().toISOString();
+      run.endReason = "withdrawn";
+      record.detail.incident.status = "DIAGNOSED";
+      record.detail.actions.approve = record.detail.actions.reject = record.detail.actions.withdraw = "not_applicable";
+      publishLifecycle(record, { id: eventId(), event: "repair.wait_ended", data: { ...lifecycleBase(record.detail), reason: "withdrawn", incidentStatus: "DIAGNOSED", runStatus: "COMPLETED" } });
+      response.writeHead(204, { "cache-control": "no-store" }); response.end(); return;
+    }
     const preparing = repairMutationMatch[2] === "repair-runs";
     const succeeded = preparing ? prepareFakeRepair(record, body as components["schemas"]["CreateRepairRunRequest"])
       : decideFakeRepair(record, body as components["schemas"]["ApprovalRequest"]);
     if (!succeeded) { runtimeError(response, 409, "approval_conflict", "The saved state changed.", false); return; }
+    if (preparing) bindFakeRequester(record, requester);
     json(response, preparing ? 202 : 200, preparing ? { schemaVersion: 5, runId: record.detail.selectedRun.id } : record.detail.approval);
     return;
   }
@@ -1665,7 +1727,7 @@ async function handleRequest(
       runtimeError(response, 404, "run_not_found", "Run was not found.", false);
       return;
     }
-    json(response, 200, detail);
+    json(response, 200, projectFakeRequester(detail, requester));
     return;
   }
 

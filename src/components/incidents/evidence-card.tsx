@@ -47,17 +47,19 @@ function EvidenceCard({ evidence, index, idPrefix }: { evidence: EvidenceRespons
   );
 }
 
-export function EvidenceList({ evidence, sourceRunAttempt }: { evidence: EvidenceResponse[]; sourceRunAttempt?: number }) {
+export function EvidenceList({ evidence, sourceRunAttempt, currentRunAttempt }: { evidence: EvidenceResponse[]; sourceRunAttempt?: number; currentRunAttempt?: number }) {
   const idPrefix = sourceRunAttempt === undefined ? "evidence" : "source-evidence";
   return (
-    <section className="console-section" aria-labelledby={`${idPrefix}-heading`}>
+    <section className="console-section evidence-section" aria-labelledby={`${idPrefix}-heading`}>
       <div className="section-heading">
         <div>
-          <span className="eyebrow">Evidence-first</span>
-          <h2 id={`${idPrefix}-heading`}>{sourceRunAttempt === undefined ? "Kubernetes 证据" : `来源诊断证据 · 第 ${sourceRunAttempt} 次运行`}</h2>
+          <span className="eyebrow">{sourceRunAttempt === undefined ? "本次运行 · Evidence" : "历史引用 · Evidence"}</span>
+          <h2 id={`${idPrefix}-heading`}>{sourceRunAttempt === undefined ? currentRunAttempt === undefined ? "Kubernetes 证据" : `本次运行证据 · 第 ${currentRunAttempt} 次运行` : `来源诊断证据 · 第 ${sourceRunAttempt} 次运行`}</h2>
         </div>
         <span className="section-count">{evidence.length}</span>
       </div>
+
+      {sourceRunAttempt !== undefined ? <p className="evidence-context">用于支撑上方引用的诊断结论，不代表本次运行重新采集或目标当前状态。</p> : currentRunAttempt !== undefined ? <p className="evidence-context">当前修复或回滚运行保存的证据，不包含引用诊断的历史证据。</p> : null}
 
       {evidence.length === 0 ? (
         <p className="empty-state empty-state--panel">尚未记录 Kubernetes 证据。</p>

@@ -5,6 +5,7 @@ import {
   OPERATOR_COOKIE,
   OPERATOR_CSRF_HEADER,
   parseOperatorSession,
+  parseConsoleSession,
 } from "./operator-contracts";
 import { getAgentRuntimeBaseUrl } from "./server-config";
 
@@ -28,6 +29,7 @@ const REPAIR_RUNS_PATH =
   "/api/v1/incidents/{incident_id}/repair-runs" satisfies RuntimePath;
 const APPROVALS_PATH =
   "/api/v1/incidents/{incident_id}/approvals" satisfies RuntimePath;
+const WITHDRAWALS_PATH = "/api/v1/incidents/{incident_id}/withdrawals" satisfies RuntimePath;
 const RUN_EVENTS_PATH =
   "/api/v1/incidents/{incident_id}/runs/{run_id}/events" satisfies RuntimePath;
 const MONITORING_HEALTH_PATH =
@@ -46,6 +48,8 @@ const UUID_PATTERN =
 const PANEL_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 const RUNTIME_ERROR_CONTRACTS = {
+  public_demo_limited: { status: 429, message: "Public demo capacity is exhausted.", retryable: false },
+  run_ownership_required: { status: 403, message: "This run is not controlled by the current session.", retryable: false },
   operator_authentication_required: {
     status: 401,
     message: "Operator authentication is required.",
@@ -374,7 +378,7 @@ function runtimeErrorResponse(
   const code = detail.code as RuntimeErrorCode;
   const contract = RUNTIME_ERROR_CONTRACTS[code];
   if (
-    (!allowedCodes.includes(code) && !code.startsWith("operator_")) ||
+    (!allowedCodes.includes(code) && !code.startsWith("operator_") && code !== "public_demo_limited" && code !== "run_ownership_required") ||
     status !== contract.status ||
     (!code.startsWith("operator_") && detail.message !== contract.message) ||
     detail.retryable !== contract.retryable
@@ -502,9 +506,9 @@ async function requestRest(
       redirect: "error",
       signal: controller.signal,
     });
-    if (path === `${OPERATOR_PATH}/logout` && upstream.status === 204) {
+    if ((path === `${OPERATOR_PATH}/logout` || path.endsWith("/withdrawals")) && upstream.status === 204) {
       return {
-        response: operatorCookieResponse(upstream, null, true),
+        response: withSessionCookies(upstream, new Response(null, { status: 204, headers: { "cache-control": "no-store" } }), path, init.method),
         value: null,
       };
     }
@@ -515,19 +519,14 @@ async function requestRest(
       path.startsWith(`${OPERATOR_PATH}/`) ? 8192 : undefined,
     );
     if (path.startsWith(`${OPERATOR_PATH}/`) && result.response.ok) {
-      const session = parseOperatorSession(result.value);
+      const session = path === `${OPERATOR_PATH}/login` ? parseOperatorSession(result.value) : parseConsoleSession(result.value);
       if (session === null) return unavailableResult();
       return {
-        response:
-          init.method === "POST"
-            ? operatorCookieResponse(upstream, session, false)
-            : Response.json(session, {
-                headers: { "cache-control": "no-store" },
-              }),
+        response: withSessionCookies(upstream, Response.json(session, { headers: { "cache-control": "no-store" } }), path, init.method),
         value: session,
       };
     }
-    return result;
+    return { ...result, response: withSessionCookies(upstream, result.response, path, init.method) };
   } catch (error) {
     if (error instanceof InvalidOperatorCookie)
       return {
@@ -658,7 +657,7 @@ export async function createIncident(request: Request): Promise<Response> {
 
   let body: ArrayBuffer;
   try {
-    body = await request.arrayBuffer();
+    body = await boundedRequestBody(request);
   } catch {
     return errorResponse(422, INVALID_REQUEST);
   }
@@ -723,21 +722,23 @@ export function fetchRuns(
     200,
     RUN_HISTORY_ERROR_CODES,
     { method: "GET" },
-    forwardQuery(searchParams, ["limit", "cursor"]),
+    forwardQuery(searchParams, ["limit", "cursor", "mine"]),
     incoming,
   );
 }
 
 export async function createRun(
   incidentId: string,
-  incoming?: Headers,
-  body?: ArrayBuffer,
+  request: Request,
 ): Promise<Response> {
   const path = incidentPath(INCIDENT_RUNS_PATH, incidentId);
   if (path === null) {
     return errorResponse(422, INVALID_REQUEST);
   }
-  if (body && body.byteLength > 0 && !isJsonContentType(incoming?.get("content-type") ?? null)) {
+  const incoming = request.headers;
+  let body: ArrayBuffer;
+  try { body = await boundedRequestBody(request); } catch { return errorResponse(422, INVALID_REQUEST); }
+  if (body.byteLength > 0 && !isJsonContentType(incoming.get("content-type"))) {
     return errorResponse(422, INVALID_REQUEST);
   }
 
@@ -760,7 +761,7 @@ export async function createRepairRun(incidentId: string, request: Request): Pro
   }
   let body: ArrayBuffer;
   try {
-    body = await request.arrayBuffer();
+    body = await boundedRequestBody(request);
   } catch {
     return errorResponse(422, INVALID_REQUEST);
   }
@@ -776,11 +777,21 @@ export async function decideApproval(incidentId: string, request: Request): Prom
   }
   let body: ArrayBuffer;
   try {
-    body = await request.arrayBuffer();
+    body = await boundedRequestBody(request);
   } catch {
     return errorResponse(422, INVALID_REQUEST);
   }
   return (await requestRest(path, 200, ["approval_conflict", "execution_disabled", "invalid_request", "runtime_not_ready", "internal_error"], {
+    method: "POST", headers: { "content-type": "application/json" }, body,
+  }, undefined, request.headers)).response;
+}
+
+export async function withdrawRun(incidentId: string, request: Request): Promise<Response> {
+  const path = incidentPath(WITHDRAWALS_PATH, incidentId);
+  if (path === null || !isJsonContentType(request.headers.get("content-type"))) return errorResponse(422, INVALID_REQUEST);
+  let body: ArrayBuffer;
+  try { body = await boundedRequestBody(request); } catch { return errorResponse(422, INVALID_REQUEST); }
+  return (await requestRest(path, 204, RUN_CREATE_ERROR_CODES, {
     method: "POST", headers: { "content-type": "application/json" }, body,
   }, undefined, request.headers)).response;
 }
@@ -896,19 +907,13 @@ function operatorHeaders(incoming?: Headers, initial?: HeadersInit): Headers {
   const cookie = incoming?.get("cookie");
   if (cookie !== undefined && cookie !== null) {
     if (cookie.length > 8192) throw new InvalidOperatorCookie();
-    const candidates = cookie
-      .split(";")
-      .map((part) => part.trim())
-      .filter((part) => part.split("=", 1)[0] === OPERATOR_COOKIE);
-    if (
-      candidates.length > 1 ||
-      (candidates.length === 1 &&
-        !new RegExp("^" + OPERATOR_COOKIE + "=[A-Za-z0-9_-]{43}$").test(
-          candidates[0],
-        ))
-    )
-      throw new InvalidOperatorCookie();
-    if (candidates.length === 1) headers.set("cookie", candidates[0]);
+    const selected: string[] = [];
+    for (const name of [OPERATOR_COOKIE]) {
+      const candidates = cookie.split(";").map(part => part.trim()).filter(part => part.split("=", 1)[0] === name);
+      if (candidates.length > 1 || (candidates.length === 1 && !new RegExp("^" + name + "=[A-Za-z0-9_-]{43}$").test(candidates[0]))) throw new InvalidOperatorCookie();
+      selected.push(...candidates);
+    }
+    if (selected.length) headers.set("cookie", selected.join("; "));
   }
   for (const name of ["origin", OPERATOR_CSRF_HEADER]) {
     const value = incoming?.get(name);
@@ -917,53 +922,35 @@ function operatorHeaders(incoming?: Headers, initial?: HeadersInit): Headers {
   return headers;
 }
 
-function operatorCookieResponse(
-  upstream: Response,
-  value: unknown,
-  logout: boolean,
-): Response {
+function withSessionCookies(upstream: Response, response: Response, path: string, method?: string): Response {
   const cookies = upstream.headers.getSetCookie();
-  if (cookies.length !== 1 || cookies[0].length > 512)
-    throw new Error("Invalid operator response");
-  const [pair, ...attributes] = cookies[0]
-    .split(";")
-    .map((part) => part.trim());
-  const expected = logout
-    ? new RegExp("^" + OPERATOR_COOKIE + '=(?:"")?$')
-    : new RegExp("^" + OPERATOR_COOKIE + "=[A-Za-z0-9_-]{43}$");
-  const attributesByName = new Map(
-    attributes.map((part) => {
+  const login = path === `${OPERATOR_PATH}/login`;
+  const logout = path === `${OPERATOR_PATH}/logout`;
+  const session = path === `${OPERATOR_PATH}/session`;
+  if (cookies.length > 1 || (!response.ok && cookies.length > 0) || (cookies.length && !login && !logout && !session) ||
+      (response.ok && login && cookies.length !== 1) || (response.ok && logout && cookies.length !== 1) ||
+      (response.ok && session && method === "POST" && cookies.length !== 1)) throw new Error("Invalid session response");
+  const names = new Set<string>();
+  for (const cookie of cookies) {
+    if (cookie.length > 512) throw new Error("Invalid session response");
+    const [pair, ...attributes] = cookie.split(";").map(part => part.trim());
+    const name = pair.split("=", 1)[0];
+    if (name !== OPERATOR_COOKIE || names.has(name)) throw new Error("Invalid session response");
+    names.add(name);
+    const values = new Map(attributes.map(part => {
       const index = part.indexOf("=");
-      return index < 0
-        ? [part.toLowerCase(), ""]
-        : [part.slice(0, index).toLowerCase(), part.slice(index + 1)];
-    }),
-  );
-  if (
-    !expected.test(pair) ||
-    attributesByName.size !== attributes.length ||
-    [...attributesByName.keys()].some(
-      (name) =>
-        ![
-          "path",
-          "httponly",
-          "secure",
-          "samesite",
-          "max-age",
-          "expires",
-        ].includes(name),
-    ) ||
-    attributesByName.get("path") !== "/" ||
-    attributesByName.get("httponly") !== "" ||
-    attributesByName.get("secure") !== "" ||
-    attributesByName.get("samesite")?.toLowerCase() !== "strict" ||
-    attributesByName.get("max-age") !== (logout ? "0" : "1800")
-  )
-    throw new Error("Invalid operator response");
-  const headers = { "set-cookie": cookies[0], "cache-control": "no-store" };
-  return logout
-    ? new Response(null, { status: 204, headers })
-    : Response.json(value, { headers });
+      return index < 0 ? [part.toLowerCase(), ""] : [part.slice(0, index).toLowerCase(), part.slice(index + 1)];
+    }));
+    const clearing = values.get("max-age") === "0";
+    const expected = clearing ? new RegExp("^" + name + '=(?:"")?$') : new RegExp("^" + name + "=[A-Za-z0-9_-]{43}$");
+    if (!expected.test(pair) || values.size !== attributes.length ||
+      [...values.keys()].some(key => !["path", "httponly", "secure", "samesite", "max-age", "expires"].includes(key)) ||
+      values.get("path") !== "/" || values.get("httponly") !== "" || values.get("secure") !== "" ||
+      values.get("samesite")?.toLowerCase() !== "strict" || values.get("max-age") !== (clearing ? "0" : "3600") ||
+      (logout && !clearing) || ((login || (session && method === "POST")) && clearing) || (session && method === "GET" && !clearing)) throw new Error("Invalid session response");
+    response.headers.append("set-cookie", cookie);
+  }
+  return response;
 }
 
 export function fetchOperatorSession(
@@ -1013,6 +1000,18 @@ export async function loginOperator(request: Request): Promise<Response> {
     request.body === null
   )
     return errorResponse(422, INVALID_REQUEST);
+  let body: ArrayBuffer;
+  try { body = await boundedRequestBody(request); } catch { return errorResponse(422, INVALID_REQUEST); }
+  return (await requestRest(
+    `${OPERATOR_PATH}/login` satisfies RuntimePath, 200,
+    ["invalid_request", "internal_error", "runtime_not_ready"],
+    { method: "POST", headers: { "content-type": "application/json" }, body },
+    undefined, request.headers,
+  )).response;
+}
+
+async function boundedRequestBody(request: Request): Promise<ArrayBuffer> {
+  if (request.body === null) return new ArrayBuffer(0);
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -1025,7 +1024,7 @@ export async function loginOperator(request: Request): Promise<Response> {
       const item = await Promise.race([reader.read(), deadline]);
       if (item.done) break;
       length += item.value.byteLength;
-      if (length > 8192) return errorResponse(422, INVALID_REQUEST);
+      if (length > 8192) throw new Error("Request too large");
       chunks.push(item.value);
     }
     const body = new Uint8Array(length);
@@ -1034,24 +1033,9 @@ export async function loginOperator(request: Request): Promise<Response> {
       body.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    return (
-      await requestRest(
-        `${OPERATOR_PATH}/login` satisfies RuntimePath,
-        200,
-        ["invalid_request", "internal_error", "runtime_not_ready"],
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body,
-        },
-        undefined,
-        request.headers,
-      )
-    ).response;
-  } catch {
-    return errorResponse(422, INVALID_REQUEST);
+    return body.buffer;
   } finally {
     clearTimeout(timer);
-    await reader.cancel().catch(() => {});
+    void reader.cancel().catch(() => {});
   }
 }

@@ -1077,8 +1077,8 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     state.logins += 1;
     state.cookie = "__Host-k8s-incident-session=" + randomBytes(32).toString("base64url");
     state.csrf = randomBytes(32).toString("hex");
-    return new Response(JSON.stringify({ operatorRef: "sandbox-operator", expiresAt: Math.floor(Date.now() / 1000) + 1800, csrfToken: state.csrf }), {
-      headers: { "content-type": "application/json", "set-cookie": state.cookie + "; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=1800" },
+    return new Response(JSON.stringify({ operatorRef: "sandbox-operator", expiresAt: Math.floor(Date.now() / 1000) + 3600, csrfToken: state.csrf }), {
+      headers: { "content-type": "application/json", "set-cookie": state.cookie + "; HttpOnly; Secure; SameSite=strict; Path=/; Max-Age=3600" },
     });
   }
   if ((url.port === "18080" && url.pathname.startsWith("/api/v1/")) ||

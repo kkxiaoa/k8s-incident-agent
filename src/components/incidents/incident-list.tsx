@@ -6,12 +6,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LocalTimestamp } from "@/components/local-timestamp";
 import { UiIcon } from "@/components/ui/ui-icon";
 import type { IncidentListItem } from "@/lib/agent-runtime/view-models";
-import { targetLabel } from "@/lib/agent-runtime/view-models";
+import { incidentStatusLabel, targetLabel } from "@/lib/agent-runtime/view-models";
 
 import { IncidentStatusBadge } from "./incident-status";
 
 export function IncidentList({ incidents }: { incidents: IncidentListItem[] }) {
   const listRef = useRef<HTMLDivElement>(null);
+  const [sort, setSort] = useState<{ key: "updatedAt" | "status"; direction: "ascending" | "descending" }>({ key: "updatedAt", direction: "descending" });
+  const sortedIncidents = [...incidents].sort((left, right) => {
+    const updated = Date.parse(left.updatedAt) - Date.parse(right.updatedAt);
+    const primary = sort.key === "updatedAt" ? updated
+      : incidentStatusLabel(left.status).localeCompare(incidentStatusLabel(right.status), "zh-CN");
+    return (sort.direction === "ascending" ? primary : -primary)
+      || -updated || left.id.localeCompare(right.id);
+  });
+  function changeSort(key: "updatedAt" | "status") {
+    setSort(current => ({ key, direction: current.key === key && current.direction === "descending" ? "ascending" : "descending" }));
+    if (listRef.current) listRef.current.scrollTop = 0;
+    updateHiddenEdges();
+  }
   const [hiddenEdges, setHiddenEdges] = useState({
     above: false,
     below: false,
@@ -49,6 +62,24 @@ export function IncidentList({ incidents }: { incidents: IncidentListItem[] }) {
   }
 
   return (
+    <>
+      <div className="incident-list-sort" role="group" aria-label="Incident 排序">
+        <span>当前列表排序</span>
+        {([ ["updatedAt", "更新时间"], ["status", "状态"] ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            className="incident-list-sort__button"
+            type="button"
+            aria-pressed={sort.key === key}
+            aria-label={`按${label}${sort.key === key && sort.direction === "descending" ? "升序" : "降序"}排列`}
+            title={key === "status" ? "按状态名称排列；同状态按更新时间从新到旧" : "按本地更新时间排列"}
+            onClick={() => changeSort(key)}
+          >
+            {label}
+            <UiIcon name={sort.key === key && sort.direction === "ascending" ? "arrow-up" : "arrow-down"} />
+          </button>
+        ))}
+      </div>
     <div
       className="incident-list-frame"
       data-hidden-above={hiddenEdges.above}
@@ -67,13 +98,13 @@ export function IncidentList({ incidents }: { incidents: IncidentListItem[] }) {
             <tr>
               <th id="incident-column-name" scope="col">Incident</th>
               <th id="incident-column-target" scope="col">Kubernetes 目标</th>
-              <th id="incident-column-updated" scope="col">本地更新时间</th>
-              <th id="incident-column-status" scope="col">状态</th>
+              <th id="incident-column-updated" scope="col" aria-sort={sort.key === "updatedAt" ? sort.direction : "none"}>本地更新时间</th>
+              <th id="incident-column-status" scope="col" aria-sort={sort.key === "status" ? sort.direction : "none"}>状态</th>
               <th id="incident-column-action" scope="col"><span className="sr-only">操作</span></th>
             </tr>
           </thead>
           <tbody>
-            {incidents.map((incident) => (
+            {sortedIncidents.map((incident) => (
               <tr key={incident.id}>
                 <td data-label="Incident" headers="incident-column-name">
                   <Link
@@ -109,5 +140,6 @@ export function IncidentList({ incidents }: { incidents: IncidentListItem[] }) {
         下方还有 Incident
       </span>
     </div>
+    </>
   );
 }

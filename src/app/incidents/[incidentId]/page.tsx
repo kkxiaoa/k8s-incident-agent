@@ -1,3 +1,5 @@
+import { fetchOperatorSession } from "@/lib/agent-runtime/server-client";
+import { parseConsoleSession } from "@/lib/agent-runtime/operator-contracts";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { headers } from "next/headers";
@@ -24,7 +26,10 @@ export default async function IncidentPage({ params, searchParams }: IncidentPag
         ? undefined
         : "invalid";
   const incoming = new Headers({ cookie: (await headers()).get("cookie") ?? "" });
-  const pageData = await loadIncidentPage(incidentId, runId, incoming);
+  const [pageData, sessionResult] = await Promise.all([
+    loadIncidentPage(incidentId, runId, incoming), fetchOperatorSession(incoming),
+  ]);
+  const session = parseConsoleSession(sessionResult.value);
   const missing = pageData.state === "missing";
 
   return (
@@ -52,12 +57,12 @@ export default async function IncidentPage({ params, searchParams }: IncidentPag
         </>
       ) : (
         <IncidentStream
-          key={`${pageData.detail.selectedRun.id}:${runId === undefined ? "latest" : "history"}`}
+          key={pageData.detail.selectedRun.id}
           initialDetail={pageData.detail}
           initialRuns={pageData.runs}
           monitoringPanels={pageData.monitoringPanels}
-          latestMode={runId === undefined}
           manualActions
+          authenticated={session?.role === "operator"}
         />
       )}
     </main>

@@ -347,20 +347,34 @@ test("animates only the currently running tool node", async ({ page }) => {
   });
 });
 
-test("makes the active waiting state visually prominent", async ({ page }) => {
+test("timeline loading paints one set of glyphs and honors reduced motion", async ({ page }) => {
   await control("/__test__/mode", { mode: "waiting" });
-  await createFromHome(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: "创建 Incident" }).click();
+  await expect(page).toHaveURL(/\/incidents\/[0-9a-f-]+$/);
 
   const waiting = page.getByText("正在等待持久化运行事件");
   await expect(waiting).toBeVisible();
-  const styles = await waiting.evaluate((element) => ({
-    fontWeight: getComputedStyle(element).fontWeight,
-    panelBorderColor: getComputedStyle(element.parentElement!).borderTopColor,
-  }));
-  expect(styles).toEqual({
-    fontWeight: "700",
-    panelBorderColor: "rgba(25, 183, 168, 0.7)",
+  const paint = await waiting.evaluate(element => {
+    const style = getComputedStyle(element);
+    return {
+      text: (element as HTMLElement).innerText,
+      repeatedPseudoText: [element, ...element.querySelectorAll("*")].some(node =>
+        ["::before", "::after"].some(pseudo => getComputedStyle(node, pseudo).content.includes("正在等待持久化运行事件"))),
+      clipsText: style.backgroundClip.split(",").every(value => value.trim() === "text"),
+      animation: style.animationName,
+      fontWeight: style.fontWeight,
+      panelBorderColor: getComputedStyle(element.parentElement!).borderTopColor,
+    };
   });
+  expect(paint).toEqual({
+    text: "正在等待持久化运行事件", repeatedPseudoText: false, clipsText: true,
+    animation: "text-shimmer-scan", fontWeight: "700", panelBorderColor: "rgba(0, 0, 0, 0)",
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(waiting).toHaveCSS("animation-name", "none");
+  const color = await waiting.evaluate(element => getComputedStyle(element).color);
+  await expect(waiting).toHaveCSS("-webkit-text-fill-color", color);
 });
 
 test("shows Runtime unavailable without static success fallback", async ({ page }) => {

@@ -17,6 +17,10 @@ from k8s_incident_agent.application.incidents import (
     ScenarioNotFoundError,
 )
 from k8s_incident_agent.application.monitoring import MonitoringPanelNotFoundError
+from k8s_incident_agent.auth.public_demo import (
+    PublicDemoLimitedError,
+    RunOwnershipError,
+)
 from k8s_incident_agent.auth.sessions import (
     OperatorAuthenticationError,
     OperatorCsrfError,
@@ -121,6 +125,31 @@ _ALERT_TARGET_INVALID = _ErrorContract(
 
 
 def install_exception_handlers(app: FastAPI) -> None:
+    async def public_demo_limited(
+        _request: Request, _error: PublicDemoLimitedError
+    ) -> JSONResponse:
+        return _response(
+            _ErrorContract(
+                429, "public_demo_limited", "Public demo capacity is exhausted."
+            )
+        )
+
+    async def run_ownership(
+        _request: Request, _error: RunOwnershipError
+    ) -> JSONResponse:
+        return _response(
+            _ErrorContract(
+                403,
+                "run_ownership_required",
+                "This run is not controlled by the current session.",
+            )
+        )
+
+    app.add_exception_handler(
+        PublicDemoLimitedError, cast(ExceptionHandler, public_demo_limited)
+    )
+    app.add_exception_handler(RunOwnershipError, cast(ExceptionHandler, run_ownership))
+
     async def approval_conflict_handler(
         _request: Request, _error: ApprovalConflictError
     ) -> JSONResponse:

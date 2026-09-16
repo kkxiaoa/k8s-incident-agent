@@ -187,7 +187,10 @@ class RepairWorkflowRunSnapshot(_WorkflowRunSnapshot):
     selection: RepairHistorySelection | None
     waiting_expires_at: datetime | None
     proposal_id: UUID | None
-    end_reason: Literal["expired", "superseded", "rejected", "execution_expired"] | None
+    end_reason: (
+        Literal["expired", "superseded", "rejected", "execution_expired", "withdrawn"]
+        | None
+    )
     approval: ApprovalRecord | None = None
     execution: ExecutionRecord | None = None
     verification: VerificationRecord | None = None

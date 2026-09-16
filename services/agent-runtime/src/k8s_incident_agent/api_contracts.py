@@ -181,6 +181,10 @@ class ApprovalRequest(_ApiContract):
     decision: ApprovalDecision
 
 
+class WithdrawRunRequest(_ApiContract):
+    run_id: UUID = Field(strict=False)
+
+
 class ExecutionReceiptResponse(_ApiContract):
     uid: str
     resource_version: str
@@ -265,6 +269,7 @@ class RunSummaryResponse(_ApiContract):
     started_at: datetime | None
     completed_at: datetime | None
     request_source: Literal["system", "operator"] | None = None
+    initiated_by_you: bool = False
     source_run_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -281,7 +286,8 @@ class SelectedRunResponse(RunSummaryResponse):
     selection: RepairHistorySelectionResponse | None = None
     waiting_expires_at: datetime | None = None
     end_reason: (
-        Literal["expired", "superseded", "rejected", "execution_expired"] | None
+        Literal["expired", "superseded", "rejected", "execution_expired", "withdrawn"]
+        | None
     ) = None
 
 
@@ -518,7 +524,7 @@ class RepairWaitingApprovalEventPayload(_TypedRunEventPayload):
 
 
 class RepairWaitEndedEventPayload(_TypedRunEventPayload):
-    reason: Literal["expired", "superseded"]
+    reason: Literal["expired", "superseded", "withdrawn"]
     incident_status: Literal["DIAGNOSED"]
     run_status: Literal["COMPLETED"]
 

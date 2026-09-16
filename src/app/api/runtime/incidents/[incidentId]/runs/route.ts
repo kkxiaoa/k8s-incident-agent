@@ -22,5 +22,5 @@ export async function POST(
   context: IncidentRunRouteContext,
 ): Promise<Response> {
   const { incidentId } = await context.params;
-  return createRun(incidentId, request.headers, await request.arrayBuffer());
+  return createRun(incidentId, request);
 }

@@ -8,6 +8,7 @@ from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 from sqlalchemy import delete, func, text, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,7 +19,7 @@ from k8s_incident_agent.persistence.models import OperatorSessionRow
 
 SESSION_COOKIE = "__Host-k8s-incident-session"
 CSRF_HEADER = "X-CSRF-Token"
-SESSION_SECONDS = 30 * 60
+SESSION_SECONDS = 60 * 60
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 
 
@@ -55,6 +56,7 @@ class OperatorSessions:
         verifier: PasswordVerifier,
         origin: str,
         now: Callable[[], float] = time.time,
+        access_mode: Literal["private", "public_demo"] = "private",
     ) -> None:
         self._sessions = sessions
         self._verifier = verifier
@@ -63,6 +65,11 @@ class OperatorSessions:
         self._attempts: deque[float] = deque()
         self._verification: asyncio.Task[bool] | None = None
         self._cleanup: asyncio.Task[None] | None = None
+        from k8s_incident_agent.auth.public_demo import PublicDemoAccess
+
+        self.access = PublicDemoAccess(
+            sessions=sessions, operator=self, mode=access_mode, now=now
+        )
 
     async def start(self) -> None:
         # Restart is the credential-rotation boundary. Revocation is durable, so

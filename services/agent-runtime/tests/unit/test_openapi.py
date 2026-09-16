@@ -29,6 +29,7 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/v1/incidents/{incident_id}/runs"),
     ("POST", "/api/v1/incidents/{incident_id}/runs"),
     ("POST", "/api/v1/incidents/{incident_id}/repair-runs"),
+    ("POST", "/api/v1/incidents/{incident_id}/withdrawals"),
     ("GET", "/api/v1/incidents/{incident_id}/runs/{run_id}/events"),
     ("GET", "/api/v1/monitoring/health"),
     ("GET", "/api/v1/monitoring/overview"),

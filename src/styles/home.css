@@ -220,13 +220,8 @@
 }
 
 .primary-button:hover:not(:disabled),
-.secondary-button:hover {
+.secondary-button:hover:not(:disabled) {
   transform: translateY(-1px);
-}
-
-.primary-button:disabled {
-  cursor: wait;
-  opacity: 0.65;
 }
 
 .secondary-button {
@@ -237,6 +232,23 @@
   background: white;
   cursor: pointer;
 }
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  color: var(--muted);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  box-shadow: none;
+  cursor: not-allowed;
+  opacity: 1;
+  transform: none;
+}
+
+.action-button { display: inline-flex; min-width: 0; }
+.action-button:has(button:disabled) { cursor: not-allowed; }
+.action-button:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; border-radius: 10px; }
+.action-button__hint { position: fixed; z-index: 100; padding: 10px 12px; border-radius: 8px; color: #fff; background: #153b54; box-shadow: 0 8px 22px rgb(8 43 69 / 20%); font-family: var(--font-body); font-size: 0.72rem; font-weight: 500; line-height: 1.6; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.action-button__hint::before { content: ""; position: absolute; inset: -8px; z-index: -1; }
 
 .inline-error,
 .page-alert {
