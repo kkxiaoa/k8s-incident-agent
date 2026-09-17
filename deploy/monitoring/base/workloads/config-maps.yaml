@@ -21,6 +21,8 @@ data:
           size: 1600MB
     rule_files:
       - /etc/prometheus/rules/*.yaml
+    scrape_config_files:
+      - /etc/prometheus/scrape/*.yaml
     alerting:
       alertmanagers:
         - api_version: v2

@@ -27,6 +27,20 @@ const PATCH_VALIDATOR_ADMISSION_POLICY =
   "k8s-incident-agent-patch-validator-dry-run-only";
 const RUNTIME_PVC = "runtime-data";
 const PROMETHEUS_PVC = "prometheus-data";
+const NODE_METRICS_SCRAPE_CONFIGMAP = "prometheus-scrape-node-metrics";
+const NODE_METRICS_DISCOVERY_ROLE = "prometheus-pod-discovery";
+const NODE_METRICS_CLUSTER_ROLE =
+  "k8s-incident-agent-prometheus-node-metrics";
+const NODE_METRICS_CLUSTER_RBAC_PATH = path.join(
+  "components",
+  "node-metrics",
+  "cluster-rbac.yaml",
+);
+const REGISTERED_NODE_PLACEHOLDER = "__REGISTERED_NODE__";
+const NODE_METRICS_NETWORK_POLICIES = Object.freeze([
+  "allow-prometheus-kubernetes-api-egress",
+  "allow-prometheus-kubelet-egress",
+]);
 const ALERTMANAGER_WEBHOOK_SECRET = "alertmanager-webhook";
 const ALERTMANAGER_WEBHOOK_SECRET_KEY = "token";
 const CUTOVER_JOB = "runtime-data-cutover";
@@ -64,18 +78,21 @@ const PROFILE_DEFINITIONS = Object.freeze({
   "kind-evaluation": Object.freeze({
     platform: "kind",
     intakeMode: "manual",
+    nodeMetrics: false,
     overlay: "overlays/kind-evaluation",
     uninstall: "uninstall/kind",
   }),
   "k3s-evaluation": Object.freeze({
     platform: "k3s",
     intakeMode: "manual",
+    nodeMetrics: true,
     overlay: "overlays/k3s-evaluation",
     uninstall: "uninstall/k3s",
   }),
   "k3s-online": Object.freeze({
     platform: "k3s",
     intakeMode: "online",
+    nodeMetrics: true,
     overlay: "overlays/k3s-online",
     uninstall: "uninstall/k3s",
   }),
@@ -108,7 +125,8 @@ async function main() {
     const rendered = await renderProfile(contract, request.profile, execute);
     requireRenderedMonitoringContract(
       indexRenderedManifest(rendered),
-      contract.monitoring.catalog,
+      contract.monitoring,
+      request.profile,
     );
     process.stdout.write(rendered);
     return;
@@ -367,7 +385,14 @@ function usageError() {
 async function loadDeploymentContract(repositoryRoot) {
   const applicationRoot = path.join(repositoryRoot, "deploy", "application");
   const monitoringRoot = path.join(repositoryRoot, "deploy", "monitoring");
-  const [rawK3s, rawImageLock, rawMonitoringImageLock, rawAlertCatalog, kind] = await Promise.all([
+  const [
+    rawK3s,
+    rawImageLock,
+    rawMonitoringImageLock,
+    rawAlertCatalog,
+    rawNodeMetricsClusterRbac,
+    kind,
+  ] = await Promise.all([
     readFile(path.join(applicationRoot, "versions.json"), "utf8"),
     readFile(
       path.join(applicationRoot, "base", "workloads", "kustomization.yaml"),
@@ -381,6 +406,7 @@ async function loadDeploymentContract(repositoryRoot) {
       path.join(repositoryRoot, "monitoring", "catalog", "catalog.json"),
       "utf8",
     ),
+    readFile(path.join(monitoringRoot, NODE_METRICS_CLUSTER_RBAC_PATH), "utf8"),
     loadKindVersionContract(repositoryRoot),
   ]);
   const k3sDocument = parseJsonObject(rawK3s, "K3s version contract");
@@ -425,6 +451,7 @@ async function loadDeploymentContract(repositoryRoot) {
     monitoringVersions,
     monitoringImageLock.images,
     rawAlertCatalog,
+    rawNodeMetricsClusterRbac,
   );
 
   return {
@@ -508,7 +535,12 @@ function normalizeImageLock(rawImages) {
   return images;
 }
 
-function normalizeMonitoringContract(rawVersions, rawImages, rawAlertCatalog) {
+function normalizeMonitoringContract(
+  rawVersions,
+  rawImages,
+  rawAlertCatalog,
+  rawNodeMetricsClusterRbac,
+) {
   const componentNames = ["prometheus", "alertmanager", "kubeStateMetrics"];
   if (
     !Array.isArray(rawImages) ||
@@ -582,7 +614,81 @@ function normalizeMonitoringContract(rawVersions, rawImages, rawAlertCatalog) {
   }
 
   const catalog = normalizeAlertRuleCatalog(rawAlertCatalog);
-  return { components, catalog };
+  const nodeMetricsClusterRbac = normalizeNodeMetricsClusterRbac(
+    rawNodeMetricsClusterRbac,
+  );
+  return { components, catalog, nodeMetricsClusterRbac };
+}
+
+function normalizeNodeMetricsClusterRbac(rawDocuments) {
+  const invalid = () =>
+    new DeploymentContractError(
+      "monitoring_contract_invalid",
+      "node-metrics cluster RBAC template is not the fixed nodes/metrics grant",
+    );
+  let documents;
+  try {
+    documents = [];
+    loadAll(rawDocuments, (document) => {
+      if (document !== undefined && document !== null) documents.push(document);
+    });
+  } catch {
+    throw invalid();
+  }
+  const [clusterRole, clusterRoleBinding] = documents;
+  const labels = {
+    "app.kubernetes.io/name": "prometheus",
+    "app.kubernetes.io/part-of": "k8s-incident-agent",
+  };
+  if (
+    documents.length !== 2 ||
+    !isDeepStrictEqual(clusterRole, {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "ClusterRole",
+      metadata: { name: NODE_METRICS_CLUSTER_ROLE, labels },
+      rules: [
+        {
+          apiGroups: [""],
+          resources: ["nodes/metrics"],
+          resourceNames: [REGISTERED_NODE_PLACEHOLDER],
+          verbs: ["get"],
+        },
+      ],
+    }) ||
+    !isDeepStrictEqual(clusterRoleBinding, {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "ClusterRoleBinding",
+      metadata: { name: NODE_METRICS_CLUSTER_ROLE, labels },
+      subjects: [
+        {
+          kind: "ServiceAccount",
+          name: "prometheus",
+          namespace: MONITORING_NAMESPACE,
+        },
+      ],
+      roleRef: {
+        apiGroup: "rbac.authorization.k8s.io",
+        kind: "ClusterRole",
+        name: NODE_METRICS_CLUSTER_ROLE,
+      },
+    })
+  ) {
+    throw invalid();
+  }
+  return { clusterRole, clusterRoleBinding };
+}
+
+function bindNodeMetricsClusterRbac(contract, registeredNode) {
+  const clusterRole = structuredClone(
+    contract.monitoring.nodeMetricsClusterRbac.clusterRole,
+  );
+  clusterRole.rules[0].resourceNames = [registeredNode];
+  return {
+    clusterRole,
+    clusterRoleBinding: structuredClone(
+      contract.monitoring.nodeMetricsClusterRbac.clusterRoleBinding,
+    ),
+  };
 }
 
 function normalizeAlertRuleCatalog(rawAlertCatalog) {
@@ -2083,22 +2189,34 @@ async function previewLifecycleAction(
   const desiredResources = indexRenderedManifest(rendered);
   requireRenderedMonitoringContract(
     desiredResources,
-    contract.monitoring.catalog,
+    contract.monitoring,
+    profile,
   );
   return {
     action,
     mode: "preview",
     profile: profile.name,
     resources: renderedInventory(desiredResources),
+    operatorBoundResources: profile.nodeMetrics
+      ? [
+        `ClusterRole/${NODE_METRICS_CLUSTER_ROLE}`,
+        `ClusterRoleBinding/${NODE_METRICS_CLUSTER_ROLE}`,
+      ]
+      : [],
   };
 }
 
 async function confirmApply(contract, request, execute) {
-  await requireClusterPrerequisites(contract, request, execute, {
-    components: true,
-    images: true,
-    secret: true,
-  });
+  const { registeredNode } = await requireClusterPrerequisites(
+    contract,
+    request,
+    execute,
+    {
+      components: true,
+      images: true,
+      secret: true,
+    },
+  );
   await requireCutoverObjectsAbsent(request, execute);
   const overlayPath = profilePath(contract, request.profile.overlay);
   const desiredManifest = await renderProfile(
@@ -2107,7 +2225,11 @@ async function confirmApply(contract, request, execute) {
     execute,
   );
   const desiredResources = indexRenderedManifest(desiredManifest);
-  requireRenderedMonitoringContract(desiredResources, contract.monitoring.catalog);
+  requireRenderedMonitoringContract(
+    desiredResources,
+    contract.monitoring,
+    request.profile,
+  );
   requireRuntimeConfig(
     desiredResources.get(`ConfigMap/${APPLICATION_NAMESPACE}/agent-runtime-config`),
     request.profile,
@@ -2121,6 +2243,9 @@ async function confirmApply(contract, request, execute) {
   );
   await applyAdmissionBoundary(request, execute, desiredResources);
   await waitForAdmissionPolicyReady(request, execute, desiredResources);
+  if (request.profile.nodeMetrics) {
+    await applyNodeMetricsClusterRbac(contract, request, execute, registeredNode);
+  }
   await runKubectl(
     execute,
     request.context,
@@ -2181,6 +2306,88 @@ async function applyAdmissionBoundary(request, execute, desiredResources) {
     "Patch Validator admission boundary apply",
     input,
   );
+}
+
+async function applyNodeMetricsClusterRbac(
+  contract,
+  request,
+  execute,
+  registeredNode,
+) {
+  const bound = bindNodeMetricsClusterRbac(contract, registeredNode);
+  const input = [bound.clusterRole, bound.clusterRoleBinding]
+    .map((resource) => serializeKubernetesResource(resource))
+    .join("---\n");
+  await runKubectl(
+    execute,
+    request.context,
+    ["apply", "--filename=-"],
+    WRITE_TIMEOUT_MILLISECONDS,
+    "node-metrics cluster RBAC apply",
+    input,
+  );
+}
+
+async function readOptionalClusterRbac(request, execute, kind) {
+  const output = await runKubectl(
+    execute,
+    request.context,
+    [
+      "get",
+      kind.toLowerCase(),
+      NODE_METRICS_CLUSTER_ROLE,
+      "--ignore-not-found=true",
+      "--output=json",
+    ],
+    READ_TIMEOUT_MILLISECONDS,
+    `node-metrics ${kind}`,
+  );
+  if (output.trim() === "") return null;
+  return parseJsonObject(output, `node-metrics ${kind}`);
+}
+
+function requireNodeMetricsClusterRbac(
+  clusterRole,
+  clusterRoleBinding,
+  contract,
+  registeredNode,
+) {
+  const bound = bindNodeMetricsClusterRbac(contract, registeredNode);
+  if (
+    clusterRole?.kind !== "ClusterRole" ||
+    clusterRole.metadata?.name !== NODE_METRICS_CLUSTER_ROLE ||
+    !isDeepStrictEqual(clusterRole.rules, bound.clusterRole.rules) ||
+    clusterRoleBinding?.kind !== "ClusterRoleBinding" ||
+    clusterRoleBinding.metadata?.name !== NODE_METRICS_CLUSTER_ROLE ||
+    !isDeepStrictEqual(
+      clusterRoleBinding.subjects,
+      bound.clusterRoleBinding.subjects,
+    ) ||
+    !isDeepStrictEqual(
+      clusterRoleBinding.roleRef,
+      bound.clusterRoleBinding.roleRef,
+    )
+  ) {
+    throw stateError(
+      "node-metrics cluster RBAC is not bound to the registered node",
+    );
+  }
+}
+
+function requireOwnedNodeMetricsClusterRbac(document, kind) {
+  if (document === null) return;
+  const labels = document.metadata?.labels;
+  if (
+    document.kind !== kind ||
+    document.metadata?.name !== NODE_METRICS_CLUSTER_ROLE ||
+    labels?.["app.kubernetes.io/part-of"] !== "k8s-incident-agent" ||
+    labels?.["app.kubernetes.io/name"] !== "prometheus"
+  ) {
+    throw new DeploymentContractError(
+      "ownership_mismatch",
+      `${kind} ${NODE_METRICS_CLUSTER_ROLE} is not owned by this installation`,
+    );
+  }
 }
 
 async function waitForAdmissionPolicyReady(request, execute, desiredResources) {
@@ -2253,6 +2460,32 @@ async function confirmUninstall(contract, request, execute) {
     WRITE_TIMEOUT_MILLISECONDS,
     "workload uninstall",
   );
+  let nodeMetricsClusterRbac = "not-enabled";
+  if (request.profile.nodeMetrics) {
+    const [clusterRole, clusterRoleBinding] = await Promise.all([
+      readOptionalClusterRbac(request, execute, "ClusterRole"),
+      readOptionalClusterRbac(request, execute, "ClusterRoleBinding"),
+    ]);
+    requireOwnedNodeMetricsClusterRbac(clusterRole, "ClusterRole");
+    requireOwnedNodeMetricsClusterRbac(clusterRoleBinding, "ClusterRoleBinding");
+    nodeMetricsClusterRbac = "absent";
+    if (clusterRole !== null || clusterRoleBinding !== null) {
+      await runKubectl(
+        execute,
+        request.context,
+        [
+          "delete",
+          "--ignore-not-found=true",
+          "--wait=true",
+          "clusterrole,clusterrolebinding",
+          NODE_METRICS_CLUSTER_ROLE,
+        ],
+        WRITE_TIMEOUT_MILLISECONDS,
+        "node-metrics cluster RBAC removal",
+      );
+      nodeMetricsClusterRbac = "removed";
+    }
+  }
   const [runtimeAfter, prometheusAfter] = await Promise.all([
     readOptionalPvc(request, execute, APPLICATION_NAMESPACE, RUNTIME_PVC),
     readOptionalPvc(request, execute, MONITORING_NAMESPACE, PROMETHEUS_PVC),
@@ -2273,6 +2506,7 @@ async function confirmUninstall(contract, request, execute) {
   return {
     action: "uninstall",
     mode: "confirmed",
+    nodeMetricsClusterRbac,
     profile: request.profile.name,
     retainedPvcs: [
       ...(runtimeAfter === null ? [] : [RUNTIME_PVC]),
@@ -2325,6 +2559,12 @@ async function readInstallationStatus(
     monitoringNetworkPolicies,
     monitoringRole,
     monitoringRoleBinding,
+    nodes,
+    nodeMetricsClusterRole,
+    nodeMetricsClusterRoleBinding,
+    nodeMetricsDiscoveryRole,
+    nodeMetricsDiscoveryRoleBinding,
+    nodeMetricsScrapeConfig,
     desiredManifest,
   ] = await Promise.all([
       readJsonResource(execute, request.context, [
@@ -2561,14 +2801,51 @@ async function readInstallationStatus(
         DIAGNOSTIC_NAMESPACE,
         "--output=json",
       ], "monitoring RoleBinding"),
+      readJsonResource(execute, request.context, [
+        "get",
+        "nodes",
+        "--output=json",
+      ], "Kubernetes Nodes"),
+      readOptionalClusterRbac(request, execute, "ClusterRole"),
+      readOptionalClusterRbac(request, execute, "ClusterRoleBinding"),
+      ...(request.profile.nodeMetrics
+        ? [
+          readJsonResource(execute, request.context, [
+            "get",
+            "role",
+            NODE_METRICS_DISCOVERY_ROLE,
+            "--namespace",
+            DIAGNOSTIC_NAMESPACE,
+            "--output=json",
+          ], "node-metrics discovery Role"),
+          readJsonResource(execute, request.context, [
+            "get",
+            "rolebinding",
+            NODE_METRICS_DISCOVERY_ROLE,
+            "--namespace",
+            DIAGNOSTIC_NAMESPACE,
+            "--output=json",
+          ], "node-metrics discovery RoleBinding"),
+          readJsonResource(execute, request.context, [
+            "get",
+            "configmap",
+            NODE_METRICS_SCRAPE_CONFIGMAP,
+            "--namespace",
+            MONITORING_NAMESPACE,
+            "--output=json",
+          ], "node-metrics scrape ConfigMap"),
+        ]
+        : [null, null, null]),
       renderProfile(contract, request.profile, execute),
     ]);
 
   const desiredResources = indexRenderedManifest(desiredManifest);
   const configurationDigests = requireRenderedMonitoringContract(
     desiredResources,
-    contract.monitoring.catalog,
+    contract.monitoring,
+    request.profile,
   );
+  const registeredNode = requireRegisteredNode(nodes).metadata.name;
 
   requireReadyDeployment(
     runtime,
@@ -2697,6 +2974,40 @@ async function readInstallationStatus(
     "RoleBinding",
     "managed-monitoring-read",
   );
+  if (request.profile.nodeMetrics) {
+    requireRenderedDataResource(
+      nodeMetricsScrapeConfig,
+      desiredResources,
+      "ConfigMap",
+      NODE_METRICS_SCRAPE_CONFIGMAP,
+      MONITORING_NAMESPACE,
+    );
+    requireRenderedRbacResource(
+      nodeMetricsDiscoveryRole,
+      desiredResources,
+      "Role",
+      NODE_METRICS_DISCOVERY_ROLE,
+    );
+    requireRenderedRbacResource(
+      nodeMetricsDiscoveryRoleBinding,
+      desiredResources,
+      "RoleBinding",
+      NODE_METRICS_DISCOVERY_ROLE,
+    );
+    requireNodeMetricsClusterRbac(
+      nodeMetricsClusterRole,
+      nodeMetricsClusterRoleBinding,
+      contract,
+      registeredNode,
+    );
+  } else if (
+    nodeMetricsClusterRole !== null ||
+    nodeMetricsClusterRoleBinding !== null
+  ) {
+    throw stateError(
+      "node-metrics cluster RBAC exists although the profile does not collect node metrics",
+    );
+  }
   requireNetworkPolicies(
     monitoringNetworkPolicies,
     desiredResources,
@@ -2717,7 +3028,7 @@ async function readInstallationStatus(
   await Promise.all([
     requireDiagnosticAccess(request, execute),
     requirePatchValidatorAccess(request, execute),
-    requireMonitoringAccess(request, execute),
+    requireMonitoringAccess(request, execute, registeredNode),
   ]);
 
   const runtimeHealth = await readJsonResource(execute, request.context, [
@@ -2761,6 +3072,13 @@ async function readInstallationStatus(
         phase: "Bound",
         volumeName: prometheusVolumeName,
       },
+      nodeMetrics: request.profile.nodeMetrics
+        ? {
+          configuration: "bound",
+          node: registeredNode,
+          collection: "requires-live-probe",
+        }
+        : { configuration: "not-enabled" },
       rbac: "matched",
       rules: "matched",
       secretProjection: "configured",
@@ -2832,8 +3150,9 @@ async function requireClusterPrerequisites(
   if (requirements.secret) {
     await requireRequiredSecrets(request.context, execute);
   }
+  let registeredNode;
   if (requirements.images) {
-    await requireSingleNodeImages(
+    registeredNode = await requireSingleNodeImages(
       request.context,
       execute,
       Array.isArray(requirements.images)
@@ -2841,7 +3160,7 @@ async function requireClusterPrerequisites(
         : Object.values(contract.images),
     );
   }
-  return { serverVersion: actualServerVersion };
+  return { serverVersion: actualServerVersion, registeredNode };
 }
 
 async function requireK3sComponents(contract, context, execute) {
@@ -2977,22 +3296,9 @@ async function requireSingleNodeImages(
     "nodes",
     "--output=json",
   ], "Kubernetes Nodes");
-  if (
-    nodes.kind !== "List" ||
-    !Array.isArray(nodes.items) ||
-    nodes.items.length !== 1
-  ) {
-    throw new DeploymentContractError(
-      "cluster_topology_mismatch",
-      "deployment profile requires exactly one Kubernetes node",
-    );
-  }
-  const [node] = nodes.items;
-  const ready = node.status?.conditions?.some(
-    (condition) => condition?.type === "Ready" && condition?.status === "True",
-  );
+  const node = requireRegisteredNode(nodes);
   const imageNames = node.status?.images?.flatMap((image) => image?.names ?? []);
-  if (!ready || !Array.isArray(imageNames)) {
+  if (!Array.isArray(imageNames)) {
     throw new DeploymentContractError(
       "node_not_ready",
       "the fixed Kubernetes node is not ready",
@@ -3007,6 +3313,31 @@ async function requireSingleNodeImages(
       "the fixed deployment images are not available on the Kubernetes node",
     );
   }
+  return node.metadata.name;
+}
+
+function requireRegisteredNode(nodes) {
+  if (
+    nodes.kind !== "List" ||
+    !Array.isArray(nodes.items) ||
+    nodes.items.length !== 1
+  ) {
+    throw new DeploymentContractError(
+      "cluster_topology_mismatch",
+      "deployment profile requires exactly one Kubernetes node",
+    );
+  }
+  const [node] = nodes.items;
+  const ready = node.status?.conditions?.some(
+    (condition) => condition?.type === "Ready" && condition?.status === "True",
+  );
+  if (!ready || typeof node.metadata?.name !== "string" || node.metadata.name === "") {
+    throw new DeploymentContractError(
+      "node_not_ready",
+      "the fixed Kubernetes node is not ready",
+    );
+  }
+  return node;
 }
 
 async function requireDiagnosticAccess(request, execute) {
@@ -3199,7 +3530,7 @@ async function requirePatchValidatorAccess(request, execute) {
   );
 }
 
-async function requireMonitoringAccess(request, execute) {
+async function requireMonitoringAccess(request, execute, registeredNode) {
   const kubeStateMetrics =
     `system:serviceaccount:${MONITORING_NAMESPACE}:kube-state-metrics`;
   await requireAccessChecks(
@@ -3313,16 +3644,39 @@ async function requireMonitoringAccess(request, execute) {
     "kube-state-metrics must not read monitoring Secret objects",
   );
 
+  const registeredNodeMetrics = {
+    verb: "get",
+    resource: `nodes/${registeredNode}`,
+    subresource: "metrics",
+    namespaced: false,
+  };
   for (const serviceAccount of ["prometheus", "alertmanager"]) {
     const subject =
       `system:serviceaccount:${MONITORING_NAMESPACE}:${serviceAccount}`;
+    const collectsNodeMetrics =
+      serviceAccount === "prometheus" && request.profile.nodeMetrics;
     await requireAccessChecks(
       request,
       execute,
       subject,
       DIAGNOSTIC_NAMESPACE,
-      [{ verb: "list", resource: "pods", expected: false, namespaced: true }],
-      `${serviceAccount} must not read Kubernetes business resources`,
+      [
+        {
+          verb: "list",
+          resource: "pods",
+          expected: collectsNodeMetrics,
+          namespaced: true,
+        },
+        ...(collectsNodeMetrics
+          ? [
+            { verb: "watch", resource: "pods", expected: true, namespaced: true },
+            { verb: "get", resource: "pods", expected: false, namespaced: true },
+          ]
+          : []),
+      ],
+      collectsNodeMetrics
+        ? "prometheus must discover Pods only in the scenario Namespace"
+        : `${serviceAccount} must not read Kubernetes business resources`,
     );
     await requireAccessChecks(
       request,
@@ -3331,6 +3685,38 @@ async function requireMonitoringAccess(request, execute) {
       MONITORING_NAMESPACE,
       [{ verb: "get", resource: "secrets", expected: false, namespaced: true }],
       `${serviceAccount} must not read mounted Secret objects`,
+    );
+    await requireAccessChecks(
+      request,
+      execute,
+      subject,
+      "",
+      [
+        { ...registeredNodeMetrics, expected: collectsNodeMetrics },
+        ...(collectsNodeMetrics
+          ? [
+            {
+              verb: "get",
+              resource: "nodes",
+              subresource: "metrics",
+              expected: false,
+              namespaced: false,
+            },
+            { verb: "get", resource: "nodes", expected: false, namespaced: false },
+            { verb: "list", resource: "nodes", expected: false, namespaced: false },
+            {
+              verb: "get",
+              resource: `nodes/${registeredNode}`,
+              subresource: "proxy",
+              expected: false,
+              namespaced: false,
+            },
+          ]
+          : []),
+      ],
+      collectsNodeMetrics
+        ? "prometheus must read only the registered node's metrics endpoint"
+        : `${serviceAccount} must not read node metrics`,
     );
   }
 }
@@ -3868,9 +4254,37 @@ function requireReadyMonitoringDeployment(
       findVolume(pod, "config")?.configMap?.name !== "prometheus-config" ||
       findVolume(pod, "rules")?.configMap?.name !== "prometheus-rules" ||
       findVolume(pod, "data")?.persistentVolumeClaim?.claimName !==
-        PROMETHEUS_PVC
+        PROMETHEUS_PVC ||
+      (container.volumeMounts?.length ?? 0) !== (profile.nodeMetrics ? 5 : 3) ||
+      (pod.volumes?.length ?? 0) !== (profile.nodeMetrics ? 5 : 3)
     ) {
       throw stateError("Prometheus configuration or storage projection drifted");
+    }
+    if (
+      profile.nodeMetrics &&
+      (!hasVolumeMount(container, "scrape", "/etc/prometheus/scrape", true) ||
+        !hasVolumeMount(
+          container,
+          "kubernetes-credentials",
+          "/var/run/secrets/kubernetes.io/serviceaccount",
+          true,
+        ) ||
+        findVolume(pod, "scrape")?.configMap?.name !==
+          NODE_METRICS_SCRAPE_CONFIGMAP ||
+        !isDeepStrictEqual(
+          findVolume(pod, "kubernetes-credentials")?.projected?.sources,
+          [
+            { serviceAccountToken: { path: "token", expirationSeconds: 3600 } },
+            {
+              configMap: {
+                name: "kube-root-ca.crt",
+                items: [{ key: "ca.crt", path: "ca.crt" }],
+              },
+            },
+          ],
+        ))
+    ) {
+      throw stateError("Prometheus node-metrics credential or scrape projection drifted");
     }
     if (profile.platform === "kind") {
       const [prepare] = initContainers;
@@ -3938,7 +4352,7 @@ function requireReadyMonitoringDeployment(
     !isDeepStrictEqual(container.args, [
       "--namespaces=k8s-incident-scenarios",
       "--resources=deployments,endpointslices,persistentvolumeclaims,pods,replicasets,services",
-      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_persistentvolumeclaim_created,kube_persistentvolumeclaim_labels,kube_persistentvolumeclaim_status_phase,kube_pod_container_status_ready,kube_pod_container_status_restarts_total,kube_pod_container_status_running,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
+      "--metric-allowlist=kube_deployment_spec_replicas,kube_deployment_status_replicas_available,kube_endpointslice_endpoints,kube_endpointslice_labels,kube_persistentvolumeclaim_created,kube_persistentvolumeclaim_labels,kube_persistentvolumeclaim_status_phase,kube_pod_container_resource_limits,kube_pod_container_resource_requests,kube_pod_container_state_started,kube_pod_container_status_last_terminated_reason,kube_pod_container_status_last_terminated_timestamp,kube_pod_container_status_ready,kube_pod_container_status_restarts_total,kube_pod_container_status_running,kube_pod_container_status_waiting_reason,kube_pod_labels,kube_pod_owner,kube_pod_status_unschedulable,kube_replicaset_owner,kube_service_info,kube_service_labels,kube_service_spec_type",
       "--metric-labels-allowlist=endpointslices=[kubernetes.io/service-name],persistentvolumeclaims=[k8s-incident-agent.io/pending-policy],pods=[k8s-incident-agent.io/liveness-container,k8s-incident-agent.io/readiness-container,k8s-incident-agent.io/readiness-slo,k8s-incident-agent.io/service],services=[k8s-incident-agent.io/monitor-selector]",
       "--use-apiserver-cache",
     ])
@@ -4328,7 +4742,7 @@ function isAdmissionPolicyObservationPending(policy) {
   );
 }
 
-function requireRenderedMonitoringContract(desiredResources, catalog) {
+function requireRenderedMonitoringContract(desiredResources, monitoring, profile) {
   const prometheusConfig = requireRenderedResource(
     desiredResources,
     "ConfigMap",
@@ -4351,9 +4765,68 @@ function requireRenderedMonitoringContract(desiredResources, catalog) {
   requireAlertmanagerConfiguration(
     alertmanagerConfig.data?.["alertmanager.yaml"],
   );
-  requireCatalogRules(rulesConfig.data?.["alerts.yaml"], catalog);
+  requireCatalogRules(rulesConfig.data?.["alerts.yaml"], monitoring.catalog);
+  const nodeMetricsResources = [
+    ["ConfigMap", NODE_METRICS_SCRAPE_CONFIGMAP, MONITORING_NAMESPACE],
+    ["Role", NODE_METRICS_DISCOVERY_ROLE, DIAGNOSTIC_NAMESPACE],
+    ["RoleBinding", NODE_METRICS_DISCOVERY_ROLE, DIAGNOSTIC_NAMESPACE],
+    ...NODE_METRICS_NETWORK_POLICIES.map((name) => [
+      "NetworkPolicy",
+      name,
+      MONITORING_NAMESPACE,
+    ]),
+  ];
+  const prometheusData = [prometheusConfig.data, rulesConfig.data];
+  if (profile.nodeMetrics) {
+    for (const [kind, name, namespace] of nodeMetricsResources) {
+      requireRenderedResource(desiredResources, kind, name, namespace);
+    }
+    const scrapeConfig = requireRenderedResource(
+      desiredResources,
+      "ConfigMap",
+      NODE_METRICS_SCRAPE_CONFIGMAP,
+      MONITORING_NAMESPACE,
+    );
+    requireNodeMetricsScrapeConfiguration(scrapeConfig.data?.["node-metrics.yaml"]);
+    const discoveryRole = requireRenderedResource(
+      desiredResources,
+      "Role",
+      NODE_METRICS_DISCOVERY_ROLE,
+      DIAGNOSTIC_NAMESPACE,
+    );
+    const discoveryRoleBinding = requireRenderedResource(
+      desiredResources,
+      "RoleBinding",
+      NODE_METRICS_DISCOVERY_ROLE,
+      DIAGNOSTIC_NAMESPACE,
+    );
+    if (
+      !isDeepStrictEqual(discoveryRole.rules, [
+        { apiGroups: [""], resources: ["pods"], verbs: ["list", "watch"] },
+      ]) ||
+      !isDeepStrictEqual(
+        discoveryRoleBinding.subjects,
+        monitoring.nodeMetricsClusterRbac.clusterRoleBinding.subjects,
+      )
+    ) {
+      throw new DeploymentContractError(
+        "monitoring_contract_invalid",
+        "node-metrics Pod discovery grant exceeds list/watch for prometheus",
+      );
+    }
+    prometheusData.push(scrapeConfig.data);
+  } else {
+    for (const [kind, name, namespace] of nodeMetricsResources) {
+      if (desiredResources.has(renderedResourceKey(kind, name, namespace))) {
+        throw new DeploymentContractError(
+          "render_contract_invalid",
+          `${profile.name} must not render node-metrics ${kind}/${name}`,
+        );
+      }
+    }
+  }
   const configurationDigests = {
-    prometheus: configurationDigest(prometheusConfig.data, rulesConfig.data),
+    prometheus: configurationDigest(...prometheusData),
     alertmanager: configurationDigest(alertmanagerConfig.data),
   };
   for (const name of ["prometheus", "alertmanager"]) {
@@ -4414,6 +4887,7 @@ function requirePrometheusConfiguration(rawConfiguration) {
       tsdb: { retention: { time: "15d", size: "1600MB" } },
     },
     rule_files: ["/etc/prometheus/rules/*.yaml"],
+    scrape_config_files: ["/etc/prometheus/scrape/*.yaml"],
     alerting: {
       alertmanagers: [
         {
@@ -4454,6 +4928,105 @@ function requirePrometheusConfiguration(rawConfiguration) {
     throw new DeploymentContractError(
       "monitoring_contract_invalid",
       "Prometheus configuration does not match the managed topology",
+    );
+  }
+}
+
+function requireNodeMetricsScrapeConfiguration(rawConfiguration) {
+  let configuration;
+  try {
+    configuration = load(
+      requireString(rawConfiguration, "node-metrics scrape config"),
+    );
+  } catch (error) {
+    if (error instanceof DeploymentContractError) throw error;
+    throw new DeploymentContractError(
+      "monitoring_contract_invalid",
+      "node-metrics scrape configuration is invalid YAML",
+    );
+  }
+  const helperLabels = ["namespace", "pod", "container"];
+  const job = (jobName, metricsPath, keptMetrics, droppedLabels) => ({
+    job_name: jobName,
+    scheme: "https",
+    metrics_path: metricsPath,
+    authorization: {
+      credentials_file: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+    },
+    tls_config: {
+      ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+    },
+    kubernetes_sd_configs: [
+      { role: "pod", namespaces: { names: [DIAGNOSTIC_NAMESPACE] } },
+    ],
+    relabel_configs: [
+      {
+        source_labels: ["__meta_kubernetes_pod_container_init"],
+        regex: "true",
+        action: "drop",
+      },
+      {
+        source_labels: ["__meta_kubernetes_pod_host_ip"],
+        regex: "(.+)",
+        action: "keep",
+      },
+      {
+        source_labels: ["__meta_kubernetes_pod_host_ip"],
+        regex: "(.+)",
+        replacement: "${1}:10250",
+        target_label: "__address__",
+      },
+      ...helperLabels.map((label) => ({
+        source_labels: [
+          label === "namespace"
+            ? "__meta_kubernetes_namespace"
+            : `__meta_kubernetes_pod_${label === "pod" ? "name" : "container_name"}`,
+        ],
+        target_label: `scrape_${label}`,
+      })),
+    ],
+    metric_relabel_configs: [
+      { source_labels: ["__name__"], regex: keptMetrics, action: "keep" },
+      ...helperLabels.map((label) => ({
+        source_labels: [label],
+        target_label: `scrape_${label}`,
+        action: "keepequal",
+      })),
+      { regex: droppedLabels, action: "labeldrop" },
+    ],
+    target_limit: 32,
+    body_size_limit: "4MB",
+    sample_limit: 20,
+    label_limit: 32,
+    label_name_length_limit: 128,
+    label_value_length_limit: 512,
+  });
+  const expected = {
+    scrape_configs: [
+      job(
+        "kubelet-resource",
+        "/metrics/resource",
+        "container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_start_time_seconds",
+        "scrape_(namespace|pod|container)",
+      ),
+      job(
+        "kubelet-cadvisor",
+        "/metrics/cadvisor",
+        "container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total",
+        "scrape_(namespace|pod|container)|name|image",
+      ),
+      job(
+        "kubelet-probes",
+        "/metrics/probes",
+        "prober_probe_total",
+        "scrape_(namespace|pod|container)",
+      ),
+    ],
+  };
+  if (!isDeepStrictEqual(configuration, expected)) {
+    throw new DeploymentContractError(
+      "monitoring_contract_invalid",
+      "node-metrics scrape configuration does not match the regular-container filter contract",
     );
   }
 }

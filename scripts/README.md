@@ -228,10 +228,39 @@ overlay 改为 `online` 并触发 rollout。ConfigMap 不重复保存该值，st
 Stage 2 Task 2 已让三个 profile 同时渲染 digest 锁定的 Prometheus、Alertmanager
 与 kube-state-metrics。operator 固定核对三个独立 ServiceAccount、当前
 Pod/ReplicaSet 最小 KSM RBAC 与 allow/deny、resource/metric allowlist、15秒
-scrape/evaluation、24小时与1GiB TSDB上限、Prometheus保留PVC、配置/rule与catalog、
+scrape/evaluation、15天与1600MB TSDB上限、Prometheus保留PVC、配置/rule与catalog、
 配置digest触发的rollout、健康probe、ClusterIP Service及两个Namespace的精确
 NetworkPolicy对象。Runtime与Alertmanager分别挂载本Namespace中同名Secret的
 `token`；两个对象的同值只能由安装流程和真实Webhook验收证明，status不读取明文。
+
+Stage 3 DC-3 为两个 K3s profile 引入 Kustomize Component
+`deploy/monitoring/components/node-metrics`：Prometheus 以自身 projected token /
+集群 CA 严格 TLS 读取固定单节点 kubelet 的 `/metrics/resource|cadvisor|probes`，
+通过 `k8s-incident-scenarios` 内 `pods` `list/watch` 的 pod-role 服务发现为每个
+regular 容器生成 target，并在入库前用 `keepequal` 只保留属于该容器的样本
+（init / ephemeral / 其他 Namespace / `container=""` 样本丢弃）。三条 job 的
+`sample_limit: 20` 故意收紧：整节点级过滤失效（如 `keepequal` 整体丢失）时整次
+抓取失败而不是把整个节点入库；局部失效由 operator 对 scrape 配置的精确匹配兜底。
+`up` 等 report 序列不经 metric relabel，会带 `scrape_*` 辅助标签（值为本项目对象名）。
+install/upgrade/uninstall 的 `--preview` JSON 除 `resources`（kustomize 渲染集合）外
+以 `operatorBoundResources` 列出由 operator 而非 kustomize 应用 / 删除的
+ClusterRole/ClusterRoleBinding，供操作者与 CI 读取完整对象集合。
+operator 精确核对 `prometheus.yaml` 的 `scrape_config_files`、node-metrics scrape
+配置、Pod 发现 Role/RoleBinding、新增 egress NetworkPolicy、credential/scrape
+挂载与含 scrape 数据的配置 digest；`nodes/metrics` 的 ClusterRole/ClusterRoleBinding
+不在 overlay 中，由 install/upgrade 在 admission boundary 就绪后把
+`deploy/monitoring/components/node-metrics/cluster-rbac.yaml` 的 `__REGISTERED_NODE__`
+绑定到唯一 Ready 节点并经 stdin apply，status 按同一节点名比对、并对 prometheus
+ServiceAccount 做 `pods list/watch`、`nodes/<node>/metrics get` 正向与
+`pods get`、无名 `nodes/metrics`、`nodes get/list`、`nodes/proxy` 负向 SSAR。
+`status` 以 `monitoring.nodeMetrics = { configuration: "bound", node,
+collection: "requires-live-probe" }` 报告：组件存在与 RBAC 绑定不证明端点可读、
+样本新鲜或过滤有效，这些需要另行授权的 live 验证。`kind-evaluation` 不启用该组件
+（kubeadm 默认 kubelet 自签 serving 证书无法用集群 CA 严格校验），status 要求该
+ClusterRole/Binding 不存在并对 prometheus 做全部负向检查。普通 `uninstall` 在
+kustomize 删除后核对 ClusterRole/Binding 的 `app.kubernetes.io/part-of` /
+`app.kubernetes.io/name` ownership 标签，仅删除本项目自己创建的对象；标签不符时以
+`ownership_mismatch` 拒绝且不删除。
 
 普通 `uninstall` 使用独立 Kustomize 资源集合，从结构上排除 Namespace、PVC
 、PV、Secret和证书资源，并在已有Runtime/Prometheus PVC时核对卸载前后UID不变。

@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-scrape-node-metrics
+  namespace: k8s-incident-monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: k8s-incident-agent
+data:
+  # One target per regular container of the fixed scenario Namespace. Every
+  # target scrapes the whole kubelet endpoint of its node, so the metric
+  # relabeling below must keep only the samples of that container: `keepequal`
+  # compares sample labels with the helper labels copied from discovery (which
+  # must not be named pod/namespace/container, or they would be renamed
+  # exported_*). Init containers have no target, ephemeral containers are not
+  # discovered, and anything else in the response is dropped before the TSDB.
+  # sample_limit is deliberately tight: losing the filter as a whole fails the
+  # scrape instead of admitting the whole node. Report series such as `up` keep
+  # the scrape_* labels because metric relabeling does not apply to them.
+  node-metrics.yaml: |
+    scrape_configs:
+      - job_name: kubelet-resource
+        scheme: https
+        metrics_path: /metrics/resource
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - k8s-incident-scenarios
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_container_init]
+            regex: "true"
+            action: drop
+          - source_labels: [__meta_kubernetes_pod_host_ip]
+            regex: (.+)
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_host_ip]
+            regex: (.+)
+            replacement: ${1}:10250
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: scrape_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: scrape_pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: scrape_container
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_start_time_seconds
+            action: keep
+          - source_labels: [namespace]
+            target_label: scrape_namespace
+            action: keepequal
+          - source_labels: [pod]
+            target_label: scrape_pod
+            action: keepequal
+          - source_labels: [container]
+            target_label: scrape_container
+            action: keepequal
+          - regex: scrape_(namespace|pod|container)
+            action: labeldrop
+        target_limit: 32
+        body_size_limit: 4MB
+        sample_limit: 20
+        label_limit: 32
+        label_name_length_limit: 128
+        label_value_length_limit: 512
+      - job_name: kubelet-cadvisor
+        scheme: https
+        metrics_path: /metrics/cadvisor
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - k8s-incident-scenarios
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_container_init]
+            regex: "true"
+            action: drop
+          - source_labels: [__meta_kubernetes_pod_host_ip]
+            regex: (.+)
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_host_ip]
+            regex: (.+)
+            replacement: ${1}:10250
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: scrape_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: scrape_pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: scrape_container
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total
+            action: keep
+          - source_labels: [namespace]
+            target_label: scrape_namespace
+            action: keepequal
+          - source_labels: [pod]
+            target_label: scrape_pod
+            action: keepequal
+          - source_labels: [container]
+            target_label: scrape_container
+            action: keepequal
+          - regex: scrape_(namespace|pod|container)|name|image
+            action: labeldrop
+        target_limit: 32
+        body_size_limit: 4MB
+        sample_limit: 20
+        label_limit: 32
+        label_name_length_limit: 128
+        label_value_length_limit: 512
+      - job_name: kubelet-probes
+        scheme: https
+        metrics_path: /metrics/probes
+        authorization:
+          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - k8s-incident-scenarios
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_container_init]
+            regex: "true"
+            action: drop
+          - source_labels: [__meta_kubernetes_pod_host_ip]
+            regex: (.+)
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_host_ip]
+            regex: (.+)
+            replacement: ${1}:10250
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: scrape_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: scrape_pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: scrape_container
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: prober_probe_total
+            action: keep
+          - source_labels: [namespace]
+            target_label: scrape_namespace
+            action: keepequal
+          - source_labels: [pod]
+            target_label: scrape_pod
+            action: keepequal
+          - source_labels: [container]
+            target_label: scrape_container
+            action: keepequal
+          - regex: scrape_(namespace|pod|container)
+            action: labeldrop
+        target_limit: 32
+        body_size_limit: 4MB
+        sample_limit: 20
+        label_limit: 32
+        label_name_length_limit: 128
+        label_value_length_limit: 512

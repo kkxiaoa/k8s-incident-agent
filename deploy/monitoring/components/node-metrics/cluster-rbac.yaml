@@ -1,0 +1,32 @@
+# Not listed in the component's resources on purpose: the ClusterRole must name
+# the exact registered node, which only the deployment operator knows at
+# install time. scripts/deployment.mjs renders this file, binds
+# __REGISTERED_NODE__ to the single Ready node and applies the result itself.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-incident-agent-prometheus-node-metrics
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: k8s-incident-agent
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/metrics"]
+    resourceNames: ["__REGISTERED_NODE__"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-incident-agent-prometheus-node-metrics
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: k8s-incident-agent
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: k8s-incident-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-incident-agent-prometheus-node-metrics

@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: k8s-incident-monitoring
+spec:
+  template:
+    metadata:
+      annotations:
+        k8s-incident-agent.io/config-digest: "sha256:ab3c34e39f04568393a10dd1d6e9130d6b95da94dac8bfa10d655a5e24b5c3a2"
+    spec:
+      containers:
+        - name: prometheus
+          volumeMounts:
+            - name: scrape
+              mountPath: /etc/prometheus/scrape
+              readOnly: true
+            - name: kubernetes-credentials
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+      volumes:
+        - name: scrape
+          configMap:
+            name: prometheus-scrape-node-metrics
+        - name: kubernetes-credentials
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
