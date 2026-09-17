@@ -46,6 +46,10 @@ const HEALTHY: MonitoringHealthView = {
 
 const AFFECTED_PODS_PANEL = {
   panelId: "image-pull-affected-pods",
+  title: "镜像拉取失败 Pod",
+  unit: "pods",
+  purpose: "Registered purpose.",
+  seriesBinding: "target",
   recommendedWindow: "15m",
   riskDirection: "higher_is_worse",
   signalRole: "trigger",
@@ -54,6 +58,10 @@ const AFFECTED_PODS_PANEL = {
 
 const AVAILABLE_REPLICAS_PANEL = {
   panelId: "image-pull-available-replicas",
+  title: "Deployment 可用副本",
+  unit: "replicas",
+  purpose: "Registered purpose.",
+  seriesBinding: "target",
   recommendedWindow: "1h",
   riskDirection: "lower_is_worse",
   signalRole: "context",
@@ -62,6 +70,10 @@ const AVAILABLE_REPLICAS_PANEL = {
 
 const SERVICE_ENDPOINT_PANEL = {
   panelId: "service-ready-endpoints",
+  title: "Service 就绪 Endpoint",
+  unit: "endpoints",
+  purpose: "Registered purpose.",
+  seriesBinding: "target",
   recommendedWindow: "15m",
   riskDirection: "lower_is_worse",
   signalRole: "trigger",
@@ -115,11 +127,23 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function metricWindowMilliseconds(window: MetricWindowView): number {
+  return window === "15m"
+    ? 15 * 60_000
+    : window === "1h"
+      ? 60 * 60_000
+      : window === "6h"
+        ? 6 * 60 * 60_000
+        : window === "7d"
+          ? 7 * 24 * 60 * 60_000
+          : 15 * 24 * 60 * 60_000;
+}
+
 function panelResponse(
   panelId: string,
   window: MetricWindowView,
   state: MetricQueryStateView = "ok",
-): IncidentMetricPanelView & { schemaVersion: 1 } {
+): IncidentMetricPanelView & { schemaVersion: 2 } {
   const empty =
     state === "no_data" ||
     state === "query_error" ||
@@ -131,8 +155,12 @@ function panelResponse(
     : serviceEndpoints
       ? "Service 就绪 Endpoint"
       : "镜像拉取失败 Pod";
+  const queriedAt = "2026-09-03T02:15:00.000Z";
+  const rangeStart = new Date(
+    Date.parse(queriedAt) - metricWindowMilliseconds(window),
+  ).toISOString();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     result: {
       panelId,
       title,
@@ -141,21 +169,31 @@ function panelResponse(
         : serviceEndpoints
           ? "endpoints"
           : "pods",
+      purpose: "Registered purpose.",
       threshold: availableReplicas ? null : 1,
       riskDirection:
         availableReplicas || serviceEndpoints
           ? "lower_is_worse"
           : "higher_is_worse",
+      seriesBinding: "target",
       window,
+      anchor: "current",
       state,
-      queriedAt: "2026-09-03T02:15:00.000Z",
-      latestSampleAt: empty ? null : "2026-09-03T02:15:00.000Z",
+      queriedAt,
+      rangeStart,
+      rangeEnd: queriedAt,
+      latestSampleAt: empty ? null : queriedAt,
       currentValue: empty ? null : 0,
-      samples: empty
+      series: empty
         ? []
         : [
-            { timestamp: "2026-09-03T02:14:45.000Z", value: 1 },
-            { timestamp: "2026-09-03T02:15:00.000Z", value: 0 },
+            {
+              labels: {},
+              samples: [
+                { timestamp: "2026-09-03T02:14:45.000Z", value: 1 },
+                { timestamp: "2026-09-03T02:15:00.000Z", value: 0 },
+              ],
+            },
           ],
     },
     markers: empty
@@ -268,11 +306,11 @@ describe("IncidentMonitoringOverview", () => {
       screen.getByRole("heading", { name: "Deployment 可用副本" }),
     ).toBeVisible();
     expect(
-      screen.getAllByLabelText("镜像拉取失败 Pod，数值越高表示影响范围越大。"),
+      screen.getAllByLabelText("Registered purpose. 镜像拉取失败 Pod，数值越高表示影响范围越大。"),
     ).toHaveLength(1);
     expect(
       screen.getAllByLabelText(
-        "Deployment 可用副本，按“当前可用副本 / 期望副本”展示；低于期望值表示容量未达标。",
+        "Registered purpose. Deployment 可用副本，按“当前可用副本 / 期望副本”展示；低于期望值表示容量未达标。",
       ),
     ).toHaveLength(1);
     expect(
@@ -555,7 +593,7 @@ describe("MetricPanelCard states", () => {
   });
 
   it.each([
-    ["stale", "最后样本早于当前查询时刻，不能作为实时状态判断。"],
+    ["stale", "最后样本早于数据窗口终点，不能作为该时刻的状态判断。"],
     ["partial", "Prometheus 报告了部分结果，图表只展示当前可验证样本。"],
   ] as const)("keeps verified samples visible for %s", async (state, copy) => {
     vi.stubGlobal(

@@ -7,7 +7,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import (
 )
 from k8s_incident_agent.domain.models import JsonValue
 from k8s_incident_agent.kubernetes.errors import validate_kubernetes_failure_contract
-from k8s_incident_agent.monitoring.contracts import MetricWindow
+from k8s_incident_agent.monitoring.contracts import MetricTimeAnchor, MetricWindow
 from k8s_incident_agent.monitoring.errors import validate_monitoring_failure_contract
 
 # Bounded successful observations per Kubernetes tool, or per Prometheus panel and
@@ -27,7 +27,9 @@ def normalize_diagnostic_tool_call_identity(
     if tool_name != PROMETHEUS_TOOL_NAME or not isinstance(value, dict):
         raise ValueError("Diagnostic tool call identity is invalid")
     mapping = cast(dict[object, object], value)
-    if set(mapping) != {"panelId", "window"}:
+    # Runs recorded before the anchor existed only ever queried the current window;
+    # their persisted identity is replayed as-is rather than rewritten.
+    if set(mapping) not in ({"panelId", "window"}, {"panelId", "window", "anchor"}):
         raise ValueError("Prometheus tool call identity is invalid")
     panel_id = mapping.get("panelId")
     window = mapping.get("window")
@@ -41,7 +43,22 @@ def normalize_diagnostic_tool_call_identity(
         normalized_window = MetricWindow(window)
     except ValueError:
         raise ValueError("Prometheus tool call identity is invalid") from None
-    return {"panelId": panel_id, "window": normalized_window.value}
+    normalized: dict[str, JsonValue] = {
+        "panelId": panel_id,
+        "window": normalized_window.value,
+    }
+    if "anchor" in mapping:
+        anchor = mapping["anchor"]
+        if not isinstance(anchor, str):
+            raise ValueError("Prometheus tool call identity is invalid")
+        try:
+            normalized_anchor = MetricTimeAnchor(anchor)
+        except ValueError:
+            raise ValueError("Prometheus tool call identity is invalid") from None
+        if normalized_anchor is MetricTimeAnchor.RUN:
+            raise ValueError("Prometheus tool call identity is invalid")
+        normalized["anchor"] = normalized_anchor.value
+    return normalized
 
 
 def observation_limit_output(tool_name: str) -> dict[str, JsonValue]:

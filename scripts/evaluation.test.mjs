@@ -803,6 +803,28 @@ test("ordinary code naming does not block lifecycle checks or prove diagnosis co
   }
 });
 
+test("context panels may be empty on a profile without kubelet collection, but never unqueryable", async () => {
+  const healthy = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    createHarness().dependencies,
+  );
+  for (const scenario of healthy.artifact.scenarios) {
+    if (scenario.status !== "passed") continue;
+    const context = scenario.checks.panels.find((panel) => panel.signalRole === "context");
+    assert.equal(context?.state, "no_data");
+  }
+
+  const broken = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    createHarness({ contextPanelState: "query_error" }).dependencies,
+  );
+  assert.ok(broken.artifact.scenarios.length > 0);
+  for (const scenario of broken.artifact.scenarios) {
+    assert.equal(scenario.status, "failed");
+    assert.equal(scenario.failure.code, "firing_panel_invalid");
+  }
+});
+
 test("ImagePull diagnosis alone cannot satisfy the repair evaluation slice", async () => {
   const harness = createHarness({
     diagnosisCodeByScenario: {
@@ -1268,14 +1290,29 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   }
   if (suffix === "/monitoring/panels") {
     return jsonResponse({
-      schemaVersion: 3,
+      schemaVersion: 4,
       panels: [
         {
           panelId: `${scenario.scenarioId}-metric`,
+          title: "Trigger metric",
+          unit: "pods",
+          purpose: "Registered purpose.",
+          seriesBinding: "target",
           recommendedWindow: "15m",
           riskDirection: "higher_is_worse",
           signalRole: "trigger",
           thresholdDuration: "30s",
+        },
+        {
+          panelId: `${scenario.scenarioId}-context`,
+          title: "Context metric",
+          unit: "cores",
+          purpose: "Registered purpose.",
+          seriesBinding: "pod_container",
+          recommendedWindow: "15m",
+          riskDirection: "neutral",
+          signalRole: "context",
+          thresholdDuration: null,
         },
       ],
     });
@@ -1283,24 +1320,34 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   if (suffix.startsWith("/monitoring/panels/")) {
     if (isOtherIncident) return new Response(null, { status: 404 });
     const panelId = suffix.split("/").at(-1);
-    const panelState = !state.prometheus
-      ? "monitoring_unavailable"
-      : !state.kubeStateMetrics || scenario.resolved
-        ? "stale"
-        : "ok";
-    const observed = !new Set(["monitoring_unavailable", "no_data"]).has(
+    const contextPanel = panelId.endsWith("-context");
+    const panelState = contextPanel
+      ? options.contextPanelState ?? "no_data"
+      : !state.prometheus
+        ? "monitoring_unavailable"
+        : !state.kubeStateMetrics || scenario.resolved
+          ? "stale"
+          : "ok";
+    const observed = !new Set(["monitoring_unavailable", "no_data", "query_error"]).has(
       panelState,
     );
     return jsonResponse({
-      schemaVersion: 1,
+      schemaVersion: 2,
       result: {
         panelId,
         window: url.searchParams.get("window"),
+        anchor: "current",
         state: panelState,
-        threshold: 1,
-        riskDirection: "higher_is_worse",
-        currentValue: observed ? 1 : null,
-        samples: observed ? [{ timestamp: "2026-09-05T00:00:00Z", value: 1 }] : [],
+        threshold: contextPanel ? null : 1,
+        riskDirection: contextPanel ? "neutral" : "higher_is_worse",
+        seriesBinding: contextPanel ? "pod_container" : "target",
+        currentValue: observed && !contextPanel ? 1 : null,
+        series: observed
+          ? [{
+              labels: contextPanel ? { pod: "web-1", uid: "u1", container: "app" } : {},
+              samples: [{ timestamp: "2026-09-05T00:00:00Z", value: 1 }],
+            }]
+          : [],
       },
       markers: [],
       markersTruncated: false,

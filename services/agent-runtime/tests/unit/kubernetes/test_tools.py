@@ -124,6 +124,8 @@ PVC_TARGET = ScenarioTarget(
     name="pvc-storage-class-missing",
 )
 
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
+
 
 def _alembic_config(paths: RuntimePaths) -> Config:
     config = Config(str(SERVICE_ROOT / "alembic.ini"))
@@ -476,6 +478,7 @@ async def _context(
         repository=repository,
         now=lambda: NOW + timedelta(seconds=30),
         prometheus=prometheus_query_service_stub(),
+        occurred_at=_OCCURRED_AT,
     )
 
 

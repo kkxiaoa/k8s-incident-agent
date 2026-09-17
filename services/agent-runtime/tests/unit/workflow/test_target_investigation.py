@@ -84,6 +84,8 @@ DEPLOYMENT_TOOLS = (
     "query_prometheus",
 )
 
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
+
 
 class _CapturingModel(FakeMessagesListChatModel):
     _bound_tool_names: list[tuple[str, ...]] = PrivateAttr(
@@ -344,6 +346,7 @@ async def _run_diagnosis(
                     repository=repository,
                     now=lambda: NOW,
                     prometheus=prometheus_query_service_stub(),
+                    occurred_at=_OCCURRED_AT,
                 ),
                 durability="sync",
             )

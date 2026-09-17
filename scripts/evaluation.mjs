@@ -1376,7 +1376,7 @@ async function validateFiringPanels(incidentId, fetchImpl) {
     `/api/v1/incidents/${incidentId}/monitoring/panels`,
   );
   if (
-    catalog?.schemaVersion !== 3 ||
+    catalog?.schemaVersion !== 4 ||
     !Array.isArray(catalog.panels) ||
     catalog.panels.length === 0 ||
     catalog.panels.length > 8
@@ -1391,11 +1391,21 @@ async function validateFiringPanels(incidentId, fetchImpl) {
       reference.recommendedWindow,
       fetchImpl,
     );
+    if (!Array.isArray(panel.result.series)) {
+      throw upstreamContractError();
+    }
+    // Only the alert's own trigger panel must be observable and firing; context
+    // panels (including kubelet-backed ones that a profile may not collect) may be
+    // empty, but a failing query or unavailable Prometheus is never acceptable.
+    const unobservable =
+      panel.result.state === "query_error" ||
+      panel.result.state === "monitoring_unavailable";
     if (
-      panel.result.state !== "ok" ||
-      panel.result.currentValue === null ||
-      !Array.isArray(panel.result.samples) ||
-      panel.result.samples.length === 0
+      unobservable ||
+      (reference.signalRole === "trigger" &&
+        (panel.result.state !== "ok" ||
+          panel.result.currentValue === null ||
+          panel.result.series.length !== 1))
     ) {
       throw contractError(
         "firing_panel_invalid",
@@ -1447,9 +1457,10 @@ async function getPanel(incidentId, panelId, window, fetchImpl) {
     { transientStatuses: new Set([502, 503, 504]) },
   );
   if (
-    document?.schemaVersion !== 1 ||
+    document?.schemaVersion !== 2 ||
     document.result?.panelId !== panelId ||
-    document.result?.window !== window
+    document.result?.window !== window ||
+    document.result?.anchor !== "current"
   ) {
     throw upstreamContractError();
   }

@@ -91,21 +91,31 @@ it("accepts every bounded metric window", () => {
 
 function metricPanel() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     result: {
       panelId: "image-pull-affected-pods",
       title: "Affected pods",
       unit: "pods",
+      purpose: "Registered purpose.",
       threshold: 1,
       riskDirection: "higher_is_worse",
+      seriesBinding: "target",
       window: "15m",
+      anchor: "current",
       state: "ok",
       queriedAt: "2026-09-03T02:15:00.000Z",
+      rangeStart: "2026-09-03T02:00:00.000Z",
+      rangeEnd: "2026-09-03T02:15:00.000Z",
       latestSampleAt: "2026-09-03T02:15:00.000Z",
       currentValue: 0,
-      samples: [
-        { timestamp: "2026-09-03T02:14:45.000Z", value: 1 },
-        { timestamp: "2026-09-03T02:15:00.000Z", value: 0 },
+      series: [
+        {
+          labels: {},
+          samples: [
+            { timestamp: "2026-09-03T02:14:45.000Z", value: 1 },
+            { timestamp: "2026-09-03T02:15:00.000Z", value: 0 },
+          ],
+        },
       ],
     },
     markers: [
@@ -406,10 +416,14 @@ describe("monitoring response contracts", () => {
 
   it("accepts unique catalog panel references and rejects duplicates", () => {
     const panels = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       panels: [
         {
           panelId: "image-pull-affected-pods",
+          title: "镜像拉取失败 Pod",
+          unit: "pods",
+          purpose: "Registered purpose.",
+          seriesBinding: "target",
           recommendedWindow: "15m",
           riskDirection: "higher_is_worse",
           signalRole: "trigger",
@@ -417,6 +431,10 @@ describe("monitoring response contracts", () => {
         },
         {
           panelId: "image-pull-available-replicas",
+          title: "Deployment 可用副本",
+          unit: "replicas",
+          purpose: "Registered purpose.",
+          seriesBinding: "target",
           recommendedWindow: "1h",
           riskDirection: "lower_is_worse",
           signalRole: "context",
@@ -444,7 +462,7 @@ describe("monitoring response contracts", () => {
     );
 
     expect(parsed?.result.currentValue).toBe(0);
-    expect(parsed?.result.samples).toHaveLength(2);
+    expect(parsed?.result.series[0]?.samples).toHaveLength(2);
     expect(parsed?.markers).toEqual(panel.markers);
   });
 
@@ -453,7 +471,7 @@ describe("monitoring response contracts", () => {
     panel.result.state = "no_data";
     panel.result.latestSampleAt = null as unknown as string;
     panel.result.currentValue = null as unknown as number;
-    panel.result.samples = [];
+    panel.result.series = [];
 
     const parsed = parseIncidentMetricPanelResponse(
       panel,
@@ -462,7 +480,55 @@ describe("monitoring response contracts", () => {
     );
 
     expect(parsed?.result.currentValue).toBeNull();
-    expect(parsed?.result.samples).toEqual([]);
+    expect(parsed?.result.series).toEqual([]);
+  });
+
+  it("accepts attributed per-container series anchored on the occurrence", () => {
+    const panel = metricPanel();
+    panel.result.panelId = "container-memory-working-set-bytes";
+    panel.result.title = "容器内存工作集与限额";
+    panel.result.unit = "bytes";
+    panel.result.threshold = null as unknown as number;
+    panel.result.riskDirection = "neutral";
+    panel.result.seriesBinding = "pod_container";
+    panel.result.anchor = "occurrence";
+    panel.result.currentValue = null as unknown as number;
+    panel.result.series = [
+      {
+        labels: { pod: "web-1", uid: "u1", container: "app", series: "usage" },
+        samples: [{ timestamp: "2026-09-03T02:15:00.000Z", value: 104857600 }],
+      },
+      {
+        labels: { pod: "web-1", uid: "u1", container: "app", series: "limit" },
+        samples: [{ timestamp: "2026-09-03T02:14:45.000Z", value: 268435456 }],
+      },
+    ];
+
+    const parsed = parseIncidentMetricPanelResponse(
+      panel,
+      "container-memory-working-set-bytes",
+      "15m",
+      "occurrence",
+    );
+
+    expect(parsed?.result.series).toHaveLength(2);
+    expect(parsed?.result.currentValue).toBeNull();
+    expect(
+      parseIncidentMetricPanelResponse(
+        panel,
+        "container-memory-working-set-bytes",
+        "15m",
+      ),
+    ).toBeNull();
+    panel.result.currentValue = 1;
+    expect(
+      parseIncidentMetricPanelResponse(
+        panel,
+        "container-memory-working-set-bytes",
+        "15m",
+        "occurrence",
+      ),
+    ).toBeNull();
   });
 
   it("accepts a static lower bound for a lower-is-worse metric", () => {
@@ -492,18 +558,30 @@ describe("monitoring response contracts", () => {
     "risk-threshold",
     "marker-shape",
     "marker-window",
+    "anchor",
+    "range",
+    "binding-labels",
+    "neutral-threshold",
   ])("rejects invalid %s responses", (mutation) => {
     const panel = metricPanel();
-    if (mutation === "panel") {
+    if (mutation === "anchor") {
+      panel.result.anchor = "occurrence";
+    } else if (mutation === "range") {
+      panel.result.rangeStart = "2026-09-03T01:59:00.000Z";
+    } else if (mutation === "binding-labels") {
+      panel.result.series[0].labels = { pod: "web-1" } as Record<string, string>;
+    } else if (mutation === "neutral-threshold") {
+      panel.result.riskDirection = "neutral";
+    } else if (mutation === "panel") {
       panel.result.panelId = "image-pull-available-replicas";
     } else if (mutation === "window") {
       panel.result.window = "1h";
     } else if (mutation === "state-shape") {
       panel.result.state = "no_data";
     } else if (mutation === "sample-order") {
-      panel.result.samples.reverse();
+      panel.result.series[0].samples.reverse();
     } else if (mutation === "sample-window") {
-      panel.result.samples[0].timestamp = "2026-09-03T01:59:59.999Z";
+      panel.result.series[0].samples[0].timestamp = "2026-09-03T01:59:59.999Z";
     } else if (mutation === "current") {
       panel.result.currentValue = 2;
     } else if (mutation === "risk-threshold") {

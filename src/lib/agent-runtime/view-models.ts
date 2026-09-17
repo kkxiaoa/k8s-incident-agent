@@ -286,13 +286,31 @@ function metricsEvidenceSummary(payload: Record<string, unknown>): string | null
   const riskDirection = nonEmptyString(result.riskDirection);
   if (
     (riskDirection !== "higher_is_worse" &&
-      riskDirection !== "lower_is_worse") ||
+      riskDirection !== "lower_is_worse" &&
+      riskDirection !== "neutral") ||
     (riskDirection === "higher_is_worse" && threshold === null)
   ) {
     return null;
   }
   if (currentValue !== null) {
     facts.push(`当前值 ${currentValue}`);
+  }
+  // Runs before the attributed-series contract persisted a single sample list.
+  const series = recordArray(result.series);
+  if (series !== null && series.length > 0) {
+    const binding = nonEmptyString(result.seriesBinding);
+    facts.push(
+      `${series.length} 条序列${
+        binding === "pod_container"
+          ? "（按 Pod / 容器归属）"
+          : binding === "pod"
+            ? "（按 Pod 归属）"
+            : ""
+      }`,
+    );
+  }
+  if (nonEmptyString(result.anchor) === "occurrence") {
+    facts.push("窗口锚定故障起点");
   }
   const state = nonEmptyString(result.state);
   const stateLabel =
@@ -312,6 +330,8 @@ function metricsEvidenceSummary(payload: Record<string, unknown>): string | null
   }
   if (threshold !== null) {
     facts.push(`阈值 ${threshold}`);
+  } else if (riskDirection === "neutral") {
+    facts.push("中性上下文指标");
   } else {
     facts.push("风险方向 数值下降");
   }

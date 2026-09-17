@@ -1,5 +1,7 @@
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -14,7 +16,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_supported_alert_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-16.1"
+    assert catalog.version == "2026-09-17.1"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
@@ -52,11 +54,20 @@ def test_production_catalog_has_supported_alert_entries() -> None:
         "liveness-probe-restarts",
         "pvc-pending-state",
         "pvc-pending-age-seconds",
+        "container-cpu-cores",
+        "container-memory-working-set-bytes",
+        "container-cpu-throttled-ratio",
+        "container-probe-failures",
+        "container-last-terminated-reason",
+        "pod-unschedulable",
     )
     assert catalog.entries[0].panels[0].model_dump() == {
         "panel_id": "image-pull-affected-pods",
         "title": "镜像拉取失败 Pod",
         "unit": "pods",
+        "purpose": catalog.entries[0].panels[0].purpose,
+        "producer": "kube-state-metrics",
+        "series_binding": "target",
         "threshold": 1.0,
         "risk_direction": "higher_is_worse",
         "signal_role": "trigger",
@@ -168,15 +179,15 @@ def test_production_catalog_has_supported_alert_entries() -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        '{"schemaVersion":9,"catalogVersion":"v1","alerts":[]}',
+        '{"schemaVersion":10,"catalogVersion":"v1","contextPanels":[],"alerts":[]}',
         (
-            '{"schemaVersion":9,"catalogVersion":"v1","alerts":['
+            '{"schemaVersion":10,"catalogVersion":"v1","contextPanels":[],"alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
             '"clusterLabel":"same","namespaceLabel":"same",'
             '"nameLabel":"name"},"panels":[{"panelId":"panel-a",'
-            '"title":"Panel A","unit":"pods","threshold":1.0,'
+            '"title":"Panel A","unit":"pods","purpose":"P","producer":"kube-state-metrics","seriesBinding":"target","threshold":1.0,'
             '"riskDirection":"higher_is_worse","signalRole":"trigger",'
             '"thresholdDuration":"1s",'
             '"recommendedWindow":"15m","staleAfterSeconds":60,'
@@ -184,14 +195,14 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             'name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schemaVersion":9,"schemaVersion":9,"catalogVersion":"v1",'
+            '{"schemaVersion":10,"schemaVersion":10,"catalogVersion":"v1","contextPanels":[],'
             '"alerts":[{"alertId":"A","displayName":"A",'
             '"triggerSummary":"A","rule":{"expression":"vector(1)",'
             '"for":"1s"},"target":{"apiVersion":"v1",'
             '"kind":"Pod","clusterLabel":"cluster",'
             '"namespaceLabel":"namespace","nameLabel":"name"},'
             '"panels":[{"panelId":"panel-a","title":"Panel A",'
-            '"unit":"pods","threshold":1.0,'
+            '"unit":"pods","purpose":"P","producer":"kube-state-metrics","seriesBinding":"target","threshold":1.0,'
             '"riskDirection":"higher_is_worse","signalRole":"trigger",'
             '"thresholdDuration":"1s",'
             '"recommendedWindow":"15m",'
@@ -199,13 +210,13 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             '"metric{namespace="{{namespace}}",name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schema_version":9,"catalogVersion":"v1","alerts":['
+            '{"schema_version":9,"catalogVersion":"v1","contextPanels":[],"alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
             '"clusterLabel":"cluster","namespaceLabel":"namespace",'
             '"nameLabel":"name"},"panels":[{"panelId":"panel-a",'
-            '"title":"Panel A","unit":"pods","threshold":1.0,'
+            '"title":"Panel A","unit":"pods","purpose":"P","producer":"kube-state-metrics","seriesBinding":"target","threshold":1.0,'
             '"riskDirection":"higher_is_worse","signalRole":"trigger",'
             '"thresholdDuration":"1s",'
             '"recommendedWindow":"15m","staleAfterSeconds":60,'
@@ -228,8 +239,9 @@ def test_catalog_rejects_empty_ambiguous_or_duplicate_key_contracts(
 
 def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     document = {
-        "schemaVersion": 9,
+        "schemaVersion": 10,
         "catalogVersion": "v1",
+        "contextPanels": [],
         "alerts": [
             {
                 "alertId": "A",
@@ -248,6 +260,9 @@ def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
                         "panelId": "panel-a",
                         "title": "Panel A",
                         "unit": "replicas",
+                        "purpose": "P",
+                        "producer": "kube-state-metrics",
+                        "seriesBinding": "target",
                         "threshold": 1.0,
                         "riskDirection": "lower_is_worse",
                         "signalRole": "trigger",
@@ -313,6 +328,9 @@ def test_catalog_rejects_higher_risk_without_a_static_threshold() -> None:
                 "panelId": "panel-a",
                 "title": "Panel A",
                 "unit": "pods",
+                "purpose": "P",
+                "producer": "kube-state-metrics",
+                "seriesBinding": "target",
                 "threshold": None,
                 "riskDirection": "higher_is_worse",
                 "signalRole": "trigger",
@@ -330,8 +348,9 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     document = {
-        "schemaVersion": 9,
+        "schemaVersion": 10,
         "catalogVersion": "v1",
+        "contextPanels": [],
         "alerts": [
             {
                 "alertId": "A",
@@ -350,6 +369,9 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
                         "panelId": "panel-a",
                         "title": "Panel A",
                         "unit": "pods",
+                        "purpose": "P",
+                        "producer": "kube-state-metrics",
+                        "seriesBinding": "target",
                         "threshold": 1.0,
                         "riskDirection": "higher_is_worse",
                         "signalRole": "trigger",
@@ -371,3 +393,130 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
 
     with pytest.raises(ValueError, match="Alert catalog contract is invalid"):
         load_alert_catalog(catalog_dir)
+
+
+def _production_document() -> dict[str, Any]:
+    return cast(
+        dict[str, Any],
+        json.loads(
+            (REPOSITORY_ROOT / "monitoring" / "catalog" / "catalog.json").read_text()
+        ),
+    )
+
+
+def _write_catalog(tmp_path: Path, document: dict[str, Any]) -> Path:
+    catalog_dir = tmp_path / "catalog"
+    catalog_dir.mkdir()
+    (catalog_dir / "catalog.json").write_text(json.dumps(document), encoding="utf-8")
+    return catalog_dir
+
+
+def test_production_context_panels_are_bounded_deployment_context() -> None:
+    catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
+
+    [group] = catalog.context_groups
+    assert (group.target.api_version, group.target.kind) == ("apps/v1", "Deployment")
+    assert [panel.panel_id for panel in group.panels] == [
+        "container-cpu-cores",
+        "container-memory-working-set-bytes",
+        "container-cpu-throttled-ratio",
+        "container-probe-failures",
+        "container-last-terminated-reason",
+        "pod-unschedulable",
+    ]
+    assert {panel.producer for panel in group.panels} == {
+        "kubelet-resource",
+        "kubelet-cadvisor",
+        "kubelet-probes",
+        "kube-state-metrics",
+    }
+    assert all(panel.signal_role == "context" for panel in group.panels)
+    assert [panel.series_binding for panel in group.panels] == [
+        *(["pod_container"] * 5),
+        "pod",
+    ]
+    assert all(
+        'job="kubelet-' in panel.query_template
+        for panel in group.panels
+        if panel.producer.startswith("kubelet")
+    )
+    assert all(
+        "group_left(uid, replicaset)" in panel.query_template for panel in group.panels
+    )
+    assert not catalog.context_panels("v1", "Service")
+    assert len(catalog.default_panels(catalog.entries[3])) == 1
+    assert catalog.find_panel("pod-unschedulable") is not None
+    assert catalog.find_panel("missing-panel") is None
+
+
+def _trigger_context(document: dict[str, Any]) -> None:
+    document["contextPanels"][0]["panels"][0].update(
+        {"signalRole": "trigger", "thresholdDuration": "30s"}
+    )
+
+
+def _unknown_kind(document: dict[str, Any]) -> None:
+    document["contextPanels"][0]["target"].update({"kind": "StatefulSet"})
+
+
+def _repeated_group(document: dict[str, Any]) -> None:
+    document["contextPanels"].append(dict(document["contextPanels"][0]))
+
+
+def _too_many_default_panels(document: dict[str, Any]) -> None:
+    template = document["alerts"][0]["panels"][1]
+    document["alerts"][0]["panels"].extend(
+        [{**template, "panelId": f"extra-context-{index}"} for index in range(2)]
+    )
+
+
+def _neutral_with_threshold(document: dict[str, Any]) -> None:
+    document["contextPanels"][0]["panels"][0].update({"threshold": 1.0})
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (_trigger_context, "contract is invalid"),
+        (_unknown_kind, "need an alert for their kind"),
+        (
+            _repeated_group,
+            "contract is invalid|repeats a context panel|duplicate panel",
+        ),
+        (_too_many_default_panels, "exceed the bounded set"),
+        (_neutral_with_threshold, "contract is invalid"),
+    ],
+)
+def test_catalog_rejects_unbounded_or_mislabelled_context_panels(
+    tmp_path: Path,
+    mutate: Callable[[dict[str, Any]], None],
+    message: str,
+) -> None:
+    document = _production_document()
+    mutate(document)
+
+    with pytest.raises(ValueError, match=message):
+        load_alert_catalog(_write_catalog(tmp_path, document))
+
+
+@pytest.mark.parametrize(
+    ("template", "valid"),
+    [
+        ('rate(m{namespace="{{namespace}}",n="{{name}}"}[{{range:2m}}])', True),
+        ('rate(m{namespace="{{namespace}}",n="{{name}}"}[{{range:30s}}])', True),
+        ('rate(m{namespace="{{namespace}}",n="{{name}}"}[{{range:2h}}])', False),
+        ('rate(m{namespace="{{namespace}}",n="{{name}}"}[{{range:0m}}])', False),
+        ('rate(m{namespace="{{namespace}}",n="{{name}}"}[{{step}}])', False),
+    ],
+)
+def test_query_templates_admit_only_the_bounded_rolling_range_placeholder(
+    template: str,
+    valid: bool,
+) -> None:
+    document = _production_document()
+    panel = {**document["contextPanels"][0]["panels"][0], "queryTemplate": template}
+    if valid:
+        MetricPanelContract.model_validate(panel)
+    else:
+        with pytest.raises(ValueError, match="unknown placeholder"):
+            MetricPanelContract.model_validate(panel)

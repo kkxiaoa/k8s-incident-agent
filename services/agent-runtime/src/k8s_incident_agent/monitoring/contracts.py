@@ -42,6 +42,41 @@ class MetricQueryState(StrEnum):
 class MetricRiskDirection(StrEnum):
     HIGHER_IS_WORSE = "higher_is_worse"
     LOWER_IS_WORSE = "lower_is_worse"
+    NEUTRAL = "neutral"
+
+
+class MetricSeriesBinding(StrEnum):
+    """How the panel's series are attributed to the Incident target.
+
+    ``target`` aggregates the whole target into one label-free series; ``pod``
+    and ``pod_container`` keep one series per Pod (``pod``/``uid``) or per regular
+    container (``+container``) as owned at each sampling time, optionally split
+    by a ``series`` label such as ``usage``/``limit`` or a probe type.
+    """
+
+    TARGET = "target"
+    POD = "pod"
+    POD_CONTAINER = "pod_container"
+
+
+class MetricTimeAnchor(StrEnum):
+    """Which fixed moment ends the data window; callers never send timestamps."""
+
+    CURRENT = "current"
+    OCCURRENCE = "occurrence"
+    RUN = "run"
+
+
+SERIES_LABEL_NAMES = frozenset({"pod", "uid", "container", "series"})
+_SERIES_LABELS_BY_BINDING: dict[MetricSeriesBinding, tuple[frozenset[str], ...]] = {
+    MetricSeriesBinding.TARGET: (frozenset(),),
+    MetricSeriesBinding.POD: (frozenset({"pod", "uid"}),),
+    MetricSeriesBinding.POD_CONTAINER: (
+        frozenset({"pod", "uid", "container"}),
+        frozenset({"pod", "uid", "container", "series"}),
+    ),
+}
+MAX_PANEL_SERIES = 8
 
 
 class MetricPanelSignalRole(StrEnum):
@@ -109,18 +144,50 @@ class RecoveryMonitoring(_MonitoringContract):
     active_alerts: list[str] = Field(max_length=8)
 
 
+class MetricSeries(_MonitoringContract):
+    labels: dict[str, str] = Field(max_length=4)
+    samples: list[MetricSample] = Field(min_length=1, max_length=512)
+
+    @field_validator("labels")
+    @classmethod
+    def require_attribution_labels(cls, value: dict[str, str]) -> dict[str, str]:
+        for name, label_value in value.items():
+            if name not in SERIES_LABEL_NAMES:
+                raise ValueError("Metric series carries an unknown label")
+            if not label_value or len(label_value) > 253:
+                raise ValueError("Metric series label value is invalid")
+        return value
+
+    @field_validator("samples")
+    @classmethod
+    def require_increasing_samples(
+        cls, value: list[MetricSample]
+    ) -> list[MetricSample]:
+        if any(
+            current.timestamp <= previous.timestamp
+            for previous, current in pairwise(value)
+        ):
+            raise ValueError("Metric series samples must increase in time")
+        return value
+
+
 class MetricPanelResult(_MonitoringContract):
     panel_id: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=160)
     unit: str = Field(min_length=1, max_length=32)
+    purpose: str = Field(min_length=1, max_length=320)
     threshold: float | None
     risk_direction: MetricRiskDirection
+    series_binding: MetricSeriesBinding
     window: MetricWindow
+    anchor: MetricTimeAnchor
     state: MetricQueryState
     queried_at: datetime
+    range_start: datetime
+    range_end: datetime
     latest_sample_at: datetime | None
     current_value: float | None
-    samples: list[MetricSample] = Field(max_length=512)
+    series: list[MetricSeries] = Field(max_length=MAX_PANEL_SERIES)
 
     @field_validator("threshold")
     @classmethod
@@ -129,7 +196,7 @@ class MetricPanelResult(_MonitoringContract):
             raise ValueError("Metric threshold must be finite")
         return value
 
-    @field_validator("queried_at", "latest_sample_at")
+    @field_validator("queried_at", "range_start", "range_end", "latest_sample_at")
     @classmethod
     def require_utc_datetime(cls, value: datetime | None) -> datetime | None:
         if value is None:
@@ -152,28 +219,64 @@ class MetricPanelResult(_MonitoringContract):
             and self.threshold is None
         ):
             raise ValueError("Higher-is-worse results require a static threshold")
-        has_samples = bool(self.samples)
+        if (
+            self.risk_direction is MetricRiskDirection.NEUTRAL
+            and self.threshold is not None
+        ):
+            raise ValueError("Neutral results cannot carry a risk threshold")
+        if (
+            self.range_end - self.range_start != self.window.duration
+            or self.range_end > self.queried_at
+        ):
+            raise ValueError("Metric data window does not match the query window")
+        has_series = bool(self.series)
         has_latest = self.latest_sample_at is not None
         has_current = self.current_value is not None
+        single_series = self.series_binding is MetricSeriesBinding.TARGET
         if self.state in {
             MetricQueryState.NO_DATA,
             MetricQueryState.QUERY_ERROR,
             MetricQueryState.MONITORING_UNAVAILABLE,
         }:
-            if has_samples or has_latest or has_current:
+            if has_series or has_latest or has_current:
                 raise ValueError("Empty metric states cannot contain samples")
         elif self.state is MetricQueryState.PARTIAL:
-            if len({has_samples, has_latest, has_current}) != 1:
+            if has_series is not has_latest or (
+                has_current is not (has_series and single_series)
+            ):
                 raise ValueError("Partial metric state must be consistently populated")
-        elif not (has_samples and has_latest and has_current):
+        elif not (has_series and has_latest and has_current is single_series):
             raise ValueError("Observed metric states require samples")
-        if self.samples and self.latest_sample_at != self.samples[-1].timestamp:
+        if not has_series:
+            return self
+        allowed = _SERIES_LABELS_BY_BINDING[self.series_binding]
+        identities = [frozenset(item.labels.items()) for item in self.series]
+        if (
+            len(set(identities)) != len(identities)
+            or (single_series and len(self.series) != 1)
+            or any(frozenset(item.labels) not in allowed for item in self.series)
+        ):
+            raise ValueError("Metric series do not match the panel binding")
+        if any(
+            sample.timestamp < self.range_start or sample.timestamp > self.range_end
+            for item in self.series
+            for sample in item.samples
+        ):
+            raise ValueError("Metric samples fall outside the data window")
+        latest = max(item.samples[-1].timestamp for item in self.series)
+        if self.latest_sample_at != latest:
             raise ValueError("Latest metric timestamp must match the final sample")
+        if single_series and self.current_value != self.series[0].samples[-1].value:
+            raise ValueError("Current value must match the final target sample")
         return self
 
 
 class MonitoringPanelReference(_MonitoringContract):
     panel_id: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=160)
+    unit: str = Field(min_length=1, max_length=32)
+    purpose: str = Field(min_length=1, max_length=320)
+    series_binding: MetricSeriesBinding
     recommended_window: MetricWindow
     risk_direction: MetricRiskDirection
     signal_role: MetricPanelSignalRole
@@ -183,7 +286,7 @@ class MonitoringPanelReference(_MonitoringContract):
 
 
 class IncidentMonitoringPanels(_MonitoringContract):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     panels: tuple[MonitoringPanelReference, ...] = Field(max_length=8)
 
 
@@ -211,7 +314,7 @@ class MetricMarker(_MonitoringContract):
 
 
 class IncidentMetricPanel(_MonitoringContract):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     result: MetricPanelResult
     markers: tuple[MetricMarker, ...] = Field(max_length=102)
     markers_truncated: bool

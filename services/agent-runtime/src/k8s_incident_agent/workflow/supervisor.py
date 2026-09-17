@@ -364,6 +364,7 @@ class RunSupervisor:
             repository=self._repository,
             now=self._now,
             prometheus=self._dependencies.prometheus,
+            occurred_at=run.occurred_at,
         )
 
     async def _require_queued_checkpoint(

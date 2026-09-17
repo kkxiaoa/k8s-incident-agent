@@ -4,7 +4,10 @@ import { useEffect, useState } from "react";
 
 import { LocalTimestamp } from "@/components/local-timestamp";
 import { UiIcon } from "@/components/ui/ui-icon";
-import { fetchMonitoringPanelFromBrowser } from "@/lib/agent-runtime/browser-client";
+import {
+  fetchMonitoringPanelFromBrowser,
+  type MonitoringPanelAnchor,
+} from "@/lib/agent-runtime/browser-client";
 import type {
   AlertSignalView,
   IncidentMetricPanelView,
@@ -18,6 +21,7 @@ import { METRIC_WINDOW_LABELS } from "./metric-window";
 import { MetricInfo } from "./metric-info";
 import {
   formatMetricDuration,
+  formatMetricValue,
   metricRiskDescription,
   metricThresholdDescription,
   metricUnitLabel,
@@ -34,6 +38,11 @@ const STATE_COPY = {
   no_data: "Prometheus 没有返回可验证样本；这不等于指标值为 0。",
   partial: "Prometheus 报告了部分结果，图表只展示当前可验证样本。",
 } as const;
+
+/** The exact Run whose completion ends the data window, or the live window. */
+export type MetricPanelAnchor =
+  | Extract<MonitoringPanelAnchor, { kind: "current" }>
+  | (Extract<MonitoringPanelAnchor, { kind: "run" }> & { attempt: number });
 
 function isUnavailableState(state: MetricQueryStateView): boolean {
   return state === "query_error" || state === "monitoring_unavailable";
@@ -61,6 +70,7 @@ export function MetricPanelCard({
   incidentId,
   panel,
   refreshKey,
+  anchor = { kind: "current" },
   alertStatus = null,
   desiredReplicas = null,
   onLoadSnapshot,
@@ -68,15 +78,19 @@ export function MetricPanelCard({
   incidentId: string;
   panel: MonitoringPanelReferenceView;
   refreshKey: string;
+  anchor?: MetricPanelAnchor;
   alertStatus?: AlertSignalView["status"] | null;
   desiredReplicas?: number | null;
   onLoadSnapshot?: (panelId: string, snapshot: MetricPanelLoadSnapshot) => void;
 }) {
   const [window, setWindow] = useState(panel.recommendedWindow);
+  const anchorKey =
+    anchor.kind === "run" ? `run:${anchor.runId}` : "current";
   const requestKey = [
     incidentId,
     panel.panelId,
     window,
+    anchorKey,
     refreshKey,
   ].join(":");
   const [load, setLoad] = useState<
@@ -92,21 +106,30 @@ export function MetricPanelCard({
       }
     | null
   >(null);
+  // Callers pass a fresh anchor object per render; depend on its primitives so
+  // the effect does not refetch on every render.
+  const anchorRunId = anchor.kind === "run" ? anchor.runId : null;
 
   useEffect(() => {
     let active = true;
+    const requestAnchor: MonitoringPanelAnchor =
+      anchorRunId === null
+        ? { kind: "current" }
+        : { kind: "run", runId: anchorRunId };
     onLoadSnapshot?.(panel.panelId, { state: "loading", result: null });
     void fetchMonitoringPanelFromBrowser(
       incidentId,
       panel.panelId,
       window,
+      requestAnchor,
     ).then((result) => {
       if (!active) {
         return;
       }
       if (
         result.ok &&
-        result.data.result.riskDirection === panel.riskDirection
+        result.data.result.riskDirection === panel.riskDirection &&
+        result.data.result.seriesBinding === panel.seriesBinding
       ) {
         setLoad({ requestKey, data: result.data, failure: null });
         onLoadSnapshot?.(panel.panelId, {
@@ -126,10 +149,12 @@ export function MetricPanelCard({
       active = false;
     };
   }, [
+    anchorRunId,
     incidentId,
     onLoadSnapshot,
     panel.panelId,
     panel.riskDirection,
+    panel.seriesBinding,
     requestKey,
     window,
   ]);
@@ -170,21 +195,24 @@ export function MetricPanelCard({
   }
 
   const { result } = data;
-  const hasSamples = result.samples.length > 0;
+  const hasSamples = result.series.length > 0;
   const unavailable = isUnavailableState(result.state);
   const stateLabel = STATE_LABELS[result.state];
-  const timestamp = result.latestSampleAt ?? result.queriedAt;
+  const anchoredRun = anchor.kind === "run" ? anchor : null;
+  const timestamp = result.latestSampleAt ?? result.rangeEnd;
   const unitLabel = metricUnitLabel(result.unit);
+  const singleSeries = result.seriesBinding === "target";
   const referenceValue =
     result.riskDirection === "lower_is_worse" && result.unit === "replicas"
       ? desiredReplicas
       : null;
-  const currentValue =
-    result.currentValue === null
+  const currentValue = !singleSeries && hasSamples
+    ? String(result.series.length)
+    : result.currentValue === null
       ? "—"
       : result.riskDirection === "lower_is_worse" && referenceValue !== null
         ? `${result.currentValue} / ${referenceValue}`
-        : result.currentValue;
+        : formatMetricValue(result.currentValue, result.unit);
   const thresholdCopy = unavailable
     ? "—"
     : result.threshold !== null
@@ -196,17 +224,20 @@ export function MetricPanelCard({
     panel.thresholdDuration === null || unavailable
       ? null
       : `持续 ${formatMetricDuration(panel.thresholdDuration)}`;
-  const metricDescription = metricRiskDescription(
+  const metricDescription = `${result.purpose} ${metricRiskDescription(
     result.title,
     result.riskDirection,
     result.unit,
-  );
-  const currentValueDescription =
-    result.riskDirection === "lower_is_worse" &&
-    result.unit === "replicas" &&
-    referenceValue !== null
+  )}`;
+  const currentValueDescription = !singleSeries
+    ? "数据窗口内按 Pod / 容器归属的序列条数；多序列面板不汇总为单一当前值，请逐序列读取。"
+    : result.riskDirection === "lower_is_worse" &&
+        result.unit === "replicas" &&
+        referenceValue !== null
       ? `前一个数字是 Prometheus 观测到的当前可用副本，后一个数字是同一次诊断 Run 的 workload Evidence 中记录的期望副本。`
-      : "Prometheus 返回的最新有效样本值。";
+      : anchoredRun === null
+        ? "Prometheus 返回的最新有效样本值。"
+        : "数据窗口终点处的最后有效样本值，不是当前值。";
   const thresholdDescription =
     result.threshold !== null
       ? metricThresholdDescription(result.riskDirection)
@@ -220,7 +251,9 @@ export function MetricPanelCard({
     <article className={`metric-panel is-${result.state}`} aria-busy={pending}>
       <header className="metric-panel__header">
         <div>
-          <span className="eyebrow">Necessary metric</span>
+          <span className="eyebrow">
+            {panel.signalRole === "trigger" ? "Necessary metric" : "Context metric"}
+          </span>
           <div className="metric-panel__title">
             <h3>{result.title}</h3>
             <MetricInfo label={metricDescription} />
@@ -228,7 +261,7 @@ export function MetricPanelCard({
         </div>
         <div className="metric-panel__header-actions">
           <div className="metric-panel__states">
-            {alertStatus === null || unavailable ? null : (
+            {alertStatus === null || unavailable || anchoredRun !== null ? null : (
               <span
                 className={`metric-signal-state is-${alertStatus.toLowerCase()}`}
                 title={
@@ -270,15 +303,27 @@ export function MetricPanelCard({
         </div>
       </header>
 
+      {anchoredRun === null ? null : (
+        <p className="metric-panel__notice metric-panel__notice--anchor" role="status">
+          数据窗口截至第 {anchoredRun.attempt} 次 Run 完成（
+          <LocalTimestamp timestamp={result.rangeEnd} />
+          ）；展示的是该 Run 当时可见的历史值，不代表当前状态。
+        </p>
+      )}
+
       <dl className="metric-panel__summary">
         <div>
           <dt>
-            当前值
+            {!singleSeries ? "序列" : anchoredRun === null ? "当前值" : "窗口末值"}
             <MetricInfo label={currentValueDescription} />
           </dt>
           <dd>
             <span className="metric-panel__value">{currentValue}</span>
-            <span className="metric-panel__unit">{unitLabel}</span>
+            {singleSeries && result.currentValue !== null && unitLabel !== "" ? (
+              <span className="metric-panel__unit">{unitLabel}</span>
+            ) : !singleSeries && hasSamples ? (
+              <span className="metric-panel__unit">条</span>
+            ) : null}
           </dd>
         </div>
         <div>
@@ -294,7 +339,7 @@ export function MetricPanelCard({
           </dd>
         </div>
         <div>
-          <dt>最后更新</dt>
+          <dt>{anchoredRun === null ? "最后更新" : "窗口终点"}</dt>
           <dd>
             {unavailable ? "—" : <LocalTimestamp timestamp={timestamp} />}
           </dd>
@@ -309,7 +354,7 @@ export function MetricPanelCard({
             </p>
           ) : result.state === "stale" ? (
             <p className="metric-panel__notice" role="status">
-              最后样本早于当前查询时刻，不能作为实时状态判断。
+              最后样本早于数据窗口终点，不能作为该时刻的状态判断。
             </p>
           ) : null}
           <TimeSeriesChart

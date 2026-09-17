@@ -185,10 +185,19 @@ export interface MonitoringOverviewView {
   samples: ApiMonitoringOverviewSample[];
 }
 
+export type MetricRiskDirectionView = components["schemas"]["MetricRiskDirection"];
+export type MetricSeriesBindingView =
+  components["schemas"]["MetricSeriesBinding"];
+export type MetricTimeAnchorView = components["schemas"]["MetricTimeAnchor"];
+
 export interface MonitoringPanelReferenceView {
   panelId: string;
+  title: string;
+  unit: string;
+  purpose: string;
+  seriesBinding: MetricSeriesBindingView;
   recommendedWindow: MetricWindowView;
-  riskDirection: "higher_is_worse" | "lower_is_worse";
+  riskDirection: MetricRiskDirectionView;
   signalRole: MetricPanelSignalRoleView;
   thresholdDuration: string | null;
 }
@@ -202,20 +211,53 @@ export type MetricMarkerView = Pick<
   ApiMetricMarker,
   "kind" | "occurredAt" | "runAttempt"
 >;
+export type MetricSeriesView = components["schemas"]["MetricSeries"];
 export type MetricPanelResultView = Pick<
   ApiMetricPanel,
   | "riskDirection"
   | "panelId"
   | "title"
   | "unit"
+  | "purpose"
   | "threshold"
+  | "seriesBinding"
   | "window"
+  | "anchor"
   | "state"
   | "queriedAt"
+  | "rangeStart"
+  | "rangeEnd"
   | "latestSampleAt"
   | "currentValue"
-  | "samples"
+  | "series"
 >;
+
+const SERIES_LABEL_NAMES = new Set(["pod", "uid", "container", "series"]);
+const SERIES_LABEL_SETS: Record<MetricSeriesBindingView, string[][]> = {
+  target: [[]],
+  pod: [["pod", "uid"]],
+  pod_container: [
+    ["container", "pod", "uid"],
+    ["container", "pod", "series", "uid"],
+  ],
+};
+
+export function isMetricRiskDirection(
+  value: unknown,
+): value is MetricRiskDirectionView {
+  return (
+    value === "higher_is_worse" ||
+    value === "lower_is_worse" ||
+    value === "neutral"
+  );
+}
+
+export function isMetricSeriesBinding(
+  value: unknown,
+): value is MetricSeriesBindingView {
+  return value === "target" || value === "pod" || value === "pod_container";
+}
+
 
 export interface IncidentMetricPanelView {
   result: MetricPanelResultView;
@@ -1197,6 +1239,12 @@ export function parseMonitoringOverviewResponse(
   };
 }
 
+function isBoundedText(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" && value.length > 0 && value.length <= maxLength
+  );
+}
+
 function parseMonitoringPanelReference(
   value: unknown,
 ): MonitoringPanelReferenceView | null {
@@ -1205,15 +1253,22 @@ function parseMonitoringPanelReference(
     typeof value.panelId === "string" &&
     /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value.panelId) &&
     value.panelId.length <= 128 &&
+    isBoundedText(value.title, 160) &&
+    isBoundedText(value.unit, 32) &&
+    isBoundedText(value.purpose, 320) &&
+    isMetricSeriesBinding(value.seriesBinding) &&
     isMetricWindow(value.recommendedWindow) &&
-    (value.riskDirection === "higher_is_worse" ||
-      value.riskDirection === "lower_is_worse") &&
+    isMetricRiskDirection(value.riskDirection) &&
     (value.signalRole === "trigger" || value.signalRole === "context") &&
     (thresholdDuration === null ||
       (typeof thresholdDuration === "string" &&
         /^[1-9][0-9]*(?:ms|s|m|h)$/.test(thresholdDuration)))
     ? {
         panelId: value.panelId,
+        title: value.title,
+        unit: value.unit,
+        purpose: value.purpose,
+        seriesBinding: value.seriesBinding,
         recommendedWindow: value.recommendedWindow,
         riskDirection: value.riskDirection,
         signalRole: value.signalRole,
@@ -1227,7 +1282,7 @@ export function parseMonitoringPanelListResponse(
 ): MonitoringPanelListView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 3 ||
+    value.schemaVersion !== 4 ||
     !Array.isArray(value.panels) ||
     value.panels.length > 8
   ) {
@@ -1243,8 +1298,12 @@ export function parseMonitoringPanelListResponse(
   return { panels: panels as MonitoringPanelReferenceView[] };
 }
 
-function parseMetricSamples(value: unknown): MetricSampleView[] | null {
-  if (!Array.isArray(value) || value.length > 512) {
+function parseMetricSamples(
+  value: unknown,
+  rangeStart: number,
+  rangeEnd: number,
+): MetricSampleView[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 512) {
     return null;
   }
   const samples: MetricSampleView[] = [];
@@ -1258,13 +1317,57 @@ function parseMetricSamples(value: unknown): MetricSampleView[] | null {
       return null;
     }
     const timestamp = Date.parse(sample.timestamp);
-    if (timestamp <= previous) {
+    if (timestamp <= previous || timestamp < rangeStart || timestamp > rangeEnd) {
       return null;
     }
     previous = timestamp;
     samples.push({ timestamp: sample.timestamp, value: sample.value });
   }
   return samples;
+}
+
+function parseMetricSeries(
+  value: unknown,
+  binding: MetricSeriesBindingView,
+  rangeStart: number,
+  rangeEnd: number,
+): MetricSeriesView[] | null {
+  if (!Array.isArray(value) || value.length > 8) {
+    return null;
+  }
+  const identities = new Set<string>();
+  const series: MetricSeriesView[] = [];
+  for (const item of value) {
+    if (!isObject(item) || !isObject(item.labels)) {
+      return null;
+    }
+    const names = Object.keys(item.labels).sort();
+    if (
+      !SERIES_LABEL_SETS[binding].some(
+        (allowed) =>
+          allowed.length === names.length &&
+          allowed.every((name, index) => name === names[index]),
+      ) ||
+      names.some(
+        (name) =>
+          !SERIES_LABEL_NAMES.has(name) ||
+          !isBoundedText((item.labels as Record<string, unknown>)[name], 253),
+      )
+    ) {
+      return null;
+    }
+    const identity = JSON.stringify(names.map((name) => [name, (item.labels as Record<string, string>)[name]]));
+    if (identities.has(identity)) {
+      return null;
+    }
+    identities.add(identity);
+    const samples = parseMetricSamples(item.samples, rangeStart, rangeEnd);
+    if (samples === null) {
+      return null;
+    }
+    series.push({ labels: { ...(item.labels as Record<string, string>) }, samples });
+  }
+  return series;
 }
 
 function parseMetricMarker(value: unknown): MetricMarkerView | null {
@@ -1314,10 +1417,11 @@ export function parseIncidentMetricPanelResponse(
   value: unknown,
   expectedPanelId: string,
   expectedWindow: MetricWindowView,
+  expectedAnchor: MetricTimeAnchorView = "current",
 ): IncidentMetricPanelView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 1 ||
+    value.schemaVersion !== 2 ||
     typeof value.markersTruncated !== "boolean" ||
     !Array.isArray(value.markers) ||
     value.markers.length > 102 ||
@@ -1329,54 +1433,66 @@ export function parseIncidentMetricPanelResponse(
   if (
     result.panelId !== expectedPanelId ||
     result.window !== expectedWindow ||
-    typeof result.title !== "string" ||
-    result.title.length === 0 ||
-    result.title.length > 160 ||
-    typeof result.unit !== "string" ||
-    result.unit.length === 0 ||
-    result.unit.length > 32 ||
-    (result.riskDirection !== "higher_is_worse" &&
-      result.riskDirection !== "lower_is_worse") ||
+    result.anchor !== expectedAnchor ||
+    !isBoundedText(result.title, 160) ||
+    !isBoundedText(result.unit, 32) ||
+    !isBoundedText(result.purpose, 320) ||
+    !isMetricRiskDirection(result.riskDirection) ||
+    !isMetricSeriesBinding(result.seriesBinding) ||
     (result.threshold !== null && !isFiniteNumber(result.threshold)) ||
     (result.riskDirection === "higher_is_worse" && result.threshold === null) ||
+    (result.riskDirection === "neutral" && result.threshold !== null) ||
     !isMetricQueryState(result.state) ||
     !isTimestamp(result.queriedAt) ||
+    !isTimestamp(result.rangeStart) ||
+    !isTimestamp(result.rangeEnd) ||
     (result.latestSampleAt !== null && !isTimestamp(result.latestSampleAt)) ||
     (result.currentValue !== null && !isFiniteNumber(result.currentValue))
   ) {
     return null;
   }
-  const samples = parseMetricSamples(result.samples);
-  if (samples === null) {
+  const queriedAt = Date.parse(result.queriedAt);
+  const rangeStart = Date.parse(result.rangeStart);
+  const rangeEnd = Date.parse(result.rangeEnd);
+  if (
+    rangeEnd - rangeStart !== metricWindowMilliseconds(expectedWindow) ||
+    rangeEnd > queriedAt
+  ) {
     return null;
   }
-  const populated =
-    samples.length > 0 &&
-    result.latestSampleAt !== null &&
-    result.currentValue !== null;
+  const series = parseMetricSeries(
+    result.series,
+    result.seriesBinding,
+    rangeStart,
+    rangeEnd,
+  );
+  if (series === null) {
+    return null;
+  }
+  const singleSeries = result.seriesBinding === "target";
+  const latest = series.reduce<string | null>((current, item) => {
+    const last = item.samples.at(-1)?.timestamp ?? null;
+    return current === null || (last !== null && Date.parse(last) > Date.parse(current))
+      ? last
+      : current;
+  }, null);
+  const populated = series.length > 0 && result.latestSampleAt === latest;
   const empty =
-    samples.length === 0 &&
+    series.length === 0 &&
     result.latestSampleAt === null &&
     result.currentValue === null;
   if (
     (!populated && !empty) ||
+    (populated && singleSeries && series.length !== 1) ||
+    (populated &&
+      (singleSeries
+        ? result.currentValue !== series[0]?.samples.at(-1)?.value
+        : result.currentValue !== null)) ||
     ((result.state === "no_data" ||
       result.state === "query_error" ||
       result.state === "monitoring_unavailable") &&
       !empty) ||
-    ((result.state === "ok" || result.state === "stale") && !populated) ||
-    (populated &&
-      (result.latestSampleAt !== samples.at(-1)?.timestamp ||
-        result.currentValue !== samples.at(-1)?.value))
-  ) {
-    return null;
-  }
-  const queriedAt = Date.parse(result.queriedAt);
-  const windowStart = queriedAt - metricWindowMilliseconds(expectedWindow);
-  if (
-    populated &&
-    (Date.parse(result.latestSampleAt as string) > queriedAt ||
-      samples.some((sample) => Date.parse(sample.timestamp) < windowStart))
+    ((result.state === "ok" || result.state === "stale") && !populated)
   ) {
     return null;
   }
@@ -1388,8 +1504,8 @@ export function parseIncidentMetricPanelResponse(
   for (const marker of markers as MetricMarkerView[]) {
     const timestamp = Date.parse(marker.occurredAt);
     if (
-      timestamp < windowStart ||
-      timestamp > queriedAt ||
+      timestamp < rangeStart ||
+      timestamp > rangeEnd ||
       timestamp < previousMarker
     ) {
       return null;
@@ -1401,14 +1517,19 @@ export function parseIncidentMetricPanelResponse(
       panelId: expectedPanelId,
       title: result.title,
       unit: result.unit,
+      purpose: result.purpose,
       threshold: result.threshold,
       riskDirection: result.riskDirection,
+      seriesBinding: result.seriesBinding,
       window: expectedWindow,
+      anchor: expectedAnchor,
       state: result.state,
       queriedAt: result.queriedAt,
+      rangeStart: result.rangeStart,
+      rangeEnd: result.rangeEnd,
       latestSampleAt: result.latestSampleAt,
       currentValue: result.currentValue,
-      samples,
+      series,
     },
     markers: markers as MetricMarkerView[],
     markersTruncated: value.markersTruncated,

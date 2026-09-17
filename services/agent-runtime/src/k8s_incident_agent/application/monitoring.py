@@ -12,6 +12,8 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricMarkerKind,
     MetricPanelSignalRole,
     MetricRiskDirection,
+    MetricSeriesBinding,
+    MetricTimeAnchor,
     MetricWindow,
     MonitoringComponentState,
     MonitoringHealthSnapshot,
@@ -26,7 +28,11 @@ from k8s_incident_agent.monitoring.errors import (
     MonitoringBoundaryError,
     MonitoringErrorCode,
 )
-from k8s_incident_agent.monitoring.service import PrometheusQueryService
+from k8s_incident_agent.monitoring.service import (
+    MetricRange,
+    PrometheusQueryService,
+    resolve_metric_range,
+)
 from k8s_incident_agent.persistence.repositories import (
     IncidentMonitoringContext,
     IncidentRepository,
@@ -38,6 +44,10 @@ _MARKER_RUN_LIMIT = 50
 
 class MonitoringPanelNotFoundError(RuntimeError):
     pass
+
+
+class MonitoringAnchorInvalidError(RuntimeError):
+    """The anchor and runId query parameters do not form a registered anchor."""
 
 
 class MonitoringApplicationService:
@@ -194,12 +204,16 @@ class MonitoringApplicationService:
                 else tuple(
                     MonitoringPanelReference(
                         panel_id=panel.panel_id,
+                        title=panel.title,
+                        unit=panel.unit,
+                        purpose=panel.purpose,
+                        series_binding=MetricSeriesBinding(panel.series_binding),
                         recommended_window=MetricWindow(panel.recommended_window),
                         risk_direction=MetricRiskDirection(panel.risk_direction),
                         signal_role=MetricPanelSignalRole(panel.signal_role),
                         threshold_duration=panel.threshold_duration,
                     )
-                    for panel in entry.panels
+                    for panel in self._catalog.default_panels(entry)
                 )
             )
         )
@@ -210,19 +224,35 @@ class MonitoringApplicationService:
         *,
         panel_id: str,
         window: MetricWindow,
+        anchor: MetricTimeAnchor = MetricTimeAnchor.CURRENT,
+        run_id: UUID | None = None,
     ) -> IncidentMetricPanel:
+        if (anchor is MetricTimeAnchor.RUN) is not (run_id is not None):
+            raise MonitoringAnchorInvalidError
         context = await self._monitoring_context(
             incident_id,
             run_limit=_MARKER_RUN_LIMIT,
         )
         entry = self._entry_for_context(context)
-        if entry is None or all(panel.panel_id != panel_id for panel in entry.panels):
+        if entry is None or all(
+            panel.panel_id != panel_id for panel in self._catalog.default_panels(entry)
+        ):
             raise MonitoringPanelNotFoundError
+        queried_at = self._now()
+        metric_range = resolve_metric_range(
+            window,
+            anchor,
+            queried_at=queried_at,
+            occurred_at=context.occurred_at,
+            run_completed_at=_anchored_run_completion(context, run_id),
+        )
         try:
             result = await self._prometheus.query_panel(
                 target=context.target,
                 panel_id=panel_id,
                 window=window,
+                metric_range=metric_range,
+                queried_at=queried_at,
             )
         except MonitoringBoundaryError as error:
             if error.code in {
@@ -233,7 +263,7 @@ class MonitoringApplicationService:
             raise
         return IncidentMetricPanel(
             result=result,
-            markers=_panel_markers(context, result.queried_at, window),
+            markers=_panel_markers(context, metric_range),
             markers_truncated=context.runs_truncated,
         )
 
@@ -282,12 +312,28 @@ def _notification_state(
     return MonitoringComponentState.HEALTHY
 
 
+def _anchored_run_completion(
+    context: IncidentMonitoringContext,
+    run_id: UUID | None,
+) -> datetime | None:
+    """Completion time of the exact Run named by the caller, or None while it runs.
+
+    Only Runs of this Incident are acceptable anchors; a foreign or unknown Run id
+    is reported as not found so the Console cannot read another Incident's window.
+    """
+    if run_id is None:
+        return None
+    run = next((item for item in context.runs if item.id == run_id), None)
+    if run is None:
+        raise MonitoringPanelNotFoundError
+    return run.completed_at
+
+
 def _panel_markers(
     context: IncidentMonitoringContext,
-    queried_at: datetime,
-    window: MetricWindow,
+    metric_range: MetricRange,
 ) -> tuple[MetricMarker, ...]:
-    start = queried_at - window.duration
+    start, queried_at = metric_range.start, metric_range.end
     markers: list[MetricMarker] = []
     signal = context.alert_signal
     if signal is not None:

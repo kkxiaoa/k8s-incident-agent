@@ -155,10 +155,14 @@ describe("server view data", () => {
       Promise.resolve(
         url.pathname.endsWith("/monitoring/panels")
           ? jsonResponse({
-              schemaVersion: 3,
+              schemaVersion: 4,
               panels: [
                 {
                   panelId: "image-pull-affected-pods",
+                  title: "镜像拉取失败 Pod",
+                  unit: "pods",
+                  purpose: "Registered purpose.",
+                  seriesBinding: "target",
                   recommendedWindow: "15m",
                   riskDirection: "higher_is_worse",
                   signalRole: "trigger",
@@ -204,6 +208,10 @@ describe("server view data", () => {
       expect(pageData.monitoringPanels?.panels).toEqual([
         {
           panelId: "image-pull-affected-pods",
+          title: "镜像拉取失败 Pod",
+          unit: "pods",
+          purpose: "Registered purpose.",
+          seriesBinding: "target",
           recommendedWindow: "15m",
           riskDirection: "higher_is_worse",
           signalRole: "trigger",

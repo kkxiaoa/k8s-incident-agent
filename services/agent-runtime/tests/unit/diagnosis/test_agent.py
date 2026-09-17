@@ -42,11 +42,27 @@ from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 
 TOOL_NAMES = ("get_workload", "get_pods", "get_events", "query_prometheus")
 PANELS = (
-    DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
-    DiagnosticPanel("image-pull-available-replicas", "Available replicas", "replicas"),
+    DiagnosticPanel(
+        "image-pull-affected-pods",
+        "Affected pods",
+        "pods",
+        "Registered purpose.",
+        "target",
+        "higher_is_worse",
+    ),
+    DiagnosticPanel(
+        "image-pull-available-replicas",
+        "Available replicas",
+        "replicas",
+        "Registered purpose.",
+        "target",
+        "higher_is_worse",
+    ),
 )
 REQUIRED_EVIDENCE = ("workload",)
 NOW = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
 
 
 def _new_bound_tool_names() -> list[tuple[str, ...]]:
@@ -179,6 +195,7 @@ def _context(
         repository=cast(IncidentRepository, object()),
         now=lambda: now,
         prometheus=prometheus_query_service_stub(),
+        occurred_at=_OCCURRED_AT,
     )
 
 

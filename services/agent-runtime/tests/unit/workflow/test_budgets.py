@@ -63,10 +63,19 @@ TEST_POLICY = DiagnosticPolicy(
     tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
     required_evidence=frozenset({"workload"}),
     prometheus_panels=(
-        DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+        DiagnosticPanel(
+            "image-pull-affected-pods",
+            "Affected pods",
+            "pods",
+            "Registered purpose.",
+            "target",
+            "higher_is_worse",
+        ),
     ),
     trigger_panel_id="image-pull-affected-pods",
 )
+
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
 
 
 class _BudgetState(TypedDict, total=False):
@@ -176,7 +185,14 @@ def _budget_graph(
         max_tool_calls=max_tool_calls,
         required_evidence=("workload",),
         prometheus_panels=(
-            DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+            DiagnosticPanel(
+                "image-pull-affected-pods",
+                "Affected pods",
+                "pods",
+                "Registered purpose.",
+                "target",
+                "higher_is_worse",
+            ),
         ),
         trigger_panel_id="image-pull-affected-pods",
     )
@@ -210,6 +226,7 @@ def _context(
         repository=cast(IncidentRepository, repository or object()),
         now=lambda: NOW,
         prometheus=prometheus_query_service_stub(),
+        occurred_at=_OCCURRED_AT,
     )
 
 
@@ -389,6 +406,7 @@ async def test_absolute_deadline_comes_from_persisted_started_at(
             timeout_seconds=180,
         ),
         started_at=started_at,
+        occurred_at=_OCCURRED_AT,
     )
     repository = _ExpiredRunRepository(run)
     model = _ToolCallingFakeModel(responses=[AIMessage(content="unused")])

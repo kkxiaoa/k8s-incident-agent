@@ -793,6 +793,12 @@ export function IncidentStream({
         evidence={detail.evidence}
         refreshKey={monitoringRefreshKey}
         alertStatus={detail.alertSignal?.status ?? null}
+        selectedRun={{
+          id: detail.selectedRun.id,
+          attempt: detail.selectedRun.attempt,
+          completedAt: detail.selectedRun.completedAt,
+        }}
+        latestRunId={latestRun.id}
       />
 
       {state.streamError === null ? null : (

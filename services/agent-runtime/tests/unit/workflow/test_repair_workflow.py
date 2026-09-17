@@ -60,11 +60,20 @@ REPAIR_POLICY = DiagnosticPolicy(
     ),
     required_evidence=frozenset({"workload", "rollout_history", "pods", "events"}),
     prometheus_panels=(
-        DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+        DiagnosticPanel(
+            "image-pull-affected-pods",
+            "Affected pods",
+            "pods",
+            "Registered purpose.",
+            "target",
+            "higher_is_worse",
+        ),
     ),
     trigger_panel_id="image-pull-affected-pods",
     repair_action="set_container_image",
 )
+
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
 
 
 class _ToolCallingModel(FakeMessagesListChatModel):
@@ -212,6 +221,7 @@ def _run() -> DiagnosisWorkflowRunSnapshot:
             timeout_seconds=180,
         ),
         started_at=None,
+        occurred_at=_OCCURRED_AT,
     )
 
 
@@ -247,6 +257,7 @@ def _context(run: DiagnosisWorkflowRunSnapshot) -> DiagnosticToolContext:
         repository=cast(IncidentRepository, object()),
         now=lambda: NOW,
         prometheus=cast(PrometheusQueryService, object()),
+        occurred_at=_OCCURRED_AT,
     )
 
 

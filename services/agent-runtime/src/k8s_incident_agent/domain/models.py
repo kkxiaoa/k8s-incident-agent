@@ -176,6 +176,7 @@ class _WorkflowRunSnapshot:
 class DiagnosisWorkflowRunSnapshot(_WorkflowRunSnapshot):
     model: ModelSnapshot
     budget: RunBudget
+    occurred_at: datetime
     kind: Literal[RunKind.DIAGNOSIS] = field(default=RunKind.DIAGNOSIS, init=False)
 
 

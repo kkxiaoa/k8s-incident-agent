@@ -60,8 +60,11 @@ def validated_stream_item(event: RunEvent) -> RunEventStreamItem:
 
 def _event_payload(payload: RunEventPayload) -> dict[str, object]:
     serialized = payload.model_dump(mode="json")
-    if isinstance(payload, ToolStartedEventPayload) and payload.call_identity is None:
-        serialized.pop("callIdentity")
+    if isinstance(payload, ToolStartedEventPayload):
+        if payload.call_identity is None:
+            serialized.pop("callIdentity")
+        elif payload.call_identity.anchor is None:
+            serialized["callIdentity"].pop("anchor")
     return serialized
 
 

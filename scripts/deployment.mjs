@@ -694,7 +694,7 @@ function bindNodeMetricsClusterRbac(contract, registeredNode) {
 function normalizeAlertRuleCatalog(rawAlertCatalog) {
   const document = parseJsonObject(rawAlertCatalog, "alert catalog");
   if (
-    document.schemaVersion !== 9 ||
+    document.schemaVersion !== 10 ||
     typeof document.catalogVersion !== "string" ||
     document.catalogVersion === "" ||
     !Array.isArray(document.alerts) ||

@@ -40,11 +40,20 @@ DIAGNOSTIC_TOOL_NAMES: Final[tuple[DiagnosticToolName, ...]] = (
 
 @dataclass(frozen=True, slots=True)
 class DiagnosticPanel:
-    """Catalog panel the model may query, with the meaning it needs to choose it."""
+    """Catalog panel the model may query, with the meaning it needs to choose it.
+
+    ``purpose`` is the catalog's registration of what the panel answers and what
+    it cannot show, so the model reads it before spending a query;
+    ``series_binding`` tells it whether values describe the whole target or one
+    Pod/container at sampling time.
+    """
 
     panel_id: str
     title: str
     unit: str
+    purpose: str
+    series_binding: Literal["target", "pod", "pod_container"]
+    risk_direction: Literal["higher_is_worse", "lower_is_worse", "neutral"]
 
 
 @dataclass(frozen=True, slots=True)

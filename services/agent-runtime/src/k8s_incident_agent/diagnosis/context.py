@@ -19,3 +19,4 @@ class DiagnosticToolContext:
     repository: IncidentRepository
     now: Callable[[], datetime]
     prometheus: PrometheusQueryService
+    occurred_at: datetime

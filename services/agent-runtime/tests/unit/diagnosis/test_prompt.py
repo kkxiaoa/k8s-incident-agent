@@ -7,8 +7,22 @@ from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 ALLOWED_TOOLS = ("get_workload", "get_pods", "get_events", "query_prometheus")
 REQUIRED_EVIDENCE = ("workload",)
 PANELS = (
-    DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
-    DiagnosticPanel("crash-loop-restarts", "Container restarts", "restarts"),
+    DiagnosticPanel(
+        "image-pull-affected-pods",
+        "Affected pods",
+        "pods",
+        "Registered purpose.",
+        "target",
+        "higher_is_worse",
+    ),
+    DiagnosticPanel(
+        "crash-loop-restarts",
+        "Container restarts",
+        "restarts",
+        "Registered purpose.",
+        "target",
+        "higher_is_worse",
+    ),
 )
 
 
@@ -31,8 +45,18 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     assert "get_pods" in prompt
     assert "get_events" in prompt
     assert "query_prometheus" in prompt
-    assert "image-pull-affected-pods — Affected pods (pods)" in prompt
-    assert "crash-loop-restarts — Container restarts (restarts)" in prompt
+    assert (
+        "  - image-pull-affected-pods — Affected pods (pods) [target|higher]: "
+        "Registered purpose." in prompt
+    )
+    assert (
+        "  - crash-loop-restarts — Container restarts (restarts) [target|higher]: "
+        "Registered purpose." in prompt
+    )
+    assert "container = one per regular container" in prompt
+    assert "gives the same range" in normalized
+    assert "never less than its stated interval" in normalized
+    assert "when empty" not in prompt
     assert "image-pull-affected-pods is the registered signal of the alert rule" in (
         normalized
     )
@@ -54,19 +78,23 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
         normalized
     )
     assert "Never conclude from panel values alone" in normalized
-    assert "Do not sweep every panel or window" in normalized
+    assert "Do not sweep panels, windows or anchors" in normalized
     # The stated caps must be the ones the repository enforces, and the counting
     # rule must match it: every attempt counts except a retryable failure.
     assert (
         f"counts every attempt other than a retryable failure and admits at most "
         f"{OBSERVATION_LIMIT} per tool"
     ) in normalized
-    assert f"admits at most {OBSERVATION_LIMIT} per panel and window" in normalized
-    assert "A different window is counted separately" in normalized
-    assert "requested query range" in prompt
-    assert "actual samples' timestamps" in prompt
+    assert (
+        f"admits at most {OBSERVATION_LIMIT} per panel, window and anchor" in normalized
+    )
+    assert "query the trigger panel with anchor=occurrence" in normalized
+    assert "rangeStart and rangeEnd are the data window" in normalized
+    assert "a limit series is configuration, not usage" in normalized
+    assert "A neutral panel is context" in normalized
+    assert "actual sample timestamps" in prompt
     assert "absent points are unknown" in prompt
-    assert "not a total over window" in prompt
+    assert "currentValue is the last point of a target panel" in prompt
     assert "summary as well as every root-cause statement" in normalized
     assert "distinct causal mechanism" in normalized
     assert "Do not split a cause and its consequences" in normalized

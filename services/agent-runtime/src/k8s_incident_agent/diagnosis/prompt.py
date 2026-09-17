@@ -4,7 +4,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
 from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 from k8s_incident_agent.repair.contracts import RepairAction
 
-DIAGNOSTIC_PROMPT_VERSION = "stage3-dc2-target-investigation-v7"
+DIAGNOSTIC_PROMPT_VERSION = "stage3-dc4-attributed-metrics-v8"
 
 
 def build_diagnostic_system_prompt(
@@ -37,7 +37,9 @@ def build_diagnostic_system_prompt(
     tool_list = ", ".join(allowed_tool_names)
     evidence_list = ", ".join(required_evidence)
     panel_lines = "\n".join(
-        f"  - {panel.panel_id} — {panel.title} ({panel.unit})"
+        f"  - {panel.panel_id} — {panel.title} ({panel.unit}) "
+        f"[{_BINDING_TAGS[panel.series_binding]}|"
+        f"{_DIRECTION_TAGS[panel.risk_direction]}]: {panel.purpose}"
         for panel in prometheus_panels
     )
     trigger_instruction = (
@@ -52,14 +54,20 @@ def build_diagnostic_system_prompt(
         "alert's condition held; query one only when a specific question needs it.\n"
     )
     prometheus_tool_instruction = (
-        f"- Use query_prometheus only with these admitted panels:\n{panel_lines}\n"
+        "- Use query_prometheus only with these admitted panels. Tags: target = one "
+        "series for the whole target, pod = one per Pod, container = one per regular "
+        "container; higher/lower = which side is worse, neutral = context without a "
+        f"threshold.\n{panel_lines}\n"
         f"{trigger_instruction}"
-        "- Its window must be 15m, 1h, 6h, 7d, or 15d. After a panel and window "
-        "succeeds, query the same pair again only to check a specific contradiction or "
-        "an expected change; the runtime counts every attempt other than a retryable "
-        f"failure and admits at most {OBSERVATION_LIMIT} per panel and window, then "
-        "refuses further calls. A different window is counted separately. Do not sweep "
-        "every panel or window.\n"
+        "- Its window must be 15m, 1h, 6h, 7d, or 15d. anchor=current ends the window "
+        "now; anchor=occurrence centres it on occurredAt, which gives the same range "
+        "while occurredAt is under half a window ago, so query only one then. If a "
+        "current result's rangeStart is after occurredAt, query the trigger panel "
+        "with anchor=occurrence rather than only widening the window.\n"
+        "- Repeat a panel, window and anchor only to check a specific contradiction "
+        "or expected change; the runtime counts every attempt other than a retryable "
+        f"failure and admits at most {OBSERVATION_LIMIT} per panel, window and "
+        "anchor. Do not sweep panels, windows or anchors.\n"
         "- If no sample in the window is on the alerting side of the threshold, one "
         "longer window may be queried; if it still shows none, record that in "
         "missing_information rather than inferring the symptom is absent. Never "
@@ -69,15 +77,22 @@ def build_diagnostic_system_prompt(
         else "- Prometheus queries are not available for this incident."
     )
     prometheus_evidence_instruction = (
-        "- The result.window is the requested query range, not an observed failure "
-        "duration or a metric's aggregation interval. Use the actual samples' "
-        "timestamps to bound observations; absent points are unknown, not zero "
-        "or proof of continuous failure.\n"
-        "- state=ok does not establish full-window coverage. currentValue is the "
-        "last returned point, not a total over window.\n"
-        "- Interpret each value using the panel title and unit; preserve "
-        "any stated rolling interval and estimate semantics, and do not sum "
-        "overlapping rolling values."
+        "- result.rangeStart and rangeEnd are the data window, not a failure duration; "
+        "queriedAt is only when the query ran. Bound observations by actual sample "
+        "timestamps; absent points are unknown, not zero or continuous failure.\n"
+        "- result.series lists the attributed series; pod and container panels label "
+        "each with pod, uid, container and optionally series (usage/limit, probe type "
+        "or termination reason) bound at sampling time. A new uid is a different "
+        "container instance; a limit series is configuration, not usage; a missing "
+        "series is unobserved or unconfigured, never zero. Do not sum series that "
+        "describe different things. A neutral panel is context, never a symptom by "
+        "itself.\n"
+        "- state=ok does not prove full-window coverage; state=partial means series may "
+        "be missing. currentValue is the last point of a target panel and null "
+        "otherwise.\n"
+        "- A per-interval panel summarises each sampling step, never less than its "
+        "stated interval, so long windows lose no time between points; do not sum "
+        "overlapping values."
         if prometheus_panels
         else ""
     )
@@ -166,6 +181,18 @@ def build_diagnostic_system_prompt(
 
 {repair_instruction}
 """
+
+
+_BINDING_TAGS: dict[str, str] = {
+    "target": "target",
+    "pod": "pod",
+    "pod_container": "container",
+}
+_DIRECTION_TAGS: dict[str, str] = {
+    "higher_is_worse": "higher",
+    "lower_is_worse": "lower",
+    "neutral": "neutral",
+}
 
 
 def _require_positive_integer(value: int, label: str) -> None:

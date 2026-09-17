@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 9,
-  "catalogVersion": "2026-09-16.1",
+  "schemaVersion": 10,
+  "catalogVersion": "2026-09-17.1",
   "alerts": [
     {
       "alertId": "K8sIncidentImagePullBackOff",
@@ -23,6 +23,9 @@
           "panelId": "image-pull-affected-pods",
           "title": "镜像拉取失败 Pod",
           "unit": "pods",
+          "purpose": "因镜像拉取失败而等待的 Pod 数，衡量影响范围，不说明失败原因。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 1,
           "riskDirection": "higher_is_worse",
           "signalRole": "trigger",
@@ -35,6 +38,9 @@
           "panelId": "image-pull-available-replicas",
           "title": "Deployment 可用副本",
           "unit": "replicas",
+          "purpose": "当前可用副本数，与期望副本对照看容量缺口。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": null,
           "riskDirection": "lower_is_worse",
           "signalRole": "context",
@@ -66,6 +72,9 @@
           "panelId": "crash-loop-restarts",
           "title": "Container restarts",
           "unit": "restarts",
+          "purpose": "容器累计重启次数（counter），看窗口内的增长而非绝对值。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 1,
           "riskDirection": "higher_is_worse",
           "signalRole": "context",
@@ -78,6 +87,9 @@
           "panelId": "crash-loop-waiting-containers",
           "title": "CrashLoopBackOff containers",
           "unit": "containers",
+          "purpose": "处于 CrashLoopBackOff 的容器数，衡量反复退出的规模，不说明退出原因。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 1,
           "riskDirection": "higher_is_worse",
           "signalRole": "trigger",
@@ -108,6 +120,9 @@
           "panelId": "deployment-replica-deficit",
           "title": "Deployment 副本缺口",
           "unit": "replicas",
+          "purpose": "期望副本减可用副本（不小于 0），大于 0 表示缺口仍在。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 1,
           "riskDirection": "higher_is_worse",
           "signalRole": "trigger",
@@ -138,6 +153,9 @@
           "panelId": "service-ready-endpoints",
           "title": "Service 就绪 Endpoint",
           "unit": "endpoints",
+          "purpose": "就绪 Endpoint 数；0 表示没有后端可接流量，不证明网络连通性。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 1,
           "riskDirection": "lower_is_worse",
           "signalRole": "trigger",
@@ -168,6 +186,9 @@
           "panelId": "readiness-probe-unready-containers",
           "title": "Readiness 未就绪容器",
           "unit": "containers",
+          "purpose": "受控容器中 Running 但未 Ready 的数量，不说明应用原因。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 1,
           "riskDirection": "higher_is_worse",
           "signalRole": "trigger",
@@ -196,15 +217,18 @@
       "panels": [
         {
           "panelId": "liveness-probe-restarts",
-          "title": "Liveness 近 5 分钟重启估算",
+          "title": "Liveness 重启估算",
           "unit": "restarts",
+          "purpose": "受控 liveness 容器每个采样区间（至少 5 分钟）的重启增量估算；重启不证明 liveness 失败。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 1,
           "riskDirection": "higher_is_worse",
           "signalRole": "trigger",
           "thresholdDuration": "30s",
           "recommendedWindow": "15m",
           "staleAfterSeconds": 60,
-          "queryTemplate": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"{{namespace}}\"}[5m]) * on (namespace, pod, container) label_replace(kube_pod_labels{namespace=\"{{namespace}}\",label_k8s_incident_agent_io_liveness_container!=\"\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\") * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"
+          "queryTemplate": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"{{namespace}}\"}[{{range:5m}}]) * on (namespace, pod, container) label_replace(kube_pod_labels{namespace=\"{{namespace}}\",label_k8s_incident_agent_io_liveness_container!=\"\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\") * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) or (max(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}) * 0)"
         }
       ]
     },
@@ -228,6 +252,9 @@
           "panelId": "pvc-pending-state",
           "title": "PVC Pending 状态",
           "unit": "claims",
+          "purpose": "PVC 是否 Pending（1 = 是），不说明存储后端原因。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 1,
           "riskDirection": "higher_is_worse",
           "signalRole": "trigger",
@@ -240,6 +267,9 @@
           "panelId": "pvc-pending-age-seconds",
           "title": "PVC Pending 时长",
           "unit": "seconds",
+          "purpose": "PVC 持续 Pending 的秒数，仅 Pending 时有值。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "target",
           "threshold": 300,
           "riskDirection": "higher_is_worse",
           "signalRole": "context",
@@ -247,6 +277,106 @@
           "recommendedWindow": "15m",
           "staleAfterSeconds": 60,
           "queryTemplate": "max((time() - kube_persistentvolumeclaim_created{namespace=\"{{namespace}}\",persistentvolumeclaim=\"{{name}}\"}) * on (namespace, persistentvolumeclaim) (kube_persistentvolumeclaim_status_phase{namespace=\"{{namespace}}\",persistentvolumeclaim=\"{{name}}\",phase=\"Pending\"} == bool 1))"
+        }
+      ]
+    }
+  ],
+  "contextPanels": [
+    {
+      "target": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment"
+      },
+      "panels": [
+        {
+          "panelId": "container-cpu-cores",
+          "title": "容器 CPU 用量与限额",
+          "unit": "cores",
+          "purpose": "每个容器每个采样区间（至少 2 分钟）的平均 CPU 核数（usage）与 limit；无 limit 序列即未配置。每个容器 2 条序列，最多展示 4 个容器，超出为部分数据。",
+          "producer": "kubelet-resource",
+          "seriesBinding": "pod_container",
+          "threshold": null,
+          "riskDirection": "neutral",
+          "signalRole": "context",
+          "thresholdDuration": null,
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "sum by (pod, uid, container, series) (label_replace(rate(container_cpu_usage_seconds_total{namespace=\"{{namespace}}\",job=\"kubelet-resource\"}[{{range:2m}}]) * on (namespace, pod) group_left(uid, replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"), \"series\", \"usage\", \"\", \"\") or label_replace(kube_pod_container_resource_limits{namespace=\"{{namespace}}\",resource=\"cpu\"} * on (namespace, pod) group_left(uid, replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"), \"series\", \"limit\", \"\", \"\"))"
+        },
+        {
+          "panelId": "container-memory-working-set-bytes",
+          "title": "容器内存工作集与限额",
+          "unit": "bytes",
+          "purpose": "每个容器的内存工作集（usage）与 limit；接近 limit 是压力而非已 OOM，无 limit 序列即未配置。每个容器 2 条序列，最多展示 4 个容器，超出为部分数据。",
+          "producer": "kubelet-resource",
+          "seriesBinding": "pod_container",
+          "threshold": null,
+          "riskDirection": "neutral",
+          "signalRole": "context",
+          "thresholdDuration": null,
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "sum by (pod, uid, container, series) (label_replace(container_memory_working_set_bytes{namespace=\"{{namespace}}\",job=\"kubelet-resource\"} * on (namespace, pod) group_left(uid, replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"), \"series\", \"usage\", \"\", \"\") or label_replace(kube_pod_container_resource_limits{namespace=\"{{namespace}}\",resource=\"memory\"} * on (namespace, pod) group_left(uid, replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"), \"series\", \"limit\", \"\", \"\"))"
+        },
+        {
+          "panelId": "container-cpu-throttled-ratio",
+          "title": "容器 CPU 限流周期比例",
+          "unit": "ratio",
+          "purpose": "每个容器每个采样区间（至少 2 分钟）被 CFS 限流的调度周期占比，不是耗时比例；无序列表示未配置 CPU limit，不能当作 0。",
+          "producer": "kubelet-cadvisor",
+          "seriesBinding": "pod_container",
+          "threshold": null,
+          "riskDirection": "neutral",
+          "signalRole": "context",
+          "thresholdDuration": null,
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "sum by (pod, uid, container, series) (label_replace((sum by (namespace, pod, container) (increase(container_cpu_cfs_throttled_periods_total{namespace=\"{{namespace}}\",job=\"kubelet-cadvisor\"}[{{range:2m}}])) / (sum by (namespace, pod, container) (increase(container_cpu_cfs_periods_total{namespace=\"{{namespace}}\",job=\"kubelet-cadvisor\"}[{{range:2m}}])) > 0)) * on (namespace, pod) group_left(uid, replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"), \"series\", \"throttled_ratio\", \"\", \"\"))"
+        },
+        {
+          "panelId": "container-probe-failures",
+          "title": "容器探针失败次数",
+          "unit": "probes",
+          "purpose": "每个容器每个采样区间（至少 5 分钟）非成功的探针次数，按探针类型拆分；启动期失败可能正常。",
+          "producer": "kubelet-probes",
+          "seriesBinding": "pod_container",
+          "threshold": null,
+          "riskDirection": "neutral",
+          "signalRole": "context",
+          "thresholdDuration": null,
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "sum by (pod, uid, container, series) (label_replace(sum by (namespace, pod, container, probe_type) (increase(prober_probe_total{namespace=\"{{namespace}}\",job=\"kubelet-probes\",result!=\"successful\"}[{{range:5m}}])) * on (namespace, pod) group_left(uid, replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"), \"series\", \"$1\", \"probe_type\", \"(.+)\"))"
+        },
+        {
+          "panelId": "container-last-terminated-reason",
+          "title": "容器最近一次终止原因",
+          "unit": "containers",
+          "purpose": "每个容器最近一次终止原因的快照（1 = 当时的最近原因），不是终止事件记录。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "pod_container",
+          "threshold": null,
+          "riskDirection": "neutral",
+          "signalRole": "context",
+          "thresholdDuration": null,
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "sum by (pod, uid, container, series) (label_replace(max by (namespace, pod, container, reason) (kube_pod_container_status_last_terminated_reason{namespace=\"{{namespace}}\"} == 1) * on (namespace, pod) group_left(uid, replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"), \"series\", \"$1\", \"reason\", \"(.+)\"))"
+        },
+        {
+          "panelId": "pod-unschedulable",
+          "title": "未调度 Pod",
+          "unit": "pods",
+          "purpose": "每个 Pod 是否被调度器判为无法调度（1 = 是），不是节点容量审计。",
+          "producer": "kube-state-metrics",
+          "seriesBinding": "pod",
+          "threshold": 1,
+          "riskDirection": "higher_is_worse",
+          "signalRole": "context",
+          "thresholdDuration": null,
+          "recommendedWindow": "15m",
+          "staleAfterSeconds": 60,
+          "queryTemplate": "max by (pod, uid) (kube_pod_status_unschedulable{namespace=\"{{namespace}}\"} * on (namespace, pod) group_left(uid, replicaset) label_replace(kube_pod_owner{namespace=\"{{namespace}}\",owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{namespace=\"{{namespace}}\",owner_kind=\"Deployment\",owner_is_controller=\"true\",owner_name=\"{{name}}\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\"))"
         }
       ]
     }

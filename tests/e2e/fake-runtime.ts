@@ -964,12 +964,93 @@ function metricMarkers(record: FakeIncident) {
   return markers;
 }
 
+const CONTEXT_PANELS = [
+  { panelId: "container-cpu-cores", title: "容器 CPU 用量与限额", unit: "cores", seriesBinding: "pod_container", riskDirection: "neutral",
+    purpose: "每个容器每个采样区间（至少 2 分钟）的平均 CPU 核数（usage）与 limit；无 limit 序列即未配置。每个容器 2 条序列，最多展示 4 个容器，超出为部分数据。" },
+  { panelId: "container-memory-working-set-bytes", title: "容器内存工作集与限额", unit: "bytes", seriesBinding: "pod_container", riskDirection: "neutral",
+    purpose: "每个容器的内存工作集（usage）与 limit；接近 limit 是压力而非已 OOM，无 limit 序列即未配置。每个容器 2 条序列，最多展示 4 个容器，超出为部分数据。" },
+  { panelId: "container-cpu-throttled-ratio", title: "容器 CPU 限流周期比例", unit: "ratio", seriesBinding: "pod_container", riskDirection: "neutral",
+    purpose: "每个容器每个采样区间（至少 2 分钟）被 CFS 限流的调度周期占比，不是耗时比例；无序列表示未配置 CPU limit，不能当作 0。" },
+  { panelId: "container-probe-failures", title: "容器探针失败次数", unit: "probes", seriesBinding: "pod_container", riskDirection: "neutral",
+    purpose: "每个容器每个采样区间（至少 5 分钟）非成功的探针次数，按探针类型拆分；启动期失败可能正常。" },
+  { panelId: "container-last-terminated-reason", title: "容器最近一次终止原因", unit: "containers", seriesBinding: "pod_container", riskDirection: "neutral",
+    purpose: "每个容器最近一次终止原因的快照（1 = 当时的最近原因），不是终止事件记录。" },
+  { panelId: "pod-unschedulable", title: "未调度 Pod", unit: "pods", seriesBinding: "pod", riskDirection: "higher_is_worse",
+    purpose: "每个 Pod 是否被调度器判为无法调度（1 = 是），不是节点容量审计。" },
+] as const;
+
+const CONTEXT_POINTS = 60;
+const POD_A = { pod: "checkout-7c9d8f6b5-x2k4p", uid: "0f6c1e52-8a41-4a0e-9d3b-5b1f7a2c9e10" };
+const POD_B = { pod: "checkout-7c9d8f6b5-m8q7z", uid: "9b2d4f80-3c17-4e6a-b5a2-1d8e6f4c7a21" };
+
+function contextSeries(panelId: string, start: number, end: number) {
+  const at = (index: number) => start + ((end - start) * index) / CONTEXT_POINTS;
+  const line = (labels: Record<string, string>, value: (progress: number) => number, from = 0) => ({
+    labels,
+    samples: Array.from({ length: CONTEXT_POINTS + 1 - from }, (_, offset) => {
+      const index = from + offset;
+      return { timestamp: new Date(at(index)).toISOString(), value: Number(value(index / CONTEXT_POINTS).toFixed(4)) };
+    }),
+  });
+  const app = { ...POD_A, container: "app" };
+  const appB = { ...POD_B, container: "app" };
+  const sidecar = { ...POD_A, container: "sidecar" };
+  const wave = (progress: number) => Math.sin(progress * Math.PI * 6) * 0.04;
+  if (panelId === "container-cpu-cores") {
+    return [
+      line({ ...app, series: "usage" }, (t) => Math.min(0.5, 0.12 + t * 0.45 + wave(t))),
+      line({ ...app, series: "limit" }, () => 0.5),
+      line({ ...appB, series: "usage" }, (t) => 0.1 + t * 0.12 + wave(t)),
+      line({ ...appB, series: "limit" }, () => 0.5),
+      line({ ...sidecar, series: "usage" }, (t) => 0.02 + Math.abs(wave(t)) / 2),
+    ];
+  }
+  if (panelId === "container-memory-working-set-bytes") {
+    const MiB = 1024 * 1024;
+    return [
+      line({ ...app, series: "usage" }, (t) => Math.round((96 + t * 150) * MiB)),
+      line({ ...app, series: "limit" }, () => 256 * MiB),
+      line({ ...appB, series: "usage" }, (t) => Math.round((90 + t * 20 + wave(t) * 100) * MiB)),
+      line({ ...appB, series: "limit" }, () => 256 * MiB),
+      line({ ...sidecar, series: "usage" }, () => 24 * MiB),
+    ];
+  }
+  if (panelId === "container-cpu-throttled-ratio") {
+    return [
+      line({ ...app, series: "throttled_ratio" }, (t) => Math.max(0, Math.min(0.85, (t - 0.35) * 1.4))),
+      line({ ...appB, series: "throttled_ratio" }, (t) => Math.max(0, wave(t))),
+    ];
+  }
+  if (panelId === "container-probe-failures") {
+    return [
+      line({ ...app, series: "Readiness" }, (t) => (t > 0.5 ? Math.round((t - 0.5) * 24) : 0)),
+      line({ ...app, series: "Liveness" }, (t) => (t > 0.75 ? Math.round((t - 0.75) * 12) : 0)),
+      line({ ...appB, series: "Readiness" }, () => 0),
+    ];
+  }
+  if (panelId === "container-last-terminated-reason") {
+    return [
+      line({ ...app, series: "Error" }, (t) => (t < 0.7 ? 1 : 0), 10),
+      line({ ...app, series: "OOMKilled" }, () => 1, Math.round(CONTEXT_POINTS * 0.7)),
+      line({ ...appB, series: "Completed" }, () => 1, 25),
+    ];
+  }
+  return [
+    line({ ...POD_A }, () => 0),
+    line({ ...POD_B }, (t) => (t > 0.6 ? 1 : 0)),
+  ];
+}
+
 function metricPanelReferences(record: FakeIncident) {
   return record.detail.incident.source.ref ===
     "K8sIncidentServiceEndpointsUnavailable"
     ? [
         {
           panelId: "service-ready-endpoints",
+          title: "Service 就绪 Endpoint",
+          unit: "endpoints",
+          purpose: "就绪 Endpoint 数；0 表示没有后端可接流量，不证明网络连通性。",
+          seriesBinding: "target",
           recommendedWindow: "15m",
           riskDirection: "lower_is_worse",
           signalRole: "trigger",
@@ -979,6 +1060,10 @@ function metricPanelReferences(record: FakeIncident) {
     : [
         {
           panelId: "image-pull-affected-pods",
+          title: "镜像拉取失败 Pod",
+          unit: "pods",
+          purpose: "因镜像拉取失败而等待的 Pod 数，衡量影响范围，不说明失败原因。",
+          seriesBinding: "target",
           recommendedWindow: "15m",
           riskDirection: "higher_is_worse",
           signalRole: "trigger",
@@ -986,11 +1071,21 @@ function metricPanelReferences(record: FakeIncident) {
         },
         {
           panelId: "image-pull-available-replicas",
+          title: "Deployment 可用副本",
+          unit: "replicas",
+          purpose: "当前可用副本数，与期望副本对照看容量缺口。",
+          seriesBinding: "target",
           recommendedWindow: "15m",
           riskDirection: "lower_is_worse",
           signalRole: "context",
           thresholdDuration: "5m",
         },
+        ...CONTEXT_PANELS.map((panel) => ({
+          ...panel,
+          recommendedWindow: "15m",
+          signalRole: "context",
+          thresholdDuration: null,
+        })),
       ];
 }
 
@@ -1014,6 +1109,7 @@ function metricPanel(
   record: FakeIncident,
   panelId: string,
   window: string,
+  anchor: string,
 ) {
   const serviceEndpoints = panelId === "service-ready-endpoints";
   const affectedPods = panelId === "image-pull-affected-pods";
@@ -1080,8 +1176,36 @@ function metricPanel(
       value,
     }));
 
+  const unavailable = record.metricState === "monitoring_unavailable";
+  const contextPanel = CONTEXT_PANELS.find((panel) => panel.panelId === panelId);
+  if (contextPanel !== undefined) {
+    return {
+      schemaVersion: 2,
+      result: {
+        panelId,
+        title: contextPanel.title,
+        unit: contextPanel.unit,
+        purpose: contextPanel.purpose,
+        threshold: contextPanel.riskDirection === "higher_is_worse" ? 1 : null,
+        riskDirection: contextPanel.riskDirection,
+        seriesBinding: contextPanel.seriesBinding,
+        window,
+        anchor,
+        state: record.metricState,
+        queriedAt: queriedAtTimestamp,
+        rangeStart: new Date(windowStartsAt).toISOString(),
+        rangeEnd: queriedAtTimestamp,
+        latestSampleAt: unavailable ? null : queriedAtTimestamp,
+        currentValue: null,
+        series: unavailable ? [] : contextSeries(panelId, windowStartsAt, queriedAt),
+      },
+      markers: markers.filter((marker) => Date.parse(marker.occurredAt) >= windowStartsAt && Date.parse(marker.occurredAt) <= queriedAt)
+        .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)),
+      markersTruncated: false,
+    };
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     result: {
       panelId,
       title:
@@ -1091,18 +1215,23 @@ function metricPanel(
             ? "Service 就绪 Endpoint"
             : "Deployment 可用副本",
       unit: affectedPods ? "pods" : serviceEndpoints ? "endpoints" : "replicas",
+      purpose: affectedPods
+        ? "因镜像拉取失败而等待的 Pod 数，衡量影响范围，不说明失败原因。"
+        : serviceEndpoints
+          ? "就绪 Endpoint 数；0 表示没有后端可接流量，不证明网络连通性。"
+          : "当前可用副本数，与期望副本对照看容量缺口。",
       threshold: affectedPods || serviceEndpoints ? 1 : null,
       riskDirection: affectedPods ? "higher_is_worse" : "lower_is_worse",
+      seriesBinding: "target",
       window,
+      anchor,
       state: record.metricState,
       queriedAt: queriedAtTimestamp,
-      latestSampleAt:
-        record.metricState === "monitoring_unavailable"
-          ? null
-          : queriedAtTimestamp,
-      currentValue:
-        record.metricState === "monitoring_unavailable" ? null : failingValue,
-      samples: record.metricState === "monitoring_unavailable" ? [] : samples,
+      rangeStart: new Date(windowStartsAt).toISOString(),
+      rangeEnd: queriedAtTimestamp,
+      latestSampleAt: unavailable ? null : queriedAtTimestamp,
+      currentValue: unavailable ? null : failingValue,
+      series: unavailable ? [] : [{ labels: {}, samples }],
     },
     markers: markers.filter((marker) => Date.parse(marker.occurredAt) >= windowStartsAt && Date.parse(marker.occurredAt) <= queriedAt)
       .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)),
@@ -1567,7 +1696,7 @@ async function handleRequest(
       return;
     }
     json(response, 200, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       panels: metricPanelReferences(record),
     });
     return;
@@ -1607,7 +1736,12 @@ async function handleRequest(
       runtimeError(response, 422, "invalid_request", "Request is invalid.", false);
       return;
     }
-    json(response, 200, metricPanel(record, panelMatch[2], window));
+    const anchor = url.searchParams.get("anchor") ?? "current";
+    if (anchor !== "current" && anchor !== "run" && anchor !== "occurrence") {
+      runtimeError(response, 422, "invalid_request", "Request is invalid.", false);
+      return;
+    }
+    json(response, 200, metricPanel(record, panelMatch[2], window, anchor));
     return;
   }
 

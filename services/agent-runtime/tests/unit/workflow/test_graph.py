@@ -61,10 +61,19 @@ TEST_POLICY = DiagnosticPolicy(
     tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
     required_evidence=frozenset({"workload"}),
     prometheus_panels=(
-        DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+        DiagnosticPanel(
+            "image-pull-affected-pods",
+            "Affected pods",
+            "pods",
+            "Registered purpose.",
+            "target",
+            "higher_is_worse",
+        ),
     ),
     trigger_panel_id="image-pull-affected-pods",
 )
+
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
 
 
 class _SubgraphView(Protocol):
@@ -175,6 +184,7 @@ def _snapshot(*, model_id: str = "deepseek-v4-flash") -> DiagnosisWorkflowRunSna
             timeout_seconds=180,
         ),
         started_at=None,
+        occurred_at=_OCCURRED_AT,
     )
 
 
@@ -208,6 +218,7 @@ def _context(run: DiagnosisWorkflowRunSnapshot) -> DiagnosticToolContext:
         repository=cast(IncidentRepository, object()),
         now=lambda: NOW,
         prometheus=prometheus_query_service_stub(),
+        occurred_at=_OCCURRED_AT,
     )
 
 
@@ -365,6 +376,7 @@ async def test_triage_validates_target_without_model_or_kubernetes_call(
     assert model.model_calls == 0
     assert result["target"] == run.target.model_dump(mode="json")
     assert len(result["messages"]) == 1
+    assert '"occurredAt":"2026-09-02T08:30:00Z"' in result["messages"][0].content
 
 
 @pytest.mark.asyncio

@@ -30,10 +30,19 @@ TEST_POLICY = DiagnosticPolicy(
     tool_names=("get_workload", "get_pods", "get_events", "query_prometheus"),
     required_evidence=frozenset({"workload"}),
     prometheus_panels=(
-        DiagnosticPanel("image-pull-affected-pods", "Affected pods", "pods"),
+        DiagnosticPanel(
+            "image-pull-affected-pods",
+            "Affected pods",
+            "pods",
+            "Registered purpose.",
+            "target",
+            "higher_is_worse",
+        ),
     ),
     trigger_panel_id="image-pull-affected-pods",
 )
+
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
 
 
 class _PolicyResolver:
@@ -107,6 +116,7 @@ def _terminal_snapshot() -> DiagnosisWorkflowRunSnapshot:
             timeout_seconds=180,
         ),
         started_at=NOW,
+        occurred_at=_OCCURRED_AT,
     )
 
 

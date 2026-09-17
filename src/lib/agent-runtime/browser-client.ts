@@ -150,12 +150,20 @@ export async function fetchIncidentFromBrowser(
     : { ok: false, failure: "invalid_response" };
 }
 
+export type MonitoringPanelAnchor =
+  | { kind: "current" }
+  | { kind: "run"; runId: string };
+
 export async function fetchMonitoringPanelFromBrowser(
   incidentId: string,
   panelId: string,
   window: MetricWindowView,
+  anchor: MonitoringPanelAnchor = { kind: "current" },
 ): Promise<BrowserRuntimeResult<IncidentMetricPanelView>> {
-  const query = new URLSearchParams({ window });
+  const query = new URLSearchParams({ window, anchor: anchor.kind });
+  if (anchor.kind === "run") {
+    query.set("runId", anchor.runId);
+  }
   let response: Response;
   try {
     response = await authenticatedFetch(
@@ -172,6 +180,7 @@ export async function fetchMonitoringPanelFromBrowser(
     await jsonBody(response),
     panelId,
     window,
+    anchor.kind,
   );
   return data !== null
     ? { ok: true, data }

@@ -36,7 +36,10 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricQueryState,
     MetricRiskDirection,
     MetricSample,
+    MetricSeries,
+    MetricSeriesBinding,
     MetricTargetRef,
+    MetricTimeAnchor,
     MetricWindow,
     PrometheusObservation,
 )
@@ -44,7 +47,7 @@ from k8s_incident_agent.monitoring.errors import (
     MonitoringBoundaryError,
     MonitoringErrorCode,
 )
-from k8s_incident_agent.monitoring.service import PrometheusQueryService
+from k8s_incident_agent.monitoring.service import MetricRange, PrometheusQueryService
 from k8s_incident_agent.monitoring.tools import (
     FatalPrometheusToolError,
     build_prometheus_tool,
@@ -71,6 +74,8 @@ TARGET = ScenarioTarget(
     kind="Deployment",
     name="image-pull-backoff",
 )
+
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
 
 
 def _alembic_config(paths: RuntimePaths) -> Config:
@@ -103,6 +108,7 @@ def _credential() -> DiagnosticCredential:
 def _observation(
     panel_id: str = PANEL_ID,
     window: MetricWindow = MetricWindow.FIFTEEN_MINUTES,
+    anchor: MetricTimeAnchor = MetricTimeAnchor.CURRENT,
 ) -> PrometheusObservation:
     return PrometheusObservation(
         evidence_kind="metrics",
@@ -120,13 +126,22 @@ def _observation(
                 title="Affected pods",
                 unit="pods",
                 threshold=1.0,
+                purpose="Registered purpose.",
                 risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
+                series_binding=MetricSeriesBinding.TARGET,
                 window=window,
+                anchor=anchor,
                 state=MetricQueryState.OK,
                 queried_at=NOW,
+                range_start=NOW - window.duration,
+                range_end=NOW,
                 latest_sample_at=NOW,
                 current_value=1.0,
-                samples=[MetricSample(timestamp=NOW, value=1.0)],
+                series=[
+                    MetricSeries(
+                        labels={}, samples=[MetricSample(timestamp=NOW, value=1.0)]
+                    )
+                ],
             )
         ),
     )
@@ -142,6 +157,7 @@ class _Prometheus:
         self.error = error
         self.before_query = before_query
         self.calls: list[tuple[ScenarioTarget, str, MetricWindow]] = []
+        self.ranges: list[MetricRange] = []
 
     async def observe_panel(
         self,
@@ -149,13 +165,16 @@ class _Prometheus:
         target: ScenarioTarget,
         panel_id: str,
         window: MetricWindow,
+        metric_range: MetricRange,
+        queried_at: datetime,
     ) -> PrometheusObservation:
         self.calls.append((target, panel_id, window))
+        self.ranges.append(metric_range)
         if self.before_query is not None:
             await self.before_query()
         if self.error is not None:
             raise self.error
-        return _observation(panel_id, window)
+        return _observation(panel_id, window, metric_range.anchor)
 
 
 async def _context(
@@ -183,6 +202,7 @@ async def _context(
         repository=repository,
         now=lambda: NOW + timedelta(seconds=30),
         prometheus=cast(PrometheusQueryService, prometheus),
+        occurred_at=_OCCURRED_AT,
     )
 
 
@@ -193,6 +213,7 @@ async def _invoke(
     tool_call_id: str,
     panel_id: str = PANEL_ID,
     window: str = "15m",
+    anchor: str | None = None,
 ) -> dict[str, object]:
     builder = StateGraph(MessagesState, context_schema=DiagnosticToolContext)
     builder.add_node(  # pyright: ignore[reportUnknownMemberType]
@@ -211,7 +232,11 @@ async def _invoke(
                         tool_calls=[
                             {
                                 "name": "query_prometheus",
-                                "args": {"panel_id": panel_id, "window": window},
+                                "args": {
+                                    "panel_id": panel_id,
+                                    "window": window,
+                                    **({} if anchor is None else {"anchor": anchor}),
+                                },
                                 "id": tool_call_id,
                                 "type": "tool_call",
                             }
@@ -234,7 +259,7 @@ def test_registry_exposes_only_panel_and_window_to_the_model() -> None:
     tool = build_prometheus_tool()
 
     assert tool.name == "query_prometheus"
-    assert set(tool.args) == {"panel_id", "window"}
+    assert set(tool.args) == {"panel_id", "window", "anchor"}
 
 
 @pytest.mark.asyncio
@@ -278,6 +303,7 @@ async def test_success_records_started_before_query_and_replays_without_requery(
         assert json.loads(started.payload_json)["callIdentity"] == {
             "panelId": PANEL_ID,
             "window": "15m",
+            "anchor": "current",
         }
 
 
@@ -443,7 +469,44 @@ async def test_third_query_of_the_same_panel_and_window_is_refused(
                 context.run.id,
                 "call-3",
                 "query_prometheus",
-                {"panelId": PANEL_ID, "window": "15m"},
+                {"panelId": PANEL_ID, "window": "15m", "anchor": "current"},
             )
             is None
         )
+
+
+@pytest.mark.asyncio
+async def test_occurrence_anchor_centres_the_window_and_counts_separately(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        prometheus = _Prometheus()
+        context = await _context(repository, prometheus)
+        tools = (build_prometheus_tool(),)
+
+        current = await _invoke(tools, context, tool_call_id="call-current")
+        occurrence = await _invoke(
+            tools, context, tool_call_id="call-occurrence", anchor="occurrence"
+        )
+
+        assert current["evidenceId"] != occurrence["evidenceId"]
+        assert [metric_range.anchor.value for metric_range in prometheus.ranges] == [
+            "current",
+            "occurrence",
+        ]
+        centred = prometheus.ranges[1]
+        assert centred.end == _OCCURRED_AT + timedelta(minutes=7, seconds=30)
+        assert centred.end - centred.start == timedelta(minutes=15)
+        assert prometheus.ranges[0].end == NOW + timedelta(seconds=30)
+        async with database.session_factory() as session:
+            started = list(
+                await session.scalars(
+                    select(RunEventRow)
+                    .where(RunEventRow.event_type == "tool.started")
+                    .order_by(RunEventRow.id)
+                )
+            )
+        assert [
+            json.loads(row.payload_json)["callIdentity"]["anchor"] for row in started
+        ] == ["current", "occurrence"]

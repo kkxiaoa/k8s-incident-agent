@@ -427,6 +427,7 @@ class RunStartedEventPayload(_TypedRunEventPayload):
 class PrometheusToolCallIdentity(_ApiContract):
     panel_id: str = Field(min_length=1, max_length=128)
     window: Literal["15m", "1h", "6h", "7d", "15d"]
+    anchor: Literal["current", "occurrence"] | None = None
 
 
 class ToolStartedEventPayload(_TypedRunEventPayload):
@@ -439,7 +440,9 @@ class ToolStartedEventPayload(_TypedRunEventPayload):
         identity = (
             None
             if self.call_identity is None
-            else self.call_identity.model_dump(mode="json", by_alias=True)
+            else self.call_identity.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            )
         )
         normalized = normalize_diagnostic_tool_call_identity(
             self.tool_name,

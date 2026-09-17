@@ -626,6 +626,9 @@ export function fetchMonitoringPanel(
 ): Promise<RuntimeJsonResult> {
   const path = monitoringPanelPath(incidentId, panelId);
   const windows = searchParams.getAll("window");
+  const anchors = searchParams.getAll("anchor");
+  const runIds = searchParams.getAll("runId");
+  const anchor = anchors[0] ?? "current";
   if (
     path === null ||
     windows.length !== 1 ||
@@ -633,7 +636,11 @@ export function fetchMonitoringPanel(
       windows[0] !== "1h" &&
       windows[0] !== "6h" &&
       windows[0] !== "7d" &&
-      windows[0] !== "15d")
+      windows[0] !== "15d") ||
+    anchors.length > 1 ||
+    (anchor !== "current" && anchor !== "run") ||
+    runIds.length !== (anchor === "run" ? 1 : 0) ||
+    (anchor === "run" && !UUID_PATTERN.test(runIds[0] ?? ""))
   ) {
     return Promise.resolve({
       response: errorResponse(422, INVALID_REQUEST),
@@ -645,7 +652,11 @@ export function fetchMonitoringPanel(
     200,
     MONITORING_PANEL_ERROR_CODES,
     { method: "GET" },
-    new URLSearchParams({ window: windows[0] }),
+    new URLSearchParams({
+      window: windows[0],
+      anchor,
+      ...(anchor === "run" ? { runId: runIds[0] } : {}),
+    }),
     incoming,
   );
 }

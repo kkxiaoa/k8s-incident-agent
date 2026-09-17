@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
+from uuid import UUID
 
 import httpx
 import pytest
@@ -24,6 +25,9 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricQueryState,
     MetricRiskDirection,
     MetricSample,
+    MetricSeries,
+    MetricSeriesBinding,
+    MetricTimeAnchor,
     MetricWindow,
     MonitoringComponentState,
     MonitoringHealthSnapshot,
@@ -64,6 +68,9 @@ def test_monitoring_overview_rejects_a_stale_24_hour_window() -> None:
 
 
 class _MonitoringService:
+    def __init__(self) -> None:
+        self.anchors: list[tuple[MetricTimeAnchor, UUID | None]] = []
+
     async def get_health(self) -> MonitoringHealthSnapshot:
         return MonitoringHealthSnapshot(
             state=MonitoringOverallState.DEGRADED,
@@ -108,6 +115,10 @@ class _MonitoringService:
             panels=(
                 MonitoringPanelReference(
                     panel_id="image-pull-affected-pods",
+                    title="Affected pods",
+                    unit="pods",
+                    purpose="Registered purpose.",
+                    series_binding=MetricSeriesBinding.TARGET,
                     recommended_window=MetricWindow.FIFTEEN_MINUTES,
                     risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
                     signal_role=MetricPanelSignalRole.TRIGGER,
@@ -115,6 +126,10 @@ class _MonitoringService:
                 ),
                 MonitoringPanelReference(
                     panel_id="image-pull-available-replicas",
+                    title="Available replicas",
+                    unit="replicas",
+                    purpose="Registered purpose.",
+                    series_binding=MetricSeriesBinding.TARGET,
                     recommended_window=MetricWindow.FIFTEEN_MINUTES,
                     risk_direction=MetricRiskDirection.LOWER_IS_WORSE,
                     signal_role=MetricPanelSignalRole.CONTEXT,
@@ -129,20 +144,32 @@ class _MonitoringService:
         *,
         panel_id: str,
         window: MetricWindow,
+        anchor: MetricTimeAnchor = MetricTimeAnchor.CURRENT,
+        run_id: UUID | None = None,
     ) -> IncidentMetricPanel:
+        self.anchors.append((anchor, run_id))
         return IncidentMetricPanel(
             result=MetricPanelResult(
                 panel_id=panel_id,
                 title="Affected pods",
                 unit="pods",
                 threshold=1.0,
+                purpose="Registered purpose.",
                 risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
+                series_binding=MetricSeriesBinding.TARGET,
                 window=window,
+                anchor=MetricTimeAnchor.CURRENT,
                 state=MetricQueryState.OK,
                 queried_at=NOW,
+                range_start=NOW - window.duration,
+                range_end=NOW,
                 latest_sample_at=NOW,
                 current_value=0.0,
-                samples=[MetricSample(timestamp=NOW, value=0.0)],
+                series=[
+                    MetricSeries(
+                        labels={}, samples=[MetricSample(timestamp=NOW, value=0.0)]
+                    )
+                ],
             ),
             markers=(
                 MetricMarker(
@@ -308,10 +335,14 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
 
     assert refs.status_code == 200
     assert refs.json() == {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "panels": [
             {
                 "panelId": "image-pull-affected-pods",
+                "title": "Affected pods",
+                "unit": "pods",
+                "purpose": "Registered purpose.",
+                "seriesBinding": "target",
                 "recommendedWindow": "15m",
                 "riskDirection": "higher_is_worse",
                 "signalRole": "trigger",
@@ -319,6 +350,10 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
             },
             {
                 "panelId": "image-pull-available-replicas",
+                "title": "Available replicas",
+                "unit": "replicas",
+                "purpose": "Registered purpose.",
+                "seriesBinding": "target",
                 "recommendedWindow": "15m",
                 "riskDirection": "lower_is_worse",
                 "signalRole": "context",
@@ -328,19 +363,29 @@ async def test_incident_monitoring_routes_return_catalog_refs_panel_and_markers(
     }
     assert panel.status_code == 200
     assert panel.json() == {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "result": {
             "panelId": "image-pull-affected-pods",
             "title": "Affected pods",
             "unit": "pods",
+            "purpose": "Registered purpose.",
             "threshold": 1.0,
             "riskDirection": "higher_is_worse",
+            "seriesBinding": "target",
             "window": "15d",
+            "anchor": "current",
             "state": "ok",
             "queriedAt": "2026-09-02T09:00:00Z",
+            "rangeStart": "2026-08-18T09:00:00Z",
+            "rangeEnd": "2026-09-02T09:00:00Z",
             "latestSampleAt": "2026-09-02T09:00:00Z",
             "currentValue": 0.0,
-            "samples": [{"timestamp": "2026-09-02T09:00:00Z", "value": 0.0}],
+            "series": [
+                {
+                    "labels": {},
+                    "samples": [{"timestamp": "2026-09-02T09:00:00Z", "value": 0.0}],
+                }
+            ],
         },
         "markers": [
             {

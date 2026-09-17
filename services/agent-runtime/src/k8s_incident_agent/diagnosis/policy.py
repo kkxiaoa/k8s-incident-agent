@@ -82,10 +82,15 @@ class DiagnosticPolicyCatalog:
             raise ValueError("Incident target does not match its diagnostic policy")
         capability = investigation_capability(target.api_version, target.kind)
         panels = tuple(
-            DiagnosticPanel(panel_id=panel.panel_id, title=panel.title, unit=panel.unit)
-            for _, panel in self._alerts.panels_for_target(
-                target.api_version, target.kind
+            DiagnosticPanel(
+                panel_id=panel.panel_id,
+                title=panel.title,
+                unit=panel.unit,
+                purpose=panel.purpose,
+                series_binding=panel.series_binding,
+                risk_direction=panel.risk_direction,
             )
+            for panel in self._alerts.panels_for_target(target.api_version, target.kind)
         )
         trigger_panel_id = next(
             panel.panel_id for panel in entry.panels if panel.signal_role == "trigger"

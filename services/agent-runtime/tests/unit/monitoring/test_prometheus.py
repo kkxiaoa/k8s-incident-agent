@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -9,13 +10,21 @@ from pydantic import HttpUrl
 from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.monitoring import prometheus as prometheus_module
 from k8s_incident_agent.monitoring.catalog import load_alert_catalog
-from k8s_incident_agent.monitoring.contracts import MetricQueryState, MetricWindow
+from k8s_incident_agent.monitoring.contracts import (
+    MetricQueryState,
+    MetricTimeAnchor,
+    MetricWindow,
+)
 from k8s_incident_agent.monitoring.errors import (
     MonitoringBoundaryError,
     MonitoringErrorCode,
 )
 from k8s_incident_agent.monitoring.prometheus import PrometheusHttpClient
-from k8s_incident_agent.monitoring.service import PrometheusQueryService
+from k8s_incident_agent.monitoring.service import (
+    MetricRange,
+    PrometheusQueryService,
+    resolve_metric_range,
+)
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 
 NOW = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
@@ -40,6 +49,10 @@ PVC_TARGET = KubernetesTarget(
     kind="PersistentVolumeClaim",
     name="pvc-storage-class-missing",
 )
+
+
+def _current(window: MetricWindow, at: datetime = NOW) -> MetricRange:
+    return resolve_metric_range(window, MetricTimeAnchor.CURRENT, queried_at=at)
 
 
 def _response(document: str, *, status: int = 200) -> httpx.Response:
@@ -91,7 +104,7 @@ def _service(
             "liveness-probe-restarts",
             TARGET,
             [[1788339600, "5.2099824440543125"]],
-            "Liveness 近 5 分钟重启估算",
+            "Liveness 重启估算",
         ),
     ],
 )
@@ -118,6 +131,8 @@ async def test_sparse_hour_query_preserves_actual_points_and_metric_semantics(
         target=target,
         panel_id=panel_id,
         window=MetricWindow.ONE_HOUR,
+        metric_range=_current(MetricWindow.ONE_HOUR),
+        queried_at=NOW,
     )
     await service.close()
 
@@ -126,13 +141,14 @@ async def test_sparse_hour_query_preserves_actual_points_and_metric_semantics(
     assert result.state is MetricQueryState.OK
     assert result.title == expected_title
     assert [
-        (sample.timestamp.timestamp(), sample.value) for sample in result.samples
+        (sample.timestamp.timestamp(), sample.value)
+        for sample in result.series[0].samples
     ] == [(timestamp, float(value)) for timestamp, value in values]
     assert result.current_value == float(values[-1][1])
     form = dict(httpx.QueryParams(requests[0].content.decode()))
     assert float(form["end"]) - float(form["start"]) == 3600
     if panel_id == "liveness-probe-restarts":
-        assert "increase(" in form["query"] and "[5m]" in form["query"]
+        assert "increase(" in form["query"] and "[300s]" in form["query"]
 
 
 @pytest.mark.asyncio
@@ -149,13 +165,15 @@ async def test_range_query_keeps_zero_and_escapes_target_labels() -> None:
         target=TARGET,
         panel_id="image-pull-affected-pods",
         window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+        queried_at=NOW,
     )
     await service.close()
 
     assert result.state is MetricQueryState.OK
     assert result.current_value == 0
     assert result.latest_sample_at == NOW
-    assert [sample.value for sample in result.samples] == [1, 0]
+    assert [sample.value for sample in result.series[0].samples] == [1, 0]
     form = dict(httpx.QueryParams(requests[0].content.decode()))
     assert requests[0].url.path == "/api/v1/query_range"
     assert 'namespace="k8s-incident-scenarios"' in form["query"]
@@ -186,6 +204,8 @@ async def test_long_windows_keep_range_queries_within_the_sample_budget(
         target=TARGET,
         panel_id="image-pull-affected-pods",
         window=window,
+        metric_range=_current(window),
+        queried_at=NOW,
     )
     await service.close()
 
@@ -211,12 +231,14 @@ async def test_service_endpoint_panel_preserves_multiple_ready_endpoints() -> No
         target=SERVICE_TARGET,
         panel_id="service-ready-endpoints",
         window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+        queried_at=NOW,
     )
     await service.close()
 
     assert result.state is MetricQueryState.OK
     assert result.current_value == 2
-    assert [sample.value for sample in result.samples] == [1, 2]
+    assert [sample.value for sample in result.series[0].samples] == [1, 2]
     form = dict(httpx.QueryParams(requests[0].content.decode()))
     assert (
         'kube_endpointslice_endpoints{namespace="k8s-incident-scenarios",ready="true"} > 0'
@@ -238,6 +260,8 @@ async def test_pvc_panel_queries_only_the_exact_claim() -> None:
         target=PVC_TARGET,
         panel_id="pvc-pending-state",
         window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+        queried_at=NOW,
     )
     await service.close()
 
@@ -289,6 +313,8 @@ async def test_query_time_uses_one_millisecond_precision_value_end_to_end() -> N
         target=TARGET,
         panel_id="image-pull-affected-pods",
         window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES, precise_now),
+        queried_at=precise_now,
     )
     await service.close()
 
@@ -308,6 +334,8 @@ async def test_empty_matrix_is_no_data_and_warning_is_partial() -> None:
         target=TARGET,
         panel_id="image-pull-affected-pods",
         window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+        queried_at=NOW,
     )
     await empty.close()
     assert no_data.state is MetricQueryState.NO_DATA
@@ -324,6 +352,8 @@ async def test_empty_matrix_is_no_data_and_warning_is_partial() -> None:
         target=TARGET,
         panel_id="image-pull-affected-pods",
         window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+        queried_at=NOW,
     )
     await partial.close()
     assert result.state is MetricQueryState.PARTIAL
@@ -344,6 +374,8 @@ async def test_warnings_do_not_hide_an_invalid_infos_contract() -> None:
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await service.close()
 
@@ -368,6 +400,8 @@ async def test_non_finite_or_invalid_sample_is_contract_invalid(value: str) -> N
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await service.close()
 
@@ -388,6 +422,8 @@ async def test_missing_final_evaluation_sample_is_stale() -> None:
         target=TARGET,
         panel_id="image-pull-affected-pods",
         window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+        queried_at=NOW,
     )
     await service.close()
 
@@ -430,6 +466,8 @@ async def test_duplicate_json_label_key_is_rejected() -> None:
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await service.close()
 
@@ -453,6 +491,8 @@ async def test_panel_query_rejects_labels_that_the_fixed_aggregate_cannot_emit()
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await service.close()
 
@@ -467,6 +507,8 @@ async def test_response_and_series_budgets_fail_closed() -> None:
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await oversized.close()
     assert body_error.value.code is MonitoringErrorCode.RESULT_BUDGET_EXCEEDED
@@ -487,6 +529,8 @@ async def test_response_and_series_budgets_fail_closed() -> None:
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await too_many_series.close()
     assert series_error.value.code is MonitoringErrorCode.RESULT_BUDGET_EXCEEDED
@@ -506,6 +550,8 @@ async def test_sample_and_label_budgets_fail_closed() -> None:
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.SIX_HOURS,
+            metric_range=_current(MetricWindow.SIX_HOURS),
+            queried_at=NOW,
         )
     await too_many_samples.close()
     assert sample_error.value.code is MonitoringErrorCode.RESULT_BUDGET_EXCEEDED
@@ -522,6 +568,8 @@ async def test_sample_and_label_budgets_fail_closed() -> None:
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await too_many_labels.close()
     assert label_error.value.code is MonitoringErrorCode.RESULT_BUDGET_EXCEEDED
@@ -549,6 +597,8 @@ async def test_invalid_or_non_increasing_timestamps_are_rejected(values: str) ->
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await service.close()
 
@@ -567,6 +617,8 @@ async def test_query_error_is_projected_for_console_but_raised_for_evidence() ->
         target=TARGET,
         panel_id="image-pull-affected-pods",
         window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+        queried_at=NOW,
     )
     await console.close()
 
@@ -579,6 +631,8 @@ async def test_query_error_is_projected_for_console_but_raised_for_evidence() ->
             target=TARGET,
             panel_id="image-pull-affected-pods",
             window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
         )
     await evidence.close()
     assert error.value.code is MonitoringErrorCode.QUERY_FAILED
@@ -611,6 +665,8 @@ async def test_total_request_timeout_includes_transport_wait(
                 target=TARGET,
                 panel_id="image-pull-affected-pods",
                 window=MetricWindow.FIFTEEN_MINUTES,
+                metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+                queried_at=NOW,
             )
     await service.close()
 
@@ -676,3 +732,256 @@ async def test_health_queries_are_fixed_and_project_only_normalized_signals() ->
         dict(httpx.QueryParams(request.content.decode()))["lookback_delta"]
         for request in requests
     ] == ["60s", "60s"]
+
+
+def test_resolve_metric_range_derives_windows_only_from_registered_anchors() -> None:
+    window = MetricWindow.FIFTEEN_MINUTES
+    onset = NOW - timedelta(hours=2)
+
+    current = resolve_metric_range(window, MetricTimeAnchor.CURRENT, queried_at=NOW)
+    centred = resolve_metric_range(
+        window, MetricTimeAnchor.OCCURRENCE, queried_at=NOW, occurred_at=onset
+    )
+    capped = resolve_metric_range(
+        window,
+        MetricTimeAnchor.OCCURRENCE,
+        queried_at=NOW,
+        occurred_at=NOW - timedelta(minutes=5),
+    )
+    completed = resolve_metric_range(
+        window,
+        MetricTimeAnchor.RUN,
+        queried_at=NOW,
+        run_completed_at=NOW - timedelta(hours=1),
+    )
+    running = resolve_metric_range(window, MetricTimeAnchor.RUN, queried_at=NOW)
+
+    assert (current.start, current.end) == (NOW - timedelta(minutes=15), NOW)
+    assert centred.end == onset + timedelta(minutes=7, seconds=30)
+    assert centred.end - centred.start == timedelta(minutes=15)
+    assert capped.end == NOW
+    assert completed.end == NOW - timedelta(hours=1)
+    assert (running.anchor, running.end) == (MetricTimeAnchor.RUN, NOW)
+    with pytest.raises(ValueError, match="Occurrence anchor"):
+        resolve_metric_range(window, MetricTimeAnchor.OCCURRENCE, queried_at=NOW)
+
+
+def _container_series(container: str, series: str, value: str) -> str:
+    return (
+        '{"metric":{"pod":"web-1","uid":"u1","container":"'
+        + container
+        + '","series":"'
+        + series
+        + '"},"values":[[1788338700,"'
+        + value
+        + '"],[1788339600,"'
+        + value
+        + '"]]}'
+    )
+
+
+@pytest.mark.asyncio
+async def test_pod_container_panel_keeps_attributed_series_without_a_current_value() -> (
+    None
+):
+    service, requests = _service(
+        _response(
+            '{"status":"success","data":{"resultType":"matrix","result":['
+            + ",".join(
+                [
+                    _container_series("app", "usage", "104857600"),
+                    _container_series("app", "limit", "268435456"),
+                    _container_series("sidecar", "usage", "1024"),
+                ]
+            )
+            + "]}}"
+        )
+    )
+
+    result = await service.query_panel(
+        target=TARGET,
+        panel_id="container-memory-working-set-bytes",
+        window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+        queried_at=NOW,
+    )
+    await service.close()
+
+    assert result.state is MetricQueryState.OK
+    assert result.series_binding.value == "pod_container"
+    assert result.risk_direction.value == "neutral"
+    assert result.current_value is None
+    assert result.latest_sample_at == NOW
+    assert [item.labels for item in result.series] == [
+        {"pod": "web-1", "uid": "u1", "container": "app", "series": "limit"},
+        {"pod": "web-1", "uid": "u1", "container": "app", "series": "usage"},
+        {"pod": "web-1", "uid": "u1", "container": "sidecar", "series": "usage"},
+    ]
+    form = dict(httpx.QueryParams(requests[0].content.decode()))
+    assert 'job="kubelet-resource"' in form["query"]
+    assert 'resource="memory"' in form["query"]
+    assert "group_left(uid, replicaset)" in form["query"]
+    assert form["limit"] == "8"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metric",
+    [
+        '{"pod":"web-1","container":"app"}',
+        '{"pod":"web-1","uid":"u1","container":"app","node":"n1"}',
+        "{}",
+    ],
+)
+async def test_pod_container_panel_rejects_series_outside_the_binding(
+    metric: str,
+) -> None:
+    service, _ = _service(
+        _response(
+            '{"status":"success","data":{"resultType":"matrix","result":['
+            '{"metric":' + metric + ',"values":[[1788339600,"1"]]}]}}'
+        )
+    )
+
+    with pytest.raises(MonitoringBoundaryError) as error:
+        await service.observe_panel(
+            target=TARGET,
+            panel_id="container-cpu-throttled-ratio",
+            window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=_current(MetricWindow.FIFTEEN_MINUTES),
+            queried_at=NOW,
+        )
+    await service.close()
+
+    assert error.value.code is MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
+@pytest.mark.asyncio
+async def test_occurrence_range_bounds_samples_and_reports_partial_truncation() -> None:
+    onset = NOW - timedelta(hours=2)
+    metric_range = resolve_metric_range(
+        MetricWindow.FIFTEEN_MINUTES,
+        MetricTimeAnchor.OCCURRENCE,
+        queried_at=NOW,
+        occurred_at=onset,
+    )
+    end = int(metric_range.end.timestamp())
+    service, requests = _service(
+        _response(
+            '{"status":"success","warnings":["results truncated due to limit"],'
+            '"data":{"resultType":"matrix","result":['
+            '{"metric":{"pod":"web-1","uid":"u1"},"values":[['
+            + str(end - 60)
+            + ',"1"],['
+            + str(end)
+            + ',"1"]]}]}}'
+        )
+    )
+
+    result = await service.query_panel(
+        target=TARGET,
+        panel_id="pod-unschedulable",
+        window=MetricWindow.FIFTEEN_MINUTES,
+        metric_range=metric_range,
+        queried_at=NOW,
+    )
+    await service.close()
+
+    assert result.state is MetricQueryState.PARTIAL
+    assert result.anchor is MetricTimeAnchor.OCCURRENCE
+    assert (result.range_start, result.range_end) == (
+        metric_range.start,
+        metric_range.end,
+    )
+    assert result.queried_at == NOW
+    assert result.threshold == 1.0 and result.current_value is None
+    form = dict(httpx.QueryParams(requests[0].content.decode()))
+    assert form["end"] == f"{metric_range.end.timestamp():.3f}"
+
+    outside, _ = _service(
+        _response(
+            '{"status":"success","data":{"resultType":"matrix","result":['
+            '{"metric":{"pod":"web-1","uid":"u1"},"values":[[1788339600,"1"]]}]}}'
+        )
+    )
+    with pytest.raises(MonitoringBoundaryError) as error:
+        await outside.observe_panel(
+            target=TARGET,
+            panel_id="pod-unschedulable",
+            window=MetricWindow.FIFTEEN_MINUTES,
+            metric_range=metric_range,
+            queried_at=NOW,
+        )
+    await outside.close()
+    assert error.value.code is MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("window", "step"),
+    [
+        (MetricWindow.FIFTEEN_MINUTES, "15s"),
+        (MetricWindow.ONE_HOUR, "60s"),
+        (MetricWindow.SIX_HOURS, "360s"),
+        (MetricWindow.SEVEN_DAYS, "10800s"),
+        (MetricWindow.FIFTEEN_DAYS, "21600s"),
+    ],
+)
+async def test_attributed_panels_keep_eight_series_within_the_sample_budget(
+    window: MetricWindow,
+    step: str,
+) -> None:
+    service, requests = _service(
+        _response('{"status":"success","data":{"resultType":"matrix","result":[]}}')
+    )
+
+    await service.query_panel(
+        target=TARGET,
+        panel_id="container-cpu-cores",
+        window=window,
+        metric_range=_current(window),
+        queried_at=NOW,
+    )
+    await service.close()
+
+    form = dict(httpx.QueryParams(requests[0].content.decode()))
+    assert form["step"] == step
+    points = int(window.duration.total_seconds()) // int(step.removesuffix("s")) + 1
+    assert points * 8 <= 512
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("panel_id", "window", "expected_range"),
+    [
+        ("container-probe-failures", MetricWindow.FIFTEEN_MINUTES, "[300s]"),
+        ("container-probe-failures", MetricWindow.SEVEN_DAYS, "[10800s]"),
+        ("container-cpu-cores", MetricWindow.SIX_HOURS, "[360s]"),
+        ("container-cpu-throttled-ratio", MetricWindow.FIFTEEN_DAYS, "[21600s]"),
+        ("liveness-probe-restarts", MetricWindow.SIX_HOURS, "[300s]"),
+        ("liveness-probe-restarts", MetricWindow.SEVEN_DAYS, "[1800s]"),
+    ],
+)
+async def test_rolling_ranges_widen_to_the_step_so_long_windows_leave_no_gaps(
+    panel_id: str,
+    window: MetricWindow,
+    expected_range: str,
+) -> None:
+    service, requests = _service(
+        _response('{"status":"success","data":{"resultType":"matrix","result":[]}}')
+    )
+
+    await service.query_panel(
+        target=TARGET,
+        panel_id=panel_id,
+        window=window,
+        metric_range=_current(window),
+        queried_at=NOW,
+    )
+    await service.close()
+
+    form = dict(httpx.QueryParams(requests[0].content.decode()))
+    ranges = set(re.findall(r"\[[0-9]+s\]", form["query"]))
+    assert ranges == {expected_range}
+    assert f"[{form['step']}]" == expected_range or form["step"] < expected_range[1:-1]
+    assert "{{" not in form["query"]

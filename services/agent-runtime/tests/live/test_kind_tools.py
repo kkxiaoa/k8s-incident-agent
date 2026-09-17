@@ -34,6 +34,8 @@ from k8s_incident_agent.scenarios.contracts import ScenarioTarget
 pytestmark = pytest.mark.live_kind
 SERVICE_ROOT = Path(__file__).resolve().parents[2]
 
+_OCCURRED_AT = datetime(2026, 9, 2, 8, 30, tzinfo=UTC)
+
 
 def _target() -> ScenarioTarget:
     scenario_path = (
@@ -123,6 +125,7 @@ async def test_fixed_kind_tools_persist_four_fresh_observations(
                 repository=repository,
                 now=lambda: datetime.now(UTC),
                 prometheus=prometheus_query_service_stub(),
+                occurred_at=_OCCURRED_AT,
             )
             tools = build_diagnostic_tools()
 

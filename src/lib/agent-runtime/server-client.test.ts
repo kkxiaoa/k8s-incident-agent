@@ -278,7 +278,7 @@ describe("fixed REST helpers", () => {
     expect(
       (fetchMock.mock.calls[3] as [URL])[0].href,
     ).toBe(
-      `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/monitoring/panels/image-pull-affected-pods?window=1h`,
+      `${RUNTIME_URL}/api/v1/incidents/${INCIDENT_ID}/monitoring/panels/image-pull-affected-pods?window=1h&anchor=current`,
     );
     for (const call of fetchMock.mock.calls) {
       expect(new Headers((call as [URL, RequestInit])[1].headers)).toEqual(

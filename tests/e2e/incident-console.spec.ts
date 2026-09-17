@@ -94,7 +94,7 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   const firstThresholdSample = (panel: IncidentMetricPanel) => {
     expect(panel.result.threshold).not.toBeNull();
     const threshold = panel.result.threshold as number;
-    return panel.result.samples.find((sample) => sample.value >= threshold);
+    return panel.result.series[0]?.samples.find((sample) => sample.value >= threshold);
   };
   const firingMarker = fifteenMinutePanel.markers.find(
     (marker) => marker.kind === "alert_firing",

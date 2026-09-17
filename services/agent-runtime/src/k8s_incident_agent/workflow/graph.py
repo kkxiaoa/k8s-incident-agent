@@ -406,6 +406,7 @@ def _triage_target_node(
                 dict[str, JsonValue],
                 target.model_dump(mode="json"),
             ),
+            "occurredAt": scheduled.occurred_at.isoformat().replace("+00:00", "Z"),
         }
         return {
             "messages": [

@@ -38,8 +38,11 @@ it("serves window-valid monitoring for all manual repair snapshots without maski
           const expectedUnavailable = incident.displayName.includes("监控不可用") || incident.displayName.includes("恢复无法证明");
           expect(result!.result.state).toBe(expectedUnavailable ? "monitoring_unavailable" : "ok");
           if (window === "15m" && expectedUnavailable) unavailable++;
-          if (!expectedUnavailable) {
-            expect(result!.result.samples.length).toBeGreaterThanOrEqual(3);
+          if (!expectedUnavailable && result!.result.seriesBinding !== "target") {
+            expect(result!.result.series.length).toBeGreaterThan(0);
+            expect(result!.result.currentValue).toBeNull();
+          } else if (!expectedUnavailable) {
+            expect(result!.result.series[0]?.samples.length ?? 0).toBeGreaterThanOrEqual(3);
             const affectedPods = panel.panelId === "image-pull-affected-pods";
             const outcome = detail!.verification?.outcome;
             expect(result!.result.currentValue).toBe(outcome === "recovered" ? affectedPods ? 0 : 3 : outcome === "observing" ? affectedPods ? 1 : 2 : affectedPods ? 3 : 0);
@@ -47,7 +50,7 @@ it("serves window-valid monitoring for all manual repair snapshots without maski
         }
       }
     }
-    expect(unavailable).toBe(4);
+    expect(unavailable).toBe(16);
   } finally {
     await runtime.close();
   }

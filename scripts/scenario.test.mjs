@@ -815,6 +815,33 @@ function pvcPendingOutput(args, resource, scenarioId) {
 
 let cachedK3sStatusFixtures;
 
+const K3S_NODE_NAME = "k3s-single-node";
+let cachedNodeMetricsClusterRbac;
+
+function nodeMetricsClusterRbac() {
+  if (cachedNodeMetricsClusterRbac === undefined) {
+    const documents = [];
+    loadAll(
+      readFileSync(
+        path.join(
+          REPOSITORY_ROOT,
+          "deploy",
+          "monitoring",
+          "components",
+          "node-metrics",
+          "cluster-rbac.yaml",
+        ),
+        "utf8",
+      ),
+      (document) => {
+        if (document !== undefined && document !== null) documents.push(document);
+      },
+    );
+    cachedNodeMetricsClusterRbac = documents;
+  }
+  return cachedNodeMetricsClusterRbac;
+}
+
 function k3sStatusFixtures() {
   if (cachedK3sStatusFixtures !== undefined) return cachedK3sStatusFixtures;
   const renderedYaml = execFileSync(
@@ -1113,7 +1140,7 @@ function k3sStatusResponse(args, options, fixtures) {
     );
   }
   const monitoringConfigMap = key.match(
-    /^get configmap (prometheus-config|prometheus-rules|alertmanager-config) --namespace k8s-incident-monitoring --output=json$/,
+    /^get configmap (prometheus-config|prometheus-rules|alertmanager-config|prometheus-scrape-node-metrics) --namespace k8s-incident-monitoring --output=json$/,
   );
   if (monitoringConfigMap !== null) {
     return requireRenderedResource(
@@ -1154,6 +1181,41 @@ function k3sStatusResponse(args, options, fixtures) {
         )
         .map((resource) => structuredClone(resource)),
     };
+  }
+  if (key === "get nodes --output=json") {
+    return {
+      kind: "List",
+      items: [{
+        metadata: { name: K3S_NODE_NAME },
+        status: { conditions: [{ type: "Ready", status: "True" }], images: [] },
+      }],
+    };
+  }
+  const clusterRbac = key.match(
+    /^get (clusterrole|clusterrolebinding) k8s-incident-agent-prometheus-node-metrics --ignore-not-found=true --output=json$/,
+  );
+  if (clusterRbac !== null) {
+    const document = structuredClone(
+      nodeMetricsClusterRbac().find(
+        (resource) =>
+          resource.kind === (clusterRbac[1] === "clusterrole" ? "ClusterRole" : "ClusterRoleBinding"),
+      ),
+    );
+    if (document.kind === "ClusterRole") document.rules[0].resourceNames = [K3S_NODE_NAME];
+    return document;
+  }
+  for (const kind of ["role", "rolebinding"]) {
+    if (
+      key ===
+      `get ${kind} prometheus-pod-discovery --namespace k8s-incident-scenarios --output=json`
+    ) {
+      return requireRenderedResource(
+        fixtures,
+        kind === "role" ? "Role" : "RoleBinding",
+        "prometheus-pod-discovery",
+        "k8s-incident-scenarios",
+      );
+    }
   }
   if (
     key ===
@@ -1254,19 +1316,26 @@ function k3sStatusResponse(args, options, fixtures) {
       }
       return "yes\n";
     }
+    const prometheusSubject = key.includes(
+      "--as=system:serviceaccount:k8s-incident-monitoring:prometheus",
+    );
     if (
-      (key.includes(
-        "--as=system:serviceaccount:k8s-incident-monitoring:prometheus",
-      ) ||
-        key.includes(
-          "--as=system:serviceaccount:k8s-incident-monitoring:alertmanager",
-        )) &&
-      ` ${key} `.includes(" list pods ")
+      prometheusSubject ||
+      key.includes("--as=system:serviceaccount:k8s-incident-monitoring:alertmanager")
     ) {
-      throw Object.assign(new Error("expected RBAC deny"), {
-        exitCode: 1,
-        stdout: "no\n",
-      });
+      const padded = ` ${key} `;
+      const permitted =
+        prometheusSubject &&
+        ((padded.includes(" list pods ") && padded.includes(" --namespace k8s-incident-scenarios ")) ||
+          (padded.includes(" watch pods ") && padded.includes(" --namespace k8s-incident-scenarios ")) ||
+          padded.includes(` get nodes/${K3S_NODE_NAME} --subresource=metrics `));
+      if (!permitted) {
+        throw Object.assign(new Error("expected RBAC deny"), {
+          exitCode: 1,
+          stdout: "no\n",
+        });
+      }
+      return "yes\n";
     }
     const denied = [
       " get secrets ",

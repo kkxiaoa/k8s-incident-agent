@@ -16,7 +16,10 @@ from k8s_incident_agent.application.incidents import (
     RuntimeNotReadyError,
     ScenarioNotFoundError,
 )
-from k8s_incident_agent.application.monitoring import MonitoringPanelNotFoundError
+from k8s_incident_agent.application.monitoring import (
+    MonitoringAnchorInvalidError,
+    MonitoringPanelNotFoundError,
+)
 from k8s_incident_agent.auth.public_demo import (
     PublicDemoLimitedError,
     RunOwnershipError,
@@ -258,6 +261,12 @@ def install_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return _response(_MONITORING_PANEL_NOT_FOUND)
 
+    async def monitoring_anchor_invalid_handler(
+        _request: Request,
+        _error: MonitoringAnchorInvalidError,
+    ) -> JSONResponse:
+        return _response(_INVALID_REQUEST)
+
     async def run_not_found_handler(
         _request: Request,
         _error: RunNotFoundError,
@@ -342,6 +351,10 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         MonitoringPanelNotFoundError,
         cast(ExceptionHandler, monitoring_panel_not_found_handler),
+    )
+    app.add_exception_handler(
+        MonitoringAnchorInvalidError,
+        cast(ExceptionHandler, monitoring_anchor_invalid_handler),
     )
     app.add_exception_handler(
         RunNotFoundError,

@@ -1108,10 +1108,10 @@ export interface components {
             result: components["schemas"]["MetricPanelResult"];
             /**
              * Schemaversion
-             * @default 1
+             * @default 2
              * @constant
              */
-            schemaVersion: 1;
+            schemaVersion: 2;
         };
         /** IncidentMonitoringPanels */
         IncidentMonitoringPanels: {
@@ -1119,10 +1119,10 @@ export interface components {
             panels: components["schemas"]["MonitoringPanelReference"][];
             /**
              * Schemaversion
-             * @default 3
+             * @default 4
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
         };
         /** IncidentResponse */
         IncidentResponse: {
@@ -1192,20 +1192,34 @@ export interface components {
         MetricMarkerKind: "alert_firing" | "alert_resolved" | "run_started" | "run_completed";
         /** MetricPanelResult */
         MetricPanelResult: {
+            anchor: components["schemas"]["MetricTimeAnchor"];
             /** Currentvalue */
             currentValue: number | null;
             /** Latestsampleat */
             latestSampleAt: string | null;
             /** Panelid */
             panelId: string;
+            /** Purpose */
+            purpose: string;
             /**
              * Queriedat
              * Format: date-time
              */
             queriedAt: string;
+            /**
+             * Rangeend
+             * Format: date-time
+             */
+            rangeEnd: string;
+            /**
+             * Rangestart
+             * Format: date-time
+             */
+            rangeStart: string;
             riskDirection: components["schemas"]["MetricRiskDirection"];
-            /** Samples */
-            samples: components["schemas"]["MetricSample"][];
+            /** Series */
+            series: components["schemas"]["MetricSeries"][];
+            seriesBinding: components["schemas"]["MetricSeriesBinding"];
             state: components["schemas"]["MetricQueryState"];
             /** Threshold */
             threshold: number | null;
@@ -1229,7 +1243,7 @@ export interface components {
          * MetricRiskDirection
          * @enum {string}
          */
-        MetricRiskDirection: "higher_is_worse" | "lower_is_worse";
+        MetricRiskDirection: "higher_is_worse" | "lower_is_worse" | "neutral";
         /** MetricSample */
         MetricSample: {
             /**
@@ -1240,6 +1254,32 @@ export interface components {
             /** Value */
             value: number;
         };
+        /** MetricSeries */
+        MetricSeries: {
+            /** Labels */
+            labels: {
+                [key: string]: string;
+            };
+            /** Samples */
+            samples: components["schemas"]["MetricSample"][];
+        };
+        /**
+         * MetricSeriesBinding
+         * @description How the panel's series are attributed to the Incident target.
+         *
+         *     ``target`` aggregates the whole target into one label-free series; ``pod``
+         *     and ``pod_container`` keep one series per Pod (``pod``/``uid``) or per regular
+         *     container (``+container``) as owned at each sampling time, optionally split
+         *     by a ``series`` label such as ``usage``/``limit`` or a probe type.
+         * @enum {string}
+         */
+        MetricSeriesBinding: "target" | "pod" | "pod_container";
+        /**
+         * MetricTimeAnchor
+         * @description Which fixed moment ends the data window; callers never send timestamps.
+         * @enum {string}
+         */
+        MetricTimeAnchor: "current" | "occurrence" | "run";
         /**
          * MetricWindow
          * @enum {string}
@@ -1337,11 +1377,18 @@ export interface components {
         MonitoringPanelReference: {
             /** Panelid */
             panelId: string;
+            /** Purpose */
+            purpose: string;
             recommendedWindow: components["schemas"]["MetricWindow"];
             riskDirection: components["schemas"]["MetricRiskDirection"];
+            seriesBinding: components["schemas"]["MetricSeriesBinding"];
             signalRole: components["schemas"]["MetricPanelSignalRole"];
             /** Thresholdduration */
             thresholdDuration: string | null;
+            /** Title */
+            title: string;
+            /** Unit */
+            unit: string;
         };
         /** OperatorSessionResponse */
         OperatorSessionResponse: {
@@ -1356,6 +1403,8 @@ export interface components {
         PatchValidationErrorCode: "stale_resource" | "patch_validator_authentication_failed" | "patch_validator_replay_rejected" | "patch_validator_permission_denied" | "patch_validator_admission_denied" | "patch_validator_timeout" | "patch_validator_upstream_failed" | "patch_validator_contract_invalid";
         /** PrometheusToolCallIdentity */
         PrometheusToolCallIdentity: {
+            /** Anchor */
+            anchor?: ("current" | "occurrence") | null;
             /** Panelid */
             panelId: string;
             /**
@@ -2803,6 +2852,8 @@ export interface operations {
         parameters: {
             query?: {
                 window?: components["schemas"]["MetricWindow"];
+                anchor?: components["schemas"]["MetricTimeAnchor"];
+                runId?: string | null;
             };
             header?: never;
             path: {

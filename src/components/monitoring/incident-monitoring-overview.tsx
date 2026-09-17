@@ -12,8 +12,28 @@ import { incidentDesiredReplicas } from "@/lib/agent-runtime/view-models";
 
 import {
   MetricPanelCard,
+  type MetricPanelAnchor,
   type MetricPanelLoadSnapshot,
 } from "./metric-panel-card";
+
+/** The Run the operator is viewing; anchors the charts when it is history. */
+export interface MonitoringSelectedRun {
+  id: string;
+  attempt: number;
+  completedAt: string | null;
+}
+
+export function monitoringPanelAnchor(
+  selectedRun: MonitoringSelectedRun | null,
+  latestRunId: string | null,
+): MetricPanelAnchor {
+  return selectedRun !== null &&
+    latestRunId !== null &&
+    selectedRun.id !== latestRunId &&
+    selectedRun.completedAt !== null
+    ? { kind: "run", runId: selectedRun.id, attempt: selectedRun.attempt }
+    : { kind: "current" };
+}
 
 function isUnavailable(snapshot: MetricPanelLoadSnapshot | undefined): boolean {
   return (
@@ -30,14 +50,19 @@ export function IncidentMonitoringOverview({
   evidence,
   refreshKey,
   alertStatus = null,
+  selectedRun = null,
+  latestRunId = null,
 }: {
   incidentId: string;
   panels: MonitoringPanelListView | null;
   evidence: EvidenceView[];
   refreshKey: string;
   alertStatus?: AlertSignalView["status"] | null;
+  selectedRun?: MonitoringSelectedRun | null;
+  latestRunId?: string | null;
 }) {
   const desiredReplicas = incidentDesiredReplicas(evidence);
+  const anchor = monitoringPanelAnchor(selectedRun, latestRunId);
   const [panelLoads, setPanelLoads] = useState<
     Record<string, MetricPanelLoadSnapshot>
   >({});
@@ -64,21 +89,35 @@ export function IncidentMonitoringOverview({
       ) : null}
 
       {panels === null ? (
-        <div className="monitoring-panels-state" role="alert">
-          <UiIcon name="activity" />
-          <div>
-            <strong>监控数据暂不可用</strong>
-            <span>当前 Incident 的指标图表未展示。</span>
+        <article className="metric-panel metric-panel--placeholder">
+          <header className="metric-panel__header">
+            <div className="metric-panel__title">
+              <h3>监控指标</h3>
+            </div>
+          </header>
+          <div className="monitoring-panels-state" role="alert">
+            <UiIcon name="activity" />
+            <div>
+              <strong>监控数据暂不可用</strong>
+              <span>当前 Incident 的指标图表未展示。</span>
+            </div>
           </div>
-        </div>
+        </article>
       ) : panels.panels.length === 0 ? (
-        <div className="monitoring-panels-state" role="status">
-          <UiIcon name="activity" />
-          <div>
-            <strong>暂无指标图表</strong>
-            <span>当前 Incident 没有匹配的监控面板。</span>
+        <article className="metric-panel metric-panel--placeholder">
+          <header className="metric-panel__header">
+            <div className="metric-panel__title">
+              <h3>监控指标</h3>
+            </div>
+          </header>
+          <div className="monitoring-panels-state" role="status">
+            <UiIcon name="activity" />
+            <div>
+              <strong>暂无指标图表</strong>
+              <span>当前 Incident 没有匹配的监控面板。</span>
+            </div>
           </div>
-        </div>
+        </article>
       ) : (
         <div
           className={`monitoring-panels${
@@ -91,8 +130,11 @@ export function IncidentMonitoringOverview({
               incidentId={incidentId}
               panel={panel}
               refreshKey={refreshKey}
+              anchor={anchor}
               alertStatus={
-                panel.signalRole === "trigger" ? alertStatus : null
+                panel.signalRole === "trigger" && anchor.kind === "current"
+                  ? alertStatus
+                  : null
               }
               desiredReplicas={desiredReplicas}
               onLoadSnapshot={updatePanelLoad}

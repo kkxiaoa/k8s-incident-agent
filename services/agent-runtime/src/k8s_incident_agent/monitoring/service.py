@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
+from pydantic import ValidationError
+
 from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.monitoring.catalog import (
+    RANGE_PLACEHOLDER,
     AlertCatalog,
     MetricPanelContract,
 )
@@ -16,7 +20,10 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricPanelResult,
     MetricQueryState,
     MetricRiskDirection,
+    MetricSeries,
+    MetricSeriesBinding,
     MetricTargetRef,
+    MetricTimeAnchor,
     MetricWindow,
     PrometheusHealthSignals,
     PrometheusObservation,
@@ -38,9 +45,53 @@ _WINDOW_STEPS: Final[dict[MetricWindow, int]] = {
     MetricWindow.SEVEN_DAYS: 1_800,
     MetricWindow.FIFTEEN_DAYS: 3_600,
 }
+# Attributed panels return up to MAX_PANEL_SERIES series, so their step keeps
+# 8 x points inside the fixed 512-sample result budget instead of widening it.
+_ATTRIBUTED_WINDOW_STEPS: Final[dict[MetricWindow, int]] = {
+    MetricWindow.FIFTEEN_MINUTES: 15,
+    MetricWindow.ONE_HOUR: 60,
+    MetricWindow.SIX_HOURS: 360,
+    MetricWindow.SEVEN_DAYS: 10_800,
+    MetricWindow.FIFTEEN_DAYS: 21_600,
+}
 _UP_QUERY: Final = 'up{job=~"kube-state-metrics|alertmanager"}'
 _WATCHDOG_QUERY: Final = 'ALERTS{alertname="Watchdog",alertstate="firing"}'
 _HEALTH_LOOKBACK_SECONDS: Final = 60
+
+
+@dataclass(frozen=True, slots=True)
+class MetricRange:
+    anchor: MetricTimeAnchor
+    start: datetime
+    end: datetime
+
+
+def resolve_metric_range(
+    window: MetricWindow,
+    anchor: MetricTimeAnchor,
+    *,
+    queried_at: datetime,
+    occurred_at: datetime | None = None,
+    run_completed_at: datetime | None = None,
+) -> MetricRange:
+    """Derive the data window from a registered anchor, never from a caller time.
+
+    ``occurrence`` centres the window on the persisted Incident onset so both the
+    lead-up and the aftermath are visible; ``run`` ends at the exact Run's
+    completion and degrades to ``current`` while that Run is still observing.
+    Every window ends no later than ``queried_at``.
+    """
+    duration = window.duration
+    queried_at = _utc_now(queried_at)
+    if anchor is MetricTimeAnchor.OCCURRENCE:
+        if occurred_at is None:
+            raise ValueError("Occurrence anchor requires the Incident onset")
+        end = min(_utc_now(occurred_at) + duration / 2, queried_at)
+    elif anchor is MetricTimeAnchor.RUN and run_completed_at is not None:
+        end = min(_utc_now(run_completed_at), queried_at)
+    else:
+        end = queried_at
+    return MetricRange(anchor=anchor, start=end - duration, end=end)
 
 
 class PrometheusQueryService:
@@ -186,14 +237,17 @@ class PrometheusQueryService:
         target: KubernetesTarget,
         panel_id: str,
         window: MetricWindow,
+        metric_range: MetricRange,
+        queried_at: datetime,
     ) -> MetricPanelResult:
         panel = self._require_panel(target, panel_id)
-        queried_at = _utc_now(self._now())
+        queried_at = _utc_now(queried_at)
         try:
             return await self._query_panel(
                 target=target,
                 panel=panel,
                 window=window,
+                metric_range=metric_range,
                 queried_at=queried_at,
             )
         except MonitoringBoundaryError as error:
@@ -209,6 +263,7 @@ class PrometheusQueryService:
             return _empty_panel_result(
                 panel,
                 window=window,
+                metric_range=metric_range,
                 state=state,
                 queried_at=queried_at,
             )
@@ -219,13 +274,16 @@ class PrometheusQueryService:
         target: KubernetesTarget,
         panel_id: str,
         window: MetricWindow,
+        metric_range: MetricRange,
+        queried_at: datetime,
     ) -> PrometheusObservation:
         panel = self._require_panel(target, panel_id)
-        queried_at = _utc_now(self._now())
+        queried_at = _utc_now(queried_at)
         result = await self._query_panel(
             target=target,
             panel=panel,
             window=window,
+            metric_range=metric_range,
             queried_at=queried_at,
         )
         namespace = target.namespace
@@ -270,14 +328,25 @@ class PrometheusQueryService:
         target: KubernetesTarget,
         panel: MetricPanelContract,
         window: MetricWindow,
+        metric_range: MetricRange,
         queried_at: datetime,
     ) -> MetricPanelResult:
-        step_seconds = _WINDOW_STEPS[window]
-        expression = _render_query(panel.query_template, target)
+        if (
+            metric_range.end - metric_range.start != window.duration
+            or metric_range.end > queried_at
+        ):
+            raise ValueError("Metric range does not match the requested window")
+        binding = MetricSeriesBinding(panel.series_binding)
+        step_seconds = (
+            _WINDOW_STEPS[window]
+            if binding is MetricSeriesBinding.TARGET
+            else _ATTRIBUTED_WINDOW_STEPS[window]
+        )
+        expression = _render_query(panel.query_template, target, step_seconds)
         result = await self._client.query_range(
             expression,
-            start=queried_at - window.duration,
-            end=queried_at,
+            start=metric_range.start,
+            end=metric_range.end,
             step_seconds=step_seconds,
             lookback_seconds=panel.stale_after_seconds,
         )
@@ -285,6 +354,7 @@ class PrometheusQueryService:
             return _empty_panel_result(
                 panel,
                 window=window,
+                metric_range=metric_range,
                 state=(
                     MetricQueryState.PARTIAL
                     if result.partial
@@ -292,31 +362,48 @@ class PrometheusQueryService:
                 ),
                 queried_at=queried_at,
             )
-        if len(result.series) != 1 or result.series[0].labels:
+        series = _attributed_series(result, binding)
+        if any(
+            sample.timestamp > metric_range.end or sample.timestamp < metric_range.start
+            for item in series
+            for sample in item.samples
+        ):
             raise MonitoringBoundaryError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID)
-        samples = result.series[0].samples
-        if any(sample.timestamp > queried_at for sample in samples):
-            raise MonitoringBoundaryError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID)
-        latest = samples[-1]
+        latest_at = max(item.samples[-1].timestamp for item in series)
         if result.partial:
             state = MetricQueryState.PARTIAL
-        elif latest.timestamp < queried_at:
+        elif latest_at < metric_range.end:
             state = MetricQueryState.STALE
         else:
             state = MetricQueryState.OK
-        return MetricPanelResult(
-            panel_id=panel.panel_id,
-            title=panel.title,
-            unit=panel.unit,
-            threshold=panel.threshold,
-            risk_direction=MetricRiskDirection(panel.risk_direction),
-            window=window,
-            state=state,
-            queried_at=queried_at,
-            latest_sample_at=latest.timestamp,
-            current_value=latest.value,
-            samples=list(samples),
-        )
+        try:
+            return MetricPanelResult(
+                panel_id=panel.panel_id,
+                title=panel.title,
+                unit=panel.unit,
+                purpose=panel.purpose,
+                threshold=panel.threshold,
+                risk_direction=MetricRiskDirection(panel.risk_direction),
+                series_binding=binding,
+                window=window,
+                anchor=metric_range.anchor,
+                state=state,
+                queried_at=queried_at,
+                range_start=metric_range.start,
+                range_end=metric_range.end,
+                latest_sample_at=latest_at,
+                current_value=(
+                    series[0].samples[-1].value
+                    if binding is MetricSeriesBinding.TARGET
+                    else None
+                ),
+                series=series,
+            )
+        except ValidationError:
+            # The fixed template returned series the binding cannot attribute.
+            raise MonitoringBoundaryError(
+                MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+            ) from None
 
     def _require_panel(
         self,
@@ -330,7 +417,7 @@ class PrometheusQueryService:
         admitted = next(
             (
                 panel
-                for _, panel in self._catalog.panels_for_target(
+                for panel in self._catalog.panels_for_target(
                     target.api_version, target.kind
                 )
                 if panel.panel_id == panel_id
@@ -346,6 +433,7 @@ def _empty_panel_result(
     panel: MetricPanelContract,
     *,
     window: MetricWindow,
+    metric_range: MetricRange,
     state: MetricQueryState,
     queried_at: datetime,
 ) -> MetricPanelResult:
@@ -353,24 +441,64 @@ def _empty_panel_result(
         panel_id=panel.panel_id,
         title=panel.title,
         unit=panel.unit,
+        purpose=panel.purpose,
         threshold=panel.threshold,
         risk_direction=MetricRiskDirection(panel.risk_direction),
+        series_binding=MetricSeriesBinding(panel.series_binding),
         window=window,
+        anchor=metric_range.anchor,
         state=state,
         queried_at=queried_at,
+        range_start=metric_range.start,
+        range_end=metric_range.end,
         latest_sample_at=None,
         current_value=None,
-        samples=[],
+        series=[],
     )
 
 
-def _render_query(template: str, target: KubernetesTarget) -> str:
+def _attributed_series(
+    result: PrometheusQueryResult,
+    binding: MetricSeriesBinding,
+) -> list[MetricSeries]:
+    """Project raw series onto the panel's attribution labels, fail-closed.
+
+    The fixed templates already aggregate onto exactly the binding's labels, so
+    any other label set means the template or Prometheus contract drifted and the
+    result must not be presented as attributed Evidence.
+    """
+    if binding is MetricSeriesBinding.TARGET and len(result.series) != 1:
+        raise MonitoringBoundaryError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID)
+    try:
+        return [
+            MetricSeries(labels=dict(raw.labels), samples=list(raw.samples))
+            for raw in result.series
+        ]
+    except ValueError:
+        raise MonitoringBoundaryError(
+            MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+        ) from None
+
+
+def _render_query(
+    template: str,
+    target: KubernetesTarget,
+    step_seconds: int,
+) -> str:
     namespace = target.namespace
     if namespace is None:
         raise MonitoringBoundaryError(MonitoringErrorCode.TARGET_UNSUPPORTED)
-    return template.replace(
-        "{{namespace}}", _escape_promql_label_value(namespace)
-    ).replace("{{name}}", _escape_promql_label_value(target.name))
+
+    def rolling_range(match: re.Match[str]) -> str:
+        minimum = int(match.group(1)) * (60 if match.group(2) == "m" else 1)
+        return f"{max(minimum, step_seconds)}s"
+
+    return RANGE_PLACEHOLDER.sub(
+        rolling_range,
+        template.replace(
+            "{{namespace}}", _escape_promql_label_value(namespace)
+        ).replace("{{name}}", _escape_promql_label_value(target.name)),
+    )
 
 
 def _escape_promql_label_value(value: str) -> str:

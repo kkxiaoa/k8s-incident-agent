@@ -20,6 +20,7 @@ from k8s_incident_agent.domain.models import (
 from k8s_incident_agent.monitoring.contracts import (
     MetricPanelPayload,
     MetricTargetRef,
+    MetricTimeAnchor,
     MetricWindow,
     PrometheusObservation,
 )
@@ -28,6 +29,7 @@ from k8s_incident_agent.monitoring.errors import (
     MonitoringErrorCode,
     validate_monitoring_failure_contract,
 )
+from k8s_incident_agent.monitoring.service import resolve_metric_range
 from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.repositories import (
     ObservationLimitExceededError,
@@ -57,16 +59,23 @@ async def _query_prometheus(
     panel_id: Annotated[str, Field(min_length=1, max_length=128)],
     window: MetricWindow,
     runtime: ToolRuntime[DiagnosticToolContext, object],
+    anchor: Literal["current", "occurrence"] = "current",
 ) -> dict[str, JsonValue]:
-    """Read one fixed catalog metric panel for the current Incident target."""
+    """Read one fixed catalog metric panel for the current Incident target.
+
+    anchor=current ends the window now; anchor=occurrence centres it on the
+    Incident onset given in the incident document.
+    """
     context = runtime.context
     tool_call_id = runtime.tool_call_id
     if tool_call_id is None or not tool_call_id:
         raise _recovery_error()
     prometheus = context.prometheus
+    time_anchor = MetricTimeAnchor(anchor)
     call_identity: dict[str, JsonValue] = {
         "panelId": panel_id,
         "window": window.value,
+        "anchor": time_anchor.value,
     }
 
     try:
@@ -79,7 +88,9 @@ async def _query_prometheus(
     except RecoveryConsistencyError:
         raise _recovery_error() from None
     if isinstance(outcome, PersistedEvidence):
-        return _success_output(outcome, panel_id=panel_id, window=window)
+        return _success_output(
+            outcome, panel_id=panel_id, window=window, anchor=time_anchor
+        )
     if isinstance(outcome, ToolFailureRecord):
         return _replay_failure(outcome)
 
@@ -95,11 +106,19 @@ async def _query_prometheus(
     except RecoveryConsistencyError:
         raise _recovery_error() from None
 
+    queried_at = context.now()
     try:
         observation = await prometheus.observe_panel(
             target=context.target,
             panel_id=panel_id,
             window=window,
+            metric_range=resolve_metric_range(
+                window,
+                time_anchor,
+                queried_at=queried_at,
+                occurred_at=context.occurred_at,
+            ),
+            queried_at=queried_at,
         )
     except MonitoringBoundaryError as error:
         return await _record_failure(
@@ -113,7 +132,9 @@ async def _query_prometheus(
         )
     except RecoveryConsistencyError:
         raise _recovery_error() from None
-    return _success_output(persisted, panel_id=panel_id, window=window)
+    return _success_output(
+        persisted, panel_id=panel_id, window=window, anchor=time_anchor
+    )
 
 
 def build_prometheus_tool() -> BaseTool:
@@ -198,6 +219,7 @@ def _success_output(
     *,
     panel_id: str,
     window: MetricWindow,
+    anchor: MetricTimeAnchor,
 ) -> dict[str, JsonValue]:
     try:
         observation = PrometheusObservation(
@@ -213,7 +235,11 @@ def _success_output(
     except (ValidationError, ValueError):
         raise _recovery_error() from None
     result = observation.payload.result
-    if result.panel_id != panel_id or result.window is not window:
+    if (
+        result.panel_id != panel_id
+        or result.window is not window
+        or result.anchor is not anchor
+    ):
         raise _recovery_error()
     output = cast(
         dict[str, JsonValue],

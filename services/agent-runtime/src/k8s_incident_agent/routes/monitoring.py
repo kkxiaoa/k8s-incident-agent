@@ -8,6 +8,7 @@ from k8s_incident_agent.application.monitoring import MonitoringApplicationServi
 from k8s_incident_agent.monitoring.contracts import (
     IncidentMetricPanel,
     IncidentMonitoringPanels,
+    MetricTimeAnchor,
     MetricWindow,
     MonitoringHealthSnapshot,
     MonitoringOverviewSnapshot,
@@ -70,9 +71,13 @@ async def get_incident_monitoring_panel(
     panel_id: _PanelId,
     service: _MonitoringService,
     window: Annotated[MetricWindow, Query()] = MetricWindow.FIFTEEN_MINUTES,
+    anchor: Annotated[MetricTimeAnchor, Query()] = MetricTimeAnchor.CURRENT,
+    run_id: Annotated[UUID | None, Query(alias="runId")] = None,
 ) -> IncidentMetricPanel:
     return await service.get_panel(
         incident_id,
         panel_id=panel_id,
         window=window,
+        anchor=anchor,
+        run_id=run_id,
     )

@@ -558,6 +558,31 @@
   background: var(--red);
 }
 
+.metric-chart__legend span {
+  cursor: default;
+  transition: opacity 120ms ease;
+}
+
+.metric-chart__legend span.is-dimmed {
+  opacity: 0.4;
+}
+
+.metric-chart__legend span:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.metric-chart__legend i.is-limit {
+  height: 0;
+  border-top: 2px dashed currentColor;
+  background: transparent;
+}
+
+.metric-panel__notice--anchor {
+  font-weight: 600;
+}
+
 .metric-chart__legend i.is-threshold-zone {
   height: 8px;
   background: var(--red-soft);

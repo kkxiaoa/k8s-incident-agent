@@ -7,6 +7,7 @@ from tests.factories import public_scenario
 
 from k8s_incident_agent.application.incidents import IncidentNotFoundError
 from k8s_incident_agent.application.monitoring import (
+    MonitoringAnchorInvalidError,
     MonitoringApplicationService,
     MonitoringPanelNotFoundError,
 )
@@ -23,6 +24,9 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricQueryState,
     MetricRiskDirection,
     MetricSample,
+    MetricSeries,
+    MetricSeriesBinding,
+    MetricTimeAnchor,
     MetricWindow,
     MonitoringComponentState,
     MonitoringOverallState,
@@ -32,7 +36,10 @@ from k8s_incident_agent.monitoring.errors import (
     MonitoringBoundaryError,
     MonitoringErrorCode,
 )
-from k8s_incident_agent.monitoring.service import PrometheusQueryService
+from k8s_incident_agent.monitoring.service import (
+    MetricRange,
+    PrometheusQueryService,
+)
 from k8s_incident_agent.persistence.repositories import (
     IncidentMonitoringContext,
     IncidentRepository,
@@ -44,6 +51,17 @@ from k8s_incident_agent.persistence.repositories import (
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 
 NOW = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
+
+RUN_1_ID = uuid4()
+RUN_2_ID = uuid4()
+DEPLOYMENT_CONTEXT_PANELS = (
+    "container-cpu-cores",
+    "container-memory-working-set-bytes",
+    "container-cpu-throttled-ratio",
+    "container-probe-failures",
+    "container-last-terminated-reason",
+    "pod-unschedulable",
+)
 
 
 class _Repository:
@@ -74,6 +92,8 @@ class _PanelPrometheus:
     def __init__(self, result: MetricPanelResult) -> None:
         self.result = result
         self.calls: list[tuple[KubernetesTarget, str, MetricWindow]] = []
+        self.ranges: list[MetricRange] = []
+        self.queried_at: list[datetime] = []
 
     async def query_panel(
         self,
@@ -81,8 +101,12 @@ class _PanelPrometheus:
         target: KubernetesTarget,
         panel_id: str,
         window: MetricWindow,
+        metric_range: MetricRange,
+        queried_at: datetime,
     ) -> MetricPanelResult:
         self.calls.append((target, panel_id, window))
+        self.ranges.append(metric_range)
+        self.queried_at.append(queried_at)
         return self.result
 
 
@@ -121,7 +145,7 @@ def _service(
     error: MonitoringBoundaryError | None = None,
 ) -> MonitoringApplicationService:
     return MonitoringApplicationService(
-        catalog=AlertCatalog(version="test", entries=()),
+        catalog=AlertCatalog(version="test", entries=(), context_groups=()),
         scenarios=(),
         prometheus=cast(PrometheusQueryService, _Prometheus(signals, error)),
         repository=cast(IncidentRepository, _Repository(last_watchdog)),
@@ -154,6 +178,11 @@ def _monitoring_context(
             kind="Deployment",
             name="image-pull-backoff",
         ),
+        occurred_at=(
+            datetime(2026, 9, 2, 8, 50, tzinfo=UTC)
+            if source_type == "alertmanager"
+            else NOW - timedelta(minutes=9)
+        ),
         alert_signal=(
             AlertSignalRecord(
                 status=AlertSignalStatus.RESOLVED,
@@ -165,11 +194,13 @@ def _monitoring_context(
         ),
         runs=(
             MonitoringRunInterval(
+                id=RUN_2_ID,
                 attempt=2,
                 started_at=NOW - timedelta(minutes=8),
                 completed_at=NOW - timedelta(minutes=5),
             ),
             MonitoringRunInterval(
+                id=RUN_1_ID,
                 attempt=1,
                 started_at=NOW - timedelta(hours=1),
                 completed_at=NOW - timedelta(minutes=58),
@@ -184,14 +215,21 @@ def _panel_result() -> MetricPanelResult:
         panel_id="image-pull-affected-pods",
         title="Affected pods",
         unit="pods",
+        purpose="Registered purpose.",
         threshold=1.0,
         risk_direction=MetricRiskDirection.HIGHER_IS_WORSE,
+        series_binding=MetricSeriesBinding.TARGET,
         window=MetricWindow.FIFTEEN_MINUTES,
+        anchor=MetricTimeAnchor.CURRENT,
         state=MetricQueryState.OK,
         queried_at=NOW,
+        range_start=NOW - timedelta(minutes=15),
+        range_end=NOW,
         latest_sample_at=NOW,
         current_value=0.0,
-        samples=[MetricSample(timestamp=NOW, value=0.0)],
+        series=[
+            MetricSeries(labels={}, samples=[MetricSample(timestamp=NOW, value=0.0)])
+        ],
     )
 
 
@@ -278,24 +316,30 @@ async def test_catalog_drives_alertmanager_and_evaluation_panel_references() -> 
     scenario_panels = await service.list_panels(uuid4())
 
     assert alert_panels == scenario_panels
-    assert [
-        panel.model_dump(mode="json", by_alias=True) for panel in alert_panels.panels
-    ] == [
-        {
-            "panelId": "image-pull-affected-pods",
-            "recommendedWindow": "15m",
-            "riskDirection": "higher_is_worse",
-            "signalRole": "trigger",
-            "thresholdDuration": "30s",
-        },
-        {
-            "panelId": "image-pull-available-replicas",
-            "recommendedWindow": "15m",
-            "riskDirection": "lower_is_worse",
-            "signalRole": "context",
-            "thresholdDuration": "5m",
-        },
+    assert alert_panels.schema_version == 4
+    assert [panel.panel_id for panel in alert_panels.panels] == [
+        "image-pull-affected-pods",
+        "image-pull-available-replicas",
+        *DEPLOYMENT_CONTEXT_PANELS,
     ]
+    first, *_, unschedulable = [
+        panel.model_dump(mode="json", by_alias=True) for panel in alert_panels.panels
+    ]
+    assert first == {
+        "panelId": "image-pull-affected-pods",
+        "title": "镜像拉取失败 Pod",
+        "unit": "pods",
+        "purpose": first["purpose"],
+        "seriesBinding": "target",
+        "recommendedWindow": "15m",
+        "riskDirection": "higher_is_worse",
+        "signalRole": "trigger",
+        "thresholdDuration": "30s",
+    }
+    assert first["purpose"].startswith("因镜像拉取失败而等待的 Pod 数")
+    assert unschedulable["seriesBinding"] == "pod"
+    assert unschedulable["signalRole"] == "context"
+    assert unschedulable["thresholdDuration"] is None
     assert repository.run_limits == [1, 1]
 
 
@@ -310,6 +354,7 @@ async def test_crash_loop_panels_use_the_same_catalog_projection() -> None:
     assert [panel.panel_id for panel in result.panels] == [
         "crash-loop-restarts",
         "crash-loop-waiting-containers",
+        *DEPLOYMENT_CONTEXT_PANELS,
     ]
 
 
@@ -480,3 +525,100 @@ async def test_prometheus_failure_keeps_other_components_unknown(
     assert result.rule_evaluation is MonitoringComponentState.UNKNOWN
     assert result.alertmanager is MonitoringComponentState.UNKNOWN
     assert result.notification is MonitoringComponentState.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_run_anchor_ends_the_window_at_the_exact_run_completion() -> None:
+    context = _monitoring_context()
+    service, _, prometheus = _panel_service(context)
+
+    panel = await service.get_panel(
+        uuid4(),
+        panel_id="image-pull-affected-pods",
+        window=MetricWindow.FIFTEEN_MINUTES,
+        anchor=MetricTimeAnchor.RUN,
+        run_id=RUN_2_ID,
+    )
+
+    [metric_range] = prometheus.ranges
+    assert metric_range.anchor is MetricTimeAnchor.RUN
+    assert metric_range.end == NOW - timedelta(minutes=5)
+    assert metric_range.start == NOW - timedelta(minutes=20)
+    assert prometheus.queried_at == [NOW]
+    assert [(marker.kind, marker.run_attempt) for marker in panel.markers] == [
+        (MetricMarkerKind.ALERT_FIRING, None),
+        (MetricMarkerKind.RUN_STARTED, 2),
+        (MetricMarkerKind.RUN_COMPLETED, 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_occurrence_anchor_centres_on_the_alert_start_or_manual_creation() -> (
+    None
+):
+    alert_service, _, alert_prometheus = _panel_service(_monitoring_context())
+    scenario_service, _, scenario_prometheus = _panel_service(
+        _monitoring_context(
+            source_type="scenario",
+            source_ref="image-pull-backoff",
+            source_revision="4",
+        )
+    )
+
+    await alert_service.get_panel(
+        uuid4(),
+        panel_id="image-pull-affected-pods",
+        window=MetricWindow.FIFTEEN_MINUTES,
+        anchor=MetricTimeAnchor.OCCURRENCE,
+    )
+    await scenario_service.get_panel(
+        uuid4(),
+        panel_id="image-pull-affected-pods",
+        window=MetricWindow.FIFTEEN_MINUTES,
+        anchor=MetricTimeAnchor.OCCURRENCE,
+    )
+
+    assert alert_prometheus.ranges[0].end == NOW - timedelta(minutes=2, seconds=30)
+    assert scenario_prometheus.ranges[0].end == NOW - timedelta(minutes=1, seconds=30)
+
+
+@pytest.mark.asyncio
+async def test_foreign_or_mismatched_run_anchors_never_reach_prometheus() -> None:
+    service, _, prometheus = _panel_service(_monitoring_context())
+
+    with pytest.raises(MonitoringPanelNotFoundError):
+        await service.get_panel(
+            uuid4(),
+            panel_id="image-pull-affected-pods",
+            window=MetricWindow.FIFTEEN_MINUTES,
+            anchor=MetricTimeAnchor.RUN,
+            run_id=uuid4(),
+        )
+    with pytest.raises(MonitoringAnchorInvalidError):
+        await service.get_panel(
+            uuid4(),
+            panel_id="image-pull-affected-pods",
+            window=MetricWindow.FIFTEEN_MINUTES,
+            anchor=MetricTimeAnchor.RUN,
+        )
+    with pytest.raises(MonitoringAnchorInvalidError):
+        await service.get_panel(
+            uuid4(),
+            panel_id="image-pull-affected-pods",
+            window=MetricWindow.FIFTEEN_MINUTES,
+            run_id=RUN_2_ID,
+        )
+    assert prometheus.calls == []
+
+
+@pytest.mark.asyncio
+async def test_context_panels_are_admitted_for_get_but_not_for_other_kinds() -> None:
+    service, _, prometheus = _panel_service(_monitoring_context())
+
+    await service.get_panel(
+        uuid4(),
+        panel_id="container-cpu-cores",
+        window=MetricWindow.FIFTEEN_MINUTES,
+    )
+
+    assert [call[1] for call in prometheus.calls] == ["container-cpu-cores"]

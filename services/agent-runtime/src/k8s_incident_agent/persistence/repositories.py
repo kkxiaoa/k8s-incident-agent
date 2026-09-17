@@ -250,6 +250,7 @@ class IncidentDetailRecord:
 
 @dataclass(frozen=True, slots=True)
 class MonitoringRunInterval:
+    id: UUID
     attempt: int
     started_at: datetime | None
     completed_at: datetime | None
@@ -259,6 +260,7 @@ class MonitoringRunInterval:
 class IncidentMonitoringContext:
     source: IncidentSource
     target: KubernetesTarget
+    occurred_at: datetime
     alert_signal: AlertSignalRecord | None
     runs: tuple[MonitoringRunInterval, ...]
     runs_truncated: bool
@@ -303,6 +305,7 @@ class RunEventPage:
 class _WorkflowRows:
     run: RunRow
     incident: IncidentRow
+    alert_signal: AlertSignalRow | None
     diagnosis: DiagnosisRow | None
     repair_proposal: RepairProposalRow | None
     repair: IncidentRepairDetail | None
@@ -598,9 +601,11 @@ class IncidentRepository:
                 return IncidentMonitoringContext(
                     source=incident.source,
                     target=incident.target,
+                    occurred_at=_incident_onset(incident_row, alert_signal),
                     alert_signal=_alert_signal_record(alert_signal, incident),
                     runs=tuple(
                         MonitoringRunInterval(
+                            id=UUID(row.id),
                             attempt=row.attempt,
                             started_at=(
                                 _database_datetime(row.started_at)
@@ -783,6 +788,7 @@ class IncidentRepository:
                 workflow, terminal = _workflow_run_projection(
                     rows.run,
                     rows.incident,
+                    rows.alert_signal,
                     rows.diagnosis,
                     rows.start_event,
                     rows.terminal_event,
@@ -1006,6 +1012,7 @@ class IncidentRepository:
                 return _workflow_run_snapshot(
                     rows.run,
                     rows.incident,
+                    rows.alert_signal,
                     rows.diagnosis,
                     rows.start_event,
                     rows.terminal_event,
@@ -1846,6 +1853,7 @@ class IncidentRepository:
                 snapshot = _workflow_run_snapshot(
                     rows.run,
                     rows.incident,
+                    rows.alert_signal,
                     rows.diagnosis,
                     rows.start_event,
                     rows.terminal_event,
@@ -3226,6 +3234,7 @@ async def _end_waiting_run(
     snapshot = _workflow_run_snapshot(
         rows.run,
         rows.incident,
+        rows.alert_signal,
         rows.diagnosis,
         rows.start_event,
         rows.terminal_event,
@@ -3765,6 +3774,7 @@ async def _load_workflow_rows(
     return _WorkflowRows(
         run=run,
         incident=incident,
+        alert_signal=await session.get(AlertSignalRow, incident.id),
         diagnosis=diagnosis,
         repair_proposal=repair_proposal,
         repair=repair,
@@ -3805,6 +3815,7 @@ async def _prune_target_from_incident(
         snapshot = _workflow_run_snapshot(
             rows.run,
             rows.incident,
+            rows.alert_signal,
             rows.diagnosis,
             rows.start_event,
             rows.terminal_event,
@@ -4103,6 +4114,7 @@ async def _run_detail_from_row(
     workflow, _ = _workflow_run_projection(
         rows.run,
         rows.incident,
+        rows.alert_signal,
         rows.diagnosis,
         rows.start_event,
         rows.terminal_event,
@@ -4356,6 +4368,7 @@ def _repair_contracts_from_row(
 def _workflow_run_snapshot(
     run: RunRow,
     incident: IncidentRow,
+    alert_signal: AlertSignalRow | None,
     diagnosis: DiagnosisRow | None,
     start_event: RunEventRow | None,
     terminal_event: RunEventRow | None,
@@ -4366,6 +4379,7 @@ def _workflow_run_snapshot(
     snapshot, _ = _workflow_run_projection(
         run,
         incident,
+        alert_signal,
         diagnosis,
         start_event,
         terminal_event,
@@ -4379,6 +4393,7 @@ def _workflow_run_snapshot(
 def _workflow_run_projection(
     run: RunRow,
     incident: IncidentRow,
+    alert_signal: AlertSignalRow | None,
     diagnosis: DiagnosisRow | None,
     start_event: RunEventRow | None,
     terminal_event: RunEventRow | None,
@@ -4526,8 +4541,27 @@ def _workflow_run_projection(
             timeout_seconds=run.timeout_seconds,
         ),
         started_at=started_at,
+        occurred_at=_incident_onset(incident, alert_signal),
     )
     return snapshot, terminal
+
+
+def _incident_onset(
+    incident: IncidentRow,
+    alert_signal: AlertSignalRow | None,
+) -> datetime:
+    """The persisted moment the Incident began: alert start, else manual creation."""
+    if incident.trigger_source == "alertmanager":
+        if alert_signal is None or alert_signal.incident_id != incident.id:
+            raise RecoveryConsistencyError
+        try:
+            starts_at = _database_alert_timestamp(alert_signal.starts_at)
+        except ValueError:
+            raise RecoveryConsistencyError from None
+        return datetime.fromisoformat(starts_at.replace("Z", "+00:00")).astimezone(UTC)
+    if alert_signal is not None:
+        raise RecoveryConsistencyError
+    return _database_datetime(incident.created_at)
 
 
 def _repair_workflow_snapshot(

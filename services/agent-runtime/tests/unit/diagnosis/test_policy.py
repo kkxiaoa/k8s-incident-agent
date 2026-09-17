@@ -26,6 +26,12 @@ DEPLOYMENT_PANELS = (
     "deployment-replica-deficit",
     "readiness-probe-unready-containers",
     "liveness-probe-restarts",
+    "container-cpu-cores",
+    "container-memory-working-set-bytes",
+    "container-cpu-throttled-ratio",
+    "container-probe-failures",
+    "container-last-terminated-reason",
+    "pod-unschedulable",
 )
 
 
@@ -170,7 +176,7 @@ def test_policy_panels_match_the_server_side_admission_set() -> None:
     )
 
     assert _panel_ids(policy) == tuple(
-        panel.panel_id for _, panel in alerts.panels_for_target("apps/v1", "Deployment")
+        panel.panel_id for panel in alerts.panels_for_target("apps/v1", "Deployment")
     )
     assert not alerts.panels_for_target("v1", "Node")
 
@@ -198,7 +204,7 @@ def test_policy_panels_match_the_server_side_admission_set() -> None:
             IncidentSource(
                 type="alertmanager",
                 ref="K8sIncidentServiceEndpointsUnavailable",
-                revision="2026-09-16.1",
+                revision="2026-09-17.1",
             ),
             _deployment("service-selector-mismatch"),
         ),

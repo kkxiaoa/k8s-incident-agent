@@ -1810,8 +1810,8 @@
             "$ref": "#/components/schemas/MetricPanelResult"
           },
           "schemaVersion": {
-            "const": 1,
-            "default": 1,
+            "const": 2,
+            "default": 2,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1836,8 +1836,8 @@
             "type": "array"
           },
           "schemaVersion": {
-            "const": 3,
-            "default": 3,
+            "const": 4,
+            "default": 4,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2024,6 +2024,9 @@
       "MetricPanelResult": {
         "additionalProperties": false,
         "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/MetricTimeAnchor"
+          },
           "currentValue": {
             "anyOf": [
               {
@@ -2053,21 +2056,40 @@
             "title": "Panelid",
             "type": "string"
           },
+          "purpose": {
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "Purpose",
+            "type": "string"
+          },
           "queriedAt": {
             "format": "date-time",
             "title": "Queriedat",
             "type": "string"
           },
+          "rangeEnd": {
+            "format": "date-time",
+            "title": "Rangeend",
+            "type": "string"
+          },
+          "rangeStart": {
+            "format": "date-time",
+            "title": "Rangestart",
+            "type": "string"
+          },
           "riskDirection": {
             "$ref": "#/components/schemas/MetricRiskDirection"
           },
-          "samples": {
+          "series": {
             "items": {
-              "$ref": "#/components/schemas/MetricSample"
+              "$ref": "#/components/schemas/MetricSeries"
             },
-            "maxItems": 512,
-            "title": "Samples",
+            "maxItems": 8,
+            "title": "Series",
             "type": "array"
+          },
+          "seriesBinding": {
+            "$ref": "#/components/schemas/MetricSeriesBinding"
           },
           "state": {
             "$ref": "#/components/schemas/MetricQueryState"
@@ -2103,14 +2125,19 @@
           "panelId",
           "title",
           "unit",
+          "purpose",
           "threshold",
           "riskDirection",
+          "seriesBinding",
           "window",
+          "anchor",
           "state",
           "queriedAt",
+          "rangeStart",
+          "rangeEnd",
           "latestSampleAt",
           "currentValue",
-          "samples"
+          "series"
         ],
         "title": "MetricPanelResult",
         "type": "object"
@@ -2138,7 +2165,8 @@
       "MetricRiskDirection": {
         "enum": [
           "higher_is_worse",
-          "lower_is_worse"
+          "lower_is_worse",
+          "neutral"
         ],
         "title": "MetricRiskDirection",
         "type": "string"
@@ -2162,6 +2190,54 @@
         ],
         "title": "MetricSample",
         "type": "object"
+      },
+      "MetricSeries": {
+        "additionalProperties": false,
+        "properties": {
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "maxProperties": 4,
+            "title": "Labels",
+            "type": "object"
+          },
+          "samples": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSample"
+            },
+            "maxItems": 512,
+            "minItems": 1,
+            "title": "Samples",
+            "type": "array"
+          }
+        },
+        "required": [
+          "labels",
+          "samples"
+        ],
+        "title": "MetricSeries",
+        "type": "object"
+      },
+      "MetricSeriesBinding": {
+        "description": "How the panel's series are attributed to the Incident target.\n\n``target`` aggregates the whole target into one label-free series; ``pod``\nand ``pod_container`` keep one series per Pod (``pod``/``uid``) or per regular\ncontainer (``+container``) as owned at each sampling time, optionally split\nby a ``series`` label such as ``usage``/``limit`` or a probe type.",
+        "enum": [
+          "target",
+          "pod",
+          "pod_container"
+        ],
+        "title": "MetricSeriesBinding",
+        "type": "string"
+      },
+      "MetricTimeAnchor": {
+        "description": "Which fixed moment ends the data window; callers never send timestamps.",
+        "enum": [
+          "current",
+          "occurrence",
+          "run"
+        ],
+        "title": "MetricTimeAnchor",
+        "type": "string"
       },
       "MetricWindow": {
         "enum": [
@@ -2409,11 +2485,20 @@
             "title": "Panelid",
             "type": "string"
           },
+          "purpose": {
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "Purpose",
+            "type": "string"
+          },
           "recommendedWindow": {
             "$ref": "#/components/schemas/MetricWindow"
           },
           "riskDirection": {
             "$ref": "#/components/schemas/MetricRiskDirection"
+          },
+          "seriesBinding": {
+            "$ref": "#/components/schemas/MetricSeriesBinding"
           },
           "signalRole": {
             "$ref": "#/components/schemas/MetricPanelSignalRole"
@@ -2429,10 +2514,26 @@
               }
             ],
             "title": "Thresholdduration"
+          },
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "unit": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Unit",
+            "type": "string"
           }
         },
         "required": [
           "panelId",
+          "title",
+          "unit",
+          "purpose",
+          "seriesBinding",
           "recommendedWindow",
           "riskDirection",
           "signalRole",
@@ -2480,6 +2581,21 @@
       "PrometheusToolCallIdentity": {
         "additionalProperties": false,
         "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "enum": [
+                  "current",
+                  "occurrence"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor"
+          },
           "panelId": {
             "maxLength": 128,
             "minLength": 1,
@@ -5220,6 +5336,32 @@
             "schema": {
               "$ref": "#/components/schemas/MetricWindow",
               "default": "15m"
+            }
+          },
+          {
+            "in": "query",
+            "name": "anchor",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/MetricTimeAnchor",
+              "default": "current"
+            }
+          },
+          {
+            "in": "query",
+            "name": "runId",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runid"
             }
           }
         ],
