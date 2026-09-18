@@ -161,15 +161,12 @@
   gap: 6px;
 }
 
-.metric-panel__header .eyebrow {
-  display: none;
-}
 
+/* Track minimums must stay at 0 so the summary shrinks with its panel: the
+   narrow-screen override lives in another stylesheet and is not guaranteed to
+   be applied while the route's loading shell paints. */
 .metric-panel__summary {
-  grid-template-columns: minmax(90px, 0.8fr) minmax(100px, 0.8fr) minmax(
-      150px,
-      1.4fr
-    );
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1.4fr);
   margin-top: 16px;
 }
 
