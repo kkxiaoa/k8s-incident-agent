@@ -16,7 +16,7 @@ from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
 def test_production_catalog_has_supported_alert_entries() -> None:
     catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
 
-    assert catalog.version == "2026-09-17.1"
+    assert catalog.version == "2026-09-17.2"
     assert [entry.alert_id for entry in catalog.entries] == [
         "K8sIncidentImagePullBackOff",
         "K8sIncidentCrashLoopBackOff",
@@ -24,6 +24,12 @@ def test_production_catalog_has_supported_alert_entries() -> None:
         "K8sIncidentServiceEndpointsUnavailable",
         "K8sIncidentReadinessProbeFailure",
         "K8sIncidentLivenessProbeRestart",
+        "K8sIncidentContainerOOMKilled",
+        "K8sIncidentContainerAbnormalExit",
+        "K8sIncidentContainerMemoryNearLimit",
+        "K8sIncidentContainerCPUThrottled",
+        "K8sIncidentContainerProbeFailing",
+        "K8sIncidentPodUnschedulable",
         "K8sIncidentPersistentVolumeClaimPending",
     ]
     assert catalog.entries[0].target.model_dump() == {
@@ -52,6 +58,12 @@ def test_production_catalog_has_supported_alert_entries() -> None:
         "service-ready-endpoints",
         "readiness-probe-unready-containers",
         "liveness-probe-restarts",
+        "oom-killed-containers",
+        "abnormal-exit-containers",
+        "memory-near-limit-containers",
+        "cpu-throttled-containers",
+        "probe-failing-containers",
+        "unschedulable-pods",
         "pvc-pending-state",
         "pvc-pending-age-seconds",
         "container-cpu-cores",
@@ -151,7 +163,8 @@ def test_production_catalog_has_supported_alert_entries() -> None:
     assert liveness_panel.unit == "restarts"
     assert liveness_panel.threshold == 1.0
     assert liveness_panel.threshold_duration == "30s"
-    pvc = catalog.entries[6]
+    pvc = catalog.find("K8sIncidentPersistentVolumeClaimPending")
+    assert pvc is not None
     assert pvc.target.model_dump() == {
         "api_version": "v1",
         "kind": "PersistentVolumeClaim",
@@ -179,9 +192,9 @@ def test_production_catalog_has_supported_alert_entries() -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        '{"schemaVersion":10,"catalogVersion":"v1","contextPanels":[],"alerts":[]}',
+        '{"schemaVersion":11,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],"alerts":[]}',
         (
-            '{"schemaVersion":10,"catalogVersion":"v1","contextPanels":[],"alerts":['
+            '{"schemaVersion":11,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],"alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -195,7 +208,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             'name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schemaVersion":10,"schemaVersion":10,"catalogVersion":"v1","contextPanels":[],'
+            '{"schemaVersion":11,"schemaVersion":11,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],'
             '"alerts":[{"alertId":"A","displayName":"A",'
             '"triggerSummary":"A","rule":{"expression":"vector(1)",'
             '"for":"1s"},"target":{"apiVersion":"v1",'
@@ -210,7 +223,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             '"metric{namespace="{{namespace}}",name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schema_version":9,"catalogVersion":"v1","contextPanels":[],"alerts":['
+            '{"schema_version":9,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],"alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -239,9 +252,10 @@ def test_catalog_rejects_empty_ambiguous_or_duplicate_key_contracts(
 
 def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     document = {
-        "schemaVersion": 10,
+        "schemaVersion": 11,
         "catalogVersion": "v1",
         "contextPanels": [],
+        "healthAlerts": [],
         "alerts": [
             {
                 "alertId": "A",
@@ -348,9 +362,10 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     document = {
-        "schemaVersion": 10,
+        "schemaVersion": 11,
         "catalogVersion": "v1",
         "contextPanels": [],
+        "healthAlerts": [],
         "alerts": [
             {
                 "alertId": "A",
@@ -520,3 +535,91 @@ def test_query_templates_admit_only_the_bounded_rolling_range_placeholder(
     else:
         with pytest.raises(ValueError, match="unknown placeholder"):
             MetricPanelContract.model_validate(panel)
+
+
+def test_discovery_alerts_are_bounded_deployment_rules_outside_the_recovery_gate() -> (
+    None
+):
+    catalog = load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog")
+    discovery = [
+        catalog.find(alert_id)
+        for alert_id in (
+            "K8sIncidentContainerOOMKilled",
+            "K8sIncidentContainerAbnormalExit",
+            "K8sIncidentContainerMemoryNearLimit",
+            "K8sIncidentContainerCPUThrottled",
+            "K8sIncidentContainerProbeFailing",
+            "K8sIncidentPodUnschedulable",
+        )
+    ]
+
+    assert all(entry is not None for entry in discovery)
+    for entry in discovery:
+        assert entry is not None
+        assert entry.target.kind == "Deployment"
+        assert entry.repair_action is None and entry.recovery_alerts is None
+        [panel] = entry.panels
+        assert panel.signal_role == "trigger"
+        assert panel.series_binding == "target"
+        assert panel.threshold_duration == entry.rule.for_duration
+        assert len(catalog.default_panels(entry)) == 7
+    assert catalog.recovery_alerts("set_container_image") == (
+        "K8sIncidentImagePullBackOff",
+        "K8sIncidentCrashLoopBackOff",
+        "K8sIncidentDeploymentReplicasUnavailable",
+        "K8sIncidentReadinessProbeFailure",
+        "K8sIncidentLivenessProbeRestart",
+    )
+    abnormal = catalog.find("K8sIncidentContainerAbnormalExit")
+    assert abnormal is not None
+    assert (
+        "unless on (namespace, deployment) max_over_time(ALERTS{"
+        in abnormal.rule.expression
+    )
+    assert [entry.alert_id for entry in catalog.health_entries] == [
+        "K8sIncidentMonitoringTargetDown",
+        "K8sIncidentKubeStateMetricsListFailing",
+        "K8sIncidentKubeletTargetsMissing",
+        "K8sIncidentRuleEvaluationFailing",
+    ]
+    assert catalog.find("K8sIncidentMonitoringTargetDown") is None
+    assert all(catalog.find_health(entry.alert_id) is None for entry in catalog.entries)
+
+
+def _drop_recovery_alerts(document: dict[str, Any]) -> None:
+    document["alerts"][0].pop("recoveryAlerts")
+
+
+def _unknown_recovery_alert(document: dict[str, Any]) -> None:
+    document["alerts"][0]["recoveryAlerts"].append(
+        "K8sIncidentServiceEndpointsUnavailable"
+    )
+
+
+def _health_reuses_business_id(document: dict[str, Any]) -> None:
+    document["healthAlerts"][0]["alertId"] = "K8sIncidentPodUnschedulable"
+
+
+def _health_named_watchdog(document: dict[str, Any]) -> None:
+    document["healthAlerts"][0]["alertId"] = "Watchdog"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (_drop_recovery_alerts, "contract is invalid"),
+        (_unknown_recovery_alert, "registered Deployment rules"),
+        (_health_reuses_business_id, "must be distinct"),
+        (_health_named_watchdog, "must be distinct"),
+    ],
+)
+def test_catalog_rejects_ambiguous_recovery_or_health_classification(
+    tmp_path: Path,
+    mutate: Callable[[dict[str, Any]], None],
+    message: str,
+) -> None:
+    document = _production_document()
+    mutate(document)
+
+    with pytest.raises(ValueError, match=message):
+        load_alert_catalog(_write_catalog(tmp_path, document))

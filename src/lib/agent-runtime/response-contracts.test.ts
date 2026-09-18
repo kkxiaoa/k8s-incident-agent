@@ -334,12 +334,27 @@ describe("monitoring response contracts", () => {
       alertmanager: "healthy",
       notification: "stale",
       watchdogLastReceivedAt: "2026-09-03T02:08:00.000Z",
+      healthAlerts: [
+        {
+          alertId: "K8sIncidentRuleEvaluationFailing",
+          displayName: "告警规则求值失败",
+          component: "rules",
+          activeSince: "2026-09-03T02:12:00.000Z",
+        },
+      ],
     };
+    const [alert] = health.healthAlerts;
 
     expect(parseMonitoringHealthResponse(health)).toEqual(health);
-    expect(
-      parseMonitoringHealthResponse({ ...health, notification: "normal" }),
-    ).toBeNull();
+    for (const invalid of [
+      { ...health, notification: "normal" },
+      { ...health, healthAlerts: undefined },
+      { ...health, healthAlerts: [{ ...alert, component: "prometheus" }] },
+      { ...health, healthAlerts: [{ ...alert, activeSince: "later" }] },
+      { ...health, healthAlerts: Array.from({ length: 17 }, () => alert) },
+    ]) {
+      expect(parseMonitoringHealthResponse(invalid)).toBeNull();
+    }
   });
 
   it("accepts a complete 24-hour overview and rejects inconsistent totals", () => {

@@ -348,18 +348,46 @@ class PrometheusObservation(_MonitoringContract):
         return value.astimezone(UTC)
 
 
+class FiringHealthAlert(_MonitoringContract):
+    alert_id: str = Field(min_length=1, max_length=128)
+    active_since: datetime
+
+    @field_validator("active_since")
+    @classmethod
+    def require_utc_active_since(cls, value: datetime) -> datetime:
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("Health alert time must use UTC")
+        return value.astimezone(UTC)
+
+
 class PrometheusHealthSignals(_MonitoringContract):
     checked_at: datetime
     partial: bool
     kube_state_metrics_available: bool
     alertmanager_available: bool
     watchdog_rule_firing: bool
+    health_rules_evaluating: bool
+    firing_health_alerts: tuple[FiringHealthAlert, ...] = Field(max_length=16)
 
     @field_validator("checked_at")
     @classmethod
     def require_utc_checked_at(cls, value: datetime) -> datetime:
         if value.utcoffset() != timedelta(0):
             raise ValueError("Monitoring health check time must use UTC")
+        return value.astimezone(UTC)
+
+
+class MonitoringHealthAlert(_MonitoringContract):
+    alert_id: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=160)
+    component: Literal["collection", "rules"]
+    active_since: datetime
+
+    @field_validator("active_since")
+    @classmethod
+    def require_utc_active_since(cls, value: datetime) -> datetime:
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("Health alert time must use UTC")
         return value.astimezone(UTC)
 
 
@@ -372,6 +400,7 @@ class MonitoringHealthSnapshot(_MonitoringContract):
     alertmanager: MonitoringComponentState
     notification: MonitoringComponentState
     watchdog_last_received_at: datetime | None
+    health_alerts: tuple[MonitoringHealthAlert, ...] = Field(max_length=16)
 
     @field_validator("checked_at", "watchdog_last_received_at")
     @classmethod

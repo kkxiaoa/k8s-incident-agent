@@ -16,6 +16,7 @@ from k8s_incident_agent.monitoring.catalog import (
     MetricPanelContract,
 )
 from k8s_incident_agent.monitoring.contracts import (
+    FiringHealthAlert,
     MetricPanelPayload,
     MetricPanelResult,
     MetricQueryState,
@@ -132,12 +133,7 @@ class PrometheusQueryService:
             or len(set(pod_uids)) != len(pod_uids)
         ):
             raise MonitoringBoundaryError(MonitoringErrorCode.TARGET_UNSUPPORTED)
-        names = tuple(
-            entry.alert_id
-            for entry in self._catalog.entries
-            if entry.target.api_version == target.api_version
-            and entry.target.kind == target.kind
-        )
+        names = self._catalog.recovery_alerts("set_container_image")
         at = _utc_now(self._now())
 
         def query(expression: str):
@@ -169,7 +165,7 @@ class PrometheusQueryService:
             query(metric_query("kube_pod_container_status_ready")),
             query(metric_query("kube_pod_container_status_running")),
             query(alerts_query),
-            self._client.read_recovery_rules((*names, "Watchdog")),
+            self._client.read_alert_rules((*names, "Watchdog")),
         )
         partial = any(result.partial for result in (up, up_at, ready, running, alerts))
         healthy_up = all(
@@ -304,22 +300,35 @@ class PrometheusQueryService:
 
     async def read_health_signals(self) -> PrometheusHealthSignals:
         checked_at = _utc_now(self._now())
-        up = await self._client.query_instant(
-            _UP_QUERY,
-            at=checked_at,
-            lookback_seconds=_HEALTH_LOOKBACK_SECONDS,
+        health_ids = tuple(entry.alert_id for entry in self._catalog.health_entries)
+
+        async def query(expression: str) -> PrometheusQueryResult:
+            return await self._client.query_instant(
+                expression,
+                at=checked_at,
+                lookback_seconds=_HEALTH_LOOKBACK_SECONDS,
+            )
+
+        # An empty firing set only means healthy when every registered health
+        # rule is loaded and evaluating; a missing rule fails the rules read.
+        up, watchdog, firing, rules = await asyncio.gather(
+            query(_UP_QUERY),
+            query(_WATCHDOG_QUERY),
+            query(_firing_since_query(health_ids)),
+            self._client.read_alert_rules((*health_ids, "Watchdog")),
         )
-        watchdog = await self._client.query_instant(
-            _WATCHDOG_QUERY,
-            at=checked_at,
-            lookback_seconds=_HEALTH_LOOKBACK_SECONDS,
-        )
+        received_at = _utc_now(self._now())
         return PrometheusHealthSignals(
             checked_at=checked_at,
-            partial=up.partial or watchdog.partial,
+            partial=up.partial or watchdog.partial or firing.partial,
             kube_state_metrics_available=_single_up(up, "kube-state-metrics"),
             alertmanager_available=_single_up(up, "alertmanager"),
             watchdog_rule_firing=_watchdog_firing(watchdog),
+            health_rules_evaluating=all(
+                rule.health == "ok" and _fresh(rule.last_evaluation, received_at)
+                for rule in rules
+            ),
+            firing_health_alerts=_firing_health_alerts(firing, health_ids),
         )
 
     async def _query_panel(
@@ -490,8 +499,9 @@ def _render_query(
         raise MonitoringBoundaryError(MonitoringErrorCode.TARGET_UNSUPPORTED)
 
     def rolling_range(match: re.Match[str]) -> str:
-        minimum = int(match.group(1)) * (60 if match.group(2) == "m" else 1)
-        return f"{max(minimum, step_seconds)}s"
+        minimum = int(match.group(2)) * (60 if match.group(3) == "m" else 1)
+        seconds = max(minimum, step_seconds)
+        return f"{seconds}s" if match.group(1) == "range" else str(seconds)
 
     return RANGE_PLACEHOLDER.sub(
         rolling_range,
@@ -503,6 +513,34 @@ def _render_query(
 
 def _escape_promql_label_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def _firing_since_query(alert_ids: tuple[str, ...]) -> str:
+    names = _escape_promql_label_value("|".join(re.escape(name) for name in alert_ids))
+    # ALERTS_FOR_STATE carries when each alert became active; the join keeps only
+    # alerts past their `for` duration, so pending health rules are not reported.
+    return (
+        f'min by (alertname) (ALERTS_FOR_STATE{{alertname=~"{names}"}} '
+        f'and ignoring(alertstate) ALERTS{{alertname=~"{names}",alertstate="firing"}})'
+    )
+
+
+def _firing_health_alerts(
+    result: PrometheusQueryResult,
+    alert_ids: tuple[str, ...],
+) -> tuple[FiringHealthAlert, ...]:
+    alerts: list[FiringHealthAlert] = []
+    for series in result.series:
+        name = series.label("alertname")
+        if len(series.labels) != 1 or name not in alert_ids:
+            raise MonitoringBoundaryError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID)
+        alerts.append(
+            FiringHealthAlert(
+                alert_id=name,
+                active_since=_sample_time(series.samples[-1].value),
+            )
+        )
+    return tuple(sorted(alerts, key=lambda alert: alert.alert_id))
 
 
 def _single_up(result: PrometheusQueryResult, job: str) -> bool:

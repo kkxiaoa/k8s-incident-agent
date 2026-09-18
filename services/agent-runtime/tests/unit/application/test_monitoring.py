@@ -19,6 +19,7 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.monitoring.catalog import AlertCatalog, load_alert_catalog
 from k8s_incident_agent.monitoring.contracts import (
+    FiringHealthAlert,
     MetricMarkerKind,
     MetricPanelResult,
     MetricQueryState,
@@ -145,7 +146,9 @@ def _service(
     error: MonitoringBoundaryError | None = None,
 ) -> MonitoringApplicationService:
     return MonitoringApplicationService(
-        catalog=AlertCatalog(version="test", entries=(), context_groups=()),
+        catalog=AlertCatalog(
+            version="test", entries=(), context_groups=(), health_entries=()
+        ),
         scenarios=(),
         prometheus=cast(PrometheusQueryService, _Prometheus(signals, error)),
         repository=cast(IncidentRepository, _Repository(last_watchdog)),
@@ -430,6 +433,8 @@ async def test_all_live_signals_are_reported_healthy() -> None:
             kube_state_metrics_available=True,
             alertmanager_available=True,
             watchdog_rule_firing=True,
+            health_rules_evaluating=True,
+            firing_health_alerts=(),
         ),
     ).get_health()
 
@@ -454,6 +459,8 @@ async def test_broken_scrape_rule_alertmanager_and_notification_are_distinct() -
             kube_state_metrics_available=False,
             alertmanager_available=False,
             watchdog_rule_firing=False,
+            health_rules_evaluating=True,
+            firing_health_alerts=(),
         ),
     ).get_health()
 
@@ -463,6 +470,26 @@ async def test_broken_scrape_rule_alertmanager_and_notification_are_distinct() -
     assert result.rule_evaluation is MonitoringComponentState.DEGRADED
     assert result.alertmanager is MonitoringComponentState.UNAVAILABLE
     assert result.notification is MonitoringComponentState.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_health_rules_that_are_not_evaluating_degrade_rule_evaluation() -> None:
+    result = await _service(
+        last_watchdog=NOW - timedelta(minutes=1),
+        signals=PrometheusHealthSignals(
+            checked_at=NOW,
+            partial=False,
+            kube_state_metrics_available=True,
+            alertmanager_available=True,
+            watchdog_rule_firing=True,
+            health_rules_evaluating=False,
+            firing_health_alerts=(),
+        ),
+    ).get_health()
+
+    assert result.state is MonitoringOverallState.DEGRADED
+    assert result.rule_evaluation is MonitoringComponentState.DEGRADED
+    assert result.kube_state_metrics is MonitoringComponentState.HEALTHY
 
 
 @pytest.mark.asyncio
@@ -481,6 +508,8 @@ async def test_missing_stale_or_future_watchdog_marks_notification_stale(
             kube_state_metrics_available=True,
             alertmanager_available=True,
             watchdog_rule_firing=True,
+            health_rules_evaluating=True,
+            firing_health_alerts=(),
         ),
     ).get_health()
 
@@ -622,3 +651,50 @@ async def test_context_panels_are_admitted_for_get_but_not_for_other_kinds() -> 
     )
 
     assert [call[1] for call in prometheus.calls] == ["container-cpu-cores"]
+
+
+@pytest.mark.asyncio
+async def test_firing_health_alerts_degrade_their_chain_node_and_are_listed() -> None:
+    service = MonitoringApplicationService(
+        catalog=_alert_catalog(),
+        scenarios=(),
+        prometheus=cast(
+            PrometheusQueryService,
+            _Prometheus(
+                PrometheusHealthSignals(
+                    checked_at=NOW,
+                    partial=False,
+                    kube_state_metrics_available=True,
+                    alertmanager_available=True,
+                    watchdog_rule_firing=True,
+                    health_rules_evaluating=True,
+                    firing_health_alerts=(
+                        FiringHealthAlert(
+                            alert_id="K8sIncidentMonitoringTargetDown",
+                            active_since=NOW - timedelta(minutes=3),
+                        ),
+                        FiringHealthAlert(
+                            alert_id="K8sIncidentRuleEvaluationFailing",
+                            active_since=NOW - timedelta(minutes=1),
+                        ),
+                    ),
+                )
+            ),
+        ),
+        repository=cast(IncidentRepository, _Repository(NOW - timedelta(minutes=1))),
+        now=lambda: NOW,
+    )
+
+    result = await service.get_health()
+
+    assert result.state is MonitoringOverallState.DEGRADED
+    assert result.kube_state_metrics is MonitoringComponentState.DEGRADED
+    assert result.rule_evaluation is MonitoringComponentState.DEGRADED
+    assert result.prometheus is MonitoringComponentState.HEALTHY
+    assert [
+        (alert.alert_id, alert.component, alert.display_name)
+        for alert in result.health_alerts
+    ] == [
+        ("K8sIncidentMonitoringTargetDown", "collection", "监控采集目标不可用"),
+        ("K8sIncidentRuleEvaluationFailing", "rules", "告警规则求值失败"),
+    ]

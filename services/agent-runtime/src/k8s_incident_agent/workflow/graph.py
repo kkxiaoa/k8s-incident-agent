@@ -235,7 +235,9 @@ def build_incident_graph(
             max_tool_calls=run.budget.max_tool_calls,
             required_evidence=tuple(sorted(policy.required_evidence)),
             prometheus_panels=policy.prometheus_panels,
+            other_panels=policy.other_panels,
             trigger_panel_id=policy.trigger_panel_id,
+            trigger_duration=policy.trigger_duration,
             repair_action=policy.repair_action,
         )
     )
@@ -406,7 +408,8 @@ def _triage_target_node(
                 dict[str, JsonValue],
                 target.model_dump(mode="json"),
             ),
-            "occurredAt": scheduled.occurred_at.isoformat().replace("+00:00", "Z"),
+            "occurredAt": _rfc3339(scheduled.occurred_at),
+            "runStartedAt": _rfc3339(runtime.context.run.started_at),
         }
         return {
             "messages": [

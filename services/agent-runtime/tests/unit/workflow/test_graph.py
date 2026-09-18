@@ -377,6 +377,7 @@ async def test_triage_validates_target_without_model_or_kubernetes_call(
     assert result["target"] == run.target.model_dump(mode="json")
     assert len(result["messages"]) == 1
     assert '"occurredAt":"2026-09-02T08:30:00Z"' in result["messages"][0].content
+    assert '"runStartedAt":"' in result["messages"][0].content
 
 
 @pytest.mark.asyncio

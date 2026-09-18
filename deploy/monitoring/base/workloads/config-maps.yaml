@@ -196,6 +196,42 @@ data:
             for: 30s
             labels:
               severity: warning
+          - alert: K8sIncidentContainerOOMKilled
+            expr: >-
+              max by (namespace, deployment) (max by (namespace, pod) ((kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1) and on (namespace, pod, uid, container) ((time() - kube_pod_container_status_last_terminated_timestamp) < 600)) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"}, "replicaset", "$1", "owner_name", "(.+)") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"}, "deployment", "$1", "owner_name", "(.+)")) > 0 unless on (namespace, deployment) max_over_time(ALERTS{alertname="K8sIncidentCrashLoopBackOff"}[10m])
+            for: 15s
+            labels:
+              severity: warning
+          - alert: K8sIncidentContainerAbnormalExit
+            expr: >-
+              max by (namespace, deployment) (max by (namespace, pod) ((increase(kube_pod_container_status_restarts_total[10m]) > 0) and on (namespace, pod, uid, container) (kube_pod_container_status_last_terminated_reason{reason!~"Completed|OOMKilled"} == 1)) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"}, "replicaset", "$1", "owner_name", "(.+)") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"}, "deployment", "$1", "owner_name", "(.+)")) > 0 unless on (namespace, deployment) max_over_time(ALERTS{alertname=~"K8sIncidentCrashLoopBackOff|K8sIncidentLivenessProbeRestart|K8sIncidentContainerOOMKilled|K8sIncidentContainerProbeFailing"}[10m])
+            for: 1m
+            labels:
+              severity: warning
+          - alert: K8sIncidentContainerMemoryNearLimit
+            expr: >-
+              max by (namespace, deployment) (max by (namespace, pod) ((max by (namespace, pod, container) (container_memory_working_set_bytes{job="kubelet-resource"}) / on (namespace, pod, container) (max by (namespace, pod, container) (kube_pod_container_resource_limits{resource="memory"}) > 0)) > 0.9) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"}, "replicaset", "$1", "owner_name", "(.+)") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"}, "deployment", "$1", "owner_name", "(.+)")) > 0
+            for: 5m
+            labels:
+              severity: warning
+          - alert: K8sIncidentContainerCPUThrottled
+            expr: >-
+              max by (namespace, deployment) (max by (namespace, pod) ((sum by (namespace, pod, container) (increase(container_cpu_cfs_throttled_periods_total{job="kubelet-cadvisor"}[5m])) / on (namespace, pod, container) (sum by (namespace, pod, container) (increase(container_cpu_cfs_periods_total{job="kubelet-cadvisor"}[5m])) > 0)) > 0.25) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"}, "replicaset", "$1", "owner_name", "(.+)") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"}, "deployment", "$1", "owner_name", "(.+)")) > 0
+            for: 10m
+            labels:
+              severity: warning
+          - alert: K8sIncidentContainerProbeFailing
+            expr: >-
+              max by (namespace, deployment) (max by (namespace, pod) ((sum by (namespace, pod, container) (increase(prober_probe_total{job="kubelet-probes",result="failed"}[5m])) >= 3) and on (namespace, pod, container) ((time() - max by (namespace, pod, container) (kube_pod_container_state_started)) > 300) unless on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_readiness_container!="",label_k8s_incident_agent_io_readiness_slo="2m"}, "container", "$1", "label_k8s_incident_agent_io_readiness_container", "(.+)") unless on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_liveness_container!=""}, "container", "$1", "label_k8s_incident_agent_io_liveness_container", "(.+)")) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"}, "replicaset", "$1", "owner_name", "(.+)") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"}, "deployment", "$1", "owner_name", "(.+)")) > 0
+            for: 2m
+            labels:
+              severity: warning
+          - alert: K8sIncidentPodUnschedulable
+            expr: >-
+              max by (namespace, deployment) (max by (namespace, pod) (kube_pod_status_unschedulable == 1) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"}, "replicaset", "$1", "owner_name", "(.+)") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"}, "deployment", "$1", "owner_name", "(.+)")) > 0
+            for: 2m
+            labels:
+              severity: warning
           - alert: K8sIncidentPersistentVolumeClaimPending
             expr: >-
               max by (namespace, persistentvolumeclaim) (
@@ -204,6 +240,30 @@ data:
                   kube_persistentvolumeclaim_labels{label_k8s_incident_agent_io_pending_policy="immediate"}
               ) > 0
             for: 5m
+            labels:
+              severity: warning
+          - alert: K8sIncidentMonitoringTargetDown
+            expr: >-
+              min by (job) (up{job=~"kube-state-metrics|kube-state-metrics-telemetry|kubelet-resource|kubelet-cadvisor|kubelet-probes"}) == 0
+            for: 2m
+            labels:
+              severity: warning
+          - alert: K8sIncidentKubeStateMetricsListFailing
+            expr: >-
+              sum(increase(kube_state_metrics_list_total{job="kube-state-metrics-telemetry",result="error"}[5m])) >= 3
+            for: 2m
+            labels:
+              severity: warning
+          - alert: K8sIncidentKubeletTargetsMissing
+            expr: >-
+              (max by (scrape_job) (prometheus_target_scrape_pool_targets{job="prometheus",scrape_job=~"kubelet-resource|kubelet-cadvisor|kubelet-probes"}) == 0) and on () (count(kube_pod_container_status_running{namespace="k8s-incident-scenarios"} == 1) > 0)
+            for: 2m
+            labels:
+              severity: warning
+          - alert: K8sIncidentRuleEvaluationFailing
+            expr: >-
+              sum(increase(prometheus_rule_evaluation_failures_total{rule_group="/etc/prometheus/rules/alerts.yaml;k8s-incident-agent"}[5m])) > 0
+            for: 1m
             labels:
               severity: warning
 ---
@@ -227,7 +287,7 @@ data:
       repeat_interval: 5m
     inhibit_rules:
       - source_matchers:
-          - alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart"
+          - alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart|K8sIncidentContainerOOMKilled|K8sIncidentContainerAbnormalExit|K8sIncidentContainerProbeFailing|K8sIncidentPodUnschedulable"
         target_matchers:
           - alertname="K8sIncidentDeploymentReplicasUnavailable"
         equal: ["cluster", "namespace", "deployment"]

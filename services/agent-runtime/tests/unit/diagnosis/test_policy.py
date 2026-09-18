@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from k8s_incident_agent.diagnosis.policy import (
@@ -26,6 +28,12 @@ DEPLOYMENT_PANELS = (
     "deployment-replica-deficit",
     "readiness-probe-unready-containers",
     "liveness-probe-restarts",
+    "oom-killed-containers",
+    "abnormal-exit-containers",
+    "memory-near-limit-containers",
+    "cpu-throttled-containers",
+    "probe-failing-containers",
+    "unschedulable-pods",
     "container-cpu-cores",
     "container-memory-working-set-bytes",
     "container-cpu-throttled-ratio",
@@ -34,9 +42,21 @@ DEPLOYMENT_PANELS = (
     "pod-unschedulable",
 )
 
+NEW_TRIGGER_PANELS = (
+    "oom-killed-containers",
+    "abnormal-exit-containers",
+    "memory-near-limit-containers",
+    "cpu-throttled-containers",
+    "probe-failing-containers",
+    "unschedulable-pods",
+)
 
-def _panel_ids(policy: DiagnosticPolicy) -> tuple[str, ...]:
-    return tuple(panel.panel_id for panel in policy.prometheus_panels)
+
+def _panel_ids(policy: DiagnosticPolicy) -> frozenset[str]:
+    # Admitted panels are the alert's own panels plus the ones listed by name.
+    return frozenset(
+        panel.panel_id for panel in (*policy.prometheus_panels, *policy.other_panels)
+    )
 
 
 def _policies() -> tuple[DiagnosticPolicyCatalog, str]:
@@ -106,11 +126,24 @@ def test_every_deployment_entry_grants_the_same_target_capability(
         _deployment(scenario_id),
     )
 
-    assert alert_policy == scenario_policy
+    # Both routes admit the same capability; only the alert route can say when
+    # the rule started firing, so only it carries the rule duration.
+    assert scenario_policy.trigger_duration is None
+    assert alert_policy.trigger_duration is not None
+    assert replace(alert_policy, trigger_duration=None) == scenario_policy
     assert alert_policy.tool_names == DEPLOYMENT_TOOLS
     assert alert_policy.required_evidence == frozenset({"workload"})
-    assert _panel_ids(alert_policy) == DEPLOYMENT_PANELS
-    assert all(panel.title and panel.unit for panel in alert_policy.prometheus_panels)
+    assert _panel_ids(alert_policy) == frozenset(DEPLOYMENT_PANELS)
+    assert all(
+        panel.title and panel.unit and panel.purpose
+        for panel in alert_policy.prometheus_panels
+    )
+    detailed = {panel.panel_id for panel in alert_policy.prometheus_panels}
+    assert trigger_panel_id in detailed
+    assert set(NEW_TRIGGER_PANELS).isdisjoint(detailed)
+    assert {"container-cpu-cores", "pod-unschedulable"} <= detailed
+    assert detailed.isdisjoint(panel.panel_id for panel in alert_policy.other_panels)
+    assert all(panel.title for panel in alert_policy.other_panels)
     assert alert_policy.trigger_panel_id == trigger_panel_id
     assert alert_policy.repair_action == repair_action
 
@@ -150,11 +183,13 @@ def test_service_and_pvc_targets_keep_their_own_bounded_capabilities() -> None:
 
     assert service_policy.tool_names == ("get_service_network", "query_prometheus")
     assert service_policy.required_evidence == frozenset({"service_network"})
-    assert _panel_ids(service_policy) == ("service-ready-endpoints",)
+    assert _panel_ids(service_policy) == frozenset({"service-ready-endpoints"})
     assert service_policy.trigger_panel_id == "service-ready-endpoints"
     assert pvc_policy.tool_names == ("get_pvc_storage", "query_prometheus")
     assert pvc_policy.required_evidence == frozenset({"pvc_storage"})
-    assert _panel_ids(pvc_policy) == ("pvc-pending-state", "pvc-pending-age-seconds")
+    assert _panel_ids(pvc_policy) == frozenset(
+        {"pvc-pending-state", "pvc-pending-age-seconds"}
+    )
     for policy in (service_policy, pvc_policy):
         assert not set(policy.tool_names).intersection(
             {"get_workload", "get_rollout_history", "get_container_logs"}
@@ -175,7 +210,7 @@ def test_policy_panels_match_the_server_side_admission_set() -> None:
         _deployment("crash-loop-backoff"),
     )
 
-    assert _panel_ids(policy) == tuple(
+    assert _panel_ids(policy) == frozenset(
         panel.panel_id for panel in alerts.panels_for_target("apps/v1", "Deployment")
     )
     assert not alerts.panels_for_target("v1", "Node")
@@ -204,7 +239,7 @@ def test_policy_panels_match_the_server_side_admission_set() -> None:
             IncidentSource(
                 type="alertmanager",
                 ref="K8sIncidentServiceEndpointsUnavailable",
-                revision="2026-09-17.1",
+                revision="2026-09-17.2",
             ),
             _deployment("service-selector-mismatch"),
         ),

@@ -4,6 +4,7 @@ import {
   parseApprovalResponse,
   parseCreateRunResponse,
   parseIncidentDetailResponse,
+  parseIncidentListResponse,
   parseIncidentMetricPanelResponse,
   parseRunEventHistoryResponse,
   parseRunHistoryResponse,
@@ -13,6 +14,7 @@ import {
   type ApprovalRequest,
   type EventPageView,
   type IncidentDetailView,
+  type IncidentListView,
   type IncidentMetricPanelView,
   type MetricWindowView,
   type RunHistoryView,
@@ -145,6 +147,29 @@ export async function fetchIncidentFromBrowser(
 
   const body = await jsonBody(response);
   const data = parseIncidentDetailResponse(body);
+  return data !== null
+    ? { ok: true, data }
+    : { ok: false, failure: "invalid_response" };
+}
+
+export async function fetchIncidentsFromBrowser(
+  cursor: string,
+): Promise<BrowserRuntimeResult<IncidentListView>> {
+  let response: Response;
+  try {
+    response = await authenticatedFetch(
+      `/api/runtime/incidents?limit=50&cursor=${encodeURIComponent(cursor)}`,
+      { method: "GET", cache: "no-store" },
+    );
+  } catch {
+    return { ok: false, failure: "unavailable" };
+  }
+
+  if (!response.ok) {
+    return { ok: false, failure: failureForStatus(response.status) };
+  }
+
+  const data = parseIncidentListResponse(await jsonBody(response));
   return data !== null
     ? { ok: true, data }
     : { ok: false, failure: "invalid_response" };

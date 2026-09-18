@@ -1295,6 +1295,23 @@ export interface components {
          * @enum {string}
          */
         MonitoringComponentState: "healthy" | "degraded" | "unavailable" | "stale" | "unknown";
+        /** MonitoringHealthAlert */
+        MonitoringHealthAlert: {
+            /**
+             * Activesince
+             * Format: date-time
+             */
+            activeSince: string;
+            /** Alertid */
+            alertId: string;
+            /**
+             * Component
+             * @enum {string}
+             */
+            component: "collection" | "rules";
+            /** Displayname */
+            displayName: string;
+        };
         /** MonitoringHealthSnapshot */
         MonitoringHealthSnapshot: {
             alertmanager: components["schemas"]["MonitoringComponentState"];
@@ -1303,6 +1320,8 @@ export interface components {
              * Format: date-time
              */
             checkedAt: string;
+            /** Healthalerts */
+            healthAlerts: components["schemas"]["MonitoringHealthAlert"][];
             kubeStateMetrics: components["schemas"]["MonitoringComponentState"];
             notification: components["schemas"]["MonitoringComponentState"];
             prometheus: components["schemas"]["MonitoringComponentState"];

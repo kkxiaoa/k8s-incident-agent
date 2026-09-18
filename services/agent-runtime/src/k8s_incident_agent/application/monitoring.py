@@ -16,6 +16,7 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricTimeAnchor,
     MetricWindow,
     MonitoringComponentState,
+    MonitoringHealthAlert,
     MonitoringHealthSnapshot,
     MonitoringOverallState,
     MonitoringOverviewCounts,
@@ -108,6 +109,7 @@ class MonitoringApplicationService:
                 alertmanager=MonitoringComponentState.UNKNOWN,
                 notification=MonitoringComponentState.UNKNOWN,
                 watchdog_last_received_at=last_watchdog,
+                health_alerts=(),
             )
 
         prometheus = (
@@ -115,14 +117,31 @@ class MonitoringApplicationService:
             if signals.partial
             else MonitoringComponentState.HEALTHY
         )
+        health_alerts = tuple(
+            MonitoringHealthAlert(
+                alert_id=alert.alert_id,
+                display_name=entry.display_name,
+                component=entry.component,
+                active_since=alert.active_since,
+            )
+            for alert in signals.firing_health_alerts
+            if (entry := self._catalog.find_health(alert.alert_id)) is not None
+        )
+        components_alerting = {alert.component for alert in health_alerts}
+        # This node stands for the whole collection path shown as "指标采集":
+        # KSM reachability plus collection health rules, including kubelet jobs.
         kube_state_metrics = (
-            MonitoringComponentState.HEALTHY
-            if signals.kube_state_metrics_available
-            else MonitoringComponentState.UNAVAILABLE
+            MonitoringComponentState.UNAVAILABLE
+            if not signals.kube_state_metrics_available
+            else MonitoringComponentState.DEGRADED
+            if "collection" in components_alerting
+            else MonitoringComponentState.HEALTHY
         )
         rule_evaluation = (
             MonitoringComponentState.HEALTHY
             if signals.watchdog_rule_firing
+            and signals.health_rules_evaluating
+            and "rules" not in components_alerting
             else MonitoringComponentState.DEGRADED
         )
         alertmanager = (
@@ -158,6 +177,7 @@ class MonitoringApplicationService:
             alertmanager=alertmanager,
             notification=notification,
             watchdog_last_received_at=last_watchdog,
+            health_alerts=health_alerts,
         )
 
     async def get_overview(self) -> MonitoringOverviewSnapshot:

@@ -67,9 +67,9 @@ test("model outage preserves history while refusing new diagnosis", async ({ pag
   await expect(page.locator(".incident-list__link")).toHaveCount(12);
 
   await page.goto("/incidents/10000000-0000-4000-8000-000000000005");
-  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await expect(page.locator(".metric-panel")).toHaveCount(8);
   await page.reload();
-  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await expect(page.locator(".metric-panel")).toHaveCount(8);
   await page.goto("/");
   await control("/__test__/mode", { mode: "diagnosed" });
   await page.getByRole("button", { name: "刷新运行概览" }).click();
@@ -130,7 +130,7 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   ).toBeVisible();
   await expect(
     page.getByRole("list", { name: "告警中 Incident 故障族分布" }),
-  ).toContainText("容器反复重启3");
+  ).toContainText("Container restart loop3");
   await expect(
     page.getByRole("img", {
       name: "最近 24 小时新增 Incident 与告警条件解除趋势",
@@ -144,13 +144,20 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   await page.goto(
     "/incidents/10000000-0000-4000-8000-000000000005",
   );
-  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await expect(page.locator(".metric-panel")).toHaveCount(8);
+  // The alert's trigger panel leads on its own row; context panels stay paired.
   const dualContainer = await page.locator(".monitoring-panels").boundingBox();
-  const firstPanel = await page.locator(".metric-panel").nth(0).boundingBox();
-  const secondPanel = await page.locator(".metric-panel").nth(1).boundingBox();
+  const leadPanel = await page.locator(".metric-panel--lead").boundingBox();
+  const context = page.locator(".metric-panel:not(.metric-panel--lead)");
+  const firstPanel = await context.nth(0).boundingBox();
+  const secondPanel = await context.nth(1).boundingBox();
   expect(dualContainer).not.toBeNull();
+  expect(leadPanel).not.toBeNull();
   expect(firstPanel).not.toBeNull();
   expect(secondPanel).not.toBeNull();
+  expect(
+    Math.abs((leadPanel?.width ?? 0) - (dualContainer?.width ?? 0)),
+  ).toBeLessThanOrEqual(1);
   expect(Math.abs((firstPanel?.width ?? 0) - (secondPanel?.width ?? 0))).toBeLessThanOrEqual(1);
   expect(firstPanel?.width ?? 0).toBeLessThan((dualContainer?.width ?? 0) * 0.6);
   await expect(page.locator(".metric-signal-state.is-firing")).toHaveCount(1);
@@ -182,11 +189,11 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   await page.goto(
     "/incidents/10000000-0000-4000-8000-000000000012",
   );
-  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await expect(page.locator(".metric-panel")).toHaveCount(8);
   await expect(page.locator(".monitoring-data-alert")).toContainText(
     "指标数据暂不可用当前值与趋势未展示。",
   );
-  await expect(page.locator(".metric-panel__empty")).toHaveCount(2);
+  await expect(page.locator(".metric-panel__empty")).toHaveCount(8);
   await expect(page.getByRole("button", { name: "重新读取" })).toHaveCount(0);
 });
 
@@ -228,21 +235,27 @@ test("create reaches terminal diagnosis, reconnects natively, and refreshes from
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await createFromHome(page);
 
-  await expect(page.getByText("诊断已完成", { exact: true })).toBeVisible();
-  await expect(page.locator(".metric-panel")).toHaveCount(2);
+  await expect(
+    page.getByLabel("运行时间线").getByText("诊断已完成", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".metric-panel")).toHaveCount(8);
   await expect(
     page.getByRole("img", { name: /^镜像拉取失败 Pod 时间序列/ }),
   ).toBeVisible();
   await expect(
     page.getByRole("img", { name: /^Deployment 可用副本 时间序列/ }),
   ).toBeVisible();
-  await expect(page.locator(".metric-panel__value")).toHaveText([
-    "3",
-    "0 / 3",
-  ]);
+  const panelValue = (title: string) =>
+    page
+      .locator(".metric-panel")
+      .filter({ has: page.getByRole("heading", { name: title }) })
+      .locator(".metric-panel__value");
+  await expect(panelValue("镜像拉取失败 Pod")).toHaveText("3");
+  await expect(panelValue("Deployment 可用副本")).toHaveText("0 / 3");
+  // The event list belongs to the trigger panel, so it appears once per page.
   await expect(
     page.locator(".metric-chart__events").getByText("第 1 次诊断 Run 完成"),
-  ).toHaveCount(2);
+  ).toHaveCount(1);
   await expect(
     page.getByText("Pod 引用的镜像 manifest 不存在，导致 ImagePullBackOff。"),
   ).toBeVisible();

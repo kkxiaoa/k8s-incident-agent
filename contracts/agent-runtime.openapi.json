@@ -2276,6 +2276,44 @@
         "title": "MonitoringComponentState",
         "type": "string"
       },
+      "MonitoringHealthAlert": {
+        "additionalProperties": false,
+        "properties": {
+          "activeSince": {
+            "format": "date-time",
+            "title": "Activesince",
+            "type": "string"
+          },
+          "alertId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Alertid",
+            "type": "string"
+          },
+          "component": {
+            "enum": [
+              "collection",
+              "rules"
+            ],
+            "title": "Component",
+            "type": "string"
+          },
+          "displayName": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Displayname",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alertId",
+          "displayName",
+          "component",
+          "activeSince"
+        ],
+        "title": "MonitoringHealthAlert",
+        "type": "object"
+      },
       "MonitoringHealthSnapshot": {
         "additionalProperties": false,
         "properties": {
@@ -2286,6 +2324,14 @@
             "format": "date-time",
             "title": "Checkedat",
             "type": "string"
+          },
+          "healthAlerts": {
+            "items": {
+              "$ref": "#/components/schemas/MonitoringHealthAlert"
+            },
+            "maxItems": 16,
+            "title": "Healthalerts",
+            "type": "array"
           },
           "kubeStateMetrics": {
             "$ref": "#/components/schemas/MonitoringComponentState"
@@ -2323,7 +2369,8 @@
           "ruleEvaluation",
           "alertmanager",
           "notification",
-          "watchdogLastReceivedAt"
+          "watchdogLastReceivedAt",
+          "healthAlerts"
         ],
         "title": "MonitoringHealthSnapshot",
         "type": "object"

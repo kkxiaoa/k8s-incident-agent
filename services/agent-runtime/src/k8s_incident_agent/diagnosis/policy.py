@@ -5,6 +5,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import (
     DIAGNOSTIC_TOOL_NAMES,
     PROMETHEUS_TOOL_NAME,
     DiagnosticPanel,
+    DiagnosticPanelName,
     investigation_capability,
 )
 from k8s_incident_agent.domain.contracts import IncidentSource, KubernetesTarget
@@ -18,7 +19,9 @@ class DiagnosticPolicy:
     tool_names: tuple[str, ...]
     required_evidence: frozenset[str]
     prometheus_panels: tuple[DiagnosticPanel, ...]
+    other_panels: tuple[DiagnosticPanelName, ...] = ()
     trigger_panel_id: str | None = None
+    trigger_duration: str | None = None
     repair_action: RepairAction | None = None
 
 
@@ -81,6 +84,8 @@ class DiagnosticPolicyCatalog:
         ):
             raise ValueError("Incident target does not match its diagnostic policy")
         capability = investigation_capability(target.api_version, target.kind)
+        default = self._alerts.default_panels(entry)
+        default_ids = {panel.panel_id for panel in default}
         panels = tuple(
             DiagnosticPanel(
                 panel_id=panel.panel_id,
@@ -90,16 +95,29 @@ class DiagnosticPolicyCatalog:
                 series_binding=panel.series_binding,
                 risk_direction=panel.risk_direction,
             )
-            for panel in self._alerts.panels_for_target(target.api_version, target.kind)
+            for panel in default
         )
-        trigger_panel_id = next(
-            panel.panel_id for panel in entry.panels if panel.signal_role == "trigger"
+        others = tuple(
+            DiagnosticPanelName(panel_id=panel.panel_id, title=panel.title)
+            for panel in self._alerts.panels_for_target(target.api_version, target.kind)
+            if panel.panel_id not in default_ids
+        )
+        trigger = next(
+            panel for panel in entry.panels if panel.signal_role == "trigger"
+        )
+        # Only an alert-sourced Incident starts at the rule's firing moment; a
+        # scenario Incident starts when it was created, so its duration says
+        # nothing about when the condition began.
+        trigger_duration = (
+            trigger.threshold_duration if source.type == "alertmanager" else None
         )
         return _policy(
             capability.tool_names,
             frozenset({capability.identity_evidence}),
             panels,
-            trigger_panel_id,
+            others,
+            trigger.panel_id,
+            trigger_duration,
             entry.repair_action,
         )
 
@@ -108,7 +126,9 @@ def _policy(
     tool_names: tuple[str, ...],
     required_evidence: frozenset[str],
     panels: tuple[DiagnosticPanel, ...],
+    other_panels: tuple[DiagnosticPanelName, ...],
     trigger_panel_id: str | None,
+    trigger_duration: str | None,
     repair_action: RepairAction | None,
 ) -> DiagnosticPolicy:
     ordered_tools = tuple(name for name in DIAGNOSTIC_TOOL_NAMES if name in tool_names)
@@ -124,11 +144,15 @@ def _policy(
             raise ValueError("Prometheus diagnostic policy requires panels")
     else:
         panels = ()
+        other_panels = ()
         trigger_panel_id = None
+        trigger_duration = None
     return DiagnosticPolicy(
         tool_names=ordered_tools,
         required_evidence=required_evidence,
         prometheus_panels=panels,
+        other_panels=other_panels,
         trigger_panel_id=trigger_panel_id,
+        trigger_duration=trigger_duration,
         repair_action=repair_action,
     )

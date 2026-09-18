@@ -143,7 +143,7 @@ class PrometheusHttpClient:
         payload = await self._request("POST", path, form)
         return _parse_success(payload, expected_result_type=expected_result_type)
 
-    async def read_recovery_rules(
+    async def read_alert_rules(
         self, names: tuple[str, ...]
     ) -> tuple[PrometheusRule, ...]:
         if not names or len(names) > 8 or len(set(names)) != len(names):
@@ -157,7 +157,7 @@ class PrometheusHttpClient:
             *(("rule_name[]", name) for name in names),
         ]
         payload = await self._request("GET", "/api/v1/rules", parameters)
-        return _parse_recovery_rules(payload, names)
+        return _parse_alert_rules(payload, names)
 
     async def _request(
         self,
@@ -209,7 +209,7 @@ class PrometheusHttpClient:
         return payload
 
 
-def _parse_recovery_rules(
+def _parse_alert_rules(
     payload: bytes, names: tuple[str, ...]
 ) -> tuple[PrometheusRule, ...]:
     try:

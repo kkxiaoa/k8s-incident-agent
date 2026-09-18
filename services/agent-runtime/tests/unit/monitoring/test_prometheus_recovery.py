@@ -146,11 +146,14 @@ async def test_recovery_uses_raw_timestamps_complete_uid_coverage_and_individual
     assert f'deployment="{TARGET.name}"' in alerts and "pending|firing" in alerts
     rules = next(request for request in fixture.requests if request.method == "GET")
     assert rules.url.params["exclude_alerts"] == "true"
+    # Recovery reads only the registered image-repair set, never every Deployment
+    # discovery rule, so new catalog alerts cannot change the recovery gate.
     assert set(rules.url.params.get_list("rule_name[]")) == {
         "Watchdog",
-        *(
-            entry.alert_id
-            for entry in fixture.catalog.entries
-            if entry.target.kind == "Deployment"
-        ),
+        "K8sIncidentImagePullBackOff",
+        "K8sIncidentCrashLoopBackOff",
+        "K8sIncidentDeploymentReplicasUnavailable",
+        "K8sIncidentReadinessProbeFailure",
+        "K8sIncidentLivenessProbeRestart",
     }
+    assert "K8sIncidentContainerOOMKilled" not in alerts

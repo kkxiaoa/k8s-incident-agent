@@ -175,6 +175,7 @@ export type MonitoringHealthView = Pick<
   | "alertmanager"
   | "notification"
   | "watchdogLastReceivedAt"
+  | "healthAlerts"
 >;
 
 export interface MonitoringOverviewView {
@@ -1109,11 +1110,42 @@ export function parseRuntimeHealthResponse(value: unknown): RuntimeHealthView | 
   }
 }
 
+function parseMonitoringHealthAlerts(
+  value: unknown,
+): MonitoringHealthView["healthAlerts"] | null {
+  if (!Array.isArray(value) || value.length > 16) {
+    return null;
+  }
+  const alerts: MonitoringHealthView["healthAlerts"] = [];
+  for (const item of value) {
+    if (
+      !isObject(item) ||
+      !isBoundedText(item.alertId, 128) ||
+      !isBoundedText(item.displayName, 160) ||
+      (item.component !== "collection" && item.component !== "rules") ||
+      !isTimestamp(item.activeSince)
+    ) {
+      return null;
+    }
+    alerts.push({
+      alertId: item.alertId,
+      displayName: item.displayName,
+      component: item.component,
+      activeSince: item.activeSince,
+    });
+  }
+  return alerts;
+}
+
 export function parseMonitoringHealthResponse(
   value: unknown,
 ): MonitoringHealthView | null {
+  if (!isObject(value)) {
+    return null;
+  }
+  const healthAlerts = parseMonitoringHealthAlerts(value.healthAlerts);
   if (
-    !isObject(value) ||
+    healthAlerts === null ||
     (value.state !== "healthy" &&
       value.state !== "degraded" &&
       value.state !== "unavailable") ||
@@ -1137,6 +1169,7 @@ export function parseMonitoringHealthResponse(
     alertmanager: value.alertmanager,
     notification: value.notification,
     watchdogLastReceivedAt: value.watchdogLastReceivedAt,
+    healthAlerts,
   };
 }
 

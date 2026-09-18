@@ -168,7 +168,7 @@ def test_default_v4_firing_projects_only_the_catalog_contract() -> None:
     assert occurrence.starts_at == "2026-09-02T08:00:00.123000000Z"
     assert occurrence.trigger.source.type == "alertmanager"
     assert occurrence.trigger.source.ref == "K8sIncidentImagePullBackOff"
-    assert occurrence.trigger.source.revision == "2026-09-17.1"
+    assert occurrence.trigger.source.revision == "2026-09-17.2"
     assert occurrence.trigger.target.name == "image-pull-backoff"
     serialized = repr(occurrence)
     assert "must-not-be-persisted" not in serialized
@@ -453,3 +453,17 @@ def test_resolved_timestamp_must_not_precede_starts_at() -> None:
                 )
             )
         )
+
+
+def test_health_alerts_are_classified_and_never_become_incident_occurrences() -> None:
+    health = _alert()
+    health["labels"] = {
+        "alertname": "K8sIncidentMonitoringTargetDown",
+        "cluster": "k8s-incident-agent",
+        "job": "kubelet-resource",
+        "severity": "warning",
+    }
+    parsed = _parse(_payload(health))
+
+    assert parsed.occurrences == ()
+    assert parsed.watchdog_firing is False

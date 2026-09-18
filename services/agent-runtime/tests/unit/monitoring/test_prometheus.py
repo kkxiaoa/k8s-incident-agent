@@ -674,12 +674,48 @@ async def test_total_request_timeout_includes_transport_wait(
     assert error.value.retryable is True
 
 
+def _health_rules_response(
+    request: httpx.Request, fault: str | None = None
+) -> httpx.Response:
+    names = request.url.params.get_list("rule_name[]")
+    if fault == "missing":
+        names = names[:-1]
+    rules = [
+        {
+            "name": name,
+            "type": "alerting",
+            "health": "err" if fault == "error" and index == 0 else "ok",
+            "lastEvaluation": (
+                NOW - timedelta(seconds=61 if fault == "stale" and index == 0 else 10)
+            ).isoformat(),
+        }
+        for index, name in enumerate(names)
+    ]
+    return httpx.Response(
+        200,
+        json={
+            "status": "success",
+            "data": {
+                "groups": [
+                    {
+                        "name": "k8s-incident-agent",
+                        "file": "/etc/prometheus/rules/alerts.yaml",
+                        "rules": rules,
+                    }
+                ]
+            },
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_health_queries_are_fixed_and_project_only_normalized_signals() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path == "/api/v1/rules":
+            return _health_rules_response(request)
         form = dict(httpx.QueryParams(request.content.decode()))
         if form["query"].startswith("up{"):
             return _response(
@@ -689,10 +725,16 @@ async def test_health_queries_are_fixed_and_project_only_normalized_signals() ->
                 '{"metric":{"job":"alertmanager"},'
                 '"value":[1788339600,"1"]}]}}'
             )
+        if form["query"].startswith("ALERTS{"):
+            return _response(
+                '{"status":"success","data":{"resultType":"vector","result":['
+                '{"metric":{"alertname":"Watchdog"},'
+                '"value":[1788339600,"1"]}]}}'
+            )
         return _response(
             '{"status":"success","data":{"resultType":"vector","result":['
-            '{"metric":{"alertname":"Watchdog"},'
-            '"value":[1788339600,"1"]}]}}'
+            '{"metric":{"alertname":"K8sIncidentMonitoringTargetDown"},'
+            '"value":[1788339500,"1788339300"]}]}}'
         )
 
     http = httpx.AsyncClient(
@@ -715,23 +757,122 @@ async def test_health_queries_are_fixed_and_project_only_normalized_signals() ->
         "kubeStateMetricsAvailable": True,
         "alertmanagerAvailable": True,
         "watchdogRuleFiring": True,
+        "healthRulesEvaluating": True,
+        "firingHealthAlerts": (
+            {
+                "alertId": "K8sIncidentMonitoringTargetDown",
+                "activeSince": NOW - timedelta(minutes=5),
+            },
+        ),
     }
-    assert [request.url.path for request in requests] == [
-        "/api/v1/query",
-        "/api/v1/query",
-    ]
-    queries = [
+    queries = [request for request in requests if request.url.path == "/api/v1/query"]
+    [rules] = [request for request in requests if request.url.path == "/api/v1/rules"]
+    assert len(requests) == 4
+    health_names = "|".join(
+        [
+            "K8sIncidentMonitoringTargetDown",
+            "K8sIncidentKubeStateMetricsListFailing",
+            "K8sIncidentKubeletTargetsMissing",
+            "K8sIncidentRuleEvaluationFailing",
+        ]
+    )
+    assert sorted(
         dict(httpx.QueryParams(request.content.decode()))["query"]
-        for request in requests
-    ]
-    assert queries == [
-        'up{job=~"kube-state-metrics|alertmanager"}',
-        'ALERTS{alertname="Watchdog",alertstate="firing"}',
-    ]
-    assert [
+        for request in queries
+    ) == sorted(
+        [
+            'up{job=~"kube-state-metrics|alertmanager"}',
+            'ALERTS{alertname="Watchdog",alertstate="firing"}',
+            f'min by (alertname) (ALERTS_FOR_STATE{{alertname=~"{health_names}"}} '
+            f'and ignoring(alertstate) ALERTS{{alertname=~"{health_names}",'
+            'alertstate="firing"})',
+        ]
+    )
+    assert {
         dict(httpx.QueryParams(request.content.decode()))["lookback_delta"]
-        for request in requests
-    ] == ["60s", "60s"]
+        for request in queries
+    } == {"60s"}
+    assert rules.url.params.get_list("rule_name[]") == [
+        *health_names.split("|"),
+        "Watchdog",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metric",
+    [
+        '{"alertname":"K8sIncidentContainerOOMKilled"}',
+        '{"alertname":"K8sIncidentMonitoringTargetDown","job":"x"}',
+        "{}",
+    ],
+)
+async def test_health_alert_query_rejects_unregistered_or_unaggregated_series(
+    metric: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/rules":
+            return _health_rules_response(request)
+        form = dict(httpx.QueryParams(request.content.decode()))
+        if form["query"].startswith("min by (alertname)"):
+            return _response(
+                '{"status":"success","data":{"resultType":"vector","result":['
+                '{"metric":' + metric + ',"value":[1788339600,"1788339300"]}]}}'
+            )
+        return _response(
+            '{"status":"success","data":{"resultType":"vector","result":[]}}'
+        )
+
+    http = httpx.AsyncClient(
+        base_url="http://127.0.0.1:9090/",
+        transport=httpx.MockTransport(handler),
+    )
+    service = PrometheusQueryService(
+        catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog"),
+        client=PrometheusHttpClient(http),
+        cluster_id="k8s-incident-agent",
+        now=lambda: NOW,
+    )
+
+    with pytest.raises(MonitoringBoundaryError) as error:
+        await service.read_health_signals()
+    await service.close()
+
+    assert error.value.code is MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["missing", "error", "stale"])
+async def test_health_read_requires_every_health_rule_loaded_and_evaluating(
+    fault: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/rules":
+            return _health_rules_response(request, fault)
+        return _response(
+            '{"status":"success","data":{"resultType":"vector","result":[]}}'
+        )
+
+    http = httpx.AsyncClient(
+        base_url="http://127.0.0.1:9090/",
+        transport=httpx.MockTransport(handler),
+    )
+    service = PrometheusQueryService(
+        catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog"),
+        client=PrometheusHttpClient(http),
+        cluster_id="k8s-incident-agent",
+        now=lambda: NOW,
+    )
+
+    if fault == "missing":
+        with pytest.raises(MonitoringBoundaryError) as error:
+            await service.read_health_signals()
+        assert error.value.code is MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+    else:
+        result = await service.read_health_signals()
+        assert result.health_rules_evaluating is False
+        assert result.firing_health_alerts == ()
+    await service.close()
 
 
 def test_resolve_metric_range_derives_windows_only_from_registered_anchors() -> None:

@@ -20,7 +20,7 @@ spec:
         app.kubernetes.io/name: prometheus
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:181e9aed26b7cf21b7c25568b82be3409d3138ad496723765e36090489e6eb20"
+        k8s-incident-agent.io/config-digest: "sha256:75f3047d6b662c441bf4be02c3d84d5880a4fb9822c772290e6930c1ed1b3e1e"
     spec:
       serviceAccountName: prometheus
       automountServiceAccountToken: false
@@ -117,7 +117,7 @@ spec:
         app.kubernetes.io/name: alertmanager
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:f1500eccf3d0fdec6c9dbbbed4a234dbf41f2047fd29c0816a51f7444042caee"
+        k8s-incident-agent.io/config-digest: "sha256:35a18b51f1bc60b55865222f80512a04de25403d6c684532fcbd9cf24940975d"
     spec:
       serviceAccountName: alertmanager
       automountServiceAccountToken: false

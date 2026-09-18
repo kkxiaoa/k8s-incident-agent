@@ -42,6 +42,7 @@ const HEALTHY: MonitoringHealthView = {
   alertmanager: "healthy",
   notification: "healthy",
   watchdogLastReceivedAt: "2026-09-03T02:14:00.000Z",
+  healthAlerts: [],
 };
 
 const AFFECTED_PODS_PANEL = {
@@ -236,11 +237,50 @@ describe("MonitoringHealthOverview", () => {
 
     const ruleNode = screen.getByLabelText("规则计算：需关注");
     expect(ruleNode).toHaveAttribute("tabindex", "0");
-    expect(ruleNode).toHaveAttribute("data-tooltip", "规则计算：需关注");
+    expect(ruleNode).toHaveAccessibleDescription("规则计算：需关注");
+    expect(screen.getAllByRole("tooltip")).toHaveLength(1);
     expect(screen.getByLabelText("Prometheus：正常")).not.toHaveAttribute(
-      "data-tooltip",
+      "tabindex",
     );
-    expect(screen.queryByText("需关注")).toBeNull();
+  });
+
+  it("lists firing health alerts under the chain node they degrade", () => {
+    const degraded = {
+      ...HEALTHY,
+      state: "degraded",
+      kubeStateMetrics: "degraded",
+      ruleEvaluation: "degraded",
+      healthAlerts: [
+        {
+          alertId: "K8sIncidentMonitoringTargetDown",
+          displayName: "监控采集目标不可用",
+          component: "collection",
+          activeSince: "2026-09-03T02:11:00.000Z",
+        },
+        {
+          alertId: "K8sIncidentRuleEvaluationFailing",
+          displayName: "告警规则求值失败",
+          component: "rules",
+          activeSince: "2026-09-03T02:13:00.000Z",
+        },
+      ],
+    } satisfies MonitoringHealthView;
+
+    render(<MonitoringHealthOverview initialHealth={degraded} />);
+
+    const collection = screen.getByLabelText("指标采集：需关注");
+    expect(collection).toHaveAccessibleDescription(
+      /^指标采集：需关注监控采集目标不可用，条件自 .+ 起$/,
+    );
+    expect(collection).not.toHaveAccessibleDescription(/告警规则求值失败/);
+    expect(
+      within(collection).getByText((_, element) =>
+        element?.getAttribute("datetime") === "2026-09-03T02:11:00.000Z",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("规则计算：需关注")).toHaveAccessibleDescription(
+      /^规则计算：需关注告警规则求值失败，条件自 .+ 起$/,
+    );
   });
 });
 
@@ -342,17 +382,21 @@ describe("IncidentMonitoringOverview", () => {
     expect(screen.getByText("持续 30 秒")).toBeVisible();
     expect(screen.getByText("持续 5 分钟")).toBeVisible();
     expect(screen.getAllByText("条件已解除")).toHaveLength(1);
-    expect(screen.getAllByText("告警条件解除")).toHaveLength(2);
+    // Chart markers stay on every panel; the event list belongs to the trigger
+    // panel only, so the same rows are not repeated per card.
+    expect(screen.getAllByText("告警条件解除")).toHaveLength(1);
     expect(
       screen.getAllByRole("listitem", {
         name: /Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成/,
       }),
-    ).toHaveLength(2);
-    for (const eventList of screen.getAllByRole("list", {
+    ).toHaveLength(1);
+    const [eventList, ...extraEventLists] = screen.getAllByRole("list", {
       name: "最近图表标记",
-    })) {
-      expect(within(eventList).getByText("第 2 次诊断 Run 完成")).toBeVisible();
-    }
+    });
+    expect(extraEventLists).toHaveLength(0);
+    expect(
+      within(eventList as HTMLElement).getByText("第 2 次诊断 Run 完成"),
+    ).toBeVisible();
   });
 
   it("lets one catalog panel fill the available row", async () => {

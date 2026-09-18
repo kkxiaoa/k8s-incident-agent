@@ -66,6 +66,65 @@ function emptyStateCopy(state: MetricQueryStateView): string {
   return "当前查询没有可展示的样本。";
 }
 
+const ROLE_LABELS = {
+  trigger: "触发指标",
+  context: "上下文指标",
+} as const;
+
+function PanelHeader({
+  panel,
+  title,
+  purpose,
+  window,
+  onWindow,
+  states,
+}: {
+  panel: MonitoringPanelReferenceView;
+  title: string;
+  purpose: string;
+  window: MetricWindowView;
+  onWindow: (value: MetricWindowView) => void;
+  states?: React.ReactNode;
+}) {
+  return (
+    <header className="metric-panel__header">
+      <div>
+        <span className={`metric-panel__role is-${panel.signalRole}`}>
+          {ROLE_LABELS[panel.signalRole]}
+        </span>
+        <div className="metric-panel__title">
+          <h3>{title}</h3>
+          <MetricInfo label={purpose} />
+        </div>
+      </div>
+      <div className="metric-panel__header-actions">
+        <div className="metric-panel__states">{states}</div>
+        <div className="metric-panel__toolbar">
+          <label className="window-dropdown">
+            <span className="sr-only">{title} 时间窗口</span>
+            <select
+              aria-label={`${title} 时间窗口`}
+              value={window}
+              onChange={(event) =>
+                onWindow(event.target.value as MetricWindowView)
+              }
+            >
+              {(Object.keys(METRIC_WINDOW_LABELS) as MetricWindowView[]).map(
+                (value) => (
+                  <option key={value} value={value}>
+                    {METRIC_WINDOW_LABELS[value]}
+                  </option>
+                ),
+              )}
+            </select>
+            <UiIcon name="chevron-down" />
+          </label>
+        </div>
+      </div>
+    </header>
+  );
+}
+
 export function MetricPanelCard({
   incidentId,
   panel,
@@ -74,6 +133,7 @@ export function MetricPanelCard({
   alertStatus = null,
   desiredReplicas = null,
   onLoadSnapshot,
+  lead = false,
 }: {
   incidentId: string;
   panel: MonitoringPanelReferenceView;
@@ -82,8 +142,11 @@ export function MetricPanelCard({
   alertStatus?: AlertSignalView["status"] | null;
   desiredReplicas?: number | null;
   onLoadSnapshot?: (panelId: string, snapshot: MetricPanelLoadSnapshot) => void;
+  /** The alert's own trigger panel takes a full row above the context ones. */
+  lead?: boolean;
 }) {
   const [window, setWindow] = useState(panel.recommendedWindow);
+  const isTrigger = panel.signalRole === "trigger";
   const anchorKey =
     anchor.kind === "run" ? `run:${anchor.runId}` : "current";
   const requestKey = [
@@ -166,7 +229,7 @@ export function MetricPanelCard({
 
   if (pending && data === null) {
     return (
-      <article className="metric-panel metric-panel--loading" aria-busy="true">
+      <article className={`metric-panel metric-panel--loading${lead ? " metric-panel--lead" : ""}`} aria-busy="true">
         <span className="skeleton skeleton--short" />
         <span className="skeleton skeleton--metric" />
         <span className="skeleton skeleton--chart" />
@@ -175,9 +238,11 @@ export function MetricPanelCard({
   }
 
   if (data === null) {
+    // The panel reference is verified even when its result is not, so the card
+    // keeps its identity and the window control instead of collapsing.
     return (
       <article
-        className="metric-panel metric-panel--error"
+        className={`metric-panel is-monitoring_unavailable${lead ? " metric-panel--lead" : ""}`}
         aria-label={
           failure === "invalid_response"
             ? "监控响应无法验证"
@@ -186,6 +251,27 @@ export function MetricPanelCard({
               : "指标读取失败"
         }
       >
+        <PanelHeader
+          panel={panel}
+          title={panel.title}
+          purpose={panel.purpose}
+          window={window}
+          onWindow={setWindow}
+        />
+        <dl className="metric-panel__summary">
+          <div>
+            <dt>{panel.seriesBinding === "target" ? "当前值" : "序列"}</dt>
+            <dd>—</dd>
+          </div>
+          <div>
+            <dt>阈值</dt>
+            <dd>—</dd>
+          </div>
+          <div>
+            <dt>最后更新</dt>
+            <dd>—</dd>
+          </div>
+        </dl>
         <div className="metric-panel__empty is-monitoring_unavailable" role="status">
           <UiIcon name="activity" />
           <p>指标数据暂不可用</p>
@@ -248,19 +334,18 @@ export function MetricPanelCard({
       : metricThresholdDescription(result.riskDirection);
 
   return (
-    <article className={`metric-panel is-${result.state}`} aria-busy={pending}>
-      <header className="metric-panel__header">
-        <div>
-          <span className="eyebrow">
-            {panel.signalRole === "trigger" ? "Necessary metric" : "Context metric"}
-          </span>
-          <div className="metric-panel__title">
-            <h3>{result.title}</h3>
-            <MetricInfo label={metricDescription} />
-          </div>
-        </div>
-        <div className="metric-panel__header-actions">
-          <div className="metric-panel__states">
+    <article
+      className={`metric-panel is-${result.state}${lead ? " metric-panel--lead" : ""}`}
+      aria-busy={pending}
+    >
+      <PanelHeader
+        panel={panel}
+        title={result.title}
+        purpose={metricDescription}
+        window={window}
+        onWindow={setWindow}
+        states={
+          <>
             {alertStatus === null || unavailable || anchoredRun !== null ? null : (
               <span
                 className={`metric-signal-state is-${alertStatus.toLowerCase()}`}
@@ -278,30 +363,9 @@ export function MetricPanelCard({
                 {stateLabel}
               </span>
             )}
-          </div>
-          <div className="metric-panel__toolbar">
-            <label className="window-dropdown">
-              <span className="sr-only">{result.title} 时间窗口</span>
-              <select
-                aria-label={`${result.title} 时间窗口`}
-                value={window}
-                onChange={(event) =>
-                  setWindow(event.target.value as MetricWindowView)
-                }
-              >
-                {(Object.keys(METRIC_WINDOW_LABELS) as MetricWindowView[]).map(
-                  (value) => (
-                    <option key={value} value={value}>
-                      {METRIC_WINDOW_LABELS[value]}
-                    </option>
-                  ),
-                )}
-              </select>
-              <UiIcon name="chevron-down" />
-            </label>
-          </div>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       {anchoredRun === null ? null : (
         <p className="metric-panel__notice metric-panel__notice--anchor" role="status">
@@ -363,6 +427,7 @@ export function MetricPanelCard({
             markersTruncated={data.markersTruncated}
             riskDirection={result.riskDirection}
             referenceValue={referenceValue}
+            showEvents={isTrigger}
           />
         </>
       ) : (
@@ -374,10 +439,12 @@ export function MetricPanelCard({
             <UiIcon name="activity" />
             <p>{emptyStateCopy(result.state)}</p>
           </div>
-          <MetricMarkerEvents
-            markers={data.markers}
-            markersTruncated={data.markersTruncated}
-          />
+          {isTrigger ? (
+            <MetricMarkerEvents
+              markers={data.markers}
+              markersTruncated={data.markersTruncated}
+            />
+          ) : null}
         </>
       )}
     </article>

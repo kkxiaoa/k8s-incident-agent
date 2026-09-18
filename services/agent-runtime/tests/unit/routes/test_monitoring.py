@@ -30,6 +30,7 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricTimeAnchor,
     MetricWindow,
     MonitoringComponentState,
+    MonitoringHealthAlert,
     MonitoringHealthSnapshot,
     MonitoringOverallState,
     MonitoringOverviewCounts,
@@ -81,6 +82,14 @@ class _MonitoringService:
             alertmanager=MonitoringComponentState.HEALTHY,
             notification=MonitoringComponentState.STALE,
             watchdog_last_received_at=NOW - timedelta(minutes=7),
+            health_alerts=(
+                MonitoringHealthAlert(
+                    alert_id="K8sIncidentRuleEvaluationFailing",
+                    display_name="告警规则求值失败",
+                    component="rules",
+                    active_since=NOW - timedelta(minutes=2),
+                ),
+            ),
         )
 
     async def get_overview(self) -> MonitoringOverviewSnapshot:
@@ -227,6 +236,14 @@ async def test_monitoring_health_route_returns_the_bounded_projection(
         "alertmanager": "healthy",
         "notification": "stale",
         "watchdogLastReceivedAt": "2026-09-02T08:53:00Z",
+        "healthAlerts": [
+            {
+                "alertId": "K8sIncidentRuleEvaluationFailing",
+                "displayName": "告警规则求值失败",
+                "component": "rules",
+                "activeSince": "2026-09-02T08:58:00Z",
+            }
+        ],
     }
 
 

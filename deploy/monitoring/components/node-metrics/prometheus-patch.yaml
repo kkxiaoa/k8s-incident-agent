@@ -7,7 +7,7 @@ spec:
   template:
     metadata:
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:ab3c34e39f04568393a10dd1d6e9130d6b95da94dac8bfa10d655a5e24b5c3a2"
+        k8s-incident-agent.io/config-digest: "sha256:76cea711016a9715c2884a8a9e07ff9effac603a69c01cabb8128090c7086308"
     spec:
       containers:
         - name: prometheus

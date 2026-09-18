@@ -765,9 +765,23 @@ test("managed monitoring render pins topology, collection, rule, and credential 
       "K8sIncidentServiceEndpointsUnavailable",
       "K8sIncidentReadinessProbeFailure",
       "K8sIncidentLivenessProbeRestart",
+      "K8sIncidentContainerOOMKilled",
+      "K8sIncidentContainerAbnormalExit",
+      "K8sIncidentContainerMemoryNearLimit",
+      "K8sIncidentContainerCPUThrottled",
+      "K8sIncidentContainerProbeFailing",
+      "K8sIncidentPodUnschedulable",
       "K8sIncidentPersistentVolumeClaimPending",
+      "K8sIncidentMonitoringTargetDown",
+      "K8sIncidentKubeStateMetricsListFailing",
+      "K8sIncidentKubeletTargetsMissing",
+      "K8sIncidentRuleEvaluationFailing",
     ],
   );
+  // Rule semantics are pinned by monitoring/tests/alert-rules.promtool.yaml.
+  for (const rule of rules.slice(1)) {
+    assert.deepEqual(rule.labels, { severity: "warning" }, rule.alert);
+  }
   assert.deepEqual(rules[0], {
     alert: "Watchdog",
     expr: "vector(1)",
@@ -809,13 +823,14 @@ test("managed monitoring render pins topology, collection, rule, and credential 
     /label_k8s_incident_agent_io_liveness_container/,
   );
   assert.deepEqual(rules[6].labels, { severity: "warning" });
-  assert.equal(rules[7].for, "5m");
-  assert.match(rules[7].expr, /kube_persistentvolumeclaim_status_phase/);
+  const pvcRule = rules[13];
+  assert.equal(pvcRule.alert, "K8sIncidentPersistentVolumeClaimPending");
+  assert.equal(pvcRule.for, "5m");
+  assert.match(pvcRule.expr, /kube_persistentvolumeclaim_status_phase/);
   assert.match(
-    rules[7].expr,
+    pvcRule.expr,
     /label_k8s_incident_agent_io_pending_policy="immediate"/,
   );
-  assert.deepEqual(rules[7].labels, { severity: "warning" });
 
   const alertmanager = load(
     getResource(
@@ -828,7 +843,7 @@ test("managed monitoring render pins topology, collection, rule, and credential 
   assert.deepEqual(alertmanager.inhibit_rules, [
     {
       source_matchers: [
-        'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart"',
+        'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart|K8sIncidentContainerOOMKilled|K8sIncidentContainerAbnormalExit|K8sIncidentContainerProbeFailing|K8sIncidentPodUnschedulable"',
       ],
       target_matchers: [
         'alertname="K8sIncidentDeploymentReplicasUnavailable"',

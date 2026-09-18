@@ -24,6 +24,7 @@ function monitoringHealth() {
     alertmanager: "healthy",
     notification: "healthy",
     watchdogLastReceivedAt: "2026-09-03T02:14:00.000Z",
+    healthAlerts: [],
   };
 }
 

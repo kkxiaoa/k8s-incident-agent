@@ -43,7 +43,7 @@ class DiagnosticPanel:
     """Catalog panel the model may query, with the meaning it needs to choose it.
 
     ``purpose`` is the catalog's registration of what the panel answers and what
-    it cannot show, so the model reads it before spending a query;
+    it cannot show, so the model reads it before spending a query.
     ``series_binding`` tells it whether values describe the whole target or one
     Pod/container at sampling time.
     """
@@ -54,6 +54,18 @@ class DiagnosticPanel:
     purpose: str
     series_binding: Literal["target", "pod", "pod_container"]
     risk_direction: Literal["higher_is_worse", "lower_is_worse", "neutral"]
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticPanelName:
+    """Panel registered for another alert on the same target kind.
+
+    The policy admits it for a symptom the Evidence points to, so the Prompt
+    lists it by name only; the query result carries its registered meaning.
+    """
+
+    panel_id: str
+    title: str
 
 
 @dataclass(frozen=True, slots=True)

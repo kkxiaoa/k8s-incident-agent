@@ -19,8 +19,12 @@ from k8s_incident_agent.repair.contracts import RepairAction
 _MAX_CATALOG_BYTES = 64 * 1024
 _MAX_DEFAULT_PANELS = 8
 # `{{range:5m}}` is a rolling interval that widens to the query step, so each
-# sampled point summarises its whole step instead of the last few minutes of it.
-RANGE_PLACEHOLDER = re.compile(r"\{\{range:([1-9][0-9]*)(s|m)\}\}")
+# sampled point summarises its whole step instead of the last few minutes of it;
+# `{{rangeSeconds:10m}}` is the same interval as a bare number of seconds.
+RANGE_PLACEHOLDER = re.compile(r"\{\{(range|rangeSeconds):([1-9][0-9]*)(s|m)\}\}")
+# Recovery and health checks read these rules together with Watchdog, and the
+# Prometheus rules read admits at most eight names.
+_MAX_CHECKED_RULES = 7
 
 type MetricSeriesBindingLiteral = Literal["target", "pod", "pod_container"]
 
@@ -143,6 +147,9 @@ class AlertCatalogEntry(_CatalogContract):
     rule: AlertRuleContract
     target: AlertTargetMapping
     repair_action: RepairAction | None = None
+    recovery_alerts: list[str] | None = Field(
+        default=None, min_length=1, max_length=_MAX_CHECKED_RULES
+    )
     panels: list[MetricPanelContract] = Field(
         min_length=1, max_length=_MAX_DEFAULT_PANELS
     )
@@ -167,7 +174,32 @@ class AlertCatalogEntry(_CatalogContract):
             self.target.api_version != "apps/v1" or self.target.kind != "Deployment"
         ):
             raise ValueError("Repair action requires a Deployment target")
+        if (self.repair_action is None) is not (self.recovery_alerts is None):
+            raise ValueError("Repair actions must name their recovery alert set")
+        if self.recovery_alerts is not None and (
+            len(set(self.recovery_alerts)) != len(self.recovery_alerts)
+            or self.alert_id not in self.recovery_alerts
+        ):
+            raise ValueError("Recovery alerts must be unique and include the entry")
         return self
+
+
+class HealthAlertEntry(_CatalogContract):
+    """Rule about the monitoring chain itself.
+
+    Health alerts have no Kubernetes target and never create an Incident; the
+    Runtime reads their state from Prometheus for the monitoring health view.
+    """
+
+    alert_id: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
+    display_name: str = Field(min_length=1, max_length=160)
+    component: Literal["collection", "rules"]
+    rule: AlertRuleContract
+
+    @field_validator("display_name")
+    @classmethod
+    def require_normalized_text(cls, value: str) -> str:
+        return _require_normalized(value)
 
 
 class ContextPanelTarget(_CatalogContract):
@@ -203,7 +235,7 @@ class ContextPanelGroup(_CatalogContract):
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[10]
+    schema_version: Literal[11]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,
@@ -211,6 +243,7 @@ class _AlertCatalogDocument(_CatalogContract):
     )
     alerts: list[AlertCatalogEntry] = Field(min_length=1, max_length=64)
     context_panels: list[ContextPanelGroup] = Field(max_length=8)
+    health_alerts: list[HealthAlertEntry] = Field(max_length=_MAX_CHECKED_RULES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,11 +251,32 @@ class AlertCatalog:
     version: str
     entries: tuple[AlertCatalogEntry, ...]
     context_groups: tuple[ContextPanelGroup, ...]
+    health_entries: tuple[HealthAlertEntry, ...]
 
     def find(self, alert_id: str) -> AlertCatalogEntry | None:
         return next(
             (entry for entry in self.entries if entry.alert_id == alert_id), None
         )
+
+    def find_health(self, alert_id: str) -> HealthAlertEntry | None:
+        return next(
+            (entry for entry in self.health_entries if entry.alert_id == alert_id),
+            None,
+        )
+
+    def recovery_alerts(self, repair_action: RepairAction) -> tuple[str, ...]:
+        """The existing rules that gate recovery for one repair action.
+
+        Recovery reads exactly this registered set, so adding discovery alerts
+        to the catalog never changes what blocks a verified repair.
+        """
+        entry = next(
+            (item for item in self.entries if item.repair_action == repair_action),
+            None,
+        )
+        if entry is None or entry.recovery_alerts is None:
+            raise ValueError("Repair action has no registered recovery alerts")
+        return tuple(entry.recovery_alerts)
 
     def find_panel(self, panel_id: str) -> MetricPanelContract | None:
         return next(
@@ -321,10 +375,29 @@ def load_alert_catalog(directory: Path) -> AlertCatalog:
         raise ValueError("Alert catalog repeats a context panel target kind")
     if any(kind not in entry_kinds for kind in context_kinds):
         raise ValueError("Alert catalog context panels need an alert for their kind")
+    health_ids = [entry.alert_id for entry in document.health_alerts]
+    if (
+        len(set(health_ids)) != len(health_ids)
+        or set(health_ids) & set(alert_ids)
+        or "Watchdog" in {*alert_ids, *health_ids}
+    ):
+        raise ValueError("Alert catalog health and business rules must be distinct")
+    deployment_ids = {
+        entry.alert_id
+        for entry in document.alerts
+        if (entry.target.api_version, entry.target.kind) == ("apps/v1", "Deployment")
+    }
+    if any(
+        not set(entry.recovery_alerts) <= deployment_ids
+        for entry in document.alerts
+        if entry.recovery_alerts is not None
+    ):
+        raise ValueError("Recovery alerts must be registered Deployment rules")
     catalog = AlertCatalog(
         version=document.catalog_version,
         entries=tuple(document.alerts),
         context_groups=tuple(document.context_panels),
+        health_entries=tuple(document.health_alerts),
     )
     panel_ids = catalog.panel_ids
     if len(set(panel_ids)) != len(panel_ids):

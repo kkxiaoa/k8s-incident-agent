@@ -868,7 +868,10 @@ describe("read-only incident presentation", () => {
       "href",
       `/incidents/${INCIDENT_ID}`,
     );
-    expect(screen.getByText("诊断中")).toBeVisible();
+    // The status also names a filter chip, so this asserts the row badge.
+    expect(
+      within(screen.getByRole("table")).getByText("诊断中"),
+    ).toBeVisible();
     expect(document.querySelector("time")).toHaveAttribute(
       "datetime",
       detail.incident.createdAt,

@@ -86,9 +86,11 @@ function laneSpanLabel(
     window === "7d" || window === "15d"
       ? `${AXIS_DATE_FORMAT.format(new Date(value))} ${AXIS_TIME_FORMAT.format(new Date(value))}`
       : AXIS_TIME_FORMAT.format(new Date(value));
+  // The band starts when this reason became the container's latest termination,
+  // and ends when a newer termination replaced it.
   return last.x >= rangeEnd
-    ? `${format(first.x)} 起，持续到窗口末`
-    : `${format(first.x)} – ${format(last.x)}`;
+    ? `${format(first.x)} 起至今`
+    : `${format(first.x)} 起，${format(last.x)} 被更新`;
 }
 
 function axisTimeLabel(
@@ -252,12 +254,14 @@ export function TimeSeriesChart({
   markersTruncated,
   riskDirection,
   referenceValue,
+  showEvents = true,
 }: {
   result: MetricPanelResultView;
   markers: MetricMarkerView[];
   markersTruncated: boolean;
   riskDirection: MetricRiskDirectionView;
   referenceValue: number | null;
+  showEvents?: boolean;
 }) {
   ensureChartJsRegistered();
   const reducedMotion = useReducedChartMotion();
@@ -388,12 +392,14 @@ export function TimeSeriesChart({
         chart.ctx.fillText(item.label, left, y);
         chart.ctx.textAlign = "right";
         chart.ctx.font = "500 11px system-ui, sans-serif";
+        const span = laneSpanLabel(result.window, item.points, end);
+        // Event markers are drawn at the window end, right under this label;
+        // a panel-coloured halo keeps the span readable where they cross.
+        const spanWidth = chart.ctx.measureText(span).width;
+        chart.ctx.fillStyle = "#ffffff";
+        chart.ctx.fillRect(right - spanWidth - 4, y - 12, spanWidth + 8, 14);
         chart.ctx.fillStyle = "#8294a4";
-        chart.ctx.fillText(
-          laneSpanLabel(result.window, item.points, end),
-          right,
-          y,
-        );
+        chart.ctx.fillText(span, right, y);
       });
       chart.ctx.restore();
     },
@@ -481,7 +487,10 @@ export function TimeSeriesChart({
   const options: ChartOptions<"line"> = {
     animation: reducedMotion ? false : { duration: 420 },
     interaction: { intersect: false, mode: "nearest" },
-    layout: { padding: { top: lanes ? 30 : 42 } },
+    // Two event labels stack above the plot; lanes need room for both.
+    layout: {
+      padding: { top: lanes ? (labeledMarkers.length > 1 ? 46 : 30) : 42 },
+    },
     maintainAspectRatio: false,
     parsing: false,
     plugins: {
@@ -642,10 +651,12 @@ export function TimeSeriesChart({
         ) : null}
       </div>
 
-      <MetricMarkerEvents
-        markers={markers}
-        markersTruncated={markersTruncated}
-      />
+      {showEvents ? (
+        <MetricMarkerEvents
+          markers={markers}
+          markersTruncated={markersTruncated}
+        />
+      ) : null}
     </div>
   );
 }

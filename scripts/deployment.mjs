@@ -694,7 +694,7 @@ function bindNodeMetricsClusterRbac(contract, registeredNode) {
 function normalizeAlertRuleCatalog(rawAlertCatalog) {
   const document = parseJsonObject(rawAlertCatalog, "alert catalog");
   if (
-    document.schemaVersion !== 10 ||
+    document.schemaVersion !== 11 ||
     typeof document.catalogVersion !== "string" ||
     document.catalogVersion === "" ||
     !Array.isArray(document.alerts) ||
@@ -706,33 +706,47 @@ function normalizeAlertRuleCatalog(rawAlertCatalog) {
     );
   }
   const entries = new Map();
-  for (const entry of document.alerts) {
-    const alertId = requireString(entry?.alertId, "catalog alert identifier");
-    const expression = requireString(
-      entry?.rule?.expression,
-      `${alertId} rule expression`,
+  const healthEntries = new Map();
+  if (!Array.isArray(document.healthAlerts)) {
+    throw new DeploymentContractError(
+      "alert_catalog_invalid",
+      "Alert catalog does not classify health rules",
     );
-    const pendingFor = requireString(
-      entry?.rule?.for,
-      `${alertId} rule duration`,
-    );
-    const keepFiringFor = entry?.rule?.keepFiringFor;
-    if (
-      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(alertId) ||
-      !/^[1-9][0-9]*(?:ms|s|m|h)$/.test(pendingFor) ||
-      (keepFiringFor !== undefined &&
-        (typeof keepFiringFor !== "string" ||
-          !/^[1-9][0-9]*(?:ms|s|m|h)$/.test(keepFiringFor))) ||
-      entries.has(alertId)
-    ) {
-      throw new DeploymentContractError(
-        "alert_catalog_invalid",
-        "Alert catalog contains an invalid or duplicate rule",
-      );
-    }
-    entries.set(alertId, { expression, pendingFor, keepFiringFor });
   }
-  return { version: document.catalogVersion, entries };
+  for (const [collection, source] of [
+    [entries, document.alerts],
+    [healthEntries, document.healthAlerts],
+  ]) {
+    for (const entry of source) {
+      const alertId = requireString(entry?.alertId, "catalog alert identifier");
+      const expression = requireString(
+        entry?.rule?.expression,
+        `${alertId} rule expression`,
+      );
+      const pendingFor = requireString(
+        entry?.rule?.for,
+        `${alertId} rule duration`,
+      );
+      const keepFiringFor = entry?.rule?.keepFiringFor;
+      if (
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(alertId) ||
+        !/^[1-9][0-9]*(?:ms|s|m|h)$/.test(pendingFor) ||
+        (keepFiringFor !== undefined &&
+          (typeof keepFiringFor !== "string" ||
+            !/^[1-9][0-9]*(?:ms|s|m|h)$/.test(keepFiringFor))) ||
+        alertId === "Watchdog" ||
+        entries.has(alertId) ||
+        healthEntries.has(alertId)
+      ) {
+        throw new DeploymentContractError(
+          "alert_catalog_invalid",
+          "Alert catalog contains an invalid or duplicate rule",
+        );
+      }
+      collection.set(alertId, { expression, pendingFor, keepFiringFor });
+    }
+  }
+  return { version: document.catalogVersion, entries, healthEntries };
 }
 
 function normalizeCutoverContract(
@@ -5082,7 +5096,7 @@ function requireAlertmanagerConfiguration(rawConfiguration) {
     inhibit_rules: [
       {
         source_matchers: [
-          'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart"',
+          'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart|K8sIncidentContainerOOMKilled|K8sIncidentContainerAbnormalExit|K8sIncidentContainerProbeFailing|K8sIncidentPodUnschedulable"',
         ],
         target_matchers: [
           'alertname="K8sIncidentDeploymentReplicasUnavailable"',
@@ -5131,7 +5145,7 @@ function requireCatalogRules(rawRules, catalog) {
       expr: "vector(1)",
       labels: { severity: "none" },
     }) ||
-    alertRules.length !== catalog.entries.size
+    alertRules.length !== catalog.entries.size + catalog.healthEntries.size
   ) {
     throw new DeploymentContractError(
       "monitoring_contract_invalid",
@@ -5140,7 +5154,10 @@ function requireCatalogRules(rawRules, catalog) {
   }
   const seen = new Set();
   for (const rule of alertRules) {
-    const expected = catalog.entries.get(rule?.alert);
+    // Business and health rules share one group; each must match its own
+    // catalog classification exactly, so no extra rule can slip in unregistered.
+    const expected =
+      catalog.entries.get(rule?.alert) ?? catalog.healthEntries.get(rule?.alert);
     if (
       expected === undefined ||
       seen.has(rule.alert) ||

@@ -29,10 +29,14 @@ interface FakeIncident {
   metricAnchor?: string;
   mode: OutcomeMode;
   history?: IncidentDetailResponse[];
+  /** Walkthrough-only: renders every panel state on one Incident. */
+  panelsDemo?: "states" | "list_unavailable" | "list_empty";
 }
 
 const lifecycleStreams = new Map<string, Set<ServerResponse>>();
 let nextRepair = 100;
+// Only the discovery walkthrough sets this; every other seed stays healthy.
+let healthOverride: Record<string, unknown> | null = null;
 
 function publishLifecycle(record: FakeIncident, event: RunEventStreamItem) {
   record.events.push(event);
@@ -205,7 +209,6 @@ const eventConnections = new Map<string, Array<string | null>>();
 
 const SHOWCASE_INCIDENTS: Array<{
   alertStatus: "FIRING" | "RESOLVED";
-  displayName: string;
   outcome: OutcomeMode;
   sourceRef: string;
   targetName: string;
@@ -213,84 +216,72 @@ const SHOWCASE_INCIDENTS: Array<{
 }> = [
   {
     alertStatus: "FIRING",
-    displayName: "容器反复重启",
     outcome: "running",
     sourceRef: "K8sIncidentCrashLoopBackOff",
     targetName: "checkout-api",
   },
   {
     alertStatus: "FIRING",
-    displayName: "容器反复重启",
     outcome: "diagnosed",
     sourceRef: "K8sIncidentCrashLoopBackOff",
     targetName: "payment-worker",
   },
   {
     alertStatus: "FIRING",
-    displayName: "容器反复重启",
     outcome: "diagnosed",
     sourceRef: "K8sIncidentCrashLoopBackOff",
     targetName: "notification-api",
   },
   {
     alertStatus: "FIRING",
-    displayName: "镜像拉取失败",
     outcome: "running",
     sourceRef: "K8sIncidentImagePullBackOff",
     targetName: "catalog-api",
   },
   {
     alertStatus: "FIRING",
-    displayName: "镜像拉取失败",
     outcome: "diagnosed",
     sourceRef: "K8sIncidentImagePullBackOff",
     targetName: "search-indexer",
   },
   {
     alertStatus: "FIRING",
-    displayName: "Service 路由异常",
     outcome: "running",
     sourceRef: "K8sIncidentServiceEndpointsUnavailable",
     targetName: "orders-api",
   },
   {
     alertStatus: "FIRING",
-    displayName: "Service 路由异常",
     outcome: "insufficient",
     sourceRef: "K8sIncidentServiceEndpointsUnavailable",
     targetName: "inventory-api",
   },
   {
     alertStatus: "FIRING",
-    displayName: "健康检查失败",
     outcome: "running",
-    sourceRef: "K8sIncidentProbeFailure",
+    sourceRef: "K8sIncidentReadinessProbeFailure",
     targetName: "session-api",
   },
   {
     alertStatus: "FIRING",
-    displayName: "存储卷待绑定",
     outcome: "failed",
-    sourceRef: "K8sIncidentPVCPending",
+    sourceRef: "K8sIncidentPersistentVolumeClaimPending",
     targetName: "reporting-worker",
   },
   {
     alertStatus: "RESOLVED",
-    displayName: "容器反复重启",
     outcome: "diagnosed",
     sourceRef: "K8sIncidentCrashLoopBackOff",
     targetName: "profile-api",
   },
   {
     alertStatus: "RESOLVED",
-    displayName: "Service 路由异常",
     outcome: "diagnosed",
     sourceRef: "K8sIncidentServiceEndpointsUnavailable",
     targetName: "pricing-api",
   },
   {
     alertStatus: "RESOLVED",
-    displayName: "镜像拉取失败",
     metricState: "monitoring_unavailable",
     outcome: "diagnosed",
     sourceRef: "K8sIncidentImagePullBackOff",
@@ -750,6 +741,7 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
 }
 
 function seedShowcase(): void {
+  healthOverride = null;
   mode = "diagnosed";
   nextIncident = 1;
   nextEventId = 1;
@@ -765,20 +757,17 @@ function seedShowcase(): void {
       ref: definition.sourceRef,
       revision: "showcase-v1",
     };
-    record.detail.incident.displayName = definition.displayName;
-    record.detail.incident.triggerSummary = `${definition.displayName}测试告警。`;
-    record.detail.incident.target =
-      definition.sourceRef === "K8sIncidentServiceEndpointsUnavailable"
-        ? {
-            ...record.detail.incident.target,
-            apiVersion: "v1",
-            kind: "Service",
-            name: definition.targetName,
-          }
-        : {
-            ...record.detail.incident.target,
-            name: definition.targetName,
-          };
+    const text = CATALOG_ALERT_TEXT[definition.sourceRef]!;
+    record.detail.incident.displayName = text.displayName;
+    record.detail.incident.triggerSummary = text.triggerSummary;
+    // The target kind follows the alert's own catalog entry.
+    const targetKind = CATALOG_PANEL_SETS[definition.sourceRef]?.kind ?? "Deployment";
+    record.detail.incident.target = {
+      ...record.detail.incident.target,
+      apiVersion: targetKind === "Deployment" ? "apps/v1" : "v1",
+      kind: targetKind,
+      name: definition.targetName,
+    };
     record.detail.alertSignal = {
       status: definition.alertStatus,
       startsAt: ALERT_STARTS_AT,
@@ -790,6 +779,108 @@ function seedShowcase(): void {
     }
     incidents.set(record.detail.incident.id, record);
   }
+}
+
+/**
+ * Manual walkthrough seed for the DC-4A discovery alerts: the standard showcase
+ * plus one Incident per new alert, and a monitoring chain that is degraded by
+ * two health alerts. Tests keep using seedShowcase, which stays healthy.
+ */
+function seedAlertIncident(ref: string, targetName: string) {
+  const kind = CATALOG_PANEL_SETS[ref]?.kind ?? "Deployment";
+  const record = createIncident("diagnosed");
+  record.detail.incident.source = {
+    type: "alertmanager",
+    ref,
+    revision: "showcase-v1",
+  };
+  const text = CATALOG_ALERT_TEXT[ref]!;
+  record.detail.incident.displayName = text.displayName;
+  record.detail.incident.triggerSummary = text.triggerSummary;
+  record.detail.incident.target = {
+    ...record.detail.incident.target,
+    apiVersion: kind === "Deployment" ? "apps/v1" : "v1",
+    kind,
+    name: targetName,
+  };
+  record.detail.alertSignal = {
+    status: "FIRING",
+    startsAt: ALERT_STARTS_AT,
+    endsAt: null,
+  };
+  for (const event of record.events) {
+    applyEvent(record, event);
+  }
+  incidents.set(record.detail.incident.id, record);
+}
+
+export function seedDiscoveryShowcase(): number {
+  seedShowcase();
+  for (const ref of Object.keys(DISCOVERY_PANELS) as DiscoveryRef[]) {
+    seedAlertIncident(ref, "checkout-api");
+  }
+  // The remaining catalog alerts, so every registered alert has one Incident.
+  seedAlertIncident("K8sIncidentDeploymentReplicasUnavailable", "billing-api");
+  seedAlertIncident("K8sIncidentLivenessProbeRestart", "gateway-api");
+  for (const [demoTarget, panelsDemo] of [
+    ["panel-states-demo", "states"],
+    ["panel-list-unavailable", "list_unavailable"],
+    ["panel-list-empty", "list_empty"],
+  ] as const) {
+    const record = createIncident("diagnosed");
+    record.panelsDemo = panelsDemo;
+    record.detail.incident.source = {
+      type: "alertmanager",
+      ref: "K8sIncidentImagePullBackOff",
+      revision: "showcase-v1",
+    };
+    const text = CATALOG_ALERT_TEXT.K8sIncidentImagePullBackOff!;
+    record.detail.incident.displayName = text.displayName;
+    record.detail.incident.triggerSummary = text.triggerSummary;
+    record.detail.incident.target = {
+      ...record.detail.incident.target,
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      // The target name is how the walkthrough tells these demo cards apart.
+      name: demoTarget,
+    };
+    record.detail.alertSignal = { status: "FIRING", startsAt: ALERT_STARTS_AT, endsAt: null };
+    for (const event of record.events) {
+      applyEvent(record, event);
+    }
+    incidents.set(record.detail.incident.id, record);
+  }
+  healthOverride = {
+    state: "degraded",
+    checkedAt: TERMINAL_AT,
+    prometheus: "healthy",
+    kubeStateMetrics: "degraded",
+    ruleEvaluation: "degraded",
+    alertmanager: "healthy",
+    notification: "healthy",
+    watchdogLastReceivedAt: TOOL_AT,
+    healthAlerts: [
+      {
+        alertId: "K8sIncidentMonitoringTargetDown",
+        displayName: "监控采集目标不可用",
+        component: "collection",
+        activeSince: "2026-08-29T01:52:00Z",
+      },
+      {
+        alertId: "K8sIncidentKubeletTargetsMissing",
+        displayName: "kubelet 采集目标缺失",
+        component: "collection",
+        activeSince: "2026-08-29T01:55:00Z",
+      },
+      {
+        alertId: "K8sIncidentRuleEvaluationFailing",
+        displayName: "告警规则求值失败",
+        component: "rules",
+        activeSince: "2026-08-29T01:58:00Z",
+      },
+    ],
+  };
+  return incidents.size;
 }
 
 function serializeEvent(event: RunEventStreamItem): string {
@@ -966,24 +1057,57 @@ function metricMarkers(record: FakeIncident) {
 
 const CONTEXT_PANELS = [
   { panelId: "container-cpu-cores", title: "容器 CPU 用量与限额", unit: "cores", seriesBinding: "pod_container", riskDirection: "neutral",
-    purpose: "每个容器每个采样区间（至少 2 分钟）的平均 CPU 核数（usage）与 limit；无 limit 序列即未配置。每个容器 2 条序列，最多展示 4 个容器，超出为部分数据。" },
+    purpose: "每个容器在每个采样区间（至少 2 分钟）的平均 CPU 核数，usage 是用量、limit 是上限。没有 limit 线表示该容器未配置上限。最多展示 4 个容器，更多时标为部分数据。" },
   { panelId: "container-memory-working-set-bytes", title: "容器内存工作集与限额", unit: "bytes", seriesBinding: "pod_container", riskDirection: "neutral",
-    purpose: "每个容器的内存工作集（usage）与 limit；接近 limit 是压力而非已 OOM，无 limit 序列即未配置。每个容器 2 条序列，最多展示 4 个容器，超出为部分数据。" },
+    purpose: "每个容器的内存工作集，usage 是用量、limit 是上限。贴近上限说明压力大，但不等于已经发生 OOM。没有 limit 线表示该容器未配置上限。最多展示 4 个容器，更多时标为部分数据。" },
   { panelId: "container-cpu-throttled-ratio", title: "容器 CPU 限流周期比例", unit: "ratio", seriesBinding: "pod_container", riskDirection: "neutral",
-    purpose: "每个容器每个采样区间（至少 2 分钟）被 CFS 限流的调度周期占比，不是耗时比例；无序列表示未配置 CPU limit，不能当作 0。" },
+    purpose: "每个容器在每个采样区间（至少 2 分钟）内，被 CFS 限流的调度周期占全部周期的比例，不是耗时比例。没有数据表示该容器未配置 CPU 上限，不能当作 0。" },
   { panelId: "container-probe-failures", title: "容器探针失败次数", unit: "probes", seriesBinding: "pod_container", riskDirection: "neutral",
-    purpose: "每个容器每个采样区间（至少 5 分钟）非成功的探针次数，按探针类型拆分；启动期失败可能正常。" },
+    purpose: "每个容器在每个采样区间（至少 5 分钟）内探针失败的次数，按探针类型分开。容器刚启动时的失败往往是正常现象。" },
   { panelId: "container-last-terminated-reason", title: "容器最近一次终止原因", unit: "containers", seriesBinding: "pod_container", riskDirection: "neutral",
-    purpose: "每个容器最近一次终止原因的快照（1 = 当时的最近原因），不是终止事件记录。" },
+    purpose: "每条色条表示在该时段内，这个容器最近一次终止的原因就是色条标注的那一项。色条起点是这次终止被记录的时刻，终点表示被更近一次终止取代；没有色条表示当时不是该原因，也可能这个容器从未终止过。" },
   { panelId: "pod-unschedulable", title: "未调度 Pod", unit: "pods", seriesBinding: "pod", riskDirection: "higher_is_worse",
-    purpose: "每个 Pod 是否被调度器判为无法调度（1 = 是），不是节点容量审计。" },
+    purpose: "只有尚未被调度的 Pod 才会出现在这里；出现即表示该时刻这个 Pod 仍未被调度，通常是调度器判定无法调度，也包括 scheduling gate 等待。它不是节点容量审计。" },
 ] as const;
 
 const CONTEXT_POINTS = 60;
 const POD_A = { pod: "checkout-7c9d8f6b5-x2k4p", uid: "0f6c1e52-8a41-4a0e-9d3b-5b1f7a2c9e10" };
 const POD_B = { pod: "checkout-7c9d8f6b5-m8q7z", uid: "9b2d4f80-3c17-4e6a-b5a2-1d8e6f4c7a21" };
 
-function contextSeries(panelId: string, start: number, end: number) {
+/**
+ * Context values belong to the Incident's own target, and only its own signal is
+ * extreme: every other rule's condition stays clearly unmet, the way a real
+ * cluster would look when just one alert is firing.
+ */
+function contextProfile(record: FakeIncident) {
+  const deployment = record.detail.incident.target.name;
+  const ref = record.detail.incident.source.ref;
+  const terminated =
+    ref === "K8sIncidentContainerOOMKilled"
+      ? "OOMKilled"
+      : ref === "K8sIncidentContainerAbnormalExit" ||
+          ref === "K8sIncidentCrashLoopBackOff" ||
+          ref === "K8sIncidentLivenessProbeRestart"
+        ? "Error"
+        : null;
+  return {
+    podA: { pod: `${deployment}-7c9d8f6b5-x2k4p`, uid: POD_A.uid },
+    podB: { pod: `${deployment}-7c9d8f6b5-m8q7z`, uid: POD_B.uid },
+    memoryPeakMiB: ref === "K8sIncidentContainerMemoryNearLimit" ? 246 : 150,
+    throttlePeak: ref === "K8sIncidentContainerCPUThrottled" ? 0.85 : 0.08,
+    probePeak: ref === "K8sIncidentContainerProbeFailing" ? 12 : 2,
+    unschedulable: ref === "K8sIncidentPodUnschedulable",
+    terminated,
+  };
+}
+
+function contextSeries(
+  panelId: string,
+  start: number,
+  end: number,
+  record: FakeIncident,
+) {
+  const profile = contextProfile(record);
   const at = (index: number) => start + ((end - start) * index) / CONTEXT_POINTS;
   const line = (labels: Record<string, string>, value: (progress: number) => number, from = 0) => ({
     labels,
@@ -992,9 +1116,9 @@ function contextSeries(panelId: string, start: number, end: number) {
       return { timestamp: new Date(at(index)).toISOString(), value: Number(value(index / CONTEXT_POINTS).toFixed(4)) };
     }),
   });
-  const app = { ...POD_A, container: "app" };
-  const appB = { ...POD_B, container: "app" };
-  const sidecar = { ...POD_A, container: "sidecar" };
+  const app = { ...profile.podA, container: "app" };
+  const appB = { ...profile.podB, container: "app" };
+  const sidecar = { ...profile.podA, container: "sidecar" };
   const wave = (progress: number) => Math.sin(progress * Math.PI * 6) * 0.04;
   if (panelId === "container-cpu-cores") {
     return [
@@ -1007,8 +1131,9 @@ function contextSeries(panelId: string, start: number, end: number) {
   }
   if (panelId === "container-memory-working-set-bytes") {
     const MiB = 1024 * 1024;
+    const peak = profile.memoryPeakMiB;
     return [
-      line({ ...app, series: "usage" }, (t) => Math.round((96 + t * 150) * MiB)),
+      line({ ...app, series: "usage" }, (t) => Math.round((96 + t * (peak - 96)) * MiB)),
       line({ ...app, series: "limit" }, () => 256 * MiB),
       line({ ...appB, series: "usage" }, (t) => Math.round((90 + t * 20 + wave(t) * 100) * MiB)),
       line({ ...appB, series: "limit" }, () => 256 * MiB),
@@ -1016,77 +1141,294 @@ function contextSeries(panelId: string, start: number, end: number) {
     ];
   }
   if (panelId === "container-cpu-throttled-ratio") {
+    const peak = profile.throttlePeak;
     return [
-      line({ ...app, series: "throttled_ratio" }, (t) => Math.max(0, Math.min(0.85, (t - 0.35) * 1.4))),
+      line({ ...app, series: "throttled_ratio" }, (t) => Math.max(0, Math.min(peak, (t - 0.35) * 1.4 * (peak / 0.85)))),
       line({ ...appB, series: "throttled_ratio" }, (t) => Math.max(0, wave(t))),
     ];
   }
   if (panelId === "container-probe-failures") {
+    const peak = profile.probePeak;
     return [
-      line({ ...app, series: "Readiness" }, (t) => (t > 0.5 ? Math.round((t - 0.5) * 24) : 0)),
-      line({ ...app, series: "Liveness" }, (t) => (t > 0.75 ? Math.round((t - 0.75) * 12) : 0)),
+      line({ ...app, series: "Readiness" }, (t) => (t > 0.5 ? Math.round((t - 0.5) * 2 * peak) : 0)),
+      line({ ...app, series: "Liveness" }, (t) => (t > 0.75 ? Math.round((t - 0.75) * peak) : 0)),
       line({ ...appB, series: "Readiness" }, () => 0),
     ];
   }
   if (panelId === "container-last-terminated-reason") {
-    return [
-      line({ ...app, series: "Error" }, (t) => (t < 0.7 ? 1 : 0), 10),
-      line({ ...app, series: "OOMKilled" }, () => 1, Math.round(CONTEXT_POINTS * 0.7)),
-      line({ ...appB, series: "Completed" }, () => 1, 25),
-    ];
+    // kube-state-metrics only reports containers that have already terminated.
+    return profile.terminated === null
+      ? [line({ ...appB, series: "Completed" }, () => 1, 25)]
+      : [
+          line({ ...app, series: "Error" }, (t) => (t < 0.7 ? 1 : 0), 10),
+          line({ ...app, series: profile.terminated }, () => 1, Math.round(CONTEXT_POINTS * 0.7)),
+          line({ ...appB, series: "Completed" }, () => 1, 25),
+        ];
   }
-  return [
-    line({ ...POD_A }, () => 0),
-    line({ ...POD_B }, (t) => (t > 0.6 ? 1 : 0)),
-  ];
+  // Only unschedulable Pods carry this series at all.
+  return profile.unschedulable
+    ? [line({ ...profile.podB }, (t) => (t > 0.3 ? 1 : 0))]
+    : [];
+}
+
+/** Display text of each alert, copied from monitoring/catalog/catalog.json. */
+const CATALOG_ALERT_TEXT: Record<string, { displayName: string; triggerSummary: string }> = {
+  K8sIncidentImagePullBackOff: { displayName: "Image pull failure", triggerSummary: "A Deployment cannot pull its configured container image." },
+  K8sIncidentCrashLoopBackOff: { displayName: "Container restart loop", triggerSummary: "A Deployment container repeatedly exits and is waiting in CrashLoopBackOff." },
+  K8sIncidentDeploymentReplicasUnavailable: { displayName: "Deployment replica availability degraded", triggerSummary: "A Deployment has fewer available replicas than desired." },
+  K8sIncidentServiceEndpointsUnavailable: { displayName: "Service has no ready endpoints", triggerSummary: "A monitored selector-based Service has candidate Pods but no ready EndpointSlice endpoints." },
+  K8sIncidentReadinessProbeFailure: { displayName: "Readiness probe unavailable", triggerSummary: "A monitored Deployment container remains running but is not ready." },
+  K8sIncidentLivenessProbeRestart: { displayName: "Liveness probe restart", triggerSummary: "A Deployment container selected for liveness monitoring restarted." },
+  K8sIncidentContainerOOMKilled: { displayName: "Recent container OOM kill", triggerSummary: "A Deployment container was terminated with OOMKilled in the last 10 minutes." },
+  K8sIncidentContainerAbnormalExit: { displayName: "Container abnormal exit", triggerSummary: "A Deployment container restarted after a non-zero or abnormal termination." },
+  K8sIncidentContainerMemoryNearLimit: { displayName: "Container memory near limit", triggerSummary: "A Deployment container's memory working set stays above 90% of its memory limit." },
+  K8sIncidentContainerCPUThrottled: { displayName: "Container CPU throttled", triggerSummary: "A Deployment container spends more than 25% of its CFS periods throttled." },
+  K8sIncidentContainerProbeFailing: { displayName: "Container probe failing", triggerSummary: "A started Deployment container keeps failing its probes outside the controlled readiness and liveness rules." },
+  K8sIncidentPodUnschedulable: { displayName: "Pod unschedulable", triggerSummary: "A Deployment Pod stays unscheduled (PodScheduled=False)." },
+  K8sIncidentPersistentVolumeClaimPending: { displayName: "PersistentVolumeClaim pending", triggerSummary: "An explicitly monitored PersistentVolumeClaim has remained Pending beyond its immediate-binding policy." },
+};
+
+/** Panel sets of the catalog's own alerts, copied from monitoring/catalog. */
+const CATALOG_PANEL_SETS: Record<string, { kind: string; panels: Array<Record<string, unknown>> }> = {
+  K8sIncidentImagePullBackOff: {
+    kind: "Deployment",
+    panels: [
+      { panelId: "image-pull-affected-pods", title: "镜像拉取失败 Pod", unit: "pods", purpose: "因镜像拉取失败而等待的 Pod 数，衡量影响范围，不说明失败原因。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "higher_is_worse", signalRole: "trigger", thresholdDuration: "30s" },
+      { panelId: "image-pull-available-replicas", title: "Deployment 可用副本", unit: "replicas", purpose: "当前可用副本数，与期望副本对照看容量缺口。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "lower_is_worse", signalRole: "context", thresholdDuration: "5m" },
+    ],
+  },
+  K8sIncidentCrashLoopBackOff: {
+    kind: "Deployment",
+    panels: [
+      { panelId: "crash-loop-restarts", title: "Container restarts", unit: "restarts", purpose: "容器累计重启次数（counter），看窗口内的增长而非绝对值。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "higher_is_worse", signalRole: "context", thresholdDuration: null },
+      { panelId: "crash-loop-waiting-containers", title: "CrashLoopBackOff containers", unit: "containers", purpose: "处于 CrashLoopBackOff 的容器数，衡量反复退出的规模，不说明退出原因。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "higher_is_worse", signalRole: "trigger", thresholdDuration: "30s" },
+    ],
+  },
+  K8sIncidentDeploymentReplicasUnavailable: {
+    kind: "Deployment",
+    panels: [
+      { panelId: "deployment-replica-deficit", title: "Deployment 副本缺口", unit: "replicas", purpose: "期望副本减可用副本（不小于 0），大于 0 表示缺口仍在。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "higher_is_worse", signalRole: "trigger", thresholdDuration: "5m" },
+    ],
+  },
+  K8sIncidentServiceEndpointsUnavailable: {
+    kind: "Service",
+    panels: [
+      { panelId: "service-ready-endpoints", title: "Service 就绪 Endpoint", unit: "endpoints", purpose: "就绪 Endpoint 数；0 表示没有后端可接流量，不证明网络连通性。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "lower_is_worse", signalRole: "trigger", thresholdDuration: "30s" },
+    ],
+  },
+  K8sIncidentReadinessProbeFailure: {
+    kind: "Deployment",
+    panels: [
+      { panelId: "readiness-probe-unready-containers", title: "Readiness 未就绪容器", unit: "containers", purpose: "受控容器中 Running 但未 Ready 的数量，不说明应用原因。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "higher_is_worse", signalRole: "trigger", thresholdDuration: "2m" },
+    ],
+  },
+  K8sIncidentLivenessProbeRestart: {
+    kind: "Deployment",
+    panels: [
+      { panelId: "liveness-probe-restarts", title: "Liveness 重启估算", unit: "restarts", purpose: "受控 liveness 容器每个采样区间（至少 5 分钟）的重启增量估算；重启不证明 liveness 失败。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "higher_is_worse", signalRole: "trigger", thresholdDuration: "30s" },
+    ],
+  },
+  K8sIncidentPersistentVolumeClaimPending: {
+    kind: "PersistentVolumeClaim",
+    panels: [
+      { panelId: "pvc-pending-state", title: "PVC Pending 状态", unit: "claims", purpose: "PVC 是否 Pending（1 = 是），不说明存储后端原因。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "higher_is_worse", signalRole: "trigger", thresholdDuration: "5m" },
+      { panelId: "pvc-pending-age-seconds", title: "PVC Pending 时长", unit: "seconds", purpose: "PVC 持续 Pending 的秒数，仅 Pending 时有值。", seriesBinding: "target", recommendedWindow: "15m", riskDirection: "higher_is_worse", signalRole: "context", thresholdDuration: null },
+    ],
+  },
+};
+
+/** Healthy and failing values for each catalog panel in the fake data. */
+const PANEL_VALUES: Record<string, { healthy: number; failing: number }> = {
+  "image-pull-affected-pods": { healthy: 0, failing: 3 },
+  "image-pull-available-replicas": { healthy: 3, failing: 0 },
+  "crash-loop-waiting-containers": { healthy: 0, failing: 2 },
+  "crash-loop-restarts": { healthy: 0, failing: 5 },
+  "deployment-replica-deficit": { healthy: 0, failing: 2 },
+  "service-ready-endpoints": { healthy: 2, failing: 0 },
+  "readiness-probe-unready-containers": { healthy: 0, failing: 2 },
+  "liveness-probe-restarts": { healthy: 0, failing: 2 },
+  "pvc-pending-state": { healthy: 0, failing: 1 },
+  "pvc-pending-age-seconds": { healthy: 0, failing: 900 },
+};
+
+/** Walkthrough-only panels, one per state the card can render. */
+const DEMO_PANELS = [
+  ["demo-ok", "状态示例 · 正常", "有样本且新鲜，正常画图。"],
+  ["demo-stale", "状态示例 · 数据陈旧", "最后样本早于窗口终点，画图并提示不能代表该时刻。"],
+  ["demo-partial", "状态示例 · 部分数据", "上游只返回了部分结果，画图并提示只展示可验证样本。"],
+  ["demo-no-data", "状态示例 · 暂无数据", "窗口内没有可验证样本；这不等于指标值为 0。"],
+  ["demo-query-error", "状态示例 · 查询失败", "查询失败，卡片显示指标数据暂不可用。"],
+  ["demo-unavailable", "状态示例 · 监控不可用", "监控链路不可用，卡片显示指标数据暂不可用。"],
+  ["demo-missing", "状态示例 · 面板读取失败", "后端返回 404，前端没有拿到合法响应。"],
+  ["demo-slow", "状态示例 · 加载中", "响应延迟，保持骨架屏以便观察加载态。"],
+] as const;
+
+function demoPanelReferences() {
+  return DEMO_PANELS.map(([panelId, title, purpose]) => ({
+    panelId,
+    title,
+    unit: "pods",
+    purpose,
+    seriesBinding: "target",
+    recommendedWindow: "15m",
+    riskDirection: "higher_is_worse",
+    signalRole: panelId === "demo-ok" ? "trigger" : "context",
+    thresholdDuration: panelId === "demo-ok" ? "30s" : null,
+  }));
+}
+
+function demoPanel(record: FakeIncident, panelId: string, window: string, anchor: string) {
+  const [, title, purpose] = DEMO_PANELS.find(([id]) => id === panelId)!;
+  const queriedAt = Date.parse(TERMINAL_AT);
+  const rangeStart = queriedAt - metricWindowMilliseconds(window);
+  const staleEnd = queriedAt - 6 * 60_000;
+  const end = panelId === "demo-stale" ? staleEnd : queriedAt;
+  const samples = Array.from({ length: 6 }, (_, index) => ({
+    timestamp: new Date(rangeStart + ((end - rangeStart) * index) / 5).toISOString(),
+    value: index < 2 ? 0 : index < 4 ? 1 : 3,
+  }));
+  const empty =
+    panelId === "demo-no-data" ||
+    panelId === "demo-query-error" ||
+    panelId === "demo-unavailable";
+  const state =
+    panelId === "demo-stale"
+      ? "stale"
+      : panelId === "demo-partial"
+        ? "partial"
+        : panelId === "demo-no-data"
+          ? "no_data"
+          : panelId === "demo-query-error"
+            ? "query_error"
+            : panelId === "demo-unavailable"
+              ? "monitoring_unavailable"
+              : "ok";
+  return {
+    schemaVersion: 2,
+    result: {
+      panelId,
+      title,
+      unit: "pods",
+      purpose,
+      threshold: 1,
+      riskDirection: "higher_is_worse",
+      seriesBinding: "target",
+      window,
+      anchor,
+      state,
+      queriedAt: new Date(queriedAt).toISOString(),
+      rangeStart: new Date(rangeStart).toISOString(),
+      rangeEnd: new Date(queriedAt).toISOString(),
+      latestSampleAt: empty ? null : new Date(end).toISOString(),
+      currentValue: empty ? null : 3,
+      series: empty ? [] : [{ labels: {}, samples }],
+    },
+    markers: metricMarkers(record).filter(
+      (marker) => Date.parse(marker.occurredAt) >= rangeStart && Date.parse(marker.occurredAt) <= queriedAt,
+    ),
+    markersTruncated: false,
+  };
+}
+
+/** Trigger panels of the DC-4A discovery alerts, copied from the catalog. */
+const DISCOVERY_PANELS = {
+  K8sIncidentContainerOOMKilled: {
+    panelId: "oom-killed-containers",
+    title: "OOM 终止容器数",
+    unit: "containers",
+    purpose:
+      "每个采样区间（至少 10 分钟）内最近一次终止原因为 OOMKilled 的容器数；按同一 Pod UID 与容器判定，不说明内存为何耗尽。",
+    thresholdDuration: "15s",
+  },
+  K8sIncidentContainerAbnormalExit: {
+    panelId: "abnormal-exit-containers",
+    title: "异常退出容器数",
+    unit: "containers",
+    purpose:
+      "每个采样区间（至少 10 分钟）内发生重启、且最近一次终止原因不是 Completed 或 OOMKilled 的容器数；正常退出不计入。",
+    thresholdDuration: "1m",
+  },
+  K8sIncidentContainerMemoryNearLimit: {
+    panelId: "memory-near-limit-containers",
+    title: "内存逼近 limit 的容器数",
+    unit: "containers",
+    purpose:
+      "内存工作集超过有效 memory limit 90% 的容器数；未配置 limit 的容器不参与，没有 kubelet 数据时无样本。表示有压力，不代表已 OOM。",
+    thresholdDuration: "5m",
+  },
+  K8sIncidentContainerCPUThrottled: {
+    panelId: "cpu-throttled-containers",
+    title: "CPU 持续限流的容器数",
+    unit: "containers",
+    purpose:
+      "每个采样区间（至少 5 分钟）内被 CFS 限流周期超过 25% 的容器数；没有 CPU limit 或没有调度周期的容器不参与。",
+    thresholdDuration: "10m",
+  },
+  K8sIncidentContainerProbeFailing: {
+    panelId: "probe-failing-containers",
+    title: "探针持续失败的容器数",
+    unit: "containers",
+    purpose:
+      "每个采样区间（至少 5 分钟）内探针失败不少于 3 次、且已启动超过 5 分钟的容器数；受控 readiness / liveness 容器由各自规则负责，不在此计入。",
+    thresholdDuration: "2m",
+  },
+  K8sIncidentPodUnschedulable: {
+    panelId: "unschedulable-pods",
+    title: "无法调度的 Pod 数",
+    unit: "pods",
+    purpose:
+      "尚未被调度的 Pod 数量，通常是调度器判定无法调度，也包括 scheduling gate 等待；它不是节点容量审计。",
+    thresholdDuration: "2m",
+  },
+} as const;
+
+type DiscoveryRef = keyof typeof DISCOVERY_PANELS;
+
+function discoveryPanelFor(record: FakeIncident) {
+  const ref = record.detail.incident.source.ref as DiscoveryRef;
+  return DISCOVERY_PANELS[ref];
+}
+
+function deploymentContextPanels() {
+  return CONTEXT_PANELS.map((panel) => ({
+    ...panel,
+    recommendedWindow: "15m",
+    signalRole: "context",
+    thresholdDuration: null,
+  }));
 }
 
 function metricPanelReferences(record: FakeIncident) {
-  return record.detail.incident.source.ref ===
-    "K8sIncidentServiceEndpointsUnavailable"
-    ? [
-        {
-          panelId: "service-ready-endpoints",
-          title: "Service 就绪 Endpoint",
-          unit: "endpoints",
-          purpose: "就绪 Endpoint 数；0 表示没有后端可接流量，不证明网络连通性。",
-          seriesBinding: "target",
-          recommendedWindow: "15m",
-          riskDirection: "lower_is_worse",
-          signalRole: "trigger",
-          thresholdDuration: "30s",
-        },
-      ]
-    : [
-        {
-          panelId: "image-pull-affected-pods",
-          title: "镜像拉取失败 Pod",
-          unit: "pods",
-          purpose: "因镜像拉取失败而等待的 Pod 数，衡量影响范围，不说明失败原因。",
-          seriesBinding: "target",
-          recommendedWindow: "15m",
-          riskDirection: "higher_is_worse",
-          signalRole: "trigger",
-          thresholdDuration: "30s",
-        },
-        {
-          panelId: "image-pull-available-replicas",
-          title: "Deployment 可用副本",
-          unit: "replicas",
-          purpose: "当前可用副本数，与期望副本对照看容量缺口。",
-          seriesBinding: "target",
-          recommendedWindow: "15m",
-          riskDirection: "lower_is_worse",
-          signalRole: "context",
-          thresholdDuration: "5m",
-        },
-        ...CONTEXT_PANELS.map((panel) => ({
-          ...panel,
-          recommendedWindow: "15m",
-          signalRole: "context",
-          thresholdDuration: null,
-        })),
-      ];
+  if (record.panelsDemo === "states") {
+    return demoPanelReferences();
+  }
+  if (record.panelsDemo === "list_empty") {
+    return [];
+  }
+  const discovery = discoveryPanelFor(record);
+  if (discovery !== undefined) {
+    return [
+      {
+        panelId: discovery.panelId,
+        title: discovery.title,
+        unit: discovery.unit,
+        purpose: discovery.purpose,
+        seriesBinding: "target",
+        recommendedWindow: "15m",
+        riskDirection: "higher_is_worse",
+        signalRole: "trigger",
+        thresholdDuration: discovery.thresholdDuration,
+      },
+      ...deploymentContextPanels(),
+    ];
+  }
+  // Scenario-sourced fixtures carry a scenario ref, and they all model image pull.
+  const entry =
+    CATALOG_PANEL_SETS[record.detail.incident.source.ref] ??
+    CATALOG_PANEL_SETS.K8sIncidentImagePullBackOff!;
+  return entry.kind === "Deployment"
+    ? [...entry.panels, ...deploymentContextPanels()]
+    : entry.panels;
 }
 
 function metricWindowMilliseconds(window: string): number {
@@ -1111,8 +1453,10 @@ function metricPanel(
   window: string,
   anchor: string,
 ) {
-  const serviceEndpoints = panelId === "service-ready-endpoints";
-  const affectedPods = panelId === "image-pull-affected-pods";
+  const reference = Object.values(CATALOG_PANEL_SETS)
+    .flatMap((entry) => entry.panels)
+    .find((panel) => panel.panelId === panelId);
+  const values = PANEL_VALUES[panelId] ?? { healthy: 0, failing: 3 };
   const alertResolved = record.detail.alertSignal?.status === "RESOLVED";
   const recovered = alertResolved || record.detail.verification?.outcome === "recovered";
   const observing = record.detail.verification?.outcome === "observing";
@@ -1125,12 +1469,19 @@ function metricPanel(
     ...markers.map((marker) => Date.parse(marker.occurredAt)));
   const queriedAtTimestamp = new Date(queriedAt).toISOString();
   const windowStartsAt = queriedAt - windowDuration;
-  const healthyValue = affectedPods ? 0 : serviceEndpoints ? 2 : 3;
-  const failingValue = affectedPods
-    ? affectedPodCount
-    : serviceEndpoints
-      ? readyEndpoints
-      : availableReplicas;
+  const healthyValue = values.healthy;
+  // Recovery fixtures move the panel back towards its healthy value.
+  const progress = recovered ? 0 : observing ? 0.5 : 1;
+  const failingValue =
+    panelId === "image-pull-affected-pods"
+      ? affectedPodCount
+      : panelId === "image-pull-available-replicas"
+        ? availableReplicas
+        : panelId === "service-ready-endpoints"
+          ? readyEndpoints
+          : Math.round(
+              values.healthy + (values.failing - values.healthy) * progress,
+            );
   const alertSignal = record.detail.alertSignal;
   const samplesByTimestamp = new Map<number, number>();
   const addSample = (timestamp: number, value: number) => {
@@ -1143,10 +1494,10 @@ function metricPanel(
   if (alertSignal === null) {
     const incidentCreatedAt = Date.parse(record.detail.incident.createdAt);
     addSample(incidentCreatedAt - 15_000, healthyValue);
-    addSample(incidentCreatedAt, affectedPods ? 3 : 0);
+    addSample(incidentCreatedAt, values.failing);
     const verification = record.detail.verification;
     if (verification) {
-      addSample(Date.parse(verification.startedAt), affectedPods ? 3 : 0);
+      addSample(Date.parse(verification.startedAt), values.failing);
       addSample(Date.parse(verification.healthySince ?? verification.lastObservedAt ?? verification.startedAt), failingValue);
     }
   } else {
@@ -1154,16 +1505,12 @@ function metricPanel(
     const firingAt = Date.parse(alertSignal.startsAt);
     addSample(pendingAt - 5 * 60_000, healthyValue);
     addSample(pendingAt - 15_000, healthyValue);
-    addSample(
-      pendingAt,
-      affectedPods ? 1 : 2,
-    );
-    addSample(
-      pendingAt + 15_000,
-      affectedPods ? 2 : 1,
-    );
-    addSample(firingAt, affectedPods ? 3 : 0);
-    addSample(Date.parse(TERMINAL_AT), affectedPods ? 3 : 0);
+    const step = (fraction: number) =>
+      Math.round(healthyValue + (values.failing - healthyValue) * fraction);
+    addSample(pendingAt, step(1 / 3));
+    addSample(pendingAt + 15_000, step(2 / 3));
+    addSample(firingAt, values.failing);
+    addSample(Date.parse(TERMINAL_AT), values.failing);
     if (alertResolved) {
       addSample(Date.parse(ALERT_ENDS_AT), healthyValue);
     }
@@ -1177,8 +1524,59 @@ function metricPanel(
     }));
 
   const unavailable = record.metricState === "monitoring_unavailable";
+  const discovery = discoveryPanelFor(record);
+  if (discovery !== undefined && discovery.panelId === panelId) {
+    return {
+      schemaVersion: 2,
+      result: {
+        panelId,
+        title: discovery.title,
+        unit: discovery.unit,
+        purpose: discovery.purpose,
+        threshold: 1,
+        riskDirection: "higher_is_worse",
+        seriesBinding: "target",
+        window,
+        anchor,
+        state: record.metricState,
+        queriedAt: queriedAtTimestamp,
+        rangeStart: new Date(windowStartsAt).toISOString(),
+        rangeEnd: queriedAtTimestamp,
+        latestSampleAt: unavailable ? null : queriedAtTimestamp,
+        currentValue: unavailable ? null : 2,
+        series: unavailable
+          ? []
+          : [
+              {
+                labels: {},
+                samples: samples.map((sample, index) => ({
+                  ...sample,
+                  value: index < 2 ? 0 : index < 4 ? 1 : 2,
+                })),
+              },
+            ],
+      },
+      markers: markers
+        .filter(
+          (marker) =>
+            Date.parse(marker.occurredAt) >= windowStartsAt &&
+            Date.parse(marker.occurredAt) <= queriedAt,
+        )
+        .sort(
+          (left, right) =>
+            Date.parse(left.occurredAt) - Date.parse(right.occurredAt),
+        ),
+      markersTruncated: false,
+    };
+  }
   const contextPanel = CONTEXT_PANELS.find((panel) => panel.panelId === panelId);
   if (contextPanel !== undefined) {
+    const contextValues = unavailable
+      ? []
+      : contextSeries(panelId, windowStartsAt, queriedAt, record);
+    // A panel whose producer emits nothing is no_data, never an empty ok result.
+    const contextState =
+      contextValues.length === 0 && !unavailable ? "no_data" : record.metricState;
     return {
       schemaVersion: 2,
       result: {
@@ -1191,13 +1589,13 @@ function metricPanel(
         seriesBinding: contextPanel.seriesBinding,
         window,
         anchor,
-        state: record.metricState,
+        state: contextState,
         queriedAt: queriedAtTimestamp,
         rangeStart: new Date(windowStartsAt).toISOString(),
         rangeEnd: queriedAtTimestamp,
-        latestSampleAt: unavailable ? null : queriedAtTimestamp,
+        latestSampleAt: contextValues.length === 0 ? null : queriedAtTimestamp,
         currentValue: null,
-        series: unavailable ? [] : contextSeries(panelId, windowStartsAt, queriedAt),
+        series: contextValues,
       },
       markers: markers.filter((marker) => Date.parse(marker.occurredAt) >= windowStartsAt && Date.parse(marker.occurredAt) <= queriedAt)
         .sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt)),
@@ -1208,20 +1606,19 @@ function metricPanel(
     schemaVersion: 2,
     result: {
       panelId,
-      title:
-        affectedPods
-          ? "镜像拉取失败 Pod"
-          : serviceEndpoints
-            ? "Service 就绪 Endpoint"
-            : "Deployment 可用副本",
-      unit: affectedPods ? "pods" : serviceEndpoints ? "endpoints" : "replicas",
-      purpose: affectedPods
-        ? "因镜像拉取失败而等待的 Pod 数，衡量影响范围，不说明失败原因。"
-        : serviceEndpoints
-          ? "就绪 Endpoint 数；0 表示没有后端可接流量，不证明网络连通性。"
-          : "当前可用副本数，与期望副本对照看容量缺口。",
-      threshold: affectedPods || serviceEndpoints ? 1 : null,
-      riskDirection: affectedPods ? "higher_is_worse" : "lower_is_worse",
+      title: (reference?.title as string) ?? panelId,
+      unit: (reference?.unit as string) ?? "pods",
+      purpose:
+        (reference?.purpose as string) ??
+        "登记面板，随查询结果返回其读法与限定。",
+      threshold:
+        panelId === "pvc-pending-age-seconds"
+          ? 300
+          : reference?.riskDirection === "lower_is_worse" &&
+              panelId !== "service-ready-endpoints"
+            ? null
+            : 1,
+      riskDirection: (reference?.riskDirection as string) ?? "higher_is_worse",
       seriesBinding: "target",
       window,
       anchor,
@@ -1422,6 +1819,7 @@ async function handleRequest(
     nextIncident = 1;
     nextEventId = 1;
     showcaseEnabled = false;
+    healthOverride = null;
     operatorSessions.clear();
     accessMode = "private";
     incidents.clear();
@@ -1438,6 +1836,11 @@ async function handleRequest(
     if (body.mode === "private" || body.mode === "public_demo") accessMode = body.mode;
     if (body.expireOperator) for (const session of operatorSessions.values()) session.expiresAt = 0;
     json(response, 200, { ok: true }); return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/__test__/discovery") {
+    json(response, 200, { ok: true, incidents: seedDiscoveryShowcase() });
+    return;
   }
 
   if (request.method === "POST" && url.pathname === "/__test__/showcase") {
@@ -1627,6 +2030,10 @@ async function handleRequest(
   }
 
   if (request.method === "GET" && url.pathname === "/api/v1/monitoring/health") {
+    if (healthOverride !== null) {
+      json(response, 200, healthOverride);
+      return;
+    }
     json(response, 200, {
       state: "healthy",
       checkedAt: TERMINAL_AT,
@@ -1636,6 +2043,7 @@ async function handleRequest(
       alertmanager: "healthy",
       notification: "healthy",
       watchdogLastReceivedAt: TOOL_AT,
+      healthAlerts: [],
     });
     return;
   }
@@ -1695,6 +2103,10 @@ async function handleRequest(
       runtimeError(response, 404, "incident_not_found", "Incident was not found.", false);
       return;
     }
+    if (record.panelsDemo === "list_unavailable") {
+      runtimeError(response, 502, "monitoring_unavailable", "Monitoring is unavailable.", true);
+      return;
+    }
     json(response, 200, {
       schemaVersion: 4,
       panels: metricPanelReferences(record),
@@ -1739,6 +2151,21 @@ async function handleRequest(
     const anchor = url.searchParams.get("anchor") ?? "current";
     if (anchor !== "current" && anchor !== "run" && anchor !== "occurrence") {
       runtimeError(response, 422, "invalid_request", "Request is invalid.", false);
+      return;
+    }
+    if (record.panelsDemo === "states") {
+      const panelId = panelMatch[2]!;
+      if (panelId === "demo-missing") {
+        runtimeError(response, 404, "monitoring_panel_not_found", "Monitoring panel was not found.", false);
+        return;
+      }
+      if (panelId === "demo-slow") {
+        setTimeout(() => {
+          json(response, 200, demoPanel(record, panelId, window, anchor));
+        }, 12_000);
+        return;
+      }
+      json(response, 200, demoPanel(record, panelId, window, anchor));
       return;
     }
     json(response, 200, metricPanel(record, panelMatch[2], window, anchor));

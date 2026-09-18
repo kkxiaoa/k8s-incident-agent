@@ -5,15 +5,67 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { LocalTimestamp } from "@/components/local-timestamp";
 import { UiIcon } from "@/components/ui/ui-icon";
+import { fetchIncidentsFromBrowser } from "@/lib/agent-runtime/browser-client";
 import type { IncidentListItem } from "@/lib/agent-runtime/view-models";
 import { incidentStatusLabel, targetLabel } from "@/lib/agent-runtime/view-models";
 
 import { IncidentStatusBadge } from "./incident-status";
 
-export function IncidentList({ incidents }: { incidents: IncidentListItem[] }) {
+export function IncidentList({
+  incidents,
+  nextCursor = null,
+}: {
+  incidents: IncidentListItem[];
+  /** Older records stay on the Runtime until the reader asks for them. */
+  nextCursor?: string | null;
+}) {
   const listRef = useRef<HTMLDivElement>(null);
+  const [loaded, setLoaded] = useState(incidents);
+  const [cursor, setCursor] = useState(nextCursor);
+  const [loadState, setLoadState] = useState<"idle" | "loading" | "failed">(
+    "idle",
+  );
+  const [families, setFamilies] = useState<string[]>([]);
+  const [statuses, setStatuses] = useState<string[]>([]);
+  const familyOptions = [...new Set(loaded.map((item) => item.displayName))].sort(
+    (left, right) => left.localeCompare(right, "zh-CN"),
+  );
+  const statusOptions = [...new Set(loaded.map((item) => item.status))];
+  const filtered = loaded.filter(
+    (item) =>
+      (families.length === 0 || families.includes(item.displayName)) &&
+      (statuses.length === 0 || statuses.includes(item.status)),
+  );
+  const toggle = (
+    values: string[],
+    setValues: (next: string[]) => void,
+    value: string,
+  ) =>
+    setValues(
+      values.includes(value)
+        ? values.filter((item) => item !== value)
+        : [...values, value],
+    );
+
+  async function loadOlder() {
+    if (cursor === null || loadState === "loading") {
+      return;
+    }
+    setLoadState("loading");
+    const result = await fetchIncidentsFromBrowser(cursor);
+    if (!result.ok) {
+      setLoadState("failed");
+      return;
+    }
+    setLoaded((current) => {
+      const known = new Set(current.map((item) => item.id));
+      return [...current, ...result.data.items.filter((item) => !known.has(item.id))];
+    });
+    setCursor(result.data.nextCursor);
+    setLoadState("idle");
+  }
   const [sort, setSort] = useState<{ key: "updatedAt" | "status"; direction: "ascending" | "descending" }>({ key: "updatedAt", direction: "descending" });
-  const sortedIncidents = [...incidents].sort((left, right) => {
+  const sortedIncidents = [...filtered].sort((left, right) => {
     const updated = Date.parse(left.updatedAt) - Date.parse(right.updatedAt);
     const primary = sort.key === "updatedAt" ? updated
       : incidentStatusLabel(left.status).localeCompare(incidentStatusLabel(right.status), "zh-CN");
@@ -50,9 +102,9 @@ export function IncidentList({ incidents }: { incidents: IncidentListItem[] }) {
     updateHiddenEdges();
     window.addEventListener("resize", updateHiddenEdges);
     return () => window.removeEventListener("resize", updateHiddenEdges);
-  }, [incidents.length, updateHiddenEdges]);
+  }, [sortedIncidents.length, updateHiddenEdges]);
 
-  if (incidents.length === 0) {
+  if (loaded.length === 0) {
     return (
       <div className="empty-state empty-state--panel">
         <p>还没有持久化的 Incident。</p>
@@ -63,6 +115,40 @@ export function IncidentList({ incidents }: { incidents: IncidentListItem[] }) {
 
   return (
     <>
+      <div className="incident-list-filter">
+        <div role="group" aria-label="按故障族过滤">
+          <span>故障族</span>
+          {familyOptions.map((family) => (
+            <button
+              key={family}
+              type="button"
+              className="incident-list-filter__chip"
+              aria-pressed={families.includes(family)}
+              onClick={() => toggle(families, setFamilies, family)}
+            >
+              {family}
+            </button>
+          ))}
+        </div>
+        <div role="group" aria-label="按状态过滤">
+          <span>状态</span>
+          {statusOptions.map((status) => (
+            <button
+              key={status}
+              type="button"
+              className="incident-list-filter__chip"
+              aria-pressed={statuses.includes(status)}
+              onClick={() => toggle(statuses, setStatuses, status)}
+            >
+              {incidentStatusLabel(status)}
+            </button>
+          ))}
+        </div>
+        <p className="incident-list-filter__summary" role="status">
+          {`已筛选 ${filtered.length} / 已加载 ${loaded.length}`}
+          {cursor === null ? "，已加载全部记录" : "，仍有更早记录未加载"}
+        </p>
+      </div>
       <div className="incident-list-sort" role="group" aria-label="Incident 排序">
         <span>当前列表排序</span>
         {([ ["updatedAt", "更新时间"], ["status", "状态"] ] as const).map(([key, label]) => (
@@ -140,6 +226,21 @@ export function IncidentList({ incidents }: { incidents: IncidentListItem[] }) {
         下方还有 Incident
       </span>
     </div>
+    {cursor === null ? null : (
+      <div className="incident-list-more">
+        <button
+          type="button"
+          className="incident-list-more__button"
+          onClick={() => void loadOlder()}
+          disabled={loadState === "loading"}
+        >
+          {loadState === "loading" ? "正在加载…" : "加载更早记录"}
+        </button>
+        {loadState === "failed" ? (
+          <span role="alert">暂时无法加载更早记录，请稍后重试。</span>
+        ) : null}
+      </div>
+    )}
     </>
   );
 }

@@ -1,0 +1,426 @@
+# promtool unit tests for the managed alert rules; scripts/alert-rules.test.mjs
+# renders the rules ConfigMap next to this file and runs the locked promtool.
+rule_files:
+  - alerts.yaml
+evaluation_interval: 15s
+tests:
+  # Recent OOM kill fires, then ages out after 10 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="OOMKilled"}'
+        values: '1x60'
+      - series: 'kube_pod_container_status_last_terminated_timestamp{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+      - eval_time: 11m
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts: []
+      - eval_time: 30s
+        alertname: K8sIncidentContainerAbnormalExit
+        exp_alerts: []
+
+  # A termination timestamp from a recreated Pod (other UID) does not make an old OOM recent.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u2",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x20'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x20'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="OOMKilled"}'
+        values: '1x20'
+      - series: 'kube_pod_container_status_last_terminated_timestamp{namespace="ns",pod="web-1",uid="u2",container="app"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts: []
+
+  # A later non-OOM termination replaces the OOM reason and resolves the alert.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="OOMKilled"}'
+        values: '1x4 stale'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="Completed"}'
+        values: '_x5 1x35'
+      - series: 'kube_pod_container_status_last_terminated_timestamp{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '0x4 75x36'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+      - eval_time: 2m
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts: []
+
+  # An active CrashLoopBackOff alert on the same Deployment suppresses OOM and abnormal-exit alerts.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_pod_container_status_waiting_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="CrashLoopBackOff"}'
+        values: '1x40'
+      - series: 'kube_pod_container_status_restarts_total{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '1+1x40'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="OOMKilled"}'
+        values: '1x40'
+      - series: 'kube_pod_container_status_last_terminated_timestamp{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '0+15x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: K8sIncidentCrashLoopBackOff
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+      - eval_time: 3m
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: K8sIncidentContainerAbnormalExit
+        exp_alerts: []
+
+  # Overlap is remembered for 10 minutes: a transient CrashLoopBackOff pending must not
+  # resolve and re-fire an OOM or abnormal-exit alert under a new start time.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="oom-1",uid="u1",owner_kind="ReplicaSet",owner_name="oom-rs",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="oom-rs",owner_kind="Deployment",owner_name="oom",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_pod_container_status_restarts_total{namespace="ns",pod="oom-1",uid="u1",container="app"}'
+        values: '1x40'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="oom-1",uid="u1",container="app",reason="OOMKilled"}'
+        values: '1x40'
+      - series: 'kube_pod_container_status_last_terminated_timestamp{namespace="ns",pod="oom-1",uid="u1",container="app"}'
+        values: '0x40'
+      - series: 'kube_pod_container_status_waiting_reason{namespace="ns",pod="oom-1",uid="u1",container="app",reason="CrashLoopBackOff"}'
+        values: '_ _ _ _ 1 1 stale'
+      - series: 'kube_pod_owner{namespace="ns",pod="err-1",uid="u2",owner_kind="ReplicaSet",owner_name="err-rs",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="err-rs",owner_kind="Deployment",owner_name="err",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_pod_container_status_restarts_total{namespace="ns",pod="err-1",uid="u2",container="app"}'
+        values: '0 1x39'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="err-1",uid="u2",container="app",reason="Error"}'
+        values: '_ 1x39'
+      - series: 'kube_pod_container_status_waiting_reason{namespace="ns",pod="err-1",uid="u2",container="app",reason="CrashLoopBackOff"}'
+        values: '_ _ _ _ _ _ _ _ 1 1 stale'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: oom, severity: warning}
+      - eval_time: 105s
+        alertname: K8sIncidentContainerAbnormalExit
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: err, severity: warning}
+      - eval_time: 4m
+        alertname: K8sIncidentCrashLoopBackOff
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: K8sIncidentContainerAbnormalExit
+        exp_alerts: []
+
+  # A resolved LivenessProbeRestart (5m window) does not hand the same restart to
+  # AbnormalExit (10m window).
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_pod_labels{namespace="ns",pod="web-1",uid="u1",label_k8s_incident_agent_io_liveness_container="app"}'
+        values: '1x60'
+      - series: 'kube_pod_container_status_restarts_total{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '0 1x59'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="Error"}'
+        values: '_ 1x59'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: K8sIncidentLivenessProbeRestart
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+      - eval_time: 6m30s
+        alertname: K8sIncidentLivenessProbeRestart
+        exp_alerts: []
+      - eval_time: 6m30s
+        alertname: K8sIncidentContainerAbnormalExit
+        exp_alerts: []
+
+  # After a crash loop ends and CrashLoopBackOff stops keeping itself firing, the same
+  # OOM episode does not open a second alert.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_pod_container_status_restarts_total{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '5x60'
+      - series: 'kube_pod_container_status_waiting_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="CrashLoopBackOff"}'
+        values: '1x8 stale'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="OOMKilled"}'
+        values: '1x60'
+      - series: 'kube_pod_container_status_last_terminated_timestamp{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: K8sIncidentCrashLoopBackOff
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+      - eval_time: 5m
+        alertname: K8sIncidentCrashLoopBackOff
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: K8sIncidentContainerOOMKilled
+        exp_alerts: []
+
+  # A non-zero exit that restarts the container fires after 1 minute; a clean exit does not.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_pod_container_status_restarts_total{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '0 0 1x58'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="web-1",uid="u1",container="app",reason="Error"}'
+        values: '_ _ 1x58'
+      - series: 'kube_pod_owner{namespace="ns",pod="job-1",uid="u9",owner_kind="ReplicaSet",owner_name="batch-rs",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="batch-rs",owner_kind="Deployment",owner_name="batch",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_pod_container_status_restarts_total{namespace="ns",pod="job-1",uid="u9",container="app"}'
+        values: '0 0 1x58'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="ns",pod="job-1",uid="u9",container="app",reason="Completed"}'
+        values: '_ _ 1x58'
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: K8sIncidentContainerAbnormalExit
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: K8sIncidentContainerAbnormalExit
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+
+  # Working set above 90% of an effective limit fires after 5 minutes; a zero or missing limit never does.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_pod_owner{namespace="ns",pod="web-2",uid="u2",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="ns",pod="web-1",container="app"}'
+        values: '95x40'
+      - series: 'kube_pod_container_resource_limits{namespace="ns",pod="web-1",uid="u1",container="app",resource="memory",unit="byte"}'
+        values: '100x40'
+      - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="ns",pod="web-2",container="app"}'
+        values: '95x40'
+      - series: 'kube_pod_container_resource_limits{namespace="ns",pod="web-2",uid="u2",container="app",resource="memory",unit="byte"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: K8sIncidentContainerMemoryNearLimit
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: K8sIncidentContainerMemoryNearLimit
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-2",uid="u2",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x40'
+      - series: 'container_memory_working_set_bytes{job="kubelet-resource",namespace="ns",pod="web-2",container="app"}'
+        values: '95x40'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: K8sIncidentContainerMemoryNearLimit
+        exp_alerts: []
+
+  # CFS throttling above 25% for 10 minutes fires; a counter reset in one cgroup does not break the ratio.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x120'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x120'
+      - series: 'container_cpu_cfs_periods_total{job="kubelet-cadvisor",namespace="ns",pod="web-1",container="app",id="/a"}'
+        values: '0+100x60 0+100x60'
+      - series: 'container_cpu_cfs_throttled_periods_total{job="kubelet-cadvisor",namespace="ns",pod="web-1",container="app",id="/a"}'
+        values: '0+40x60 0+40x60'
+      - series: 'kube_pod_owner{namespace="ns",pod="idle-1",uid="u3",owner_kind="ReplicaSet",owner_name="idle-rs",owner_is_controller="true"}'
+        values: '1x120'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="idle-rs",owner_kind="Deployment",owner_name="idle",owner_is_controller="true"}'
+        values: '1x120'
+      - series: 'container_cpu_cfs_periods_total{job="kubelet-cadvisor",namespace="ns",pod="idle-1",container="app",id="/b"}'
+        values: '0x120'
+      - series: 'container_cpu_cfs_throttled_periods_total{job="kubelet-cadvisor",namespace="ns",pod="idle-1",container="app",id="/b"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: K8sIncidentContainerCPUThrottled
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: K8sIncidentContainerCPUThrottled
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+
+  # Sustained probe failures fire for started containers the Readiness/Liveness rules do not cover;
+  # startup-window containers and containers covered by the Readiness rule do not fire.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x80'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x80'
+      - series: 'kube_pod_container_state_started{namespace="ns",pod="web-1",uid="u1",container="app"}'
+        values: '0x80'
+      - series: 'prober_probe_total{job="kubelet-probes",namespace="ns",pod="web-1",pod_uid="u1",container="app",probe_type="Readiness",result="failed"}'
+        values: '0+1x80'
+      - series: 'kube_pod_owner{namespace="ns",pod="ctl-1",uid="u5",owner_kind="ReplicaSet",owner_name="ctl-rs",owner_is_controller="true"}'
+        values: '1x80'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="ctl-rs",owner_kind="Deployment",owner_name="ctl",owner_is_controller="true"}'
+        values: '1x80'
+      - series: 'kube_pod_container_state_started{namespace="ns",pod="ctl-1",uid="u5",container="app"}'
+        values: '0x80'
+      - series: 'kube_pod_labels{namespace="ns",pod="ctl-1",uid="u5",label_k8s_incident_agent_io_readiness_container="app",label_k8s_incident_agent_io_readiness_slo="2m"}'
+        values: '1x80'
+      - series: 'kube_pod_owner{namespace="ns",pod="half-1",uid="u7",owner_kind="ReplicaSet",owner_name="half-rs",owner_is_controller="true"}'
+        values: '1x80'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="half-rs",owner_kind="Deployment",owner_name="half",owner_is_controller="true"}'
+        values: '1x80'
+      - series: 'kube_pod_container_state_started{namespace="ns",pod="half-1",uid="u7",container="app"}'
+        values: '0x80'
+      - series: 'kube_pod_labels{namespace="ns",pod="half-1",uid="u7",label_k8s_incident_agent_io_readiness_container="app"}'
+        values: '1x80'
+      - series: 'prober_probe_total{job="kubelet-probes",namespace="ns",pod="half-1",pod_uid="u7",container="app",probe_type="Readiness",result="failed"}'
+        values: '0+1x80'
+      - series: 'prober_probe_total{job="kubelet-probes",namespace="ns",pod="ctl-1",pod_uid="u5",container="app",probe_type="Readiness",result="failed"}'
+        values: '0+1x80'
+      - series: 'kube_pod_owner{namespace="ns",pod="slow-1",uid="u6",owner_kind="ReplicaSet",owner_name="slow-rs",owner_is_controller="true"}'
+        values: '1x80'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="slow-rs",owner_kind="Deployment",owner_name="slow",owner_is_controller="true"}'
+        values: '1x80'
+      - series: 'kube_pod_container_state_started{namespace="ns",pod="slow-1",uid="u6",container="app"}'
+        values: '0+15x80'
+      - series: 'prober_probe_total{job="kubelet-probes",namespace="ns",pod="slow-1",pod_uid="u6",container="app",probe_type="Startup",result="failed"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: K8sIncidentContainerProbeFailing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: K8sIncidentContainerProbeFailing
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+          - exp_labels: {namespace: ns, deployment: half, severity: warning}
+
+  # An unschedulable Pod fires after 2 minutes and resolves when scheduled.
+  - interval: 15s
+    input_series:
+      - series: 'kube_pod_owner{namespace="ns",pod="web-1",uid="u1",owner_kind="ReplicaSet",owner_name="web-rs",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_replicaset_owner{namespace="ns",replicaset="web-rs",owner_kind="Deployment",owner_name="web",owner_is_controller="true"}'
+        values: '1x60'
+      - series: 'kube_pod_status_unschedulable{namespace="ns",pod="web-1",uid="u1"}'
+        values: '1x20 stale'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: K8sIncidentPodUnschedulable
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: K8sIncidentPodUnschedulable
+        exp_alerts:
+          - exp_labels: {namespace: ns, deployment: web, severity: warning}
+      - eval_time: 12m
+        alertname: K8sIncidentPodUnschedulable
+        exp_alerts: []
+
+  # Health rules: a down collection job, repeated KSM list errors, a configured kubelet
+  # job without targets while containers run, and rule evaluation failures.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="kubelet-resource",instance="10.0.0.1:10250"}'
+        values: '0x20'
+      - series: 'up{job="alertmanager",instance="am:9093"}'
+        values: '0x20'
+      - series: 'kube_state_metrics_list_total{job="kube-state-metrics-telemetry",resource="*v1.Pod",result="error"}'
+        values: '0+1x20'
+      - series: 'prometheus_target_scrape_pool_targets{job="prometheus",scrape_job="kubelet-resource"}'
+        values: '1x20'
+      - series: 'prometheus_target_scrape_pool_targets{job="prometheus",scrape_job="kubelet-cadvisor"}'
+        values: '0x20'
+      - series: 'kube_pod_container_status_running{namespace="k8s-incident-scenarios",pod="web-1",uid="u1",container="app"}'
+        values: '1x20'
+      - series: 'prometheus_rule_evaluation_failures_total{rule_group="/etc/prometheus/rules/alerts.yaml;k8s-incident-agent"}'
+        values: '0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: K8sIncidentMonitoringTargetDown
+        exp_alerts:
+          - exp_labels: {job: kubelet-resource, severity: warning}
+      - eval_time: 3m
+        alertname: K8sIncidentKubeStateMetricsListFailing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+      - eval_time: 3m
+        alertname: K8sIncidentKubeletTargetsMissing
+        exp_alerts:
+          - exp_labels: {scrape_job: kubelet-cadvisor, severity: warning}
+      - eval_time: 2m
+        alertname: K8sIncidentRuleEvaluationFailing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+
+  # Healthy jobs, occasional list errors and an empty kubelet pool without running containers stay quiet.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="kube-state-metrics",instance="ksm:8080"}'
+        values: '1x20'
+      - series: 'kube_state_metrics_list_total{job="kube-state-metrics-telemetry",resource="*v1.Pod",result="error"}'
+        values: '0 0 0 0 1 1 1 1 2x12'
+      - series: 'prometheus_target_scrape_pool_targets{job="prometheus",scrape_job="kubelet-resource"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: K8sIncidentMonitoringTargetDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: K8sIncidentKubeStateMetricsListFailing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: K8sIncidentKubeletTargetsMissing
+        exp_alerts: []
+
+  # Kind profile: no kubelet job is configured, so running containers do not make targets "missing".
+  - interval: 15s
+    input_series:
+      - series: 'prometheus_target_scrape_pool_targets{job="prometheus",scrape_job="kube-state-metrics"}'
+        values: '1x20'
+      - series: 'kube_pod_container_status_running{namespace="k8s-incident-scenarios",pod="web-1",uid="u1",container="app"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: K8sIncidentKubeletTargetsMissing
+        exp_alerts: []

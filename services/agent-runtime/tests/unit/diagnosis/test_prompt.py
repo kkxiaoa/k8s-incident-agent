@@ -1,6 +1,9 @@
 import pytest
 
-from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
+from k8s_incident_agent.diagnosis.policy_contracts import (
+    DiagnosticPanel,
+    DiagnosticPanelName,
+)
 from k8s_incident_agent.diagnosis.prompt import build_diagnostic_system_prompt
 from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 
@@ -24,6 +27,7 @@ PANELS = (
         "higher_is_worse",
     ),
 )
+OTHER_PANELS = (DiagnosticPanelName("oom-killed-containers", "OOM killed containers"),)
 
 
 def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
@@ -33,7 +37,9 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
         allowed_tool_names=ALLOWED_TOOLS,
         required_evidence=REQUIRED_EVIDENCE,
         prometheus_panels=PANELS,
+        other_panels=OTHER_PANELS,
         trigger_panel_id="image-pull-affected-pods",
+        trigger_duration="10m",
         repair_action="set_container_image",
     )
     normalized = " ".join(prompt.split())
@@ -54,7 +60,17 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
         "Registered purpose." in prompt
     )
     assert "container = one per regular container" in prompt
-    assert "gives the same range" in normalized
+    assert (
+        "oom-killed-containers (OOM killed containers)" in prompt
+        and "OOM killed containers (" not in prompt
+    )
+    assert (
+        "condition had held for 10m, and occurredAt is the moment it started firing"
+        in normalized
+    )
+    assert "use a window wider than that duration" in normalized
+    assert "start with anchor=occurrence" in normalized
+    assert "runStartedAt" in normalized
     assert "never less than its stated interval" in normalized
     assert "when empty" not in prompt
     assert "image-pull-affected-pods is the registered signal of the alert rule" in (
@@ -88,7 +104,7 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     assert (
         f"admits at most {OBSERVATION_LIMIT} per panel, window and anchor" in normalized
     )
-    assert "query the trigger panel with anchor=occurrence" in normalized
+    assert "start with anchor=occurrence" in normalized
     assert "rangeStart and rangeEnd are the data window" in normalized
     assert "a limit series is configuration, not usage" in normalized
     assert "A neutral panel is context" in normalized

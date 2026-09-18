@@ -36,12 +36,17 @@ it("serves window-valid monitoring for all manual repair snapshots without maski
           const result = parseIncidentMetricPanelResponse(await read(`incidents/${incident.id}/monitoring/panels/${panel.panelId}?window=${window}`), panel.panelId, window);
           expect(result, `${incident.displayName}: ${panel.panelId}/${window}`).not.toBeNull();
           const expectedUnavailable = incident.displayName.includes("监控不可用") || incident.displayName.includes("恢复无法证明");
-          expect(result!.result.state).toBe(expectedUnavailable ? "monitoring_unavailable" : "ok");
+          // kube-state-metrics only reports Pods the scheduler rejected, so this
+          // panel has no series on these snapshots.
+          const expectedNoData = panel.panelId === "pod-unschedulable";
+          expect(result!.result.state).toBe(
+            expectedUnavailable ? "monitoring_unavailable" : expectedNoData ? "no_data" : "ok",
+          );
           if (window === "15m" && expectedUnavailable) unavailable++;
-          if (!expectedUnavailable && result!.result.seriesBinding !== "target") {
+          if (!expectedUnavailable && !expectedNoData && result!.result.seriesBinding !== "target") {
             expect(result!.result.series.length).toBeGreaterThan(0);
             expect(result!.result.currentValue).toBeNull();
-          } else if (!expectedUnavailable) {
+          } else if (!expectedUnavailable && !expectedNoData) {
             expect(result!.result.series[0]?.samples.length ?? 0).toBeGreaterThanOrEqual(3);
             const affectedPods = panel.panelId === "image-pull-affected-pods";
             const outcome = detail!.verification?.outcome;

@@ -1,10 +1,13 @@
 from collections.abc import Sequence
 
-from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
+from k8s_incident_agent.diagnosis.policy_contracts import (
+    DiagnosticPanel,
+    DiagnosticPanelName,
+)
 from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 from k8s_incident_agent.repair.contracts import RepairAction
 
-DIAGNOSTIC_PROMPT_VERSION = "stage3-dc4-attributed-metrics-v8"
+DIAGNOSTIC_PROMPT_VERSION = "stage3-dc4a-alert-discovery-v9"
 
 
 def build_diagnostic_system_prompt(
@@ -14,7 +17,9 @@ def build_diagnostic_system_prompt(
     allowed_tool_names: Sequence[str],
     required_evidence: Sequence[str],
     prometheus_panels: Sequence[DiagnosticPanel],
+    other_panels: Sequence[DiagnosticPanelName] = (),
     trigger_panel_id: str | None,
+    trigger_duration: str | None = None,
     repair_action: RepairAction | None,
 ) -> str:
     _require_positive_integer(max_model_calls, "Model call limit")
@@ -26,7 +31,8 @@ def build_diagnostic_system_prompt(
     if not required_evidence or len(set(required_evidence)) != len(required_evidence):
         raise ValueError("Required evidence kinds must be non-empty and unique")
     panel_ids = [panel.panel_id for panel in prometheus_panels]
-    if len(set(panel_ids)) != len(panel_ids):
+    admitted_ids = [*panel_ids, *(panel.panel_id for panel in other_panels)]
+    if len(set(admitted_ids)) != len(admitted_ids):
         raise ValueError("Prometheus panel identifiers must be unique")
     if ("query_prometheus" in allowed_tool_names) is not bool(prometheus_panels):
         raise ValueError("Prometheus panels must match the allowed tool set")
@@ -42,6 +48,15 @@ def build_diagnostic_system_prompt(
         f"{_DIRECTION_TAGS[panel.risk_direction]}]: {panel.purpose}"
         for panel in prometheus_panels
     )
+    other_alert_panels = ", ".join(
+        f"{panel.panel_id} ({panel.title})" for panel in other_panels
+    )
+    other_alert_line = (
+        "\n- Panels registered for other alerts on this target kind, for a symptom "
+        f"the Evidence points to: {other_alert_panels}."
+        if other_alert_panels
+        else ""
+    )
     trigger_instruction = (
         f"- {trigger_panel_id} is the registered signal of the alert rule this incident "
         "is mapped to. Its values approximate that rule's condition; they are not the "
@@ -52,18 +67,27 @@ def build_diagnostic_system_prompt(
         "symptom persists.\n"
         "- The other panels are context for the same target and never show that this "
         "alert's condition held; query one only when a specific question needs it.\n"
+        + (
+            ""
+            if trigger_duration is None
+            else "- That rule fired only after its condition had held for "
+            f"{trigger_duration}, and occurredAt is the moment it started firing, so "
+            "the condition already held that long before occurredAt. To see when it "
+            "began, use a window wider than that duration.\n"
+        )
     )
     prometheus_tool_instruction = (
         "- Use query_prometheus only with these admitted panels. Tags: target = one "
         "series for the whole target, pod = one per Pod, container = one per regular "
         "container; higher/lower = which side is worse, neutral = context without a "
-        f"threshold.\n{panel_lines}\n"
+        f"threshold.\n{panel_lines}{other_alert_line}\n"
         f"{trigger_instruction}"
         "- Its window must be 15m, 1h, 6h, 7d, or 15d. anchor=current ends the window "
-        "now; anchor=occurrence centres it on occurredAt, which gives the same range "
-        "while occurredAt is under half a window ago, so query only one then. If a "
-        "current result's rangeStart is after occurredAt, query the trigger panel "
-        "with anchor=occurrence rather than only widening the window.\n"
+        "at query time, close to runStartedAt; anchor=occurrence centres it on "
+        "occurredAt. Both come from the incident document: when occurredAt is more "
+        "than half the chosen window before runStartedAt, start with "
+        "anchor=occurrence, otherwise the two anchors give the same range and "
+        "current is enough.\n"
         "- Repeat a panel, window and anchor only to check a specific contradiction "
         "or expected change; the runtime counts every attempt other than a retryable "
         f"failure and admits at most {OBSERVATION_LIMIT} per panel, window and "
