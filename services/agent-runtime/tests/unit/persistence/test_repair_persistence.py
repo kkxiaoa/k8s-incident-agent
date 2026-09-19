@@ -116,6 +116,16 @@ async def prepared_repair_record(
                 }
             ],
             "missing_information": [],
+            "recommendations": [
+                {
+                    "action": "确认上一版本镜像仍可拉取后再批准修复",
+                    "purpose": "避免回到同样不可用的镜像",
+                    "preconditions": "rollout 历史中记录了上一版本镜像",
+                    "risk": "上一版本同样有问题时修复不能恢复",
+                    "verification": "观察镜像拉取失败 Pod 数是否回到 0",
+                    "evidence_ids": [str(value) for value in evidence_ids],
+                }
+            ],
             "repair_intent": {
                 "action": "set_container_image",
                 "target": target.model_dump(mode="json"),
@@ -198,6 +208,11 @@ async def test_repair_success_is_atomic_replayable_and_projected(
         assert detail.incident.status is IncidentStatus.WAITING_APPROVAL
         assert detail.run.status is RunStatus.COMPLETED
         assert detail.diagnosis is not None
+        # A repair Run keeps the recommendations of the same diagnosis; NULL
+        # stays reserved for Runs recorded before the column existed.
+        assert detail.diagnosis.recommendations is not None
+        [recommendation] = detail.diagnosis.recommendations
+        assert recommendation.action == "确认上一版本镜像仍可拉取后再批准修复"
         assert detail.repair is not None
         assert detail.repair.proposal == terminal.proposal
         assert detail.repair.validation == terminal.validation

@@ -104,6 +104,16 @@ export function makeWaitingApprovalIncidentDetail(): IncidentDetailResponse {
       },
     ],
     missingInformation: [],
+    recommendations: [
+      {
+        action: "对照 rollout 历史确认当前镜像是否为误发布",
+        purpose: "在不改动集群的前提下判断是否应回到上一可用镜像",
+        preconditions: "确认 rollout 历史中的上一版本镜像仍可拉取",
+        risk: "若上一版本同样有问题，回退不能恢复",
+        verification: "观察镜像拉取失败 Pod 数是否回到 0",
+        evidenceIds: [EVIDENCE_ID],
+      },
+    ],
     redacted: false,
     createdAt: "2026-08-29T01:00:04Z",
   };

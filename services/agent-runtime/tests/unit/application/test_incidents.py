@@ -25,6 +25,7 @@ from k8s_incident_agent.domain.models import (
     EvidenceRecord,
     ModelSnapshot,
     PersistedEvidence,
+    RecommendationRecord,
     RootCauseRecord,
     RunBudget,
     RunStatus,
@@ -394,6 +395,16 @@ async def test_detail_projects_terminal_run_and_sorts_evidence_by_time_then_id(
                 tool_calls=3,
                 input_tokens=1000,
                 output_tokens=200,
+                recommendations=(
+                    RecommendationRecord(
+                        action="确认 rollout 历史中的上一版本镜像",
+                        purpose="判断是否应回到上一可用镜像",
+                        preconditions="确认该镜像仍可拉取",
+                        risk="上一版本同样有问题时无法恢复",
+                        verification="观察镜像拉取失败 Pod 数是否回到 0",
+                        evidence_ids=(persisted[0].id,),
+                    ),
+                ),
             )
         )
 
@@ -405,6 +416,10 @@ async def test_detail_projects_terminal_run_and_sorts_evidence_by_time_then_id(
         assert response.selected_run.error is None
         assert response.diagnosis is not None
         assert response.diagnosis.outcome is DiagnosisOutcome.DIAGNOSED
+        assert response.diagnosis.recommendations is not None
+        [recommendation] = response.diagnosis.recommendations
+        assert recommendation.action == "确认 rollout 历史中的上一版本镜像"
+        assert recommendation.evidence_ids == (persisted[0].id,)
         assert [item.id for item in response.evidence] == sorted(
             item.id for item in persisted
         )

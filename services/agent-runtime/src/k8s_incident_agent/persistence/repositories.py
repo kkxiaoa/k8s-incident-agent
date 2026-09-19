@@ -27,7 +27,10 @@ from k8s_incident_agent.auth.sessions import (
     OperatorAuthenticationError,
     OperatorSession,
 )
-from k8s_incident_agent.diagnosis.contracts import ValidatedDiagnosis
+from k8s_incident_agent.diagnosis.contracts import (
+    ValidatedDiagnosis,
+    recommendation_records,
+)
 from k8s_incident_agent.diagnosis.tool_execution import (
     OBSERVATION_LIMIT,
     normalize_diagnostic_tool_call_identity,
@@ -56,6 +59,7 @@ from k8s_incident_agent.domain.models import (
     PersistedAlertBatch,
     PersistedEvidence,
     PersistedTerminal,
+    RecommendationRecord,
     RepairOperation,
     RepairWorkflowRunSnapshot,
     RootCauseRecord,
@@ -209,6 +213,8 @@ class IncidentDiagnosisDetail:
     summary: str
     root_causes: tuple[RootCauseRecord, ...]
     missing_information: tuple[str, ...]
+    # None marks a Run recorded before recommendations existed.
+    recommendations: tuple[RecommendationRecord, ...] | None
     redacted: bool
     created_at: datetime
 
@@ -2777,6 +2783,9 @@ class IncidentRepository:
                         missing_information_json=_string_list_json(
                             terminal.missing_information
                         ),
+                        recommendations_json=_recommendations_json(
+                            terminal.recommendations
+                        ),
                         redacted=terminal.redacted,
                         created_at=terminal.completed_at,
                     )
@@ -4076,6 +4085,7 @@ def _incident_detail_record(
                 summary=cast(str, terminal.summary),
                 root_causes=terminal.root_causes,
                 missing_information=terminal.missing_information,
+                recommendations=terminal.recommendations,
                 redacted=terminal.redacted,
                 created_at=_database_datetime(diagnosis.created_at),
             )
@@ -4968,6 +4978,7 @@ def _terminal_record_from_rows(
                 for root_cause in validated.root_causes
             ),
             missing_information=tuple(validated.missing_information),
+            recommendations=_recommendation_records(diagnosis, validated),
             redacted=validated.redacted,
             error_code=None,
             error_retryable=None,
@@ -5062,6 +5073,11 @@ def _validated_diagnosis_from_row(
                 "summary": diagnosis.summary,
                 "root_causes": json.loads(diagnosis.root_causes_json),
                 "missing_information": json.loads(diagnosis.missing_information_json),
+                "recommendations": (
+                    []
+                    if diagnosis.recommendations_json is None
+                    else json.loads(diagnosis.recommendations_json)
+                ),
                 "redacted": diagnosis.redacted,
             }
         )
@@ -6118,6 +6134,7 @@ def _diagnosis_terminal_record(terminal: RepairTerminalRecord) -> TerminalRecord
         tool_calls=terminal.tool_calls,
         input_tokens=terminal.input_tokens,
         output_tokens=terminal.output_tokens,
+        recommendations=recommendation_records(diagnosis.recommendations),
     )
 
 
@@ -6133,6 +6150,7 @@ def _repair_diagnosis_row(
         summary=_diagnosis_summary(diagnosis),
         root_causes_json=_root_causes_json(diagnosis.root_causes),
         missing_information_json=_string_list_json(diagnosis.missing_information),
+        recommendations_json=_recommendations_json(diagnosis.recommendations),
         redacted=diagnosis.redacted,
         created_at=terminal.diagnosis_completed_at,
     )
@@ -6394,6 +6412,13 @@ def _diagnosis_matches(row: DiagnosisRow, terminal: TerminalRecord) -> bool:
         and row.root_causes_json == _root_causes_json(terminal.root_causes)
         and row.missing_information_json
         == _string_list_json(terminal.missing_information)
+        # A row written before this column cannot be compared on it; every other
+        # diagnosis field still has to match for a replay to be accepted.
+        and (
+            row.recommendations_json is None
+            or row.recommendations_json
+            == _recommendations_json(terminal.recommendations)
+        )
         and row.redacted is terminal.redacted
         and _database_datetime(row.created_at) == terminal.completed_at
     )
@@ -6417,6 +6442,35 @@ def _root_causes_json(root_causes: tuple[RootCauseRecord, ...]) -> str:
             }
         )
     return canonical_json(values)
+
+
+def _recommendations_json(
+    recommendations: tuple[RecommendationRecord, ...] | None,
+) -> str | None:
+    if recommendations is None:
+        return None
+    values: list[JsonValue] = []
+    for recommendation in recommendations:
+        values.append(
+            {
+                "action": recommendation.action,
+                "purpose": recommendation.purpose,
+                "preconditions": recommendation.preconditions,
+                "risk": recommendation.risk,
+                "verification": recommendation.verification,
+                "evidence_ids": [str(value) for value in recommendation.evidence_ids],
+            }
+        )
+    return canonical_json(values)
+
+
+def _recommendation_records(
+    diagnosis: DiagnosisRow,
+    validated: ValidatedDiagnosis,
+) -> tuple[RecommendationRecord, ...] | None:
+    if diagnosis.recommendations_json is None:
+        return None
+    return recommendation_records(validated.recommendations)
 
 
 def _string_list_json(values: tuple[str, ...]) -> str:

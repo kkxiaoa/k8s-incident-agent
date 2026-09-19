@@ -1148,6 +1148,7 @@ describe("read-only incident presentation", () => {
         },
       ],
       missingInformation: ["镜像仓库端的拉取审计记录"],
+      recommendations: null,
       redacted: true,
       createdAt: "2026-08-29T01:00:04Z",
     };

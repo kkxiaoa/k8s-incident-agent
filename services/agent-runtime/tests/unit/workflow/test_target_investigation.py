@@ -208,6 +208,7 @@ class _Outcome:
     tool_messages: list[dict[str, object]]
     bound_tool_names: list[tuple[str, ...]]
     adapter_calls: list[str]
+    recommendations_json: str | None
 
 
 def _trigger(scenario_id: str, revision: str, kind: str) -> NormalizedIncidentTrigger:
@@ -251,7 +252,12 @@ def _tool_call(name: str, call_id: str) -> AIMessage:
     )
 
 
-def _diagnosed(run_id: UUID, cited_call_ids: Sequence[str]) -> AIMessage:
+def _diagnosed(
+    run_id: UUID,
+    cited_call_ids: Sequence[str],
+    *,
+    recommendations: Sequence[dict[str, object]] = (),
+) -> AIMessage:
     return AIMessage(
         content="",
         tool_calls=[
@@ -272,6 +278,7 @@ def _diagnosed(run_id: UUID, cited_call_ids: Sequence[str]) -> AIMessage:
                         }
                     ],
                     "missing_information": [],
+                    "recommendations": list(recommendations),
                 },
                 "id": "call-structured",
                 "type": "tool_call",
@@ -379,6 +386,9 @@ async def _run_diagnosis(
             ],
             bound_tool_names=model.bound_tool_names,
             adapter_calls=adapter.calls,
+            recommendations_json=(
+                None if diagnosis is None else diagnosis.recommendations_json
+            ),
         )
 
 
@@ -431,3 +441,55 @@ async def test_service_incident_registers_only_the_service_capability(
         "query_prometheus",
         "DiagnosisCandidate",
     )
+
+
+@pytest.mark.asyncio
+async def test_recommendations_reach_the_database_through_the_real_agent_chain(
+    tmp_path: Path,
+) -> None:
+    outcome = await _run_diagnosis(
+        tmp_path,
+        trigger=_trigger("crash-loop-backoff", "2", "Deployment"),
+        responses_for=lambda run_id: [
+            _tool_call("get_workload", "call-1"),
+            _diagnosed(
+                run_id,
+                ["call-1"],
+                recommendations=[
+                    {
+                        "action": "对照 rollout 历史确认当前镜像是否为误发布",
+                        "purpose": "判断是否应回到上一可用镜像",
+                        "preconditions": "确认上一版本镜像仍可拉取",
+                        "risk": "上一版本同样有问题时无法恢复",
+                        "verification": "观察可用副本是否回到期望值",
+                        "evidence_ids": [str(evidence_id(run_id, "call-1"))],
+                    }
+                ],
+            ),
+        ],
+    )
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.diagnosis_outcome == "diagnosed"
+    assert outcome.recommendations_json is not None
+    [stored] = json.loads(outcome.recommendations_json)
+    assert stored["action"] == "对照 rollout 历史确认当前镜像是否为误发布"
+    assert stored["evidence_ids"] != []
+
+
+@pytest.mark.asyncio
+async def test_diagnosis_without_recommendations_records_an_empty_list(
+    tmp_path: Path,
+) -> None:
+    outcome = await _run_diagnosis(
+        tmp_path,
+        trigger=_trigger("crash-loop-backoff", "2", "Deployment"),
+        responses_for=lambda run_id: [
+            _tool_call("get_workload", "call-1"),
+            _diagnosed(run_id, ["call-1"]),
+        ],
+    )
+
+    # An empty list means this Run offered none; NULL is reserved for Runs
+    # recorded before recommendations existed.
+    assert outcome.recommendations_json == "[]"

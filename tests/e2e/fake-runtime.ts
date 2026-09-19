@@ -686,6 +686,16 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
           },
         ],
         missingInformation: [],
+        recommendations: [
+          {
+            action: "对照 rollout 历史确认当前镜像是否为误发布",
+            purpose: "判断是否应回到上一可用镜像",
+            preconditions: "确认上一版本镜像仍可拉取",
+            risk: "上一版本同样有问题时无法恢复",
+            verification: "观察镜像拉取失败 Pod 数是否回到 0",
+            evidenceIds: record.detail.evidence.slice(0, 1).map((item) => item.id),
+          },
+        ],
         redacted: false,
         createdAt: event.data.occurredAt,
       };
@@ -722,6 +732,9 @@ function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
         summary: "现有 Kubernetes 证据不足以确认镜像仓库端失败原因。",
         rootCauses: [],
         missingInformation: ["镜像仓库端的拉取审计记录"],
+        // A new Run records an empty list; null is reserved for Runs recorded
+        // before recommendations existed.
+        recommendations: [],
         redacted: true,
         createdAt: event.data.occurredAt,
       };

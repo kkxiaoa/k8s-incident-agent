@@ -337,6 +337,8 @@ class DiagnosisRow(Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     root_causes_json: Mapped[str] = mapped_column(Text, nullable=False)
     missing_information_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL marks a Run recorded before recommendations existed.
+    recommendations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     redacted: Mapped[bool] = mapped_column(Boolean, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

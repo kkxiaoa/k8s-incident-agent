@@ -7,7 +7,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import (
 from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 from k8s_incident_agent.repair.contracts import RepairAction
 
-DIAGNOSTIC_PROMPT_VERSION = "stage3-dc4a-alert-discovery-v9"
+DIAGNOSTIC_PROMPT_VERSION = "stage3-dc5-recommendations-v10"
 
 
 def build_diagnostic_system_prompt(
@@ -199,6 +199,19 @@ def build_diagnostic_system_prompt(
 - missing_information: Include only unresolved facts that could materially change the
   explanation or its confidence, not every unperformed check. Keep those uncertainties
   and the distinction between observed and inferred claims consistent across fields.
+- recommendations: Up to three next steps for the person reading this incident,
+  ordered with the most useful first. Include one only when the cited observations
+  support it; an empty array is correct when they do not, and the maximum is not a
+  target. Each entry states the action to take, the purpose it serves, the
+  preconditions to confirm first, the risk it carries, and how to verify the outcome,
+  and cites the evidenceId values it rests on. With insufficient_evidence, recommend
+  the checks that would close the gap, never a conclusion the observations do not
+  support.
+- A recommendation is written for a person to decide on: never a command, a manifest,
+  a patch, a kubectl invocation, or an API call. Do not invent an image tag, a memory
+  value, a probe setting, a selector, or any other concrete value the observations do
+  not contain. A recommendation never authorizes an action; the runtime decides
+  separately whether a repair is eligible.
 - Produce exactly one structured response and no prose fallback.
 
 ## Repair intent

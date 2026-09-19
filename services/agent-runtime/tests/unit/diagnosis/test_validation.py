@@ -13,7 +13,10 @@ from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
 from tests.factories import normalized_trigger
 
-from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
+from k8s_incident_agent.diagnosis.contracts import (
+    DiagnosisCandidate,
+    Recommendation,
+)
 from k8s_incident_agent.diagnosis.validation import (
     DiagnosisValidationError,
     RepairIntentUnsupportedError,
@@ -350,6 +353,19 @@ def _insufficient(
             "missing_information": [missing],
         }
     )
+
+
+def _recommendation(
+    evidence_id: UUID, *, action: str = "重新拉取镜像前先确认上一版本"
+) -> dict[str, object]:
+    return {
+        "action": action,
+        "purpose": "在不改动集群的前提下判断下一步",
+        "preconditions": "确认上一版本镜像仍可拉取",
+        "risk": "上一版本同样有问题时无法恢复",
+        "verification": "观察失败 Pod 数是否回到 0",
+        "evidence_ids": [str(evidence_id)],
+    }
 
 
 def _text_that_expands_during_redaction(max_code_points: int) -> str:
@@ -1063,3 +1079,84 @@ async def test_repair_intent_requires_the_proven_invalid_registry_fact(
                     required_evidence=frozenset({"workload"}),
                 )
             assert error.value.code == "repair_policy_denied"
+
+
+@pytest.mark.asyncio
+async def test_recommendations_are_sanitized_and_kept_with_the_diagnosis(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        run_id = await _running_run(repository, "recommendation-run")
+        evidence_id = await _record_evidence(
+            repository,
+            run_id,
+            tool_call_id="call-1",
+            tool_name="get_workload",
+        )
+        candidate = _diagnosed(evidence_id).model_copy(
+            update={
+                "recommendations": [
+                    Recommendation.model_validate(
+                        _recommendation(
+                            evidence_id,
+                            action="确认 token=abcdef012345 是否泄露",
+                        )
+                    )
+                ]
+            }
+        )
+
+        validated = await validate_diagnosis(
+            candidate,
+            run_id,
+            repository,
+            required_evidence=frozenset(),
+        )
+
+        assert validated.redacted is True
+        [recommendation] = validated.recommendations
+        assert "abcdef012345" not in recommendation.action
+        assert recommendation.evidence_ids == [evidence_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["diagnosed", "insufficient_evidence"])
+async def test_recommendations_must_cite_evidence_of_this_run(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        run_id = await _running_run(repository, f"foreign-recommendation-{outcome}")
+        evidence_id = await _record_evidence(
+            repository,
+            run_id,
+            tool_call_id="call-1",
+            tool_name="get_workload",
+        )
+        other_run = await _running_run(repository, f"other-{outcome}")
+        foreign = await _record_evidence(
+            repository,
+            other_run,
+            tool_call_id="call-foreign",
+            tool_name="get_pods",
+        )
+        base = _diagnosed(evidence_id) if outcome == "diagnosed" else _insufficient()
+        candidate = base.model_copy(
+            update={
+                "recommendations": [
+                    Recommendation.model_validate(_recommendation(foreign))
+                ]
+            }
+        )
+
+        with pytest.raises(DiagnosisValidationError) as error:
+            await validate_diagnosis(
+                candidate,
+                run_id,
+                repository,
+                required_evidence=frozenset(),
+            )
+
+        assert error.value.code == "structured_output_invalid"

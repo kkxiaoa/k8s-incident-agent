@@ -757,6 +757,8 @@ export interface components {
             /** Missinginformation */
             missingInformation: string[];
             outcome: components["schemas"]["DiagnosisOutcome"];
+            /** Recommendations */
+            recommendations: components["schemas"]["RecommendationResponse"][] | null;
             /** Redacted */
             redacted: boolean;
             /** Rootcauses */
@@ -1431,6 +1433,24 @@ export interface components {
              * @enum {string}
              */
             window: "15m" | "1h" | "6h" | "7d" | "15d";
+        };
+        /**
+         * RecommendationResponse
+         * @description A next step for the reader, never an executable action.
+         */
+        RecommendationResponse: {
+            /** Action */
+            action: string;
+            /** Evidenceids */
+            evidenceIds: string[];
+            /** Preconditions */
+            preconditions: string;
+            /** Purpose */
+            purpose: string;
+            /** Risk */
+            risk: string;
+            /** Verification */
+            verification: string;
         };
         /** RepairDiffResponse */
         RepairDiffResponse: {

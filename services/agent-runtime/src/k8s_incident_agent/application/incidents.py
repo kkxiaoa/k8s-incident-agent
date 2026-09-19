@@ -26,6 +26,7 @@ from k8s_incident_agent.api_contracts import (
     IncidentResponse,
     IncidentSourceResponse,
     IncidentTargetResponse,
+    RecommendationResponse,
     RepairDiffResponse,
     RepairHistorySelectionResponse,
     RepairPatchOperationResponse,
@@ -521,6 +522,21 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
                 for root_cause in detail.diagnosis.root_causes
             ),
             missing_information=detail.diagnosis.missing_information,
+            recommendations=(
+                None
+                if detail.diagnosis.recommendations is None
+                else tuple(
+                    RecommendationResponse(
+                        action=recommendation.action,
+                        purpose=recommendation.purpose,
+                        preconditions=recommendation.preconditions,
+                        risk=recommendation.risk,
+                        verification=recommendation.verification,
+                        evidence_ids=recommendation.evidence_ids,
+                    )
+                    for recommendation in detail.diagnosis.recommendations
+                )
+            ),
             redacted=detail.diagnosis.redacted,
             created_at=detail.diagnosis.created_at,
         )

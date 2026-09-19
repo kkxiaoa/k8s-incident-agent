@@ -255,6 +255,18 @@ class RootCauseRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class RecommendationRecord:
+    """A next step the reader may take, always tied to observed Evidence."""
+
+    action: str
+    purpose: str
+    preconditions: str
+    risk: str
+    verification: str
+    evidence_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TerminalRecord:
     run_id: UUID
     completed_at: datetime
@@ -269,6 +281,9 @@ class TerminalRecord:
     tool_calls: int | None
     input_tokens: int | None
     output_tokens: int | None
+    # None marks a Run recorded before recommendations existed; a diagnosis that
+    # produced none carries an empty tuple.
+    recommendations: tuple[RecommendationRecord, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is not None:
@@ -281,6 +296,8 @@ class TerminalRecord:
             return
         if self.error_code is None or self.error_retryable is None:
             raise ValueError("Failure terminal record requires an error")
+        if self.recommendations:
+            raise ValueError("Failure terminal record cannot carry recommendations")
         if (
             self.summary is not None
             or self.root_causes

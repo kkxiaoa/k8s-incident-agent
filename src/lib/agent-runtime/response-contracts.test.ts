@@ -315,6 +315,39 @@ describe("parseIncidentDetailResponse", () => {
     );
   });
 
+  it("keeps Evidence-bound recommendations and rejects unusable ones", () => {
+    const detail = makeWaitingApprovalIncidentDetail();
+    if (detail.diagnosis === null) throw new Error("diagnosis fixture is missing");
+    const [recommendation] = detail.diagnosis.recommendations!;
+
+    expect(
+      parseIncidentDetailResponse(detail)?.diagnosis?.recommendations,
+    ).toEqual([recommendation]);
+    // A Run recorded before recommendations existed reports null, not an
+    // empty list, and the reader is told so.
+    expect(
+      parseIncidentDetailResponse({
+        ...detail,
+        diagnosis: { ...detail.diagnosis, recommendations: null },
+      })?.diagnosis?.recommendations,
+    ).toBeNull();
+    for (const invalid of [
+      { ...recommendation, evidenceIds: [] },
+      { ...recommendation, action: "" },
+      [recommendation, recommendation, recommendation, recommendation],
+    ]) {
+      expect(
+        parseIncidentDetailResponse({
+          ...detail,
+          diagnosis: {
+            ...detail.diagnosis,
+            recommendations: Array.isArray(invalid) ? invalid : [invalid],
+          },
+        }),
+      ).toBeNull();
+    }
+  });
+
   it("accepts a historical repair Run while the Incident has advanced", () => {
     const detail = makeWaitingApprovalIncidentDetail();
     detail.incident.status = "TRIAGING";

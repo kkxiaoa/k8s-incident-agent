@@ -18,6 +18,7 @@ from k8s_incident_agent.domain.models import (
     DiagnosisWorkflowRunSnapshot,
     EvidenceRecord,
     ModelSnapshot,
+    RecommendationRecord,
     RootCauseRecord,
     RunBudget,
     RunStatus,
@@ -678,3 +679,90 @@ async def test_workflow_snapshot_reuses_strict_diagnosis_contract(
 
         with pytest.raises(RecoveryConsistencyError):
             await repository.get_workflow_run_snapshot(created.run_id)
+
+
+@pytest.mark.asyncio
+async def test_recommendations_survive_a_restart_and_absence_stays_absent(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        await repository.start_run(created.run_id, NOW)
+        await repository.record_tool_started(created.run_id, "call-1", "get_workload")
+        evidence = await repository.record_evidence(
+            EvidenceRecord(
+                run_id=created.run_id,
+                tool_call_id="call-1",
+                tool_name="get_workload",
+                evidence_kind="workload",
+                target_ref={"kind": "Deployment", "name": "image-pull-backoff"},
+                observed_at=NOW,
+                payload={"availableReplicas": 0},
+                truncated=False,
+                redacted=False,
+            )
+        )
+        recommendation = RecommendationRecord(
+            action="对照 rollout 历史确认当前镜像是否为误发布",
+            purpose="判断是否应回到上一可用镜像",
+            preconditions="确认上一版本镜像仍可拉取",
+            risk="上一版本同样有问题时无法恢复",
+            verification="观察可用副本是否回到期望值",
+            evidence_ids=(evidence.id,),
+        )
+        await repository.persist_terminal(
+            TerminalRecord(
+                run_id=created.run_id,
+                completed_at=NOW.replace(minute=1),
+                outcome=DiagnosisOutcome.DIAGNOSED,
+                summary="The Deployment has no available replicas.",
+                root_causes=(
+                    RootCauseRecord(
+                        code="deployment_unavailable",
+                        statement="The workload observation reports zero availability.",
+                        confidence="high",
+                        evidence_ids=(evidence.id,),
+                    ),
+                ),
+                missing_information=(),
+                redacted=False,
+                error_code=None,
+                error_retryable=None,
+                model_calls=2,
+                tool_calls=2,
+                input_tokens=None,
+                output_tokens=None,
+                recommendations=(recommendation,),
+            )
+        )
+
+    # A fresh process reads the same database file.
+    database = await create_business_database(
+        RuntimePaths.prepare(tmp_path / "runtime")
+    )
+    try:
+        repository = IncidentRepository(database.session_factory)
+        detail = await repository.get_incident_detail(
+            created.incident_id, run_id=created.run_id, event_limit=10
+        )
+        assert detail is not None
+        assert detail.diagnosis is not None
+        assert detail.diagnosis.recommendations == (recommendation,)
+
+        async with database.session_factory() as session, session.begin():
+            row = await session.scalar(select(DiagnosisRow))
+            assert row is not None
+            # A Run recorded before this column keeps NULL, and the reader is
+            # told the Run produced none instead of being shown an empty list.
+            row.recommendations_json = None
+        detail = await repository.get_incident_detail(
+            created.incident_id, run_id=created.run_id, event_limit=10
+        )
+        assert detail is not None
+        assert detail.diagnosis is not None
+        assert detail.diagnosis.recommendations is None
+    finally:
+        await database.dispose()

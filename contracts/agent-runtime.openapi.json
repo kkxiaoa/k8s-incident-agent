@@ -879,6 +879,21 @@
           "outcome": {
             "$ref": "#/components/schemas/DiagnosisOutcome"
           },
+          "recommendations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RecommendationResponse"
+                },
+                "maxItems": 3,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommendations"
+          },
           "redacted": {
             "title": "Redacted",
             "type": "boolean"
@@ -901,6 +916,7 @@
           "summary",
           "rootCauses",
           "missingInformation",
+          "recommendations",
           "redacted",
           "createdAt"
         ],
@@ -2666,6 +2682,50 @@
           "window"
         ],
         "title": "PrometheusToolCallIdentity",
+        "type": "object"
+      },
+      "RecommendationResponse": {
+        "additionalProperties": false,
+        "description": "A next step for the reader, never an executable action.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "evidenceIds": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Evidenceids",
+            "type": "array"
+          },
+          "preconditions": {
+            "title": "Preconditions",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "risk": {
+            "title": "Risk",
+            "type": "string"
+          },
+          "verification": {
+            "title": "Verification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "purpose",
+          "preconditions",
+          "risk",
+          "verification",
+          "evidenceIds"
+        ],
+        "title": "RecommendationResponse",
         "type": "object"
       },
       "RepairDiffResponse": {

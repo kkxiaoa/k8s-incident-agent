@@ -152,6 +152,10 @@ async def test_nonempty_upgrade_retains_owners_proposal_evidence_and_legacy_term
             "end_reason",
         ):
             assert row.pop(column) is None
+    for row in after["diagnoses"]:
+        # A Run recorded before recommendations existed keeps NULL, which the
+        # reader sees as "this Run produced none", not as an empty list.
+        assert row.pop("recommendations_json") is None
     for row in after["run_events"]:
         assert row["schema_version"] == 5
         payload = json.loads(row["payload_json"])

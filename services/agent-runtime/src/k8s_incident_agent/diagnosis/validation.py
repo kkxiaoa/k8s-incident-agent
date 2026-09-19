@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from k8s_incident_agent.diagnosis.contracts import (
     DiagnosisCandidate,
+    Recommendation,
     RootCause,
     ValidatedDiagnosis,
 )
@@ -32,7 +33,11 @@ from k8s_incident_agent.persistence.repositories import (
 )
 from k8s_incident_agent.security.sanitizer import sanitize_untrusted_text
 
-_MAX_DIAGNOSIS_BYTES: Final = 16 * 1024
+# A size guard on one serialized diagnosis, deliberately below the sum of the
+# field limits: those admit ~62 KB of CJK text, which no useful diagnosis needs.
+# Raised with DC-5 so a result carrying recommendations keeps the headroom the
+# earlier fields had. Exceeding it fails the Run closed as structured_output_invalid.
+_MAX_DIAGNOSIS_BYTES: Final = 24 * 1024
 _INVALID_REGISTRY_ROOT_CAUSE: Final = "image_invalid_registry"
 _IMAGE_PULL_WAITING_REASONS: Final = frozenset({"ErrImagePull", "ImagePullBackOff"})
 
@@ -89,6 +94,16 @@ async def validate_diagnosis(
         raise UnresolvedToolFailuresError(snapshot.unresolved_tool_failures)
     evidence_ids = snapshot.evidence_by_id.keys()
     if not evidence_ids:
+        raise DiagnosisValidationError
+
+    # A recommendation is only readable next to what it was drawn from, so its
+    # references must belong to this Run whatever the outcome is.
+    recommended_ids = {
+        evidence_id
+        for recommendation in validated.recommendations
+        for evidence_id in recommendation.evidence_ids
+    }
+    if not recommended_ids.issubset(evidence_ids):
         raise DiagnosisValidationError
 
     if validated.outcome == "diagnosed":
@@ -259,6 +274,22 @@ def _sanitize_candidate(candidate: DiagnosisCandidate) -> ValidatedDiagnosis:
             )
         )
 
+    recommendations: list[Recommendation] = []
+    for recommendation in candidate.recommendations:
+        fields: dict[str, str] = {}
+        for name in ("action", "purpose", "preconditions", "risk", "verification"):
+            sanitized = sanitize_untrusted_text(
+                getattr(recommendation, name),
+                max_code_points=512,
+            )
+            if sanitized.truncated or not sanitized.value:
+                raise DiagnosisValidationError
+            redacted = redacted or sanitized.redacted
+            fields[name] = sanitized.value
+        recommendations.append(
+            Recommendation(**fields, evidence_ids=recommendation.evidence_ids)
+        )
+
     missing_information: list[str] = []
     for value in candidate.missing_information:
         sanitized = sanitize_untrusted_text(value, max_code_points=512)
@@ -273,6 +304,7 @@ def _sanitize_candidate(candidate: DiagnosisCandidate) -> ValidatedDiagnosis:
             summary=summary.value,
             root_causes=root_causes,
             missing_information=missing_information,
+            recommendations=recommendations,
             repair_intent=candidate.repair_intent,
             redacted=redacted,
         )

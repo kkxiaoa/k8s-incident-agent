@@ -127,10 +127,16 @@ type RootCauseView = Pick<
   "code" | "statement" | "confidence" | "evidenceIds"
 >;
 
+type RecommendationView = components["schemas"]["RecommendationResponse"];
+
 export type DiagnosisView = Pick<
   ApiDiagnosis,
   "outcome" | "summary" | "missingInformation" | "redacted"
-> & { rootCauses: RootCauseView[] };
+> & {
+  rootCauses: RootCauseView[];
+  /** null marks a Run recorded before recommendations existed. */
+  recommendations: RecommendationView[] | null;
+};
 
 export type AlertSignalView = Pick<
   ApiAlertSignal,
@@ -621,6 +627,31 @@ function parseRootCause(value: unknown): RootCauseView | null {
       };
 }
 
+function parseRecommendation(value: unknown): RecommendationView | null {
+  if (
+    !isObject(value) ||
+    !isBoundedText(value.action, 512) ||
+    !isBoundedText(value.purpose, 512) ||
+    !isBoundedText(value.preconditions, 512) ||
+    !isBoundedText(value.risk, 512) ||
+    !isBoundedText(value.verification, 512)
+  ) {
+    return null;
+  }
+
+  const evidenceIds = parseStringList(value.evidenceIds);
+  return evidenceIds === null || evidenceIds.length === 0
+    ? null
+    : {
+        action: value.action,
+        purpose: value.purpose,
+        preconditions: value.preconditions,
+        risk: value.risk,
+        verification: value.verification,
+        evidenceIds,
+      };
+}
+
 function parseDiagnosis(value: unknown): DiagnosisView | null {
   if (
     !isObject(value) ||
@@ -637,9 +668,23 @@ function parseDiagnosis(value: unknown): DiagnosisView | null {
   const rootCauses = value.rootCauses.map(parseRootCause);
   if (
     missingInformation === null ||
-    rootCauses.some((rootCause) => rootCause === null)
+    rootCauses.some((rootCause) => rootCause === null) ||
+    (value.recommendations !== null && !Array.isArray(value.recommendations))
   ) {
     return null;
+  }
+
+  const recommendations =
+    value.recommendations === null
+      ? null
+      : value.recommendations.map(parseRecommendation);
+  if (recommendations !== null) {
+    if (
+      recommendations.length > 3 ||
+      recommendations.some((recommendation) => recommendation === null)
+    ) {
+      return null;
+    }
   }
 
   return {
@@ -647,6 +692,7 @@ function parseDiagnosis(value: unknown): DiagnosisView | null {
     summary: value.summary,
     rootCauses: rootCauses as RootCauseView[],
     missingInformation,
+    recommendations: recommendations as RecommendationView[] | null,
     redacted: value.redacted,
   };
 }

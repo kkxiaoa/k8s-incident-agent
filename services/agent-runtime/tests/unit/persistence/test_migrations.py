@@ -254,7 +254,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
             } == before
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260913_0008" if fail_ddl else "20260915_0012",)
+            ).fetchone() == ("20260913_0008" if fail_ddl else "20260919_0013",)
             if fail_ddl:
                 assert (
                     connection.execute(
@@ -392,6 +392,8 @@ EXPECTED_COLUMNS = {
         "missing_information_json",
         "redacted",
         "created_at",
+        # SQLite appends an added column, so this one follows created_at.
+        "recommendations_json",
     ),
     "repair_proposals": (
         "id",
@@ -827,7 +829,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20260915_0012",)
+        ).fetchone() == ("20260919_0013",)
 
 
 def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(

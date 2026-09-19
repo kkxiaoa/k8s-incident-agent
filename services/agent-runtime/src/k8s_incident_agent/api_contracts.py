@@ -316,12 +316,25 @@ class RootCauseResponse(_ApiContract):
     evidence_ids: tuple[UUID, ...]
 
 
+class RecommendationResponse(_ApiContract):
+    """A next step for the reader, never an executable action."""
+
+    action: str
+    purpose: str
+    preconditions: str
+    risk: str
+    verification: str
+    evidence_ids: tuple[UUID, ...]
+
+
 class DiagnosisResponse(_ApiContract):
     id: UUID
     outcome: DiagnosisOutcome
     summary: str
     root_causes: tuple[RootCauseResponse, ...]
     missing_information: tuple[str, ...]
+    # null marks a Run recorded before recommendations existed.
+    recommendations: tuple[RecommendationResponse, ...] | None = Field(max_length=3)
     redacted: bool
     created_at: datetime
 

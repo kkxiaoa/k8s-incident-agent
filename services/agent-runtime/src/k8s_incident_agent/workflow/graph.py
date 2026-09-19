@@ -37,6 +37,7 @@ from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import (
     DiagnosisCandidate,
     ValidatedDiagnosis,
+    recommendation_records,
 )
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
 from k8s_incident_agent.diagnosis.tool_execution import DiagnosticToolFatalError
@@ -732,6 +733,7 @@ def _persist_terminal_node(
                     for root_cause in diagnosis.root_causes
                 ),
                 missing_information=tuple(diagnosis.missing_information),
+                recommendations=recommendation_records(diagnosis.recommendations),
                 redacted=diagnosis.redacted,
                 error_code=None,
                 error_retryable=None,
