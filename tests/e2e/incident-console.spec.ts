@@ -133,7 +133,7 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   ).toContainText("Container restart loop3");
   await expect(
     page.getByRole("img", {
-      name: "最近 24 小时新增 Incident 与告警条件解除趋势",
+      name: "最近 24 小时新增 Incident 与告警条件解除的累计趋势",
     }),
   ).toBeVisible();
   await expect(page.locator(".incident-list__link")).toHaveCount(12);

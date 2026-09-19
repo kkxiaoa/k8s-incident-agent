@@ -19,6 +19,23 @@
   letter-spacing: -0.03em;
 }
 
+.monitoring-health__header {
+  margin-bottom: 22px;
+}
+
+.monitoring-health__header h2 {
+  margin: 0;
+  color: var(--navy-deep);
+  font-size: 0.95rem;
+  letter-spacing: -0.02em;
+}
+
+.monitoring-health__header p {
+  margin: 4px 0 0;
+  color: var(--faint);
+  font-size: 0.7rem;
+}
+
 .monitoring-health__path {
   position: relative;
   display: grid;

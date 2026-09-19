@@ -1,7 +1,7 @@
 "use client";
 
-import type { ChartData, ChartOptions } from "chart.js";
-import { Chart } from "react-chartjs-2";
+import type { ChartData, ChartOptions, ScriptableContext } from "chart.js";
+import { Line } from "react-chartjs-2";
 
 import type { MonitoringOverviewView } from "@/lib/agent-runtime/response-contracts";
 
@@ -17,6 +17,20 @@ const HOUR_FORMAT = new Intl.DateTimeFormat("zh-CN", {
   hour: "2-digit",
   hourCycle: "h23",
 });
+const CREATED_COLOR = "#0f9d91";
+const RESOLVED_COLOR = "#4b9ae4";
+
+function createdArea(context: ScriptableContext<"line">) {
+  const { ctx, chartArea } = context.chart;
+  if (chartArea === undefined) {
+    return "transparent";
+  }
+
+  const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+  gradient.addColorStop(0, "rgba(15, 157, 145, 0.24)");
+  gradient.addColorStop(1, "rgba(15, 157, 145, 0)");
+  return gradient;
+}
 
 export function OverviewTrendChart({
   samples,
@@ -26,46 +40,53 @@ export function OverviewTrendChart({
   ensureChartJsRegistered();
   const reducedMotion = useReducedChartMotion();
   const labels = samples.map((sample) => HOUR_FORMAT.format(new Date(sample.timestamp)));
-  const incidentsCreated = samples.reduce(
-    (total, sample) => total + sample.incidentsCreated,
-    0,
-  );
-  const alertConditionsResolved = samples.reduce(
-    (total, sample) => total + sample.alertConditionsResolved,
-    0,
-  );
-  const data: ChartData<"bar" | "line", number[], string> = {
+  // Hourly counts of one or two read as a row of spikes, so the curve carries
+  // the running total across the window and the hourly count stays in the
+  // tooltip.
+  const createdRunning: number[] = [];
+  const resolvedRunning: number[] = [];
+  for (const sample of samples) {
+    createdRunning.push((createdRunning.at(-1) ?? 0) + sample.incidentsCreated);
+    resolvedRunning.push(
+      (resolvedRunning.at(-1) ?? 0) + sample.alertConditionsResolved,
+    );
+  }
+  const incidentsCreated = createdRunning.at(-1) ?? 0;
+  const alertConditionsResolved = resolvedRunning.at(-1) ?? 0;
+  const data: ChartData<"line", number[], string> = {
     labels,
     datasets: [
       {
-        type: "bar",
-        label: "新增 Incident",
-        data: samples.map((sample) => sample.incidentsCreated),
-        backgroundColor: "rgba(15, 157, 145, 0.82)",
-        borderColor: "#0f8f86",
-        borderRadius: 6,
-        borderSkipped: false,
-        barPercentage: 0.55,
-        categoryPercentage: 0.72,
-        order: 2,
-      },
-      {
-        type: "line",
-        label: "告警条件解除",
-        data: samples.map((sample) => sample.alertConditionsResolved),
-        borderColor: "#2f8de4",
-        borderDash: [5, 5],
-        borderWidth: 2,
+        label: "累计新增 Incident",
+        data: createdRunning,
+        backgroundColor: createdArea,
+        borderColor: CREATED_COLOR,
+        borderWidth: 2.2,
+        fill: true,
         pointBackgroundColor: "#ffffff",
-        pointBorderColor: "#2f8de4",
+        pointBorderColor: CREATED_COLOR,
+        pointBorderWidth: 2,
         pointHoverRadius: 4,
         pointRadius: 0,
-        tension: 0.22,
-        order: 1,
+        cubicInterpolationMode: "monotone",
+      },
+      {
+        label: "累计告警条件解除",
+        data: resolvedRunning,
+        borderColor: RESOLVED_COLOR,
+        borderDash: [6, 4],
+        borderWidth: 2,
+        fill: false,
+        pointBackgroundColor: "#ffffff",
+        pointBorderColor: RESOLVED_COLOR,
+        pointBorderWidth: 2,
+        pointHoverRadius: 4,
+        pointRadius: 0,
+        cubicInterpolationMode: "monotone",
       },
     ],
   };
-  const options: ChartOptions<"bar" | "line"> = {
+  const options: ChartOptions<"line"> = {
     animation: reducedMotion ? false : { duration: 420 },
     interaction: { intersect: false, mode: "index" },
     maintainAspectRatio: false,
@@ -76,19 +97,27 @@ export function OverviewTrendChart({
       tooltip: {
         ...TOOLTIP_LINE_MARKER,
         callbacks: {
+          label(context) {
+            const hourly =
+              context.datasetIndex === 0
+                ? samples[context.dataIndex]?.incidentsCreated
+                : samples[context.dataIndex]?.alertConditionsResolved;
+            const thisHour = hourly === undefined || hourly === 0 ? "" : `（本小时 +${hourly}）`;
+            return ` ${context.dataset.label}  ${context.parsed.y}${thisHour}`;
+          },
           afterBody(items) {
-            return items.some((item) => item.dataset.label === "告警条件解除")
+            return items.some((item) => item.dataset.label === "累计告警条件解除")
               ? "仅表示 Alertmanager 条件解除，不代表 Incident 关闭。"
               : "";
           },
           labelColor(context) {
             return tooltipLineLabelStyle(
-              context.datasetIndex === 0 ? "#0f8f86" : "#2f8de4",
+              context.datasetIndex === 0 ? CREATED_COLOR : RESOLVED_COLOR,
             );
           },
           labelPointStyle(context) {
             return tooltipLinePointStyle(
-              context.datasetIndex === 0 ? "#0f8f86" : "#2f8de4",
+              context.datasetIndex === 0 ? CREATED_COLOR : RESOLVED_COLOR,
               context.datasetIndex !== 0,
             );
           },
@@ -113,16 +142,15 @@ export function OverviewTrendChart({
   return (
     <div className="overview-trend">
       <div className="overview-trend__legend" aria-label="趋势图图例">
-        <span><i className="is-created" />新增 Incident</span>
-        <span><i className="is-resolved" />告警条件解除</span>
+        <span><i className="is-created" />累计新增 Incident</span>
+        <span><i className="is-resolved" />累计告警条件解除</span>
       </div>
       <div className="overview-trend__plot">
-        <Chart
-          type="bar"
+        <Line
           data={data}
           options={options}
           role="img"
-          aria-label="最近 24 小时新增 Incident 与告警条件解除趋势"
+          aria-label="最近 24 小时新增 Incident 与告警条件解除的累计趋势"
         />
       </div>
       <p className="sr-only">

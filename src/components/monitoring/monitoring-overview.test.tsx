@@ -216,11 +216,11 @@ function panelResponse(
 }
 
 describe("MonitoringHealthOverview", () => {
-  it("renders a lightweight status path without title, overall state, or refresh", () => {
+  it("renders a titled status path without overall state or refresh", () => {
     render(<MonitoringHealthOverview initialHealth={HEALTHY} />);
 
     expect(screen.getByRole("region", { name: "监控链路" })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "监控链路" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "监控链路" })).toBeVisible();
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.queryByText("正常")).toBeNull();
     expect(screen.getByLabelText("规则计算：正常")).toBeVisible();

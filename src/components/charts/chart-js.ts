@@ -2,8 +2,6 @@
 
 import {
   ArcElement,
-  BarController,
-  BarElement,
   CategoryScale,
   Chart as ChartJS,
   DoughnutController,
@@ -77,8 +75,6 @@ export function ensureChartJsRegistered(): void {
 
   ChartJS.register(
     ArcElement,
-    BarController,
-    BarElement,
     CategoryScale,
     DoughnutController,
     Filler,

@@ -16,10 +16,10 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("react-chartjs-2", () => ({
-  Chart: (props: Record<string, unknown>) => (
+  Doughnut: (props: Record<string, unknown>) => (
     <div role="img" aria-label={String(props["aria-label"])} />
   ),
-  Doughnut: (props: Record<string, unknown>) => (
+  Line: (props: Record<string, unknown>) => (
     <div role="img" aria-label={String(props["aria-label"])} />
   ),
 }));
@@ -87,7 +87,7 @@ describe("HomeMonitoringDashboard", () => {
     );
 
     expect(screen.getByRole("region", { name: "监控链路" })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: "监控链路" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "监控链路" })).toBeVisible();
     expect(screen.getByLabelText("Incident 状态统计")).toHaveTextContent(
       /活跃 Incident.*8告警中2诊断中3待审批4/,
     );
@@ -107,7 +107,7 @@ describe("HomeMonitoringDashboard", () => {
     ).toHaveTextContent("Image pull failure2");
     expect(
       screen.getByRole("img", {
-        name: "最近 24 小时新增 Incident 与告警条件解除趋势",
+        name: "最近 24 小时新增 Incident 与告警条件解除的累计趋势",
       }),
     ).toBeVisible();
     expect(

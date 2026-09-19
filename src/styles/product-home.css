@@ -70,12 +70,14 @@
 }
 
 .home-monitoring .monitoring-health {
+  --monitoring-node-size: 26px;
+
   display: grid;
   height: 100%;
   min-height: 0;
   align-content: center;
   margin: 0;
-  padding: 18px;
+  padding: 22px 26px 24px;
   border: 1px solid rgb(216 226 232 / 80%);
   border-radius: 15px;
   background: rgb(255 255 255 / 94%);
@@ -83,16 +85,11 @@
 }
 
 .home-monitoring .monitoring-health__path {
-  gap: 7px;
+  gap: 10px;
 }
 
-.home-monitoring .monitoring-health__dot {
-  width: 24px;
-  height: 24px;
-}
-
-.home-monitoring .monitoring-health__path::before {
-  top: 11px;
+.home-monitoring .monitoring-health__node {
+  gap: 9px;
 }
 
 .overview-counts {
@@ -295,6 +292,7 @@
   place-content: center;
   justify-items: center;
   pointer-events: none;
+  transition: opacity 160ms ease;
 }
 
 .overview-doughnut__center strong,
@@ -380,29 +378,45 @@
   font-size: 0.68rem;
 }
 
-.overview-doughnut__tip {
-  position: absolute;
-  z-index: 5;
-  display: grid;
-  gap: 2px;
-  width: max-content;
-  max-width: 184px;
-  margin: 0;
-  padding: 7px 10px;
-  border-radius: 9px;
-  color: #ffffff;
-  background: #153b54;
-  box-shadow: 0 8px 22px rgb(8 43 69 / 22%);
-  font-size: 0.66rem;
-  line-height: 1.45;
-  pointer-events: none;
-  transform: translate(-50%, calc(-100% - 10px));
+.overview-doughnut__center[data-visible="false"] {
+  opacity: 0;
 }
 
-.overview-doughnut__tip strong {
-  color: rgb(255 255 255 / 78%);
+/* The hovered family is read out inside the ring instead of in a floating box
+   that this plot is too narrow to place. */
+.overview-doughnut__focus {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding-inline: 46px;
+  place-content: center;
+  justify-items: center;
+  opacity: 0;
+  text-align: center;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.overview-doughnut__focus[data-visible="true"] {
+  opacity: 1;
+}
+
+.overview-doughnut__focus span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--navy-deep);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.overview-doughnut__focus strong {
+  color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: 0.68rem;
   font-weight: 600;
 }
 
@@ -507,15 +521,14 @@
   width: 17px;
   height: 2px;
   border-radius: 999px;
-  background: rgb(15 157 145 / 82%);
+  background: #0f9d91;
 }
 
 .overview-trend__legend i.is-resolved {
-  height: 2px;
   background: repeating-linear-gradient(
     90deg,
-    #2f8de4 0 5px,
-    transparent 5px 9px
+    #4b9ae4 0 6px,
+    transparent 6px 10px
   );
 }
 

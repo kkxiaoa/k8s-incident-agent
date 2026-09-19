@@ -17,8 +17,7 @@ type HealthAlerts = MonitoringHealthView["healthAlerts"];
 
 function healthNodes(health: MonitoringHealthView | null) {
   const alertsOf = (component: HealthAlerts[number]["component"]) =>
-    health?.healthAlerts.filter((alert) => alert.component === component) ??
-    [];
+    health?.healthAlerts.filter((alert) => alert.component === component) ?? [];
   const none: HealthAlerts = [];
   return [
     {
@@ -64,8 +63,12 @@ export function MonitoringHealthOverview({
   return (
     <section
       className="monitoring-health"
-      aria-label="监控链路"
+      aria-labelledby="monitoring-health-title"
     >
+      <header className="monitoring-health__header">
+        <h2 id="monitoring-health-title">监控链路</h2>
+        <p>从指标采集到 Runtime 通知的逐段状态</p>
+      </header>
       <ol className="monitoring-health__path">
         {nodes.map((node) => {
           const status = `${node.label}：${STATE_LABELS[node.state]}`;
