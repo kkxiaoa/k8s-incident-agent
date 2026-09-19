@@ -42,6 +42,7 @@ from k8s_incident_agent.repair.compiler import (
     compile_repair_proposal,
 )
 from k8s_incident_agent.repair.contracts import EvidenceBoundImageChange, RepairProposal
+from k8s_incident_agent.repair.eligibility import proves_invalid_image_reference
 from k8s_incident_agent.repair.history import image_history_candidates
 from k8s_incident_agent.repair.records import PreparedRepairRecord
 from k8s_incident_agent.repair.rollback import resolve_rollback_change
@@ -101,25 +102,12 @@ def resolve_fresh_change(
         for item in revisions[0].containers
     ):
         raise RepairPreparationError("stale_resource")
-    failing_pod_uids = {
-        pod.uid
-        for pod in pods.payload.pods
-        if pod.owner.uid == revisions[0].replica_set_ref.uid
-        and any(
-            container.name == source.container_name
-            and container.image == source.current_image
-            and container.state.status == "waiting"
-            and container.state.reason in ("ImagePullBackOff", "ErrImagePull")
-            for container in pod.containers
-        )
-    }
-    if not failing_pod_uids or not any(
-        event.regarding.uid in failing_pod_uids
-        and event.regarding.kind == "Pod"
-        and event.type == "Warning"
-        and event.reason == "Failed"
-        and event.reporting_controller == "kubelet"
-        for event in events.payload.events
+    if not proves_invalid_image_reference(
+        workload=workload.payload,
+        pods=(pods.payload,),
+        events=(events.payload,),
+        container_name=source.container_name,
+        replica_set_uid=revisions[0].replica_set_ref.uid,
     ):
         raise RepairPreparationError("stale_resource")
     candidates = [

@@ -13,11 +13,6 @@ from k8s_incident_agent.domain.models import (
     DiagnosisValidationSnapshot,
     JsonValue,
 )
-from k8s_incident_agent.kubernetes.contracts import (
-    RolloutHistoryPayload,
-    TargetRef,
-    WorkloadPayload,
-)
 from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.repair.contracts import (
     EvidenceBoundImageChange,
@@ -25,6 +20,11 @@ from k8s_incident_agent.repair.contracts import (
     RepairAction,
     RepairDiff,
     RepairProposal,
+)
+from k8s_incident_agent.repair.eligibility import (
+    fault_observations,
+    load_intent_evidence,
+    proves_invalid_image_reference,
 )
 
 _REPAIR_NAMESPACE: Final = UUID("4a999af4-1b9c-5d42-a967-c45b79f38a47")
@@ -56,37 +56,15 @@ def resolve_evidence_bound_change(
     cited_ids = {
         evidence_id
         for root_cause in diagnosis.root_causes
-        if root_cause.code == "image_invalid_registry"
         for evidence_id in root_cause.evidence_ids
     }
-    requested_ids = set(intent.evidence_ids)
-    if not requested_ids.issubset(cited_ids):
+    if not set(intent.evidence_ids).issubset(cited_ids):
         raise RepairPreparationError("repair_policy_denied")
-    try:
-        evidence = tuple(
-            snapshot.evidence_by_id[value] for value in intent.evidence_ids
-        )
-    except KeyError:
-        raise RepairPreparationError("repair_policy_denied") from None
-    if (
-        len(evidence) != 2
-        or {item.evidence_kind for item in evidence} != {"workload", "rollout_history"}
-        or any(
-            item.run_id != run_id or item.truncated or item.redacted
-            for item in evidence
-        )
-    ):
+    cited = load_intent_evidence(intent, snapshot.evidence_by_id, run_id=run_id)
+    if cited is None:
         raise RepairPreparationError("repair_policy_denied")
-    by_kind = {item.evidence_kind: item for item in evidence}
-    workload_evidence = by_kind["workload"]
-    rollout_evidence = by_kind["rollout_history"]
-    try:
-        workload_ref = TargetRef.model_validate(workload_evidence.target_ref)
-        rollout_ref = TargetRef.model_validate(rollout_evidence.target_ref)
-        workload = WorkloadPayload.model_validate(workload_evidence.payload)
-        rollout = RolloutHistoryPayload.model_validate(rollout_evidence.payload)
-    except ValidationError:
-        raise RepairPreparationError("repair_policy_denied") from None
+    workload_ref, rollout_ref = cited.workload_ref, cited.rollout_ref
+    workload, rollout = cited.workload, cited.rollout
     expected_ref = (
         target.api_version,
         target.kind,
@@ -130,6 +108,15 @@ def resolve_evidence_bound_change(
         if container.name == intent.container_name
     ]
     if len(current_containers) != 1 or current_containers[0].image != current_image:
+        raise RepairPreparationError("repair_policy_denied")
+    pods, events = fault_observations(snapshot.evidence_by_id, run_id=run_id)
+    if not proves_invalid_image_reference(
+        workload=workload,
+        pods=pods,
+        events=events,
+        container_name=intent.container_name,
+        replica_set_uid=current_revision.replica_set_ref.uid,
+    ):
         raise RepairPreparationError("repair_policy_denied")
     prior_revisions = rollout.revisions[1:]
     if not prior_revisions:

@@ -7,7 +7,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import (
 from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 from k8s_incident_agent.repair.contracts import RepairAction
 
-DIAGNOSTIC_PROMPT_VERSION = "stage3-dc5-recommendations-v10"
+DIAGNOSTIC_PROMPT_VERSION = "stage3-dc6-action-eligibility-v11"
 
 
 def build_diagnostic_system_prompt(
@@ -121,10 +121,12 @@ def build_diagnostic_system_prompt(
         else ""
     )
     repair_instruction = (
-        "- Only when the observations establish root-cause code "
-        "image_invalid_registry, and the workload plus rollout-history Evidence "
-        "identify the exact current container image and the immediately preceding "
-        "revision image, include repair_intent.\n"
+        "- Include repair_intent only when the observations show that one "
+        "container cannot start because its image reference itself is invalid, "
+        "and the workload plus rollout-history Evidence identify that "
+        "container's exact current image and the immediately preceding revision "
+        "image. How you name the root cause does not grant or withhold this "
+        "action; the Runtime decides it from the Evidence alone.\n"
         "- Its action must be "
         "set_container_image; copy the fixed incident target; set container_name "
         "to that observed container; set replacement_image to that observed prior "

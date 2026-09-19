@@ -19,7 +19,6 @@ from k8s_incident_agent.diagnosis.contracts import (
 )
 from k8s_incident_agent.diagnosis.validation import (
     DiagnosisValidationError,
-    RepairIntentUnsupportedError,
     UnresolvedToolFailuresError,
     validate_diagnosis,
 )
@@ -410,10 +409,12 @@ async def test_validator_sanitizes_model_text_and_preserves_model_code(
     "model_code",
     ["image_pull_forbidden", "image_reference_unavailable_or_unauthenticated"],
 )
-async def test_validator_canonicalizes_reserved_invalid_registry_failure(
+async def test_validator_keeps_the_model_root_cause_code(
     tmp_path: Path,
     model_code: str,
 ) -> None:
+    """Naming is explanation; the action is decided from the Evidence."""
+
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
         run_id = await _running_run(repository, f"invalid-registry-{model_code}")
@@ -438,7 +439,7 @@ async def test_validator_canonicalizes_reserved_invalid_registry_failure(
             required_evidence=frozenset({"workload", "pods", "events"}),
         )
 
-        assert validated.root_causes[0].code == "image_invalid_registry"
+        assert validated.root_causes[0].code == model_code
 
 
 @pytest.mark.asyncio
@@ -1002,36 +1003,19 @@ def _repair_intent(evidence_ids: tuple[UUID, ...]) -> SetContainerImageIntent:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("image", "recorded_tools", "expected"),
-    [
-        (
-            "registry.invalid/k8s-incident-agent/missing:v1",
-            ("get_workload", "get_pods", "get_events"),
-            "accepted",
-        ),
-        (
-            "registry.example.com/private/workload:v1",
-            ("get_workload", "get_pods", "get_events"),
-            "denied",
-        ),
-        (
-            "registry.invalid/k8s-incident-agent/missing:v1",
-            ("get_workload",),
-            "denied",
-        ),
-    ],
-)
-async def test_repair_intent_requires_the_proven_invalid_registry_fact(
+async def test_validation_leaves_the_repair_intent_to_the_policy_gate(
     tmp_path: Path,
-    image: str,
-    recorded_tools: tuple[str, ...],
-    expected: str,
 ) -> None:
+    """An unproven intent must not cost the reader the diagnosis itself.
+
+    Eligibility is decided once, in the repair policy gate; failing here would
+    end the Run with an error and no summary, root causes or recommendations.
+    """
+
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
         run_id = await _running_run(repository, "image-pull-backoff")
-        payloads = _image_pull_payloads(image)
+        payloads = _image_pull_payloads("registry.example.com/private/workload:v1")
         evidence_ids = tuple(
             [
                 await _record_evidence(
@@ -1041,7 +1025,7 @@ async def test_repair_intent_requires_the_proven_invalid_registry_fact(
                     tool_name=tool_name,
                     payload=payloads[tool_name],
                 )
-                for tool_name in recorded_tools
+                for tool_name in ("get_workload", "get_pods", "get_events")
             ]
             + [
                 await _record_evidence(
@@ -1052,33 +1036,23 @@ async def test_repair_intent_requires_the_proven_invalid_registry_fact(
                 )
             ]
         )
-        # The model self-reports the reserved code; only proven facts may back a repair.
         candidate = _diagnosed_with_evidence(
-            evidence_ids, code="image_invalid_registry"
+            evidence_ids, code="registry_credentials_missing"
         ).model_copy(
             update={
                 "repair_intent": _repair_intent((evidence_ids[0], evidence_ids[-1]))
             }
         )
 
-        if expected == "accepted":
-            validated = await validate_diagnosis(
-                candidate,
-                run_id,
-                repository,
-                required_evidence=frozenset({"workload"}),
-            )
-            assert validated.repair_intent is not None
-            assert validated.root_causes[0].code == "image_invalid_registry"
-        else:
-            with pytest.raises(RepairIntentUnsupportedError) as error:
-                await validate_diagnosis(
-                    candidate,
-                    run_id,
-                    repository,
-                    required_evidence=frozenset({"workload"}),
-                )
-            assert error.value.code == "repair_policy_denied"
+        validated = await validate_diagnosis(
+            candidate,
+            run_id,
+            repository,
+            required_evidence=frozenset({"workload"}),
+        )
+
+        assert validated.repair_intent is not None
+        assert validated.root_causes[0].code == "registry_credentials_missing"
 
 
 @pytest.mark.asyncio

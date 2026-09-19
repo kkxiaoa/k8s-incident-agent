@@ -39,10 +39,11 @@ def _evidence(
     *,
     uid: str = "deployment-uid",
     truncated: bool = False,
+    run_id: UUID = RUN_ID,
 ) -> PersistedEvidence:
     return PersistedEvidence(
         id=evidence_id,
-        run_id=RUN_ID,
+        run_id=run_id,
         tool_call_id=f"call-{kind}",
         tool_name=f"get_{kind}",
         evidence_kind=kind,
@@ -69,11 +70,93 @@ def _evidence(
     )
 
 
+def _pull_failure_payloads(
+    *,
+    failing_container: str = "workload",
+    failing_image: str = CURRENT_IMAGE,
+    owner_uid: str = "rs-new",
+) -> tuple[dict[str, object], dict[str, object]]:
+    source_workload: dict[str, object] = {
+        "resourceVersion": "42",
+        "selector": {"matchLabels": {"app": "image-pull"}},
+    }
+    pods: dict[str, object] = {
+        "sourceWorkload": source_workload,
+        "pods": [
+            {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "namespace": "k8s-incident-scenarios",
+                "name": "image-pull-pod",
+                "uid": "pod-uid",
+                "resourceVersion": "44",
+                "owner": {
+                    "apiVersion": "apps/v1",
+                    "kind": "ReplicaSet",
+                    "name": "image-pull-new",
+                    "uid": owner_uid,
+                    "controller": True,
+                },
+                "phase": "Pending",
+                "conditions": [],
+                "containers": [
+                    {
+                        "name": failing_container,
+                        "image": failing_image,
+                        "imageId": None,
+                        "restartCount": 0,
+                        "state": {
+                            "status": "waiting",
+                            "reason": "ImagePullBackOff",
+                            "message": "Image pull failed.",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    events: dict[str, object] = {
+        "sourceWorkload": source_workload,
+        "associatedReplicaSetCount": 1,
+        "associatedPodCount": 1,
+        "events": [
+            {
+                "apiVersion": "events.k8s.io/v1",
+                "kind": "Event",
+                "namespace": "k8s-incident-scenarios",
+                "name": "image-pull-pod.failed",
+                "uid": "event-uid",
+                "resourceVersion": "45",
+                "regarding": {
+                    "apiVersion": "v1",
+                    "kind": "Pod",
+                    "namespace": "k8s-incident-scenarios",
+                    "name": "image-pull-pod",
+                    "uid": "pod-uid",
+                },
+                "type": "Warning",
+                "reason": "Failed",
+                "action": None,
+                "note": "Failed to pull image.",
+                "eventTime": NOW.isoformat(),
+                "seriesCount": 3,
+                "reportingController": "kubelet",
+            }
+        ],
+    }
+    return pods, events
+
+
 def _snapshot(
     *,
     rollout_uid: str = "deployment-uid",
     rollout_resource_version: str = "42",
     workload_truncated: bool = False,
+    current_image: str = CURRENT_IMAGE,
+    fault: dict[str, str] | None = None,
+    fault_run_id: UUID = RUN_ID,
+    fault_truncated: bool = False,
+    record_fault: bool = True,
 ) -> tuple[DiagnosisValidationSnapshot, UUID, UUID]:
     workload_id = uuid4()
     rollout_id = uuid4()
@@ -104,7 +187,7 @@ def _snapshot(
                     },
                     {
                         "name": "workload",
-                        "image": CURRENT_IMAGE,
+                        "image": current_image,
                         "imagePullPolicy": "Always",
                         "command": [],
                         "args": [],
@@ -135,7 +218,7 @@ def _snapshot(
                         "name": "image-pull-new",
                         "uid": "rs-new",
                     },
-                    "containers": [{"name": "workload", "image": CURRENT_IMAGE}],
+                    "containers": [{"name": "workload", "image": current_image}],
                 },
                 {
                     "revision": 2,
@@ -152,9 +235,29 @@ def _snapshot(
         },
         uid=rollout_uid,
     )
+    evidence_by_id = {workload_id: workload, rollout_id: rollout}
+    if record_fault:
+        pods_payload, events_payload = _pull_failure_payloads(
+            **{"failing_image": current_image, **(fault or {})}
+        )
+        pods_id, events_id = uuid4(), uuid4()
+        evidence_by_id[pods_id] = _evidence(
+            pods_id,
+            "pods",
+            pods_payload,
+            run_id=fault_run_id,
+            truncated=fault_truncated,
+        )
+        evidence_by_id[events_id] = _evidence(
+            events_id,
+            "events",
+            events_payload,
+            run_id=fault_run_id,
+            truncated=fault_truncated,
+        )
     return (
         DiagnosisValidationSnapshot(
-            evidence_by_id={workload_id: workload, rollout_id: rollout},
+            evidence_by_id=evidence_by_id,
             tool_failures=(),
             unresolved_tool_failures=(),
         ),
@@ -163,14 +266,19 @@ def _snapshot(
     )
 
 
-def _diagnosis(workload_id: UUID, rollout_id: UUID) -> ValidatedDiagnosis:
+def _diagnosis(
+    workload_id: UUID,
+    rollout_id: UUID,
+    *,
+    code: str = "image_invalid_registry",
+) -> ValidatedDiagnosis:
     return ValidatedDiagnosis.model_validate(
         {
             "outcome": "diagnosed",
             "summary": "The current image cannot be pulled.",
             "root_causes": [
                 {
-                    "code": "image_invalid_registry",
+                    "code": code,
                     "statement": "The current image uses a reserved registry.",
                     "confidence": "high",
                     "evidence_ids": [str(workload_id), str(rollout_id)],
@@ -317,3 +425,106 @@ def test_policy_rejects_cross_run_evidence() -> None:
             target=TARGET,
             allowed_action="set_container_image",
         )
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["image_invalid_registry", "registry_host_unresolvable", "workload_misconfigured"],
+)
+def test_policy_decides_from_facts_not_from_the_root_cause_name(code: str) -> None:
+    """The same proven facts keep the action whatever the model called them."""
+
+    snapshot, workload_id, rollout_id = _snapshot()
+
+    change = resolve_evidence_bound_change(
+        _diagnosis(workload_id, rollout_id, code=code),
+        snapshot,
+        run_id=RUN_ID,
+        target=TARGET,
+        allowed_action="set_container_image",
+    )
+
+    assert change.container_name == "workload"
+    assert change.current_image == CURRENT_IMAGE
+    assert change.replacement_image == PREVIOUS_IMAGE
+
+
+@pytest.mark.parametrize(
+    "snapshot_options",
+    [
+        # Another container's pull failure must not license replacing this one.
+        {
+            "fault": {
+                "failing_container": "telemetry",
+                "failing_image": "registry.example/telemetry:v2",
+            }
+        },
+        # Pods left over from an earlier ReplicaSet prove nothing about this revision.
+        {"fault": {"owner_uid": "rs-old"}},
+        # Without the pull failure itself only the history remains, which is not a fault.
+        {"record_fault": False},
+        # Observations another Run recorded cannot prove this Run's fault.
+        {"fault_run_id": uuid4()},
+        # A truncated observation is not a usable proof.
+        {"fault_truncated": True},
+    ],
+)
+def test_policy_requires_the_pull_failure_attributed_to_this_container(
+    snapshot_options: dict[str, object],
+) -> None:
+    snapshot, workload_id, rollout_id = _snapshot(**snapshot_options)  # type: ignore[arg-type]
+
+    with pytest.raises(RepairPreparationError) as captured:
+        resolve_evidence_bound_change(
+            _diagnosis(workload_id, rollout_id),
+            snapshot,
+            run_id=RUN_ID,
+            target=TARGET,
+            allowed_action="set_container_image",
+        )
+
+    assert captured.value.code == "repair_policy_denied"
+
+
+def test_policy_rejects_an_intent_no_root_cause_cites() -> None:
+    snapshot, workload_id, rollout_id = _snapshot()
+    diagnosis = _diagnosis(workload_id, rollout_id)
+    uncited = diagnosis.model_copy(
+        update={
+            "root_causes": [
+                diagnosis.root_causes[0].model_copy(
+                    update={"evidence_ids": [workload_id]}
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(RepairPreparationError) as captured:
+        resolve_evidence_bound_change(
+            uncited,
+            snapshot,
+            run_id=RUN_ID,
+            target=TARGET,
+            allowed_action="set_container_image",
+        )
+
+    assert captured.value.code == "repair_policy_denied"
+
+
+def test_policy_rejects_a_pull_failure_from_an_ordinary_registry() -> None:
+    """Credentials, network or rate limits fail the same way and stay out of reach."""
+
+    snapshot, workload_id, rollout_id = _snapshot(
+        current_image="registry.example.com/private/workload:v1"
+    )
+
+    with pytest.raises(RepairPreparationError) as captured:
+        resolve_evidence_bound_change(
+            _diagnosis(workload_id, rollout_id),
+            snapshot,
+            run_id=RUN_ID,
+            target=TARGET,
+            allowed_action="set_container_image",
+        )
+
+    assert captured.value.code == "repair_policy_denied"

@@ -825,11 +825,32 @@ test("context panels may be empty on a profile without kubelet collection, but n
   }
 });
 
+test("ImagePull repair is judged by cited Evidence, not by the root-cause name", async () => {
+  const harness = createHarness({
+    diagnosisCodeByScenario: {
+      "image-pull-backoff": "registry_host_unresolvable",
+    },
+  });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const imagePull = result.artifact.scenarios.find(
+    (scenario) => scenario.scenarioId === "image-pull-backoff",
+  );
+  assert.notEqual(imagePull.status, "failed");
+  assert.equal(imagePull.checks.repair.validation, "passed");
+  assert.equal(imagePull.checks.repair.terminalStatus, "WAITING_APPROVAL");
+});
+
 test("ImagePull diagnosis alone cannot satisfy the repair evaluation slice", async () => {
   const harness = createHarness({
     diagnosisCodeByScenario: {
       "image-pull-backoff": "image_pull_forbidden_invalid_registry",
     },
+    omitRepair: true,
   });
 
   const result = await runEvaluationCommand(
@@ -1502,7 +1523,7 @@ function repairProjection(scenario, diagnosisCode, options, evidence) {
   const expected = scenario.expectedPatchConstraints;
   if (
     expected === undefined ||
-    diagnosisCode !== "image_invalid_registry" ||
+    options.omitRepair === true ||
     options.omitDiagnosisEvidenceLinks === true
   ) {
     return null;

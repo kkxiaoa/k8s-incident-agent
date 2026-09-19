@@ -1317,16 +1317,19 @@ function validateTerminalRepair(scenario, detail, evidenceById) {
   const repairKinds = new Set(
     evidenceIds.map((evidenceId) => evidenceById.get(evidenceId).evidenceKind),
   );
+  // The proposal is bound to the Evidence a root cause cites, not to how the
+  // model named that root cause; the Runtime decides the action from the facts.
   const repairRootCause = detail.diagnosis.rootCauses.find(
-    (rootCause) => rootCause.code === "image_invalid_registry",
+    (rootCause) =>
+      Array.isArray(rootCause.evidenceIds) &&
+      evidenceIds.every((evidenceId) =>
+        rootCause.evidenceIds.includes(evidenceId)),
   );
   if (
     repairKinds.size !== 2 ||
     !repairKinds.has("workload") ||
     !repairKinds.has("rollout_history") ||
-    !Array.isArray(repairRootCause?.evidenceIds) ||
-    evidenceIds.some((evidenceId) =>
-      !repairRootCause.evidenceIds.includes(evidenceId)) ||
+    repairRootCause === undefined ||
     repair.digest !== expectedRepairDigest(detail.selectedRun.id, repair)
   ) {
     throw contractError(
