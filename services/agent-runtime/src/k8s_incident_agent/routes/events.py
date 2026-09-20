@@ -44,7 +44,9 @@ _EventService = Annotated[
 async def get_incident_events(
     incident_id: UUID,
     service: _EventService,
-    session: Annotated[OperatorSession | None, Depends(require_reader, scope="function")],
+    session: Annotated[
+        OperatorSession | None, Depends(require_reader, scope="function")
+    ],
     access: Annotated[PublicDemoAccess, Depends(console_access)],
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:

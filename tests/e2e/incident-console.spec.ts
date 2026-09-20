@@ -197,20 +197,44 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   await expect(page.getByRole("button", { name: "重新读取" })).toHaveCount(0);
 });
 
-test("keeps the overview inside a phone screen", async ({ page }) => {
+test("keeps the overview inside a phone screen while it loads", async ({ page }) => {
   // The panel expansion once overflowed narrow screens with no test to catch
-  // it; the home page carries the counters, the chain and the trend chart.
+  // it, and only during loading. Slow the CPU down so the frames a chart
+  // paints before it resizes are actually observed instead of raced past.
   await control("/__test__/showcase", {});
+  const devtools = await page.context().newCDPSession(page);
+  await devtools.send("Emulation.setCPUThrottlingRate", { rate: 8 });
+  await page.addInitScript(() => {
+    const offenders: string[] = [];
+    const sample = () => {
+      const width = document.documentElement.clientWidth;
+      if (document.documentElement.scrollWidth > width) {
+        for (const element of document.querySelectorAll<HTMLElement>("*")) {
+          if (element.getBoundingClientRect().right > width + 1) {
+            offenders.push(`${element.tagName}.${String(element.className).slice(0, 40)}`);
+          }
+        }
+      }
+      (window as unknown as { __overflow: string[] }).__overflow = [
+        ...new Set(offenders),
+      ].slice(0, 8);
+    };
+    const timer = setInterval(sample, 16);
+    setTimeout(() => clearInterval(timer), 15_000);
+  });
 
   for (const width of [320, 390, 768]) {
     await page.setViewportSize({ width, height: 844 });
     await page.goto("/");
     await expect(page.locator(".overview-trend")).toBeVisible();
-    const widths = await page.evaluate(() => ({
+    await expect(page.locator(".overview-doughnut__plot canvas")).toBeVisible();
+    const report = await page.evaluate(() => ({
       client: document.documentElement.clientWidth,
       scroll: document.documentElement.scrollWidth,
+      offenders: (window as unknown as { __overflow?: string[] }).__overflow ?? [],
     }));
-    expect(widths.scroll, `width ${width}`).toBeLessThanOrEqual(widths.client);
+    expect(report.offenders, `width ${width}`).toEqual([]);
+    expect(report.scroll, `width ${width}`).toBeLessThanOrEqual(report.client);
   }
 });
 

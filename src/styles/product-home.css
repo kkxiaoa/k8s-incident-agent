@@ -285,6 +285,13 @@
   height: 202px;
 }
 
+/* Chart.js paints its first frame at the canvas default width, which on a
+   phone would widen this grid column past the viewport before it resizes. */
+.overview-doughnut__plot canvas {
+  display: block;
+  max-width: 100%;
+}
+
 .overview-doughnut__center {
   position: absolute;
   inset: 0;
