@@ -37,6 +37,7 @@ import {
 } from "@/lib/agent-runtime/view-models";
 
 import { DiagnosisPanel } from "./diagnosis-panel";
+import { RecommendationPanel } from "./recommendation-panel";
 import { EvidenceList } from "./evidence-card";
 import { IncidentStatusBadge, RunStatusBadge } from "./incident-status";
 import { RunTimeline } from "./run-timeline";
@@ -857,6 +858,13 @@ export function IncidentStream({
           )}
         </section>
       )}
+
+      <RecommendationPanel
+        diagnosis={diagnosisDetail?.diagnosis ?? null}
+        evidence={diagnosisDetail?.evidence}
+        referenceRunAttempt={referenceRunAttempt}
+        runCompletedAt={diagnosisDetail?.selectedRun.completedAt}
+      />
 
       <RepairPanel
         detail={detail}

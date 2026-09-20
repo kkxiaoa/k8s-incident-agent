@@ -18,9 +18,9 @@ import { MonitoringHealthOverview } from "./monitoring-health-overview";
 const COUNT_CARDS = [
   {
     key: "totalIncidents",
-    label: "活跃 Incident",
+    label: "已记录 Incident",
     tone: "neutral",
-    info: "已进入 Runtime、尚未完成受控修复与恢复验证的 Incident。",
+    info: "Runtime 已持久化的 Incident 累计数，含已结束的记录；不是当前未恢复的数量。",
   },
   { key: "firingAlerts", label: "告警中", tone: "danger", info: null },
   { key: "triagingIncidents", label: "诊断中", tone: "active", info: null },
@@ -98,14 +98,14 @@ export function HomeMonitoringDashboard({
                 {card.info === null ? null : (
                   <span
                     className="overview-count__info"
-                    aria-describedby="active-incidents-tooltip"
-                    aria-label="说明活跃 Incident 的统计口径"
+                    aria-describedby="total-incidents-tooltip"
+                    aria-label="说明已记录 Incident 的统计口径"
                     tabIndex={0}
                   >
                     <UiIcon name="info" />
                     <span
                       className="overview-count__tooltip"
-                      id="active-incidents-tooltip"
+                      id="total-incidents-tooltip"
                       role="tooltip"
                     >
                       {card.info}

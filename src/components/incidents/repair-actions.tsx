@@ -74,6 +74,21 @@ export function RepairActions({ detail, busy, busyReason, refreshing, onAction, 
     setConfirming(null);
   }
 
+  // An advice-only Run has no controlled repair to offer, and a generic next
+  // step here would imply a preparation entry that does not exist. Runs that
+  // did enter the repair path keep their explanation even without an action.
+  if (
+    run.kind === "diagnosis" &&
+    repair === null &&
+    visible.length === 0 &&
+    confirming === null &&
+    error === null &&
+    !busy &&
+    !refreshing
+  ) {
+    return null;
+  }
+
   return (
     <div className="repair-actions" aria-label="修复操作">
       <div className="repair-actions__heading">

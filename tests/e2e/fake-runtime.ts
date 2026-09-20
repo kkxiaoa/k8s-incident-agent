@@ -1720,6 +1720,11 @@ export function seedManualRepairShowcase(): number {
     ["T9 · 已回滚，恢复已验证", "rollback-recovered"],
     ["T9 · 已回滚，但恢复无法证明", "rollback-monitoring_unavailable"],
     ["T9 · 回滚结果 UNKNOWN，保持占用", "rollback-unknown"],
+    ["DC-7 · 仅诊断与建议（两步）", "advice-only"],
+    ["DC-7 · 证据不足，未提出建议（两步）", "advice-empty"],
+    ["DC-7 · 记录于建议功能之前（两步）", "advice-legacy"],
+    ["DC-7 · 运行失败，未到门禁（两步）", "run-failed"],
+    ["DC-7 · 准备门禁未通过（五步）", "policy-denied"],
   ] as const;
   const now = new Date().toISOString();
   const approve = (record: FakeIncident, decision: "approve" | "reject" = "approve") => {
@@ -1779,7 +1784,8 @@ export function seedManualRepairShowcase(): number {
     detail.incident.triggerSummary = "手工 UI 走查测试数据；不连接 Kubernetes，不证明真实执行或恢复。";
     detail.incident.status = "DIAGNOSED";
     for (const event of record.events) event.data.incidentId = detail.incident.id;
-    if (state !== "diagnosis") {
+    const diagnosisOnly = state.startsWith("advice-") || state === "run-failed" || state === "policy-denied";
+    if (state !== "diagnosis" && !diagnosisOnly) {
       if (!prepareFakeRepair(record, { sourceRunId: detail.selectedRun.id })) throw new Error("Invalid manual preparation fixture");
       if (state === "expired") {
         record.detail.selectedRun.waitingExpiresAt = new Date(Date.now() - 1000).toISOString();
@@ -1813,6 +1819,33 @@ export function seedManualRepairShowcase(): number {
         } else if (state === "observing") recover(record, "observing");
         else if (state.endsWith("monitoring_unavailable")) recover(record, "monitoring_unavailable");
         else if (state.endsWith("recovered")) recover(record, "recovered");
+      }
+    }
+    if (diagnosisOnly) {
+      // A diagnosis Run that never produced an approvable proposal: the reading
+      // flow branches on these Runtime facts alone.
+      detail.repair = null;
+      detail.approval = null;
+      detail.verification = null;
+      detail.actions = { ...detail.actions, prepare: "not_applicable", refresh: "not_applicable",
+        edit: "not_applicable", approve: "not_applicable", reject: "not_applicable",
+        rollback: "not_applicable", withdraw: "not_applicable", rerun: null,
+        preparationSource: null, historyCandidates: [] };
+      detail.selectedRun.status = state === "advice-only" || state === "advice-empty" || state === "advice-legacy"
+        ? "COMPLETED" : "FAILED";
+      detail.selectedRun.error = state === "run-failed"
+        ? { code: "workflow_failed", retryable: false }
+        : state === "policy-denied" ? { code: "repair_policy_denied", retryable: false } : null;
+      detail.incident.status = detail.selectedRun.status === "FAILED" ? "FAILED" : "DIAGNOSED";
+      if (state === "advice-empty") {
+        detail.diagnosis = { ...detail.diagnosis!, outcome: "insufficient_evidence",
+          summary: "现有证据不足以判断镜像拉取失败的仓库端原因。",
+          rootCauses: [], missingInformation: ["镜像仓库端的拉取审计记录"], recommendations: [] };
+        detail.incident.status = "INSUFFICIENT_EVIDENCE";
+      } else if (state === "advice-legacy") {
+        detail.diagnosis = { ...detail.diagnosis!, recommendations: null };
+      } else if (state === "run-failed") {
+        detail.diagnosis = null;
       }
     }
     record.metricState = state.endsWith("monitoring_unavailable") ? "monitoring_unavailable" : "ok";

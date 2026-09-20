@@ -89,13 +89,13 @@ describe("HomeMonitoringDashboard", () => {
     expect(screen.getByRole("region", { name: "监控链路" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "监控链路" })).toBeVisible();
     expect(screen.getByLabelText("Incident 状态统计")).toHaveTextContent(
-      /活跃 Incident.*8告警中2诊断中3待审批4/,
+      /已记录 Incident.*8告警中2诊断中3待审批4/,
     );
     expect(
-      screen.getByLabelText("说明活跃 Incident 的统计口径"),
+      screen.getByLabelText("说明已记录 Incident 的统计口径"),
     ).toBeVisible();
     expect(screen.getByRole("tooltip")).toHaveTextContent(
-      "已进入 Runtime、尚未完成受控修复与恢复验证的 Incident。",
+      "Runtime 已持久化的 Incident 累计数，含已结束的记录；不是当前未恢复的数量。",
     );
     expect(
       screen.getByRole("img", {

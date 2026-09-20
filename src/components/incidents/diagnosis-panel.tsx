@@ -9,6 +9,8 @@ import { UiIcon } from "@/components/ui/ui-icon";
 import { LocalTimestamp } from "@/components/local-timestamp";
 import { ShimmerText } from "@/components/ui/shimmer-text";
 
+import { evidenceAnchorId } from "./evidence-card";
+
 const CONFIDENCE_LABELS = {
   low: "低置信度",
   medium: "中置信度",
@@ -132,7 +134,7 @@ export function DiagnosisPanel({
                             )}
                           </span>
                           <a
-                            href={`#${referenceRunAttempt === undefined ? "evidence" : "source-evidence"}-${evidenceId}`}
+                            href={`#${evidenceAnchorId(evidenceId, referenceRunAttempt !== undefined)}`}
                             aria-label={`查看证据：${label}`}
                           >
                             查看证据

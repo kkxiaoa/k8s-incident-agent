@@ -121,7 +121,7 @@ test("renders the tests-only chart showcase with drill-down data", async ({
 
   await page.goto("/");
   await expect(page.getByLabel("Incident 状态统计")).toContainText(
-    /活跃 Incident.*12告警中9诊断中4待审批0/,
+    /已记录 Incident.*12告警中9诊断中4待审批0/,
   );
   await expect(
     page.getByRole("img", {
@@ -137,8 +137,8 @@ test("renders the tests-only chart showcase with drill-down data", async ({
     }),
   ).toBeVisible();
   await expect(page.locator(".incident-list__link")).toHaveCount(12);
-  const activeInfo = page.getByLabel("说明活跃 Incident 的统计口径");
-  await activeInfo.hover();
+  const totalInfo = page.getByLabel("说明已记录 Incident 的统计口径");
+  await totalInfo.hover();
   await expect(page.getByRole("tooltip")).toBeVisible();
 
   await page.goto(
@@ -430,6 +430,46 @@ test("renders insufficient evidence with missing information", async ({ page }) 
   await expect(page.getByText("诊断文本已脱敏")).toBeVisible();
 });
 
+test("recommendations link to the Evidence cards the same Run rendered", async ({
+  page,
+}) => {
+  await control("/__test__/mode", { mode: "diagnosed" });
+  await createFromHome(page);
+
+  const advice = page.getByRole("region", { name: "处置建议" });
+  await expect(advice).toContainText("目的");
+  await expect(advice).toContainText("验证方向");
+  await expect(advice.getByRole("button")).toHaveCount(0);
+  const anchor = await advice
+    .getByRole("link", { name: /查看证据/ })
+    .first()
+    .getAttribute("href");
+  expect(anchor).toMatch(/^#evidence-/);
+  await expect(page.locator(anchor!)).toHaveCount(1);
+});
+
+test("advice-only delivery keeps two steps and reads out its recommendations", async ({
+  page,
+}) => {
+  await control("/__test__/mode", { mode: "insufficient" });
+  await createFromHome(page);
+
+  const progress = page.getByRole("navigation", { name: "事件处理阶段" });
+  await expect(progress.getByRole("listitem")).toHaveCount(2);
+  await expect(progress).toContainText("无适用的受控修复");
+  await expect(progress).not.toContainText("修复准备");
+  await expect(progress).not.toContainText("人工审批");
+
+  const advice = page.getByRole("region", { name: "处置建议" });
+  await expect(advice).toContainText("建议是诊断的输出，不是执行许可");
+  const repair = page.getByRole("region", { name: "受控修复" });
+  await expect(repair).toContainText("本次没有可执行的受控修复。");
+  await expect(repair).toContainText("Runtime 未在本次证据中确认适用的受控动作");
+  await expect(page.getByRole("list", { name: "修复验证门禁" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /准备修复提案|批准/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "下一步" })).toHaveCount(0);
+});
+
 test("renders typed tool and terminal failures", async ({ page }) => {
   await control("/__test__/mode", { mode: "failed" });
   await createFromHome(page);
@@ -448,4 +488,10 @@ test("renders typed tool and terminal failures", async ({ page }) => {
     "rgba(184, 60, 70, 0.18) 0px 0px 0px 1.5px",
   );
   await expect(page.getByRole("button", { name: /批准|执行|回滚|Apply/i })).toHaveCount(0);
+  // The Run never reached a repair gate, so it reports no applicable repair
+  // instead of an empty proposal or a failed preparation.
+  const repair = page.getByRole("region", { name: "受控修复" });
+  await expect(repair).toContainText("本次没有可执行的受控修复。");
+  await expect(repair).toContainText("没有产生诊断结论");
+  await expect(page.getByRole("list", { name: "修复验证门禁" })).toHaveCount(0);
 });

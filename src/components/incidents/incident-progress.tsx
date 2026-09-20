@@ -3,6 +3,7 @@
 import { UiIcon } from "@/components/ui/ui-icon";
 import { ShimmerText } from "@/components/ui/shimmer-text";
 import { ApprovalCountdown } from "./approval-countdown";
+import { isPreparationFailure } from "./repair-preparation";
 import type { IncidentDetailView } from "@/lib/agent-runtime/response-contracts";
 
 export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun.kind === "diagnosis" ? detail : null, diagnosisLoading = false }: {
@@ -25,12 +26,21 @@ export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun.
         : diagnostic && running ? "诊断处理中"
           : diagnostic && run.status === "QUEUED" ? "等待诊断"
           : diagnosisDetail ? "未保存诊断结论" : "来源记录加载失败";
-  const steps = [
+  // Runtime facts decide the path: a repair Run, a proposal that passed the
+  // gates on this diagnosis Run, or a preparation that ran and failed. A Run
+  // that entered the repair path keeps it, and the preparation step reports
+  // that failure, so the bar never contradicts the gate record below it.
+  const preparationFailed = isPreparationFailure(
+    (repair?.validation.error ?? run.error)?.code,
+  );
+  const repairPath = !diagnostic || repair !== null || preparationFailed;
+  const path = [
     { title: "故障发现", caption: detail.incident.source.type === "alertmanager" ? "告警已记录" : "场景已记录", href: "#incident-heading", done: true },
     { title: "诊断分析", caption: diagnosisCaption, href: "#diagnosis-heading", done: diagnosis?.outcome === "diagnosed" },
-    { title: run.operation === "rollback" ? "回滚准备" : "修复准备", caption: diagnostic ? "尚未准备执行"
+    { title: run.operation === "rollback" ? "回滚准备" : "修复准备", caption: preparationFailed ? "准备未通过"
+      : diagnostic ? "尚未准备执行"
       : repair?.validation.outcome === "passed" ? "检查记录已保存"
-        : run.status === "FAILED" ? "准备未通过" : running ? "准备处理中" : "未形成可用提案", href: diagnostic ? null : "#repair-preparation", done: !diagnostic && repair?.validation.outcome === "passed" },
+        : run.status === "FAILED" ? "准备未通过" : running ? "准备处理中" : "未形成可用提案", href: diagnostic && !preparationFailed ? null : "#repair-preparation", done: !diagnostic && repair?.validation.outcome === "passed" },
     { title: "人工审批", caption: approval ? approval.decision === "approve" ? "已批准" : "已拒绝"
       : run.endReason === "expired" || detail.actions.approve === "proposal_expired" ? "提案已过期" : run.endReason === "superseded" ? "已被替换"
         : run.endReason === "withdrawn" ? "已撤回" : run.status === "WAITING_APPROVAL" ? "等待决定" : "尚未审批", href: stage >= 3 ? "#repair-decision" : null, done: approval?.decision === "approve" },
@@ -42,12 +52,20 @@ export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun.
             EXPIRED: "许可已到期", REJECTED: "执行被拒绝", STALE_RESOURCE: "目标已变化", UNKNOWN: "结果未知",
           }[execution.status] : "尚未执行", href: stage === 4 ? "#repair-execution" : null, done: verification?.outcome === "recovered" },
   ];
+  const steps = repairPath ? path : path.slice(0, 2);
+  const branchNote = repairPath ? null
+    : diagnostic && (run.status === "QUEUED" || run.status === "RUNNING")
+      ? "受控修复适用性待判定"
+      : diagnosis
+        ? "本次无适用的受控修复，需人工处置"
+        : "未生成诊断结论，无适用的受控修复";
 
   return <nav className="incident-progress" aria-label="事件处理阶段">
     <p className="incident-progress__current">{stopped ? "流程已停止" : run.status === "COMPLETED" ? "运行已结束" : "当前阶段"}
       <strong>{steps[stage].title} · {steps[stage].caption}</strong>
+      {branchNote === null ? null : <span className="incident-progress__branch">{branchNote}</span>}
     </p>
-    <ol>
+    <ol data-steps={steps.length}>
       {steps.map((step, index) => {
         const interrupted = index === stage && stopped && !step.done;
         const loadingSource = index === 1 && diagnosisLoading;

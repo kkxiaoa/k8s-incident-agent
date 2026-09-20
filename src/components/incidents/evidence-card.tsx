@@ -4,12 +4,18 @@ import { evidenceTargetLabel } from "@/lib/agent-runtime/view-models";
 
 import { JsonViewer } from "./json-viewer";
 
-function EvidenceCard({ evidence, index, idPrefix }: { evidence: EvidenceResponse; index: number; idPrefix: string }) {
+/** Evidence cards of a referenced source Run carry their own anchor prefix. */
+export function evidenceAnchorId(evidenceId: string, referenced: boolean): string {
+  return `${referenced ? "source-evidence" : "evidence"}-${evidenceId}`;
+}
+
+function EvidenceCard({ evidence, index, referenced }: { evidence: EvidenceResponse; index: number; referenced: boolean }) {
+  const anchorId = evidenceAnchorId(evidence.id, referenced);
   return (
     <article
       className="evidence-card"
-      id={`${idPrefix}-${evidence.id}`}
-      data-testid={`${idPrefix}-${evidence.id}`}
+      id={anchorId}
+      data-testid={anchorId}
     >
       <header className="evidence-card__header">
         <div>
@@ -48,7 +54,8 @@ function EvidenceCard({ evidence, index, idPrefix }: { evidence: EvidenceRespons
 }
 
 export function EvidenceList({ evidence, sourceRunAttempt, currentRunAttempt }: { evidence: EvidenceResponse[]; sourceRunAttempt?: number; currentRunAttempt?: number }) {
-  const idPrefix = sourceRunAttempt === undefined ? "evidence" : "source-evidence";
+  const referenced = sourceRunAttempt !== undefined;
+  const idPrefix = referenced ? "source-evidence" : "evidence";
   return (
     <section className="console-section evidence-section" aria-labelledby={`${idPrefix}-heading`}>
       <div className="section-heading">
@@ -66,7 +73,7 @@ export function EvidenceList({ evidence, sourceRunAttempt, currentRunAttempt }: 
       ) : (
         <div className="evidence-grid">
           {evidence.map((item, index) => (
-            <EvidenceCard key={item.id} evidence={item} index={index} idPrefix={idPrefix} />
+            <EvidenceCard key={item.id} evidence={item} index={index} referenced={referenced} />
           ))}
         </div>
       )}

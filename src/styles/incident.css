@@ -465,6 +465,78 @@
   overflow-wrap: anywhere;
 }
 
+.recommendation-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: recommendation;
+}
+
+.recommendation-list > li {
+  min-width: 0;
+  padding: 19px 21px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface-soft);
+}
+
+.recommendation-list > li h3 {
+  display: flex;
+  gap: 9px;
+  margin: 0;
+  color: var(--navy-deep);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  counter-increment: recommendation;
+}
+
+.recommendation-list > li h3::before {
+  flex: none;
+  color: var(--teal);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  content: counter(recommendation) ".";
+}
+
+.recommendation-list dl {
+  display: grid;
+  gap: 11px;
+  margin: 15px 0 0;
+}
+
+.recommendation-list dl > div {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 14px;
+  align-items: baseline;
+}
+
+.recommendation-list dt {
+  color: var(--faint);
+  font-size: 0.68rem;
+}
+
+.recommendation-list dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.71rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.recommendation-list .diagnosis-evidence {
+  margin-top: 17px;
+  padding: 0;
+}
+
+.recommendation-list .diagnosis-evidence h4 {
+  margin: 0 0 9px;
+  color: var(--ink);
+  font-size: 0.7rem;
+}
+
 .diagnosis-evidence {
   margin-top: 13px;
   padding: 0 10px;

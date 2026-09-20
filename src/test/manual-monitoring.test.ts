@@ -21,7 +21,7 @@ it("serves window-valid monitoring for all manual repair snapshots without maski
       return response.json();
     };
     const list = await read("incidents");
-    expect(list.items).toHaveLength(14);
+    expect(list.items).toHaveLength(19);
     const overview = parseMonitoringOverviewResponse(await read("monitoring/overview"));
     expect(overview).not.toBeNull();
     expect(Date.now() - Date.parse(overview!.generatedAt)).toBeLessThan(60_000);

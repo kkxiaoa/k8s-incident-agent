@@ -69,15 +69,60 @@ describe("selected Run progress", () => {
     expect(steps[3]).toHaveAttribute("data-running", "false");
   });
 
-  it.each(["QUEUED", "RUNNING", "FAILED"] as const)("distinguishes diagnostic %s from an unstarted or successful step", (status) => {
+  it.each(["QUEUED", "RUNNING", "FAILED"] as const)("keeps diagnostic %s on the two-step path instead of showing unentered repair stages", (status) => {
     const detail = makeIncidentDetail();
     detail.selectedRun.status = status;
     render(<IncidentProgress detail={detail} />);
     const steps = screen.getAllByRole("listitem");
+    expect(steps).toHaveLength(2);
     expect(steps[1]).toHaveAttribute("data-running", String(status === "RUNNING"));
     expect(steps[1]).toHaveAttribute("data-attention", String(status === "FAILED"));
+    expect(screen.queryByText("修复准备")).toBeNull();
+    expect(screen.queryByText("人工审批")).toBeNull();
+    expect(
+      screen.getByText(status === "FAILED" ? /无适用的受控修复/ : /适用性待判定/),
+    ).toBeVisible();
+  });
+
+  it.each([
+    "repair_policy_denied",
+    "repair_schema_invalid",
+    "patch_validator_timeout",
+  ] as const)("keeps the repair path for a preparation that ran and failed with %s", (code) => {
+    const detail = makeWaitingApprovalIncidentDetail();
+    detail.repair = null;
+    detail.selectedRun.status = "FAILED";
+    detail.selectedRun.error = { code, retryable: false };
+    render(<IncidentProgress detail={detail} />);
+    const steps = screen.getAllByRole("listitem");
+    expect(steps).toHaveLength(5);
     expect(steps[2]).toHaveAttribute("data-done", "false");
-    expect(steps[2]).toHaveAttribute("data-attention", "false");
+    // The gate record below says the preparation failed; the step must agree
+    // and lead there instead of reading as never started.
+    expect(steps[2]).toHaveTextContent("准备未通过");
+    expect(within(steps[2]).getByRole("link")).toHaveAttribute(
+      "href",
+      "#repair-preparation",
+    );
+    expect(screen.queryByText(/无适用的受控修复/)).toBeNull();
+  });
+
+  it("stays on the two-step path when the Run failed before any repair gate", () => {
+    const detail = makeIncidentDetail();
+    detail.selectedRun.status = "FAILED";
+    detail.selectedRun.error = { code: "workflow_failed", retryable: false };
+    render(<IncidentProgress detail={detail} />);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("expands the repair path once Runtime confirms an applicable action, with its stages unentered", () => {
+    render(<IncidentProgress detail={makeWaitingApprovalIncidentDetail()} />);
+    const steps = screen.getAllByRole("listitem");
+    expect(steps).toHaveLength(5);
+    expect(steps[2]).toHaveAttribute("data-done", "false");
+    expect(steps[3]).toHaveAttribute("data-done", "false");
+    expect(steps[4]).toHaveAttribute("data-done", "false");
+    expect(screen.queryByText(/无适用的受控修复/)).toBeNull();
   });
 
   it("does not style a pending execution as processing just because its Run is RUNNING", () => {

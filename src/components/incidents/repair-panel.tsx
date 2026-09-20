@@ -6,22 +6,8 @@ import { ShimmerText } from "@/components/ui/shimmer-text";
 import { ActionButton } from "@/components/ui/action-button";
 import type { IncidentDetailView } from "@/lib/agent-runtime/response-contracts";
 import { evidenceSummary, targetLabel } from "@/lib/agent-runtime/view-models";
-
-const FAILURE_LABELS: Readonly<Record<string, string>> = {
-  repair_schema_invalid: "Schema 校验未通过",
-  repair_policy_denied: "Policy 校验未通过",
-  repair_diff_invalid: "Diff 校验未通过",
-  repair_no_candidate: "没有匹配的历史镜像候选",
-  repair_timeout: "修复准备超时",
-  stale_resource: "目标状态已变化",
-  patch_validator_authentication_failed: "验证通信认证失败",
-  patch_validator_replay_rejected: "验证请求重放被拒绝",
-  patch_validator_permission_denied: "验证权限不足",
-  patch_validator_admission_denied: "准入检查拒绝",
-  patch_validator_timeout: "验证超时",
-  patch_validator_upstream_failed: "验证服务暂不可用",
-  patch_validator_contract_invalid: "验证响应不符合契约",
-};
+import { evidenceAnchorId } from "./evidence-card";
+import { isPreparationFailure, PREPARATION_FAILURE_LABELS } from "./repair-preparation";
 
 type GateOutcome = "passed" | "failed" | "not_run" | "unrecorded";
 type GateOutcomes = Readonly<Record<"schema" | "policy" | "diff" | "dryRun", GateOutcome>>;
@@ -76,8 +62,20 @@ export function RepairPanel({
   const tone = executionFailed || verificationFailed || repair?.validation.outcome === "failed" ? "failed"
     : ended ? "neutral" : verification?.outcome === "recovered" ? "success" : "neutral";
   const error = repair?.validation.error ?? selectedRun.error;
-  const failure = error === null ? undefined : FAILURE_LABELS[error.code];
+  const failure = error === null ? undefined : PREPARATION_FAILURE_LABELS[error.code];
   const active = selectedRun.status === "QUEUED" || selectedRun.status === "RUNNING" || selectedRun.status === "WAITING_APPROVAL";
+  // No proposal and no gate failure means no preparation was ever attempted:
+  // advice-only is the delivery, not an empty or failed proposal. A recorded
+  // preparation failure stays a failure record, because that attempt did run.
+  const adviceOnly =
+    selectedRun.kind === "diagnosis"
+    && repair === null
+    && !isPreparationFailure(error?.code);
+  const adviceReason = running
+    ? "诊断仍在进行，本次是否存在适用的受控修复尚未判定。"
+    : detail.diagnosis === null
+      ? "本次运行没有产生诊断结论，无法判断受控修复是否适用。"
+      : "Runtime 未在本次证据中确认适用的受控动作。处置建议见上方，后续需人工处理。";
   // A persisted proposal exists only after Schema, Policy and Diff have passed.
   const outcomes: GateOutcomes | undefined = repair !== null
     ? { schema: "passed", policy: "passed", diff: "passed", dryRun: repair.validation.outcome }
@@ -108,11 +106,11 @@ export function RepairPanel({
     <section className="console-section repair-panel" aria-labelledby="repair-heading">
       <div className="section-heading">
         <div>
-          <span className="eyebrow">{selectedRun.kind === "diagnosis" ? "Read-only suggestion" : rollback ? "Rollback" : "Repair workflow"}</span>
-          <h2 id="repair-heading">{selectedRun.kind === "diagnosis" ? "修复建议" : rollback ? "回滚处置" : "修复处置"}</h2>
+          <span className="eyebrow">{selectedRun.kind === "diagnosis" ? repair === null ? "Controlled repair" : "Read-only suggestion" : rollback ? "Rollback" : "Repair workflow"}</span>
+          <h2 id="repair-heading">{selectedRun.kind === "diagnosis" ? repair === null ? "受控修复" : "修复建议" : rollback ? "回滚处置" : "修复处置"}</h2>
         </div>
         <div className="repair-panel__tools">{onRefresh ? <ActionButton type="button" className="secondary-button" onClick={onRefresh} disabled={refreshing} disabledReason="正在读取最新保存状态，请稍候。">检查最新状态</ActionButton> : null}
-        <span className="repair-run-label">第 {selectedRun.attempt} 次运行 · {selectedRun.kind === "diagnosis" ? "只读建议" : selectedRun.operation === "rollback" ? "回滚提案" : "修复提案"}</span></div>
+        <span className="repair-run-label">第 {selectedRun.attempt} 次运行 · {adviceOnly ? running ? "适用性待判定" : "无适用动作" : selectedRun.kind === "diagnosis" ? repair === null ? "准备未通过" : "只读建议" : selectedRun.operation === "rollback" ? "回滚提案" : "修复提案"}</span></div>
       </div>
 
       {selectedRun.sourceRunId ? <p className="repair-source">基于已保存的{rollback ? "原修复" : "来源"}记录生成 · {rollback
@@ -125,6 +123,14 @@ export function RepairPanel({
         <p className="page-alert" role="status">修复详情暂不可用</p>
       ) : pending ? (
         <p role="status"><ShimmerText>正在读取持久化的修复验证结果…</ShimmerText></p>
+      ) : adviceOnly ? (
+        <div id="repair-preparation" className="repair-empty">
+          <UiIcon name="info" />
+          <div>
+            <p><ShimmerText active={running}>{running ? "本次受控修复的适用性尚未判定。" : "本次没有可执行的受控修复。"}</ShimmerText></p>
+            <span>{adviceReason}</span>
+          </div>
+        </div>
       ) : repair === null ? (
         <>
           <div id="repair-preparation" className="repair-empty">
@@ -213,7 +219,7 @@ export function RepairPanel({
                   {repair.evidenceIds.map((id) => {
                     const item = evidence.find((entry) => entry.id === id);
                     return <li key={id}>{item === undefined ? "关联证据不可用" : (
-                      <a href={`#evidence-${id}`} aria-label={`查看证据：${evidenceSummary(item)}`}>
+                      <a href={`#${evidenceAnchorId(id, false)}`} aria-label={`查看证据：${evidenceSummary(item)}`}>
                         <UiIcon name={item.evidenceKind === "rollout_history" ? "layers" : "activity"} />
                         <span>{item.evidenceKind === "rollout_history" ? "历史修订" : "当前工作负载"}<small>{item.toolName}</small></span>
                         <span className="repair-evidence__action">查看<UiIcon name="arrow-down" /></span>

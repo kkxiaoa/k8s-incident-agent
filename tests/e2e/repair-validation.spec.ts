@@ -24,7 +24,7 @@ test("repair validation stays read-only across keyboard navigation, mobile and r
     if (new URL(request.url()).origin !== new URL(baseURL!).origin) external.push(request.url());
   });
   await page.goto(`/incidents/${incidentId}`);
-  const panel = page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ });
+  const panel = page.getByRole("region", { name: /修复处置|回滚处置|修复建议|受控修复/ });
   await expect(panel).toContainText("只读建议已保存，需重新准备后才能审批");
   const panelGap = () => panel.evaluate((element) => {
     const evidence = document.getElementById("evidence-heading")!.closest("section")!;
@@ -66,7 +66,7 @@ test("repair validation stays read-only across keyboard navigation, mobile and r
 test("stale repair remains a failed historical validation", async ({ page }) => {
   const { incidentId } = await seed("stale", page);
   await page.goto(`/incidents/${incidentId}`);
-  const panel = page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ });
+  const panel = page.getByRole("region", { name: /修复处置|回滚处置|修复建议|受控修复/ });
   await expect(panel).toContainText("目标状态已变化");
   await expect(panel).toContainText("验证未通过，尚未批准或执行");
   await expect(panel.getByText("已通过", { exact: true })).toHaveCount(3);
@@ -77,7 +77,7 @@ test("invalid persisted repair fails closed at the page boundary", async ({ page
   const { incidentId } = await seed("invalid", page);
   await page.goto(`/incidents/${incidentId}`);
   await expect(page.getByRole("heading", { name: "详情数据校验失败" })).toBeVisible();
-  await expect(page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: /修复处置|回滚处置|修复建议|受控修复/ })).toHaveCount(0);
 });
 
 for (const failure of [
@@ -89,7 +89,7 @@ for (const failure of [
     const { incidentId } = await seed(failure.code, page);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/incidents/${incidentId}`);
-    const panel = page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ });
+    const panel = page.getByRole("region", { name: /修复处置|回滚处置|修复建议|受控修复/ });
     const gates = panel.getByRole("list", { name: "修复验证门禁" });
     await expect(gates.getByRole("listitem").filter({ has: page.getByText(failure.label, { exact: true }) })).toContainText("未通过");
     await expect(gates.getByText("无独立记录", { exact: true })).toHaveCount(failure.unrecorded);

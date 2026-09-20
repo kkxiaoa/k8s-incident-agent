@@ -206,9 +206,13 @@
 .run-history-menu .run-context { padding-inline: 8px; }
 
 .incident-progress { margin-block: 24px 28px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
-.incident-progress ol { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px; margin: 0; padding: 0; list-style: none; }
+.incident-progress ol { display: grid; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; gap: 20px; margin: 0; padding: 0; list-style: none; }
+/* The two-step path keeps the five-step rhythm instead of stretching two nodes across the card. */
+.incident-progress ol[data-steps="2"] { grid-auto-columns: minmax(0, 210px); justify-content: center; }
 .incident-progress__current { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin: 0 0 24px; color: var(--muted); font-size: 0.7rem; }
 .incident-progress__current strong { color: var(--navy-deep); }
+.incident-progress__branch { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); }
+.incident-progress__branch::before { width: 1px; height: 12px; background: var(--line-strong); content: ""; }
 .incident-progress li { position: relative; min-width: 0; }
 .incident-progress li:not(:last-child)::after { content: ""; position: absolute; top: 15px; left: calc(50% + 21px); width: calc(100% - 22px); height: 1px; background: var(--line-strong); }
 .incident-progress li[data-connected="true"]::after { background: var(--teal); }
@@ -474,6 +478,11 @@
   .detail-loading__action {
     width: 118px;
   }
+}
+
+/* Sits between the conclusion and the controlled repair, on the same rhythm. */
+.recommendation-panel {
+  margin-top: 28px;
 }
 
 .repair-panel {
@@ -1130,5 +1139,9 @@
   .run-controls__actions { flex-wrap: wrap; }
   .incident-progress { padding: 18px 16px; overflow-x: auto; }
   .incident-progress ol { min-width: 740px; }
+  /* Two nodes fit a phone, so they must not force the five-step scroll. */
+  .incident-progress ol[data-steps="2"] { min-width: 0; grid-auto-columns: minmax(0, 1fr); }
+  /* The verdict wraps onto its own line here, where a leading rule would dangle. */
+  .incident-progress__branch::before { display: none; }
   .run-event-records > summary span { display: block; margin: 6px 0 0 16px; }
 }

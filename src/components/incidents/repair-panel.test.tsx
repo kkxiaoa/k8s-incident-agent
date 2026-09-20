@@ -98,6 +98,9 @@ describe("read-only repair validation", () => {
     value.selectedRun.error = { code, retryable: false };
     render(<RepairPanel detail={value} pending={false} refreshError={null} />);
     expect(screen.getByText(label)).toBeInTheDocument();
+    // No proposal means no suggestion to read; the section reports the repair.
+    expect(screen.getByRole("heading", { name: "受控修复" })).toBeVisible();
+    expect(screen.getByText(/第 1 次运行 · 准备未通过/)).toBeVisible();
     expect(screen.queryByText("已通过")).not.toBeInTheDocument();
     const gates = screen.getByRole("list", { name: "修复验证门禁" });
     for (const [index, name] of ["Schema", "Policy", "Diff", "Server-side dry-run"].entries()) {
@@ -149,7 +152,8 @@ describe("read-only repair validation", () => {
     const value = detail();
     value.repair = null;
     const view = render(<RepairPanel detail={value} pending={false} refreshError={null} />);
-    expect(screen.getByText("本次运行未生成修复提案。")).toBeInTheDocument();
+    expect(screen.getByText("本次没有可执行的受控修复。")).toBeInTheDocument();
+    expect(screen.getByText(/Runtime 未在本次证据中确认适用的受控动作/)).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "修复验证门禁" })).not.toBeInTheDocument();
     view.rerender(<RepairPanel detail={value} pending refreshError={null} />);
     expect(screen.getByText("正在读取持久化的修复验证结果…")).toBeInTheDocument();
