@@ -312,7 +312,7 @@
 
 .incident-list-filter {
   display: grid;
-  gap: 8px;
+  gap: 12px;
   margin-bottom: 12px;
 }
 
@@ -568,7 +568,7 @@
 }
 
 .recent-incidents__body {
-  padding: 0 12px 12px;
+  padding: 0 24px 12px;
 }
 
 .incident-list-frame {
@@ -617,7 +617,10 @@
   border-color: var(--line-strong);
 }
 
-.incident-list-sort__button .ui-icon { width: 12px; height: 12px; }
+.incident-list-sort__button .ui-icon {
+  width: 12px;
+  height: 12px;
+}
 
 .incident-table th {
   padding: 10px 12px;
