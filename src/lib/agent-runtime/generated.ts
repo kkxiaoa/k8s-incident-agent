@@ -1363,6 +1363,8 @@ export interface components {
             alertConditionsResolved: number;
             /** Incidentscreated */
             incidentsCreated: number;
+            /** Incidentssettled */
+            incidentsSettled: number;
             /**
              * Timestamp
              * Format: date-time
@@ -1383,10 +1385,10 @@ export interface components {
             samples: components["schemas"]["MonitoringOverviewSample"][];
             /**
              * Schemaversion
-             * @default 2
+             * @default 3
              * @constant
              */
-            schemaVersion: 2;
+            schemaVersion: 3;
             /**
              * Window
              * @default 24h

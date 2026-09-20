@@ -260,6 +260,7 @@ async def test_overview_maps_current_catalog_families_and_preserves_hourly_count
             timestamp=NOW.replace(minute=0) - timedelta(hours=23 - offset),
             incidents_created=1 if offset == 22 else 0,
             alert_conditions_resolved=1 if offset == 23 else 0,
+            incidents_settled=1 if offset == 21 else 0,
         )
         for offset in range(24)
     )

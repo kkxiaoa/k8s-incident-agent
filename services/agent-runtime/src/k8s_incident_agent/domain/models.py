@@ -43,6 +43,16 @@ class IncidentStatus(StrEnum):
     def can_transition_to(self, target: IncidentStatus) -> bool:
         return target in _INCIDENT_TRANSITIONS[self]
 
+    @property
+    def is_terminal(self) -> bool:
+        """Report whether this status ends the Incident's current attempt.
+
+        A terminal status is not absorbing: a new diagnosis Run reopens the
+        Incident from any of them, so these are transitions, not a stock.
+        """
+
+        return self in _TERMINAL_INCIDENT_STATUSES
+
 
 class RunStatus(StrEnum):
     QUEUED = "QUEUED"
@@ -315,6 +325,17 @@ class PersistedTerminal:
     diagnosis_id: UUID | None
     event: RunEvent
 
+
+_TERMINAL_INCIDENT_STATUSES: Final[frozenset[IncidentStatus]] = frozenset(
+    {
+        IncidentStatus.RESOLVED,
+        IncidentStatus.ROLLED_BACK,
+        IncidentStatus.REJECTED,
+        IncidentStatus.INSUFFICIENT_EVIDENCE,
+        IncidentStatus.STALE_RESOURCE,
+        IncidentStatus.FAILED,
+    }
+)
 
 _INCIDENT_TRANSITIONS: Final[dict[IncidentStatus, frozenset[IncidentStatus]]] = {
     IncidentStatus.RECEIVED: frozenset(

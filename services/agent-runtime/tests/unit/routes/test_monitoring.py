@@ -62,6 +62,7 @@ def test_monitoring_overview_rejects_a_stale_24_hour_window() -> None:
                     timestamp=first_hour + timedelta(hours=offset),
                     incidents_created=0,
                     alert_conditions_resolved=0,
+                    incidents_settled=0,
                 )
                 for offset in range(24)
             ),
@@ -114,6 +115,7 @@ class _MonitoringService:
                     timestamp=first_hour + timedelta(hours=offset),
                     incidents_created=1 if offset == 23 else 0,
                     alert_conditions_resolved=1 if offset == 22 else 0,
+                    incidents_settled=1 if offset == 21 else 0,
                 )
                 for offset in range(24)
             ),
@@ -281,7 +283,7 @@ async def test_monitoring_overview_route_returns_fixed_24_hour_projection(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["schemaVersion"] == 2
+    assert payload["schemaVersion"] == 3
     assert payload["window"] == "24h"
     assert payload["counts"] == {
         "totalIncidents": 8,

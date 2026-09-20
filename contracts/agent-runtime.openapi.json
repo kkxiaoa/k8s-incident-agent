@@ -2475,6 +2475,11 @@
             "title": "Incidentscreated",
             "type": "integer"
           },
+          "incidentsSettled": {
+            "minimum": 0.0,
+            "title": "Incidentssettled",
+            "type": "integer"
+          },
           "timestamp": {
             "format": "date-time",
             "title": "Timestamp",
@@ -2484,7 +2489,8 @@
         "required": [
           "timestamp",
           "incidentsCreated",
-          "alertConditionsResolved"
+          "alertConditionsResolved",
+          "incidentsSettled"
         ],
         "title": "MonitoringOverviewSample",
         "type": "object"
@@ -2518,8 +2524,8 @@
             "type": "array"
           },
           "schemaVersion": {
-            "const": 2,
-            "default": 2,
+            "const": 3,
+            "default": 3,
             "title": "Schemaversion",
             "type": "integer"
           },

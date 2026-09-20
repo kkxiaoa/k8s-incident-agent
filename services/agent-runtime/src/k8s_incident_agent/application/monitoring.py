@@ -209,6 +209,7 @@ class MonitoringApplicationService:
                     timestamp=sample.timestamp,
                     incidents_created=sample.incidents_created,
                     alert_conditions_resolved=sample.alert_conditions_resolved,
+                    incidents_settled=sample.incidents_settled,
                 )
                 for sample in overview.samples
             ),

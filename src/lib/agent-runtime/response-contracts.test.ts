@@ -393,7 +393,7 @@ describe("monitoring response contracts", () => {
   it("accepts a complete 24-hour overview and rejects inconsistent totals", () => {
     const start = Date.parse("2026-09-02T03:00:00.000Z");
     const overview = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       window: "24h",
       generatedAt: "2026-09-03T02:15:00.000Z",
       counts: {
@@ -413,6 +413,7 @@ describe("monitoring response contracts", () => {
         timestamp: new Date(start + index * 3_600_000).toISOString(),
         incidentsCreated: index === 23 ? 1 : 0,
         alertConditionsResolved: index === 22 ? 1 : 0,
+        incidentsSettled: index === 21 ? 1 : 0,
       })),
     };
 

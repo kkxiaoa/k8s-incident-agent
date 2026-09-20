@@ -1224,7 +1224,7 @@ export function parseMonitoringOverviewResponse(
 ): MonitoringOverviewView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 2 ||
+    value.schemaVersion !== 3 ||
     value.window !== "24h" ||
     !isTimestamp(value.generatedAt) ||
     !isObject(value.counts) ||
@@ -1280,7 +1280,8 @@ export function parseMonitoringOverviewResponse(
       !isObject(sample) ||
       !isTimestamp(sample.timestamp) ||
       !isNonNegativeInteger(sample.incidentsCreated) ||
-      !isNonNegativeInteger(sample.alertConditionsResolved)
+      !isNonNegativeInteger(sample.alertConditionsResolved) ||
+      !isNonNegativeInteger(sample.incidentsSettled)
     ) {
       return null;
     }
@@ -1297,6 +1298,7 @@ export function parseMonitoringOverviewResponse(
       timestamp: sample.timestamp,
       incidentsCreated: sample.incidentsCreated,
       alertConditionsResolved: sample.alertConditionsResolved,
+      incidentsSettled: sample.incidentsSettled,
     });
   }
   const generatedAt = Date.parse(value.generatedAt);

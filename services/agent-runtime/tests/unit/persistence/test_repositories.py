@@ -766,3 +766,60 @@ async def test_recommendations_survive_a_restart_and_absence_stays_absent(
         assert detail.diagnosis.recommendations is None
     finally:
         await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_status_writes_publish_the_status_they_persisted(tmp_path: Path) -> None:
+    """The overview reads terminal transitions out of the event payloads.
+
+    This pins the diagnosis chain; the repair chain's own ending is pinned in
+    `test_repair_persistence.py`. A schema version that drops the field from
+    either chain fails one of them.
+    """
+
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await repository.create_incident_and_run(
+            _scenario(), _model(), _budget()
+        )
+        started = await repository.start_run(created.run_id, NOW)
+        terminal = await repository.persist_terminal(
+            TerminalRecord(
+                run_id=created.run_id,
+                completed_at=NOW.replace(minute=2),
+                outcome=DiagnosisOutcome.INSUFFICIENT_EVIDENCE,
+                summary="Evidence is insufficient.",
+                root_causes=(),
+                missing_information=("registry pull audit",),
+                redacted=False,
+                error_code=None,
+                error_retryable=None,
+                model_calls=1,
+                tool_calls=1,
+                input_tokens=10,
+                output_tokens=10,
+            )
+        )
+
+        async with database.session_factory() as session:
+            rows = (
+                await session.scalars(select(RunEventRow).order_by(RunEventRow.id))
+            ).all()
+            incident = await session.get(IncidentRow, str(created.incident_id))
+
+        assert incident is not None
+        assert incident.status.value == "INSUFFICIENT_EVIDENCE"
+        published = {
+            row.event_key: json.loads(row.payload_json).get("incidentStatus")
+            for row in rows
+        }
+        assert published == {
+            "incident.created": "RECEIVED",
+            "run.started": "TRIAGING",
+            "run:terminal": "INSUFFICIENT_EVIDENCE",
+        }
+        assert created.incident_status.value == "RECEIVED"
+        assert started.incident_status.value == "TRIAGING"
+        assert terminal.incident_status.value == incident.status.value
+        # The overview counts this event; its key marks the Run's own ending.
+        assert [row.event_key for row in rows][-1] == "run:terminal"

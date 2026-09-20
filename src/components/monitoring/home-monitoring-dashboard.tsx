@@ -141,7 +141,7 @@ export function HomeMonitoringDashboard({
           <header className="chart-card__header">
             <div>
               <h2>近 24 小时 Incident 趋势</h2>
-              <p>窗口内累计的新增记录与告警条件解除</p>
+              <p>每小时新增与已结束的次数（含拒绝、证据不足与失败，重开会再次计入）</p>
             </div>
             <span className="chart-window" aria-label="固定时间窗口：最近 24 小时">
               <UiIcon name="clock" />

@@ -283,6 +283,7 @@ class MonitoringOverviewSampleRecord:
     timestamp: datetime
     incidents_created: int
     alert_conditions_resolved: int
+    incidents_settled: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -550,7 +551,41 @@ class IncidentRepository:
                     .tuples()
                     .all()
                 )
+                # A Run ends its Incident once, in one "run:terminal" event
+                # whose payload records the status it wrote. Counting those
+                # events counts transitions into a terminal status, which is
+                # what the trend reports; it is not a remaining-work stock.
+                settled_hour = func.strftime(
+                    "%Y-%m-%dT%H",
+                    RunEventRow.occurred_at,
+                )
+                settled_rows = (
+                    (
+                        await session.execute(
+                            select(settled_hour, func.count())
+                            .where(
+                                RunEventRow.event_key == "run:terminal",
+                                RunEventRow.occurred_at >= first_hour,
+                                RunEventRow.occurred_at <= generated_at,
+                                func.json_extract(
+                                    RunEventRow.payload_json,
+                                    "$.incidentStatus",
+                                ).in_(
+                                    sorted(
+                                        status.value
+                                        for status in IncidentStatus
+                                        if status.is_terminal
+                                    )
+                                ),
+                            )
+                            .group_by(settled_hour)
+                        )
+                    )
+                    .tuples()
+                    .all()
+                )
                 incident_counts = _overview_hour_counts(incident_rows)
+                settled_counts = _overview_hour_counts(settled_rows)
                 resolved_counts = _overview_hour_counts(resolved_rows)
                 samples = tuple(
                     MonitoringOverviewSampleRecord(
@@ -560,6 +595,10 @@ class IncidentRepository:
                             0,
                         ),
                         alert_conditions_resolved=resolved_counts.get(
+                            timestamp.strftime("%Y-%m-%dT%H"),
+                            0,
+                        ),
+                        incidents_settled=settled_counts.get(
                             timestamp.strftime("%Y-%m-%dT%H"),
                             0,
                         ),

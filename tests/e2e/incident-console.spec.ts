@@ -133,7 +133,7 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   ).toContainText("Container restart loop3");
   await expect(
     page.getByRole("img", {
-      name: "最近 24 小时新增 Incident 与告警条件解除的累计趋势",
+      name: "最近 24 小时每小时新增与已结束的 Incident",
     }),
   ).toBeVisible();
   await expect(page.locator(".incident-list__link")).toHaveCount(12);
@@ -488,6 +488,10 @@ test("renders typed tool and terminal failures", async ({ page }) => {
     "rgba(184, 60, 70, 0.18) 0px 0px 0px 1.5px",
   );
   await expect(page.getByRole("button", { name: /批准|执行|回滚|Apply/i })).toHaveCount(0);
+  // This Run ended in a terminal status, so the home trend counts one ending.
+  await page.goto("/");
+  await expect(page.getByText(/新增 Incident 共 1 个；进入终态 1 次/)).toBeAttached();
+  await page.goBack();
   // The Run never reached a repair gate, so it reports no applicable repair
   // instead of an empty proposal or a failed preparation.
   const repair = page.getByRole("region", { name: "受控修复" });

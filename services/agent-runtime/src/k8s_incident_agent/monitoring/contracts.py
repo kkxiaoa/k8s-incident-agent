@@ -429,6 +429,9 @@ class MonitoringOverviewSample(_MonitoringContract):
     timestamp: datetime
     incidents_created: int = Field(ge=0)
     alert_conditions_resolved: int = Field(ge=0)
+    # Transitions into a terminal status, which a reopened Incident repeats;
+    # it is not the remaining work and never means recovered.
+    incidents_settled: int = Field(ge=0)
 
     @field_validator("timestamp")
     @classmethod
@@ -442,7 +445,7 @@ class MonitoringOverviewSample(_MonitoringContract):
 
 
 class MonitoringOverviewSnapshot(_MonitoringContract):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     window: Literal["24h"] = "24h"
     generated_at: datetime
     counts: MonitoringOverviewCounts

@@ -61,6 +61,7 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
       timestamp: new Date(start + index * 3_600_000).toISOString(),
       incidentsCreated: index === 23 ? 2 : 0,
       alertConditionsResolved: index === 22 ? 1 : 0,
+      incidentsSettled: index === 21 ? 1 : 0,
     })),
   };
 }
@@ -107,11 +108,11 @@ describe("HomeMonitoringDashboard", () => {
     ).toHaveTextContent("Image pull failure2");
     expect(
       screen.getByRole("img", {
-        name: "最近 24 小时新增 Incident 与告警条件解除的累计趋势",
+        name: "最近 24 小时每小时新增与已结束的 Incident",
       }),
     ).toBeVisible();
     expect(
-      screen.getByText(/最近 24 小时新增 Incident 共 2 个；告警条件解除共 1 个/),
+      screen.getByText(/新增 Incident 共 2 个；进入终态 1 次.*不代表已恢复/),
     ).toBeInTheDocument();
   });
 

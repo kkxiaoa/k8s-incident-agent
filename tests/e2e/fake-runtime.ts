@@ -959,6 +959,15 @@ function listItem(record: FakeIncident): IncidentListItem {
   };
 }
 
+const TERMINAL_INCIDENT_STATUSES = new Set([
+  "RESOLVED",
+  "ROLLED_BACK",
+  "REJECTED",
+  "INSUFFICIENT_EVIDENCE",
+  "STALE_RESOURCE",
+  "FAILED",
+]);
+
 function monitoringOverview() {
   const generatedAt = new Date(Math.max(Date.parse(TERMINAL_AT), ...[...incidents.values()].map((record) => Date.parse(record.metricAnchor ?? TERMINAL_AT))));
   const currentHour = new Date(generatedAt);
@@ -976,6 +985,36 @@ function monitoringOverview() {
     [23, 1],
   ]);
   const showcaseResolved = new Set([8, 16, 22]);
+  // Endings lag the arrivals they belong to; a reopened Incident ends twice.
+  const showcaseSettled = new Map([
+    [5, 1],
+    [10, 2],
+    [13, 1],
+    [18, 1],
+    [20, 2],
+    [22, 1],
+  ]);
+  const records = [...incidents.values()];
+  // Outside the scripted showcases the samples are derived from the records
+  // this Runtime actually holds, so a Run created through the API shows up in
+  // the trend. The showcases keep their scripted 24 hour shape because their
+  // records all arrive within one hour.
+  const bucketOf = (value: string) =>
+    Math.round(
+      (currentHour.valueOf() - new Date(value).setUTCMinutes(0, 0, 0)) / 3_600_000,
+    );
+  const derivedCreated = new Map<number, number>();
+  const derivedSettled = new Map<number, number>();
+  for (const record of records) {
+    const detail = record.detail;
+    const created = 23 - bucketOf(detail.incident.createdAt);
+    derivedCreated.set(created, (derivedCreated.get(created) ?? 0) + 1);
+    const ended = detail.selectedRun.completedAt;
+    if (ended !== null && TERMINAL_INCIDENT_STATUSES.has(detail.incident.status)) {
+      const settled = 23 - bucketOf(ended);
+      derivedSettled.set(settled, (derivedSettled.get(settled) ?? 0) + 1);
+    }
+  }
   const samples = Array.from({ length: 24 }, (_, index) => {
     const timestamp = new Date(
       currentHour.valueOf() - (23 - index) * 3_600_000,
@@ -984,14 +1023,14 @@ function monitoringOverview() {
       timestamp: timestamp.toISOString(),
       incidentsCreated: showcaseEnabled
         ? (showcaseCreated.get(index) ?? 0)
-        : index === 23
-          ? incidents.size
-          : 0,
+        : (derivedCreated.get(index) ?? 0),
       alertConditionsResolved:
         showcaseEnabled && showcaseResolved.has(index) ? 1 : 0,
+      incidentsSettled: showcaseEnabled
+        ? (showcaseSettled.get(index) ?? 0)
+        : (derivedSettled.get(index) ?? 0),
     };
   });
-  const records = [...incidents.values()];
   const firingRecords = records.filter(
     (record) => record.detail.alertSignal?.status === "FIRING",
   );
@@ -1005,7 +1044,7 @@ function monitoringOverview() {
     });
   }
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     window: "24h",
     generatedAt: generatedAt.toISOString(),
     counts: {
@@ -1727,6 +1766,7 @@ export function seedManualRepairShowcase(): number {
     ["DC-7 · 准备门禁未通过（五步）", "policy-denied"],
   ] as const;
   const now = new Date().toISOString();
+  showcaseEnabled = true;
   const approve = (record: FakeIncident, decision: "approve" | "reject" = "approve") => {
     const detail = record.detail;
     if (!decideFakeRepair(record, { runId: detail.selectedRun.id, proposalId: detail.repair!.id,

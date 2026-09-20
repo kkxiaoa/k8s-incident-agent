@@ -375,3 +375,41 @@ async def test_repair_projection_insert_failure_rolls_back_everything(
                 )
                 == 0
             )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_code", "include_proposal", "expected"),
+    [
+        (None, True, IncidentStatus.WAITING_APPROVAL),
+        ("repair_policy_denied", False, IncidentStatus.FAILED),
+    ],
+)
+async def test_repair_terminal_publishes_the_status_it_persisted(
+    tmp_path: Path,
+    error_code: str | None,
+    include_proposal: bool,
+    expected: IncidentStatus,
+) -> None:
+    """The overview reads endings out of this payload, so it must stay in it."""
+
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        incident_id, run_id, terminal = await prepared_repair_record(
+            repository,
+            error_code=error_code,
+            error_retryable=None if error_code is None else False,
+            include_proposal=include_proposal,
+        )
+
+        await repository.persist_repair_terminal(terminal)
+        detail = await repository.get_incident_detail(
+            incident_id,
+            run_id=run_id,
+            event_limit=100,
+        )
+
+        assert detail is not None
+        assert detail.incident.status is expected
+        [ending] = [item for item in detail.events if item.event_key == "run:terminal"]
+        assert ending.payload["incidentStatus"] == expected.value

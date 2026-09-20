@@ -31,7 +31,7 @@ function monitoringHealth() {
 function monitoringOverview() {
   const start = Date.parse("2026-09-02T03:00:00.000Z");
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     window: "24h",
     generatedAt: "2026-09-03T02:15:00.000Z",
     counts: {
@@ -45,6 +45,7 @@ function monitoringOverview() {
       timestamp: new Date(start + index * 3_600_000).toISOString(),
       incidentsCreated: 0,
       alertConditionsResolved: 0,
+      incidentsSettled: 0,
     })),
   };
 }
