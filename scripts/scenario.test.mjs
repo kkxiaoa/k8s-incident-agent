@@ -300,6 +300,13 @@ spec:
           image: ${image}
           imagePullPolicy: IfNotPresent
           args: ["pause"]
+${overrides.resources ?? `          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi`}
 `;
 }
 
@@ -329,6 +336,7 @@ function createCatalog(t, options = {}) {
     validManifest({
       image:
         "registry.k8s.io/e2e-test-images/agnhost:2.53@sha256:99c6b4bb4a1e1df3f0b3752168c89358794d02258ebebc26bf21c29399011a85",
+      ...(options.resources === undefined ? {} : { resources: options.resources }),
     }),
   );
   if (options.symlinkManifest) {
@@ -1924,6 +1932,83 @@ test("catalog rejects incompatible versions, extra fields, and target drift", as
       );
     });
   }
+});
+
+test("catalog rejects a workload without the resource budget its signals divide by", async (t) => {
+  // The kubelet emits no CFS period counters for a container with no CPU limit,
+  // so the throttling and near-limit rules would have nothing to divide by.
+  const cases = {
+    "no resources at all": "",
+    "requests only": `          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi`,
+    "limit missing memory": `          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m`,
+    // A zero limit is the exact shape the guard exists to reject: it parses as a
+    // legal quantity but leaves the cgroup unbounded, so no counter is emitted.
+    "zero cpu limit": `          resources:
+            limits:
+              cpu: "0"
+              memory: 128Mi`,
+    "zero memory limit": `          resources:
+            limits:
+              cpu: 100m
+              memory: "0"`,
+    // Without the quantity shape check this parses to NaN, which slips past a
+    // bare positivity comparison.
+    "unparsable cpu limit": `          resources:
+            limits:
+              cpu: mostly
+              memory: 128Mi`,
+    // Binary SI takes an uppercase K, so this one is not a quantity at all.
+    "lowercase binary suffix": `          resources:
+            limits:
+              cpu: 100m
+              memory: 256ki`,
+  };
+  for (const [name, resources] of Object.entries(cases)) {
+    await t.test(name, async (subtest) => {
+      // Both revisions carry it: the catalog separately requires the healthy
+      // and faulty manifests to differ in nothing but the image.
+      const { environment } = createCatalog(subtest, {
+        manifest: validManifest({ resources }),
+        resources,
+      });
+      await assert.rejects(
+        runScenarioCommand("list", undefined, {
+          repositoryRoot: REPOSITORY_ROOT,
+          environment,
+        }),
+        (error) => error?.code === "scenario_contract_invalid",
+        name,
+      );
+    });
+  }
+});
+
+test("catalog accepts a whole-core limit, binary SI, and omitted requests", async (t) => {
+  // Requests drive no signal; a bare `cpu: 1` is a legal whole-core limit that
+  // YAML hands over as a number rather than a string, and `Ki` is the binary
+  // SI spelling Kubernetes accepts.
+  const resources = `          resources:
+            limits:
+              cpu: 1
+              memory: 256Ki`;
+  const { environment } = createCatalog(t, {
+    manifest: validManifest({ resources }),
+    resources,
+  });
+  await assert.doesNotReject(
+    runScenarioCommand("list", undefined, {
+      repositoryRoot: REPOSITORY_ROOT,
+      environment,
+    }),
+  );
 });
 
 test("catalog rejects path traversal and symlink manifests", async (t) => {

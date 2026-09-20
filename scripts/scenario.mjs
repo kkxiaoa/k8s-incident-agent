@@ -644,6 +644,7 @@ function validateDeploymentManifest(manifestPath, relativePath, definition) {
     (container) => isPlainObject(container) && container.name === "workload",
   );
   if (workload === undefined) throw new Error();
+  assertWorkloadResourceBudget(workload.resources);
   if (verifier === "image_pull_backoff") {
     const expectedPaths = [
       "manifests/healthy-deployment.yaml",
@@ -2181,6 +2182,37 @@ function assertContainedPath(root, target) {
   ) {
     throw new Error();
   }
+}
+
+// A zero or absent CPU limit leaves the cgroup without a CFS quota, so the
+// kubelet emits no period counters; a zero or absent memory limit leaves
+// kube-state-metrics with no limit series, and the near-limit rule filters its
+// divisor on > 0. Either way the throttling and near-limit signals have nothing
+// to divide by and can never fire, so the limit must be present and positive.
+function assertPositiveQuantity(value) {
+  const text = typeof value === "number" ? String(value) : value;
+  assertNormalizedString(text);
+  if (!/^[0-9]+(?:\.[0-9]+)?(?:[numkMGTPE]|[KMGTPE]i)?$/.test(text)) {
+    throw new Error();
+  }
+  if (Number.parseFloat(text) <= 0) throw new Error();
+}
+
+function assertWorkloadResourceBudget(resources) {
+  assertPlainObject(resources);
+  for (const key of Object.keys(resources)) {
+    if (key !== "requests" && key !== "limits") throw new Error();
+  }
+  assertPlainObject(resources.limits);
+  assertExactKeys(resources.limits, ["cpu", "memory"]);
+  assertPositiveQuantity(resources.limits.cpu);
+  assertPositiveQuantity(resources.limits.memory);
+  // Requests carry no signal of their own, so they stay optional here.
+  if (resources.requests === undefined) return;
+  assertPlainObject(resources.requests);
+  assertExactKeys(resources.requests, ["cpu", "memory"]);
+  assertPositiveQuantity(resources.requests.cpu);
+  assertPositiveQuantity(resources.requests.memory);
 }
 
 function assertExactKeys(value, keys) {
