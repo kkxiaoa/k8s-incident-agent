@@ -3330,6 +3330,49 @@ test("render gate rejects a node-metrics filter that lost its keepequal rules", 
   assert.equal(calls.some((call) => call.startsWith("--context demo-k3s apply")), false);
 });
 
+test("render gate rejects a panel whose producer no profile scrapes", (t) => {
+  // The catalog ships on its own version line, so it can name a producer the
+  // deployment never scrapes without any rendered file changing.
+  const catalogPath = path.join(REPOSITORY_ROOT, "monitoring", "catalog", "catalog.json");
+  const original = readFileSync(catalogPath, "utf8");
+  // The only tracked file this suite rewrites. `exit` alone would miss Ctrl-C
+  // during a run of this length, so the signals restore and then re-raise to
+  // keep their default termination.
+  const restore = () => writeFileSync(catalogPath, original);
+  const onSignal = (signal) => {
+    restore();
+    process.kill(process.pid, signal);
+  };
+  process.once("exit", restore);
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  t.after(() => {
+    process.off("exit", restore);
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    restore();
+  });
+  const catalog = JSON.parse(original);
+  catalog.contextPanels[0].panels[0].producer = "kubelet-network";
+  writeFileSync(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+
+  for (const [profile, context, environment] of [
+    ["k3s-online", "demo-k3s", {}],
+    ["kind-evaluation", "kind-k8s-incident-agent", { FAKE_SERVER_VERSION: "v1.36.1" }],
+  ]) {
+    const fake = createFakeKubectl(t, { FAKE_PROFILE: profile, ...environment });
+    const result = runDeployment(
+      ["install", profile, "--context", context, "--confirm"],
+      fake.environment,
+    );
+    assert.equal(result.status, 1, profile);
+    assert.match(result.stderr, /^FAIL monitoring_contract_invalid /, profile);
+    assert.match(result.stderr, /renders no kubelet-network scrape job/, profile);
+    const calls = fake.calls().map((call) => call.args.join(" "));
+    assert.equal(calls.some((call) => call.includes(" apply")), false, profile);
+  }
+});
+
 test("status reports model degradation separately from ready core workloads", (t) => {
   const fake = createFakeKubectl(t, { FAKE_DIAGNOSIS_UNAVAILABLE: "1" });
   const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);

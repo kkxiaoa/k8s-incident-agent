@@ -247,7 +247,9 @@ install/upgrade/uninstall 的 `--preview` JSON 除 `resources`（kustomize 渲�
 ClusterRole/ClusterRoleBinding，供操作者与 CI 读取完整对象集合。
 operator 精确核对 `prometheus.yaml` 的 `scrape_config_files`、node-metrics scrape
 配置、Pod 发现 Role/RoleBinding、新增 egress NetworkPolicy、credential/scrape
-挂载与含 scrape 数据的配置 digest；`nodes/metrics` 的 ClusterRole/ClusterRoleBinding
+挂载与含 scrape 数据的配置 digest；并要求告警目录里每个面板的 `producer` 都有同名
+scrape job，否则渲染失败——不启用 node-metrics 的 profile 按 ADR-0011 豁免三条
+kubelet job，其余 producer 一律强制；`nodes/metrics` 的 ClusterRole/ClusterRoleBinding
 不在 overlay 中，由 install/upgrade 在 admission boundary 就绪后把
 `deploy/monitoring/components/node-metrics/cluster-rbac.yaml` 的 `__REGISTERED_NODE__`
 绑定到唯一 Ready 节点并经 stdin apply，status 按同一节点名比对、并对 prometheus

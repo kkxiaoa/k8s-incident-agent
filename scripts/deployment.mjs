@@ -41,6 +41,14 @@ const NODE_METRICS_NETWORK_POLICIES = Object.freeze([
   "allow-prometheus-kubernetes-api-egress",
   "allow-prometheus-kubelet-egress",
 ]);
+// The producers any profile forgoes when it renders without node-metrics, which
+// today is Kind alone: ADR-0011 keeps it on that path because kubeadm self-signs
+// the kubelet serving certificate, which the ServiceAccount CA cannot validate.
+const NODE_METRICS_SCRAPE_JOBS = Object.freeze([
+  "kubelet-resource",
+  "kubelet-cadvisor",
+  "kubelet-probes",
+]);
 const ALERTMANAGER_WEBHOOK_SECRET = "alertmanager-webhook";
 const ALERTMANAGER_WEBHOOK_SECRET_KEY = "token";
 const CUTOVER_JOB = "runtime-data-cutover";
@@ -746,7 +754,36 @@ function normalizeAlertRuleCatalog(rawAlertCatalog) {
       collection.set(alertId, { expression, pendingFor, keepFiringFor });
     }
   }
-  return { version: document.catalogVersion, entries, healthEntries };
+  if (!Array.isArray(document.contextPanels)) {
+    throw new DeploymentContractError(
+      "alert_catalog_invalid",
+      "Alert catalog does not define context panels",
+    );
+  }
+  const producers = new Map();
+  for (const owner of [...document.alerts, ...document.contextPanels]) {
+    for (const panel of owner?.panels ?? []) {
+      const panelId = requireString(panel?.panelId, "catalog panel identifier");
+      const producer = requireString(
+        panel?.producer,
+        `${panelId} panel producer`,
+      );
+      if (!producers.has(producer)) producers.set(producer, []);
+      producers.get(producer).push(panelId);
+    }
+  }
+  if (producers.size === 0) {
+    throw new DeploymentContractError(
+      "alert_catalog_invalid",
+      "Alert catalog does not bind any panel to a producer",
+    );
+  }
+  return {
+    version: document.catalogVersion,
+    entries,
+    healthEntries,
+    producers,
+  };
 }
 
 function normalizeCutoverContract(
@@ -4756,6 +4793,21 @@ function isAdmissionPolicyObservationPending(policy) {
   );
 }
 
+// A panel names the scrape job that produces its series. Widening that set in
+// the Runtime catalog without adding the matching scrape job here leaves the
+// panel loading cleanly and reporting no_data forever, with nothing to fail.
+function requireCatalogProducersAreScraped(catalog, scrapeJobs, profile) {
+  const forgone = profile.nodeMetrics ? [] : NODE_METRICS_SCRAPE_JOBS;
+  for (const [producer, panelIds] of catalog.producers) {
+    if (scrapeJobs.has(producer)) continue;
+    if (forgone.includes(producer)) continue;
+    throw new DeploymentContractError(
+      "monitoring_contract_invalid",
+      `${profile.name} renders no ${producer} scrape job for ${panelIds.join(", ")}`,
+    );
+  }
+}
+
 function requireRenderedMonitoringContract(desiredResources, monitoring, profile) {
   const prometheusConfig = requireRenderedResource(
     desiredResources,
@@ -4775,7 +4827,9 @@ function requireRenderedMonitoringContract(desiredResources, monitoring, profile
     "alertmanager-config",
     MONITORING_NAMESPACE,
   );
-  requirePrometheusConfiguration(prometheusConfig.data?.["prometheus.yaml"]);
+  const scrapeJobs = new Set(
+    requirePrometheusConfiguration(prometheusConfig.data?.["prometheus.yaml"]),
+  );
   requireAlertmanagerConfiguration(
     alertmanagerConfig.data?.["alertmanager.yaml"],
   );
@@ -4801,7 +4855,11 @@ function requireRenderedMonitoringContract(desiredResources, monitoring, profile
       NODE_METRICS_SCRAPE_CONFIGMAP,
       MONITORING_NAMESPACE,
     );
-    requireNodeMetricsScrapeConfiguration(scrapeConfig.data?.["node-metrics.yaml"]);
+    for (const jobName of requireNodeMetricsScrapeConfiguration(
+      scrapeConfig.data?.["node-metrics.yaml"],
+    )) {
+      scrapeJobs.add(jobName);
+    }
     const discoveryRole = requireRenderedResource(
       desiredResources,
       "Role",
@@ -4839,6 +4897,7 @@ function requireRenderedMonitoringContract(desiredResources, monitoring, profile
       }
     }
   }
+  requireCatalogProducersAreScraped(monitoring.catalog, scrapeJobs, profile);
   const configurationDigests = {
     prometheus: configurationDigest(...prometheusData),
     alertmanager: configurationDigest(alertmanagerConfig.data),
@@ -4944,6 +5003,7 @@ function requirePrometheusConfiguration(rawConfiguration) {
       "Prometheus configuration does not match the managed topology",
     );
   }
+  return expected.scrape_configs.map((entry) => entry.job_name);
 }
 
 function requireNodeMetricsScrapeConfiguration(rawConfiguration) {
@@ -5018,19 +5078,19 @@ function requireNodeMetricsScrapeConfiguration(rawConfiguration) {
   const expected = {
     scrape_configs: [
       job(
-        "kubelet-resource",
+        NODE_METRICS_SCRAPE_JOBS[0],
         "/metrics/resource",
         "container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_start_time_seconds",
         "scrape_(namespace|pod|container)",
       ),
       job(
-        "kubelet-cadvisor",
+        NODE_METRICS_SCRAPE_JOBS[1],
         "/metrics/cadvisor",
         "container_cpu_cfs_periods_total|container_cpu_cfs_throttled_periods_total",
         "scrape_(namespace|pod|container)|name|image",
       ),
       job(
-        "kubelet-probes",
+        NODE_METRICS_SCRAPE_JOBS[2],
         "/metrics/probes",
         "prober_probe_total",
         "scrape_(namespace|pod|container)",
@@ -5043,6 +5103,7 @@ function requireNodeMetricsScrapeConfiguration(rawConfiguration) {
       "node-metrics scrape configuration does not match the regular-container filter contract",
     );
   }
+  return expected.scrape_configs.map((entry) => entry.job_name);
 }
 
 function requireAlertmanagerConfiguration(rawConfiguration) {
