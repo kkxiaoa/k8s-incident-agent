@@ -197,6 +197,23 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   await expect(page.getByRole("button", { name: "重新读取" })).toHaveCount(0);
 });
 
+test("keeps the overview inside a phone screen", async ({ page }) => {
+  // The panel expansion once overflowed narrow screens with no test to catch
+  // it; the home page carries the counters, the chain and the trend chart.
+  await control("/__test__/showcase", {});
+
+  for (const width of [320, 390, 768]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto("/");
+    await expect(page.locator(".overview-trend")).toBeVisible();
+    const widths = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(widths.scroll, `width ${width}`).toBeLessThanOrEqual(widths.client);
+  }
+});
+
 test("shows which incident list edges contain clipped records", async ({ page }) => {
   for (let incident = 0; incident < 6; incident += 1) {
     await control("/api/v1/incidents", { scenarioId: "image-pull-backoff" });
