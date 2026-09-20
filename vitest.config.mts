@@ -8,7 +8,9 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
-    include: ["src/**/*.test.{ts,tsx}"],
+    // The integration suite drives the e2e fake runtime, which .dockerignore
+    // keeps out of the image build, so it cannot live under src/.
+    include: ["src/**/*.test.{ts,tsx}", "tests/integration/**/*.test.ts"],
     setupFiles: ["./vitest.setup.ts"],
   },
 });

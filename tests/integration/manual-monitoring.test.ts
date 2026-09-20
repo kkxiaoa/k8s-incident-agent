@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { expect, it } from "vitest";
-import { seedManualRepairShowcase, startFakeRuntime } from "../../tests/e2e/fake-runtime";
+import { seedManualRepairShowcase, startFakeRuntime } from "../e2e/fake-runtime";
 import { parseIncidentMetricPanelResponse, parseIncidentDetailResponse, parseMonitoringOverviewResponse } from "@/lib/agent-runtime/response-contracts";
 import { incidentDesiredReplicas } from "@/lib/agent-runtime/view-models";
 
