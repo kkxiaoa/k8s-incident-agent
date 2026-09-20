@@ -20,4 +20,4 @@ patches:
 images:
   - name: k8s-incident-agent-runtime
     newName: k8s-incident-agent-runtime
-    digest: sha256:3badc436853d547b23816a103265d7e4ff03bf9ecf1added5f767fd13be673dc
+    digest: sha256:2b88637f97495bf9d7becb59af4c359e7ad4e49c30b896a8aab3ff132c5b311c
