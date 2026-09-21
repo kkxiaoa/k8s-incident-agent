@@ -938,6 +938,23 @@ test("ImagePull SSE replay rejects duplicate repair lifecycle events", async () 
   assert.equal(imagePull.failure.code, "sse_replay_invalid");
 });
 
+test("ImagePull evaluation rejects a proposal that rolls back an execution", async () => {
+  const harness = createHarness({
+    sourceExecutionId: "70000000-0000-4000-8000-0000000000ff",
+  });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const imagePull = result.artifact.scenarios.find(
+    (scenario) => scenario.scenarioId === "image-pull-backoff",
+  );
+  assert.equal(imagePull.status, "failed");
+  assert.equal(imagePull.failure.code, "repair_validation_invalid");
+});
+
 test("ImagePull evaluation rejects a proposal digest outside the compiler contract", async () => {
   const harness = createHarness({ invalidRepairDigest: true });
 
@@ -1560,6 +1577,7 @@ function repairProjection(scenario, diagnosisCode, options, evidence) {
     currentImage: expected.currentImage,
     replacementImage: expected.replacementImage,
     evidenceIds,
+    sourceExecutionId: options.sourceExecutionId ?? null,
     patch,
     digest:
       options.invalidRepairDigest === true
