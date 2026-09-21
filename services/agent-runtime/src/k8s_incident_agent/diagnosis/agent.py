@@ -47,7 +47,7 @@ from k8s_incident_agent.repair.contracts import RepairAction
 _DEFAULT_MAX_MODEL_CALLS = 12
 _DEFAULT_MAX_TOOL_CALLS = 12
 _FINAL_RESPONSE_TOOL_NAME = DiagnosisCandidate.__name__
-UNPARSABLE_TOOL_CALL_HINT = (
+_UNPARSABLE_TOOL_CALL_HINT = (
     "The previous tool call arguments were not valid JSON and were discarded. "
     "Send the call again as well-formed JSON, keeping every identifier exactly "
     "as the tool results gave it."
@@ -209,28 +209,34 @@ class _CheckpointSafeDiagnosisMiddleware(
         message = _last_ai_message(values)
         if message is None or message.tool_calls:
             return None
-        broken = [call for call in message.invalid_tool_calls if call.get("id")]
+        # A call with no id or no name cannot be answered without inventing one.
+        broken = [
+            call
+            for call in message.invalid_tool_calls
+            if call.get("id") and call.get("name")
+        ]
         if not broken:
             return None
-        repairs = values.get("unparsable_call_repairs")
-        if (
-            repairs is not None
-            and (not isinstance(repairs, int) or isinstance(repairs, bool))
-        ) or (
-            isinstance(repairs, int) and not isinstance(repairs, bool) and repairs < 0
-        ):
-            raise StructuredDiagnosisError
-        if isinstance(repairs, int) and repairs >= 1:
+        # One repair per Run. Anything but an exact zero declines, so a counter
+        # restored corrupt from the checkpoint store can never reissue one.
+        repairs = values.get("unparsable_call_repairs", 0)
+        if type(repairs) is not int or repairs != 0:
+            return None
+        # The broken call is not charged yet: the hook that charges it runs after
+        # this one. With no call left after it, a repair would only trade the
+        # accurate terminal error for a call-limit one.
+        charged = _model_calls_used(values) + 1
+        if charged >= self._max_model_calls:
             return None
         return {
             "jump_to": "model",
-            "unparsable_call_repairs": (repairs or 0) + 1,
-            "thread_model_call_count": _model_calls_used(values) + 1,
+            "unparsable_call_repairs": 1,
+            "thread_model_call_count": charged,
             "messages": [
                 ToolMessage(
-                    content=UNPARSABLE_TOOL_CALL_HINT,
+                    content=_UNPARSABLE_TOOL_CALL_HINT,
                     tool_call_id=str(call["id"]),
-                    name=str(call.get("name") or _FINAL_RESPONSE_TOOL_NAME),
+                    name=str(call["name"]),
                 )
                 for call in broken
             ],

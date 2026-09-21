@@ -24,7 +24,6 @@ from tests.factories import prometheus_query_service_stub
 from tests.unit.routes.test_operator import credential as credential
 
 from k8s_incident_agent.diagnosis.agent import (
-    UNPARSABLE_TOOL_CALL_HINT,
     DiagnosticDeadlineExceededError,
     StructuredDiagnosisError,
     build_diagnostic_agent,
@@ -774,12 +773,14 @@ async def test_unparsable_structured_output_is_retried_before_the_run_is_lost() 
 
 @pytest.mark.asyncio
 async def test_unparsable_response_is_repaired_at_most_once() -> None:
-    # Jumping back to the model skips the call-limit middleware's own guard, so
-    # a model that keeps breaking the syntax would otherwise loop forever.
+    # A slip is transient; a second break in a row is more likely systematic, such
+    # as a length cut-off, and retrying it to the end of the budget only delays
+    # the failure. The default budget keeps the call limit from ending the loop
+    # first, so the cap is what this observes.
     calls: list[str] = []
     tools = _build_tools(calls)
     model = _ToolCallingFakeModel(
-        responses=[_unparsable_structured_response() for _ in range(4)]
+        responses=[_unparsable_structured_response() for _ in range(6)]
     )
     agent = _runner(
         build_diagnostic_agent(
@@ -788,7 +789,6 @@ async def test_unparsable_response_is_repaired_at_most_once() -> None:
             required_evidence=REQUIRED_EVIDENCE,
             prometheus_panels=PANELS,
             trigger_panel_id="image-pull-affected-pods",
-            max_model_calls=2,
         )
     )
 
@@ -796,7 +796,7 @@ async def test_unparsable_response_is_repaired_at_most_once() -> None:
         await agent.ainvoke(
             {"messages": [{"role": "user", "content": "Diagnose the target."}]}
         )
-    assert len(model.capture.requests) <= 2
+    assert len(model.capture.requests) == 2
 
 
 @pytest.mark.asyncio
@@ -850,12 +850,13 @@ async def test_a_parsable_or_partly_usable_batch_is_not_handed_back() -> None:
             await agent.ainvoke(
                 {"messages": [{"role": "user", "content": "Diagnose the target."}]}
             )
-        # The only observable effect of a repair is the hint reaching the model.
+        # A repair answers the broken call by id, so no request may carry one.
         handed_back = [
             message
             for request in model.capture.requests
             for message in request
-            if UNPARSABLE_TOOL_CALL_HINT in str(message.content)
+            if isinstance(message, ToolMessage)
+            and message.tool_call_id == "call-broken"
         ]
         assert handed_back == [], label
 
@@ -933,3 +934,75 @@ async def test_a_broken_investigation_call_is_handed_back_too() -> None:
     assert calls == ["get_events"]
     validated = DiagnosisCandidate.model_validate(result["structured_response"])
     assert validated.root_causes[0].evidence_ids == [UUID(evidence_id)]
+
+
+@pytest.mark.asyncio
+async def test_a_break_on_the_last_permitted_call_keeps_its_own_error() -> None:
+    # With no call left, a repair would only jump into the call limit and report
+    # the Run as over budget when the truth is that its final response broke.
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    model = _ToolCallingFakeModel(
+        responses=[
+            _tool_call("get_events", "call-events"),
+            _unparsable_structured_response(),
+            _structured_response(
+                _diagnosed_candidate("00000000-0000-0000-0000-000000000008")
+            ),
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+            max_model_calls=2,
+        )
+    )
+
+    with pytest.raises(StructuredDiagnosisError):
+        await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+        )
+    assert len(model.capture.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_broken_call_without_a_name_is_not_answered() -> None:
+    # Answering it would mean attributing the reply to a tool the model never named.
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    model = _ToolCallingFakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[],
+                invalid_tool_calls=[
+                    {
+                        "name": None,
+                        "args": '{"x": ',
+                        "id": "call-nameless",
+                        "error": "Expecting value",
+                        "type": "invalid_tool_call",
+                    }
+                ],
+            )
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    with pytest.raises(StructuredDiagnosisError):
+        await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+        )
+    assert len(model.capture.requests) == 1
