@@ -141,6 +141,7 @@ SERVICE_SELECTOR_LABEL_LIMIT = 16
 LOG_CONTAINER_LIMIT = 4
 LOG_LINE_LIMIT = 80
 LOG_RESPONSE_LIMIT_BYTES = 4 * 1024
+LOG_TRANSPORT_LIMIT_BYTES = 256 * 1024
 LOG_SINCE_SECONDS = 10 * 60
 LOG_LINE_MAX_CODE_POINTS = 512
 WORKLOAD_ARGUMENT_LIMIT = 16
@@ -1281,7 +1282,7 @@ class KubernetesEvidenceAdapter:
                 container=target.container_name,
                 follow=False,
                 insecure_skip_tls_verify_backend=False,
-                limit_bytes=LOG_RESPONSE_LIMIT_BYTES,
+                limit_bytes=LOG_TRANSPORT_LIMIT_BYTES,
                 previous=previous,
                 since_seconds=LOG_SINCE_SECONDS
                 if since_at is None
@@ -1328,7 +1329,16 @@ class KubernetesEvidenceAdapter:
             raw = await _read_bounded_log_body(response_view)
         finally:
             release()
-        lines = _normalize_log_lines(raw, state)
+        lines, interrupted = _normalize_log_lines(raw, state)
+        if interrupted and not lines:
+            # The kubelet commits HTTP 200 before asking the runtime for the
+            # log, so a container the runtime no longer holds is reported as
+            # plain text in the stream instead of as a status code.
+            if not previous:
+                raise KubernetesBoundaryError(KubernetesErrorCode.UPSTREAM_UNAVAILABLE)
+            return ContainerLogSnapshot(
+                source="previous", status="previous_unavailable", lines=[]
+            )
         if since_at is not None:
             # The locked SDK exposes sinceSeconds but not sinceTime. Round the
             # request outward and retain only timestamps after the execution.
@@ -3183,7 +3193,7 @@ def _optional_rfc3339(value: object) -> str | None:
 
 async def _read_bounded_log_body(response: _LogResponseView) -> bytes:
     content = response.content
-    remaining = LOG_RESPONSE_LIMIT_BYTES + 1
+    remaining = LOG_TRANSPORT_LIMIT_BYTES + 1
     chunks: list[bytes] = []
     while remaining > 0:
         chunk = await content.read(remaining)
@@ -3192,7 +3202,7 @@ async def _read_bounded_log_body(response: _LogResponseView) -> bytes:
         chunks.append(chunk)
         remaining -= len(chunk)
     raw = b"".join(chunks)
-    if len(raw) > LOG_RESPONSE_LIMIT_BYTES:
+    if len(raw) > LOG_TRANSPORT_LIMIT_BYTES:
         raise _budget_error()
     return raw
 
@@ -3200,29 +3210,54 @@ async def _read_bounded_log_body(response: _LogResponseView) -> bytes:
 def _normalize_log_lines(
     raw: bytes,
     state: _SanitizationState,
-) -> list[ContainerLogLine]:
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        raise _contract_error() from None
-    raw_lines = text.splitlines()
-    if len(raw_lines) > LOG_LINE_LIMIT:
-        raise _budget_error()
-    parsed_lines: list[tuple[datetime, str]] = []
-    for index, raw_line in enumerate(raw_lines):
-        timestamp, separator, message = raw_line.partition(" ")
+) -> tuple[list[ContainerLogLine], bool]:
+    # The kubelet ends a line only at "\n"; any other byte, including "\r",
+    # U+2028 and invalid UTF-8, is workload content inside a message.
+    segments = raw.split(b"\n")
+    unterminated = segments.pop()
+    if len(raw) == LOG_TRANSPORT_LIMIT_BYTES:
+        # limitBytes cuts the end of the stream without a marker, so the
+        # unterminated tail may stop anywhere, even inside its timestamp.
+        state.truncated = True
+        if not segments:
+            raise _budget_error()
+    elif unterminated:
+        segments.append(unterminated)
+
+    interrupted = False
+    timestamped: list[tuple[datetime, bytes, int]] = []
+    for segment in segments:
+        timestamp, _, message = segment.partition(b" ")
         try:
-            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(
+                timestamp.decode("ascii").replace("Z", "+00:00")
+            )
             if parsed.tzinfo is None or parsed.utcoffset() is None:
                 raise ValueError
         except ValueError:
-            if index == 0 and len(raw) == LOG_RESPONSE_LIMIT_BYTES:
-                state.truncated = True
-                continue
-            raise _contract_error() from None
-        if not separator:
-            message = ""
-        parsed_lines.append((parsed, message))
+            # The kubelet stamps every line it starts, so text without a stamp
+            # is its own in-stream failure report: it ends the log, names node
+            # paths and container IDs, and has no consumer.
+            interrupted = True
+            state.truncated = state.truncated or bool(timestamped)
+            break
+        timestamped.append((parsed, message, len(segment) + 1))
+    if len(timestamped) > LOG_LINE_LIMIT:
+        raise _budget_error()
+
+    # The stream runs oldest to newest while a crash explains itself last, so
+    # the evidence budget is spent from the newest line backwards.
+    remaining = LOG_RESPONSE_LIMIT_BYTES
+    parsed_lines: list[tuple[datetime, str]] = []
+    for parsed, message, size in reversed(timestamped):
+        if size > remaining:
+            state.truncated = True
+            if parsed_lines:
+                break
+            message = message[: max(0, remaining - (size - len(message)))]
+        remaining -= size
+        parsed_lines.append((parsed, message.decode("utf-8", errors="replace")))
+    parsed_lines.reverse()
 
     if parsed_lines:
         sanitized_block = sanitize_untrusted_text(
@@ -3249,9 +3284,7 @@ def _normalize_log_lines(
                 message=message,
             )
         )
-    if len(raw) == LOG_RESPONSE_LIMIT_BYTES:
-        state.truncated = True
-    return normalized
+    return normalized, interrupted
 
 
 def _api_status_exception(status: int) -> ApiException:

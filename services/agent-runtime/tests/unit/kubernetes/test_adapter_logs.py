@@ -176,7 +176,7 @@ async def test_read_container_logs_uses_fixed_bounds_and_normalizes_snapshots() 
                 "container": "app",
                 "follow": False,
                 "insecure_skip_tls_verify_backend": False,
-                "limit_bytes": 4096,
+                "limit_bytes": 262144,
                 "previous": False,
                 "since_seconds": 600,
                 "tail_lines": 80,
@@ -192,7 +192,7 @@ async def test_read_container_logs_uses_fixed_bounds_and_normalizes_snapshots() 
                 "container": "app",
                 "follow": False,
                 "insecure_skip_tls_verify_backend": False,
-                "limit_bytes": 4096,
+                "limit_bytes": 262144,
                 "previous": True,
                 "since_seconds": 600,
                 "tail_lines": 80,
@@ -329,12 +329,16 @@ async def test_read_container_logs_skips_non_crashloop_pods_without_rebinding() 
     [
         (_LogResponse(404), KubernetesErrorCode.RESOURCE_NOT_FOUND),
         (
-            _LogResponse(200, b"x" * 4097),
+            _LogResponse(200, b"x" * 262145),
             KubernetesErrorCode.RESULT_BUDGET_EXCEEDED,
         ),
         (
-            _LogResponse(200, b"missing-timestamp\n"),
-            KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID,
+            _LogResponse(200, b"2026-08-21T09:14:58Z " + b"x" * 262123),
+            KubernetesErrorCode.RESULT_BUDGET_EXCEEDED,
+        ),
+        (
+            _LogResponse(200, b"2026-08-21T09:14:58Z line\n" * 81),
+            KubernetesErrorCode.RESULT_BUDGET_EXCEEDED,
         ),
     ],
 )
@@ -353,6 +357,185 @@ async def test_read_container_logs_fails_closed_on_bad_responses(
 
     assert error.value.code is expected_code
     assert response.released is True
+
+
+# The kubelet v1.36.1 log endpoint on the Kind baseline answered 200 with bodies
+# of exactly these two shapes; the identifiers are replaced.
+_KUBELET_CONTAINER_GONE = (
+    b"unable to retrieve container logs for containerd://"
+    b"0f6a3c1d9b7e4f52a8c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2"
+)
+_KUBELET_LOG_FILE_GONE = (
+    b'failed to try resolving symlinks in path "/var/log/pods/'
+    b'k8s-incident-scenarios_probe_5b1c/app/3.log": lstat /var/log/pods/'
+    b"k8s-incident-scenarios_probe_5b1c/app/3.log: no such file or directory"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [_KUBELET_CONTAINER_GONE, _KUBELET_LOG_FILE_GONE])
+async def test_a_kubelet_failure_inside_the_previous_stream_is_unavailable(
+    body: bytes,
+) -> None:
+    core_api = _CoreApi(
+        [_crash_loop_pod()],
+        {
+            False: _LogResponse(200, b"2026-08-21T09:14:58.000000001Z boom\n"),
+            True: _LogResponse(200, body),
+        },
+    )
+    adapter, _ = _adapter(core_api)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    snapshots = observation.payload.containers[0].snapshots
+    assert [(item.source, item.status, item.lines) for item in snapshots[1:]] == [
+        ("previous", "previous_unavailable", []),
+    ]
+    assert snapshots[0].status == "available"
+    assert observation.truncated is False
+
+
+@pytest.mark.asyncio
+async def test_a_kubelet_failure_inside_the_current_stream_is_retryable() -> None:
+    core_api = _CoreApi(
+        [_crash_loop_pod()],
+        {False: _LogResponse(200, _KUBELET_CONTAINER_GONE), True: _LogResponse(400)},
+    )
+    adapter, _ = _adapter(core_api)
+
+    with pytest.raises(KubernetesBoundaryError) as error:
+        await adapter.read_container_logs(TARGET)
+
+    assert error.value.code is KubernetesErrorCode.UPSTREAM_UNAVAILABLE
+    assert error.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_a_kubelet_failure_after_log_lines_keeps_them_and_hides_its_text() -> (
+    None
+):
+    body = (
+        b"2026-08-21T09:14:56.000000001Z\n" * 78
+        + b"2026-08-21T09:14:57.000000001Z first\n"
+        + b"2026-08-21T09:14:58.000000001Z second\n"
+        + b'failed to read log file "/var/log/pods/ns_pod_uid/app/0.log": EOF'
+    )
+    core_api = _CoreApi(
+        [_crash_loop_pod()],
+        {False: _LogResponse(200, body), True: _LogResponse(400)},
+    )
+    adapter, _ = _adapter(core_api)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    current = observation.payload.containers[0].snapshots[0]
+    assert [line.message for line in current.lines] == [""] * 78 + ["first", "second"]
+    assert observation.truncated is True
+    assert "/var/log/pods" not in observation.payload.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_only_a_newline_ends_a_log_line() -> None:
+    body = (
+        "2026-08-21T09:14:57.000000001Z progress 10%\rprogress 20%\n"
+        "2026-08-21T09:14:58.000000001Z left\u2028right\n"
+        "2026-08-21T09:14:59.000000001Z next\x85line\n"
+    ).encode()
+    core_api = _CoreApi(
+        [_crash_loop_pod()],
+        {False: _LogResponse(200, body), True: _LogResponse(400)},
+    )
+    adapter, _ = _adapter(core_api)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    current = observation.payload.containers[0].snapshots[0]
+    assert [line.message for line in current.lines] == [
+        "progress 10%\rprogress 20%",
+        "left\u2028right",
+        "nextline",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bytes_that_are_not_utf8_do_not_void_the_other_lines() -> None:
+    body = (
+        b"2026-08-21T09:14:57.000000001Z caf\xe9 closed\n"
+        b"2026-08-21T09:14:58.000000001Z panic: nil map\n"
+    )
+    core_api = _CoreApi(
+        [_crash_loop_pod()],
+        {False: _LogResponse(200, body), True: _LogResponse(400)},
+    )
+    adapter, _ = _adapter(core_api)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    current = observation.payload.containers[0].snapshots[0]
+    assert [line.message for line in current.lines] == [
+        "caf\ufffd closed",
+        "panic: nil map",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_evidence_budget_keeps_the_newest_lines() -> None:
+    body = (
+        b"".join(
+            b"2026-08-21T09:%02d:00.000000001Z %s\n" % (index, b"x" * 80)
+            for index in range(59)
+        )
+        + b"2026-08-21T09:59:00.000000001Z panic: the reason"
+    )
+    core_api = _CoreApi(
+        [_crash_loop_pod()],
+        {False: _LogResponse(200, body), True: _LogResponse(400)},
+    )
+    adapter, _ = _adapter(core_api)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    lines = observation.payload.containers[0].snapshots[0].lines
+    assert lines[-1].message == "panic: the reason"
+    assert lines[-1].timestamp.minute == 59
+    assert [line.timestamp.minute for line in lines] == list(range(60 - len(lines), 60))
+    assert 1 < len(lines) < 60
+    assert observation.truncated is True
+
+
+@pytest.mark.asyncio
+async def test_a_single_line_over_the_budget_is_clipped_not_refused() -> None:
+    body = b"2026-08-21T09:14:58.000000001Z " + b"y" * 100_000 + b"\n"
+    core_api = _CoreApi(
+        [_crash_loop_pod()],
+        {False: _LogResponse(200, body), True: _LogResponse(400)},
+    )
+    adapter, _ = _adapter(core_api)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    lines = observation.payload.containers[0].snapshots[0].lines
+    assert [line.message for line in lines] == ["y" * 512]
+    assert observation.truncated is True
+
+
+@pytest.mark.asyncio
+async def test_a_stream_cut_at_the_transport_limit_drops_its_broken_tail() -> None:
+    whole = b"2026-08-21T09:14:58.000000001Z whole\n"
+    body = whole + b"2026-08-21T09:14:59.000000001Z cut "
+    body = body + b"z" * (262144 - len(body))
+    core_api = _CoreApi(
+        [_crash_loop_pod()],
+        {False: _LogResponse(200, body), True: _LogResponse(400)},
+    )
+    adapter, _ = _adapter(core_api)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    lines = observation.payload.containers[0].snapshots[0].lines
+    assert [line.message for line in lines] == ["whole"]
+    assert observation.truncated is True
 
 
 @pytest.mark.asyncio
