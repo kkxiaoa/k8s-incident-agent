@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,7 @@ from tests.factories import prometheus_query_service_stub
 from tests.unit.routes.test_operator import credential as credential
 
 from k8s_incident_agent.diagnosis.agent import (
+    UNPARSABLE_TOOL_CALL_HINT,
     DiagnosticDeadlineExceededError,
     StructuredDiagnosisError,
     build_diagnostic_agent,
@@ -203,6 +205,27 @@ def _tool_call(name: str, call_id: str) -> AIMessage:
     return AIMessage(
         content="",
         tool_calls=[{"name": name, "args": {}, "id": call_id, "type": "tool_call"}],
+    )
+
+
+def _unparsable_structured_response(
+    call_id: str = "call-unparsable",
+) -> AIMessage:
+    # What DeepSeek actually produced in DC-8 layer 3: a structured tool call
+    # whose arguments are truncated mid-JSON. LangChain routes it to
+    # invalid_tool_calls, which the agent factory never inspects.
+    return AIMessage(
+        content="",
+        tool_calls=[],
+        invalid_tool_calls=[
+            {
+                "name": "DiagnosisCandidate",
+                "args": '{"outcome": "diagnosed", "summary": "truncated',
+                "id": call_id,
+                "error": "Expecting ',' delimiter: line 1 column 1281 (char 1280)",
+                "type": "invalid_tool_call",
+            }
+        ],
     )
 
 
@@ -715,3 +738,198 @@ async def test_mixed_final_and_evidence_batch_is_checked_as_a_whole(
                 {"messages": [{"role": "user", "content": "Diagnose the target."}]}
             )
     assert calls == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_unparsable_structured_output_is_retried_before_the_run_is_lost() -> None:
+    # A truncated structured response is a formatting slip, not a claim about the
+    # cluster: the budget is untouched and the next attempt usually parses.
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    evidence_id = "00000000-0000-0000-0000-000000000004"
+    model = _ToolCallingFakeModel(
+        responses=[
+            _tool_call("get_events", "call-events"),
+            _unparsable_structured_response(),
+            _structured_response(_diagnosed_candidate(evidence_id)),
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+    )
+
+    validated = DiagnosisCandidate.model_validate(result["structured_response"])
+    assert validated.root_causes[0].evidence_ids == [UUID(evidence_id)]
+
+
+@pytest.mark.asyncio
+async def test_unparsable_response_is_repaired_at_most_once() -> None:
+    # Jumping back to the model skips the call-limit middleware's own guard, so
+    # a model that keeps breaking the syntax would otherwise loop forever.
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    model = _ToolCallingFakeModel(
+        responses=[_unparsable_structured_response() for _ in range(4)]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+            max_model_calls=2,
+        )
+    )
+
+    with pytest.raises(StructuredDiagnosisError):
+        await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+        )
+    assert len(model.capture.requests) <= 2
+
+
+@pytest.mark.asyncio
+async def test_a_parsable_or_partly_usable_batch_is_not_handed_back() -> None:
+    # Two shapes that must NOT be repaired, each exercising one predicate: a
+    # schema failure that parsed at all, and a batch that still carries a usable
+    # tool call, whose results let the model continue on its own.
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    unrepairable = {
+        "schema": AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "DiagnosisCandidate",
+                    "args": {"outcome": "not-a-valid-outcome"},
+                    "id": "call-schema",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        "alongside_tool_call": AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "get_events", "args": {}, "id": "call-ev", "type": "tool_call"}
+            ],
+            invalid_tool_calls=[
+                {
+                    "name": "DiagnosisCandidate",
+                    "args": '{"outcome": "diagnosed"',
+                    "id": "call-broken",
+                    "error": "Expecting ',' delimiter",
+                    "type": "invalid_tool_call",
+                }
+            ],
+        ),
+    }
+    for label, response in unrepairable.items():
+        model = _ToolCallingFakeModel(responses=[response])
+        agent = _runner(
+            build_diagnostic_agent(
+                model,
+                tools,
+                required_evidence=REQUIRED_EVIDENCE,
+                prometheus_panels=PANELS,
+                trigger_panel_id="image-pull-affected-pods",
+            )
+        )
+
+        with suppress(StructuredDiagnosisError, ToolCallLimitExceededError):
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+            )
+        # The only observable effect of a repair is the hint reaching the model.
+        handed_back = [
+            message
+            for request in model.capture.requests
+            for message in request
+            if UNPARSABLE_TOOL_CALL_HINT in str(message.content)
+        ]
+        assert handed_back == [], label
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_response_is_charged_to_the_call_budget() -> None:
+    # The jump skips the hook that charges the call, so the repair charges it.
+    # Otherwise the reserve reads a stale count and the persisted usage undercounts.
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    evidence_id = "00000000-0000-0000-0000-000000000006"
+    model = _ToolCallingFakeModel(
+        responses=[
+            _unparsable_structured_response(),
+            _structured_response(_diagnosed_candidate(evidence_id)),
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+    )
+
+    assert result["model_calls"] == len(model.capture.requests)
+
+
+@pytest.mark.asyncio
+async def test_a_broken_investigation_call_is_handed_back_too() -> None:
+    # The same truncation on an Evidence read ends the Run with no Evidence at
+    # all, which is the same loss by a different tool name.
+    calls: list[str] = []
+    tools = _build_tools(calls)
+    evidence_id = "00000000-0000-0000-0000-000000000007"
+    model = _ToolCallingFakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[],
+                invalid_tool_calls=[
+                    {
+                        "name": "get_events",
+                        "args": '{"names": ["a',
+                        "id": "call-broken-ev",
+                        "error": "Expecting ',' delimiter",
+                        "type": "invalid_tool_call",
+                    }
+                ],
+            ),
+            _tool_call("get_events", "call-events"),
+            _structured_response(_diagnosed_candidate(evidence_id)),
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            tools,
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+    )
+
+    assert calls == ["get_events"]
+    validated = DiagnosisCandidate.model_validate(result["structured_response"])
+    assert validated.root_causes[0].evidence_ids == [UUID(evidence_id)]

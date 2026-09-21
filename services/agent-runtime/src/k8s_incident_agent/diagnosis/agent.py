@@ -21,7 +21,7 @@ from langchain.agents.middleware.model_call_limit import (
     ModelCallLimitExceededError,
 )
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
-from langchain.agents.middleware.types import OmitFromInput
+from langchain.agents.middleware.types import OmitFromInput, PrivateStateAttr
 from langchain.agents.structured_output import StructuredOutputError, ToolStrategy
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
@@ -47,6 +47,11 @@ from k8s_incident_agent.repair.contracts import RepairAction
 _DEFAULT_MAX_MODEL_CALLS = 12
 _DEFAULT_MAX_TOOL_CALLS = 12
 _FINAL_RESPONSE_TOOL_NAME = DiagnosisCandidate.__name__
+UNPARSABLE_TOOL_CALL_HINT = (
+    "The previous tool call arguments were not valid JSON and were discarded. "
+    "Send the call again as well-formed JSON, keeping every identifier exactly "
+    "as the tool results gave it."
+)
 _FINAL_ONLY_HINT = (
     "Budget notice: only the final structured response remains. Deliver the "
     "diagnosis from the Evidence already collected; further tool calls are refused."
@@ -59,6 +64,7 @@ class _CheckpointSafeDiagnosisState(AgentState[_DiagnosisPayload]):
     tool_calls: NotRequired[Annotated[int, OmitFromInput]]
     terminal_error_code: NotRequired[str]
     terminal_error_retryable: NotRequired[bool]
+    unparsable_call_repairs: NotRequired[Annotated[int, PrivateStateAttr]]
 
 
 type _DiagnosticAgentGraph = CompiledStateGraph[
@@ -160,21 +166,75 @@ class _CheckpointSafeDiagnosisMiddleware(
         except Exception:
             raise ModelUpstreamError from None
 
+    @hook_config(can_jump_to=["model"])
     def after_model(
         self,
         state: _CheckpointSafeDiagnosisState,
         runtime: Runtime[DiagnosticToolContext],
-    ) -> None:
+    ) -> dict[str, object] | None:
         del runtime
         self._require_batch_within_reserve(state)
+        return self._reprompt_unparsable_response(state)
 
+    @hook_config(can_jump_to=["model"])
     async def aafter_model(
         self,
         state: _CheckpointSafeDiagnosisState,
         runtime: Runtime[DiagnosticToolContext],
-    ) -> None:
+    ) -> dict[str, object] | None:
         del runtime
         self._require_batch_within_reserve(state)
+        return self._reprompt_unparsable_response(state)
+
+    def _reprompt_unparsable_response(
+        self,
+        state: _CheckpointSafeDiagnosisState,
+    ) -> dict[str, object] | None:
+        """Hand structurally broken tool calls back for one more attempt.
+
+        A tool call whose arguments are not valid JSON reaches
+        `invalid_tool_calls`, which the SDK never inspects. When a batch carries
+        nothing else the Run ends there: with no diagnosis if the final response
+        broke, and with no Evidence if an investigation call did. Only the break
+        in the JSON is handed back; a call that parses is answered by the tool
+        boundary or by `validate_diagnosis` against this Run's Evidence, which
+        the retried response has to satisfy exactly as the first one did.
+
+        Jumping from here skips the remaining `after_model` hooks, including the
+        one that charges the call, so the charge is carried in this update.
+        Without it the reserve reads a stale count and hands the repaired call a
+        full tool surface instead of the final-response-only turn it is owed.
+        """
+        values = cast(dict[str, object], state)
+        message = _last_ai_message(values)
+        if message is None or message.tool_calls:
+            return None
+        broken = [call for call in message.invalid_tool_calls if call.get("id")]
+        if not broken:
+            return None
+        repairs = values.get("unparsable_call_repairs")
+        if (
+            repairs is not None
+            and (not isinstance(repairs, int) or isinstance(repairs, bool))
+        ) or (
+            isinstance(repairs, int) and not isinstance(repairs, bool) and repairs < 0
+        ):
+            raise StructuredDiagnosisError
+        if isinstance(repairs, int) and repairs >= 1:
+            return None
+        return {
+            "jump_to": "model",
+            "unparsable_call_repairs": (repairs or 0) + 1,
+            "thread_model_call_count": _model_calls_used(values) + 1,
+            "messages": [
+                ToolMessage(
+                    content=UNPARSABLE_TOOL_CALL_HINT,
+                    tool_call_id=str(call["id"]),
+                    name=str(call.get("name") or _FINAL_RESPONSE_TOOL_NAME),
+                )
+                for call in broken
+            ],
+        }
 
     def _reserve_final(
         self,
