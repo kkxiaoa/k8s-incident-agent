@@ -524,6 +524,7 @@ class _ContainerLogTarget:
     owner: OwnerSummary
     container_name: str
     restart_count: int
+    waiting_to_start: bool = False
     selection_reason: LogSelectionReason | None = None
 
 
@@ -931,11 +932,30 @@ class KubernetesEvidenceAdapter:
                     await self._read_container_log_snapshot(
                         cast(str, target.namespace),
                         log_target,
-                        source,
+                        "current",
                         state,
                     )
-                    for source in ("current", "previous")
                 ]
+                if log_target.waiting_to_start:
+                    # While a container waits to start, the kubelet serves its
+                    # last terminated container for both reads, so asking for
+                    # the previous one repeats the generation just read.
+                    snapshots.append(
+                        ContainerLogSnapshot(
+                            source="previous",
+                            status="previous_unavailable",
+                            lines=[],
+                        )
+                    )
+                else:
+                    snapshots.append(
+                        await self._read_container_log_snapshot(
+                            cast(str, target.namespace),
+                            log_target,
+                            "previous",
+                            state,
+                        )
+                    )
                 containers.append(
                     ContainerLogSummary(
                         pod_ref=TargetRef(
@@ -2711,6 +2731,7 @@ def _abnormal_log_targets(
                         owner=owner_summary,
                         container_name=name,
                         restart_count=restart_count,
+                        waiting_to_start=current.status == "waiting",
                         selection_reason=reason,
                     )
                 )

@@ -117,6 +117,29 @@ def _crash_loop_pod(*, uid: str = "pod-uid") -> V1Pod:
     )
 
 
+def _terminated_pod(*, uid: str = "pod-uid") -> V1Pod:
+    # The kubelet serves a distinct previous generation only while the current
+    # container has an id of its own; a container waiting to start has none.
+    return _pod(
+        "crash-pod",
+        uid,
+        "rs-uid",
+        container_statuses=[
+            _container_status(
+                "app",
+                V1ContainerState(
+                    terminated=V1ContainerStateTerminated(
+                        exit_code=1,
+                        reason="Error",
+                        started_at=OBSERVED_AT,
+                        finished_at=OBSERVED_AT,
+                    )
+                ),
+            )
+        ],
+    )
+
+
 def _adapter(
     core_api: _CoreApi,
     events_api: _EventsApi | None = None,
@@ -158,7 +181,7 @@ async def test_read_container_logs_uses_fixed_bounds_and_normalizes_snapshots() 
         b"2026-08-21T09:14:00+00:00 unknown command\n",
     )
     core_api = _CoreApi(
-        [_crash_loop_pod()],
+        [_terminated_pod()],
         {False: current, True: previous},
     )
     adapter, apps_api = _adapter(core_api)
@@ -219,6 +242,29 @@ async def test_read_container_logs_uses_fixed_bounds_and_normalizes_snapshots() 
 
 
 @pytest.mark.asyncio
+async def test_a_container_waiting_to_start_is_not_read_twice() -> None:
+    # The kubelet resolves both reads to lastState.Terminated while a container
+    # waits to start, so a previous read would repeat the current generation.
+    current = _LogResponse(200, b"2026-08-21T09:14:58.000000001Z exit 1\n")
+    previous = _LogResponse(200, b"2026-08-21T09:14:58.000000001Z exit 1\n")
+    core_api = _CoreApi([_crash_loop_pod()], {False: current, True: previous})
+    adapter, _ = _adapter(core_api)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    assert [call[2]["previous"] for call in core_api.log_calls] == [False]
+    assert previous.released is False
+    container = observation.payload.containers[0]
+    assert container.selection_reason == "crash_loop"
+    assert [(item.source, item.status) for item in container.snapshots] == [
+        ("current", "available"),
+        ("previous", "previous_unavailable"),
+    ]
+    assert [line.message for line in container.snapshots[0].lines] == ["exit 1"]
+    assert container.snapshots[1].lines == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "body",
     [
@@ -257,7 +303,7 @@ async def test_read_container_logs_projects_known_unavailable_snapshots() -> Non
     current = _LogResponse(400)
     previous = _LogResponse(400)
     core_api = _CoreApi(
-        [_crash_loop_pod()],
+        [_terminated_pod()],
         {False: current, True: previous},
     )
     adapter, _ = _adapter(core_api)
@@ -281,7 +327,7 @@ async def test_read_container_logs_distinguishes_an_empty_snapshot_window() -> N
         b"2026-08-21T09:14:00Z previous failure\n",
     )
     core_api = _CoreApi(
-        [_crash_loop_pod()],
+        [_terminated_pod()],
         {False: current, True: previous},
     )
     adapter, _ = _adapter(core_api)
@@ -794,8 +840,8 @@ async def test_logs_survive_a_restart_between_the_read_and_the_rebind(
     # A container that restarts while its own logs are being read is the normal
     # state of the workloads this tool exists for, not a workload swapped out
     # underneath the read. Failing it closed cost the whole diagnosis.
-    pod = _crash_loop_pod()
-    rebound = _crash_loop_pod()
+    pod = _terminated_pod()
+    rebound = _terminated_pod()
     rebound_view: Any = rebound
     if change == "restart":
         rebound_view.status.container_statuses[0].restart_count += 1
