@@ -2,3 +2,15 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ../k3s-base
+patches:
+  # The evaluator reaches the Runtime over a private port-forward and only
+  # replays this origin as a header, so this profile needs no resolvable host
+  # and offers no browser sign-in. k3s-online still requires a real origin.
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: agent-runtime-config
+        namespace: k8s-incident-agent
+      data:
+        OPERATOR_ORIGIN: https://k8s-incident-agent.invalid
