@@ -1254,6 +1254,7 @@ function validateTerminalRepair(scenario, detail, evidenceById) {
       "currentImage",
       "replacementImage",
       "evidenceIds",
+      "sourceExecutionId",
       "patch",
       "digest",
       "diff",
@@ -1280,6 +1281,9 @@ function validateTerminalRepair(scenario, detail, evidenceById) {
     repair.containerName !== expected.containerName ||
     repair.currentImage !== expected.currentImage ||
     repair.replacementImage !== expected.replacementImage ||
+    // A proposal carries a source execution only when it rolls one back, and the
+    // repair contract pairs that with a single Evidence instead of two.
+    repair.sourceExecutionId !== null ||
     !Array.isArray(evidenceIds) ||
     evidenceIds.length !== 2 ||
     new Set(evidenceIds).size !== 2 ||
