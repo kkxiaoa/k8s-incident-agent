@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "pvc-storage-class-missing",
-  "scenario_version": 1,
+  "scenario_version": 2,
   "monitoring_alert_id": "K8sIncidentPersistentVolumeClaimPending",
   "display_name": "PVC storage class missing",
   "description": "A PersistentVolumeClaim requests an immediate StorageClass that does not exist.",
@@ -24,6 +24,7 @@
   "expected_root_causes": [
     "The PVC explicitly references a StorageClass that the current lookup cannot find, preventing provisioning or binding; support this with the exact PVC and its associated Events, not Pending alone."
   ],
+  "identity_evidence": "pvc_storage",
   "required_evidence": [
     "pvc_storage"
   ],

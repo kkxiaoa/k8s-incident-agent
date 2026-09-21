@@ -228,7 +228,7 @@ function validScenario() {
   return {
     schema_version: 3,
     scenario_id: SCENARIO_ID,
-    scenario_version: 4,
+    scenario_version: 5,
     monitoring_alert_id: "K8sIncidentImagePullBackOff",
     display_name: "Image pull failure",
     description: "A Deployment cannot pull its configured image.",
@@ -248,6 +248,7 @@ function validScenario() {
       "manifests/deployment.yaml",
     ],
     expected_root_causes: ["image_pull_failure"],
+    identity_evidence: "workload",
     required_evidence: ["workload", "rollout_history", "pods", "events"],
     allowed_tools: [
       "get_workload",
@@ -1482,7 +1483,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
   assert.deepEqual(publicItems, [
     {
       scenario_id: "crash-loop-backoff",
-      scenario_version: 2,
+      scenario_version: 3,
       display_name: "Container restart loop",
       description:
         "A Deployment container repeatedly exits because its startup arguments are invalid.",
@@ -1500,7 +1501,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: SCENARIO_ID,
-      scenario_version: 4,
+      scenario_version: 5,
       display_name: "Image pull failure",
       description: "A Deployment cannot pull its configured image.",
       trigger: {
@@ -1517,7 +1518,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: "liveness-probe-misconfigured",
-      scenario_version: 2,
+      scenario_version: 3,
       display_name: "Liveness probe misconfiguration",
       description:
         "A healthy Deployment process is repeatedly restarted because its liveness probe targets the wrong numeric port.",
@@ -1536,7 +1537,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: "pvc-binding-pending",
-      scenario_version: 1,
+      scenario_version: 2,
       display_name: "PVC binding pending",
       description:
         "A PersistentVolumeClaim requests an immediate static StorageClass without an available PersistentVolume.",
@@ -1555,7 +1556,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: "pvc-storage-class-missing",
-      scenario_version: 1,
+      scenario_version: 2,
       display_name: "PVC storage class missing",
       description:
         "A PersistentVolumeClaim requests an immediate StorageClass that does not exist.",
@@ -1574,7 +1575,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: "readiness-probe-misconfigured",
-      scenario_version: 2,
+      scenario_version: 3,
       display_name: "Readiness probe misconfiguration",
       description:
         "A running Deployment container remains unready because its readiness probe references an undeclared named port.",
@@ -1593,7 +1594,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
     },
     {
       scenario_id: "service-selector-mismatch",
-      scenario_version: 1,
+      scenario_version: 2,
       display_name: "Service selector mismatch",
       description:
         "A monitored Service selector does not match the labels of its explicitly associated candidate Pods.",
@@ -1614,6 +1615,7 @@ test("the versioned fixture exposes only the public scenario contract", async ()
   const serialized = JSON.stringify(publicItems);
   for (const privateField of [
     "expected_root_causes",
+    "identity_evidence",
     "required_evidence",
     "allowed_tools",
     "forbidden_tools",
@@ -1909,6 +1911,11 @@ test("catalog rejects incompatible versions, extra fields, and target drift", as
     }],
     ["empty root cause criterion", (scenario) => {
       scenario.expected_root_causes = [" "];
+    }],
+    ["identity Evidence the scenario does not expect", (scenario) => {
+      scenario.required_evidence = scenario.required_evidence.filter(
+        (kind) => kind !== scenario.identity_evidence,
+      );
     }],
     ["cluster", (scenario) => { scenario.target.cluster = "production"; }],
     ["namespace", (scenario) => { scenario.target.namespace = "default"; }],

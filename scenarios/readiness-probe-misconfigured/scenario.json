@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "readiness-probe-misconfigured",
-  "scenario_version": 2,
+  "scenario_version": 3,
   "monitoring_alert_id": "K8sIncidentReadinessProbeFailure",
   "display_name": "Readiness probe misconfiguration",
   "description": "A running Deployment container remains unready because its readiness probe references an undeclared named port.",
@@ -24,6 +24,7 @@
   "expected_root_causes": [
     "The readiness probe references an undeclared named port, causing the observed Kubelet probe error and NotReady state; distinguish this configuration error from ordinary startup delay or a liveness restart."
   ],
+  "identity_evidence": "workload",
   "required_evidence": [
     "workload",
     "pods",

@@ -23,10 +23,13 @@ const NAMESPACE = "k8s-incident-scenarios";
 const SCENARIO_SCHEMA_VERSION = 3;
 const DEFAULT_SCENARIO_VERSION = 1;
 const SCENARIO_VERSION_OVERRIDES = new Map([
-  ["crash-loop-backoff", 2],
-  ["image-pull-backoff", 4],
-  ["liveness-probe-misconfigured", 2],
-  ["readiness-probe-misconfigured", 2],
+  ["crash-loop-backoff", 3],
+  ["image-pull-backoff", 5],
+  ["liveness-probe-misconfigured", 3],
+  ["pvc-binding-pending", 2],
+  ["pvc-storage-class-missing", 2],
+  ["readiness-probe-misconfigured", 3],
+  ["service-selector-mismatch", 2],
 ]);
 const MAX_FILE_BYTES = 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 1024 * 1024;
@@ -122,6 +125,7 @@ export function loadEvaluationScenarioCatalog(
       kind: definition.target.kind,
       name: definition.target.name,
     },
+    identityEvidence: definition.identity_evidence,
     requiredEvidence: [...definition.required_evidence],
     allowedTools: [...definition.allowed_tools],
     forbiddenTools: [...definition.forbidden_tools],
@@ -381,6 +385,7 @@ function validateScenarioDefinition(definition, directoryName) {
     "target",
     "fixture_manifests",
     "expected_root_causes",
+    "identity_evidence",
     "required_evidence",
     "allowed_tools",
     "forbidden_tools",
@@ -463,6 +468,11 @@ function validateScenarioDefinition(definition, directoryName) {
     "forbidden_tools",
   ]) {
     assertNonEmptyUniqueStringArray(definition[field]);
+  }
+  // Which kind is the target's identity Evidence is resolved by the Runtime
+  // catalog alone; here it only has to be one this scenario actually expects.
+  if (!definition.required_evidence.includes(definition.identity_evidence)) {
+    throw new Error();
   }
   const forbidden = new Set(definition.forbidden_tools);
   const allowed = new Set(definition.allowed_tools);

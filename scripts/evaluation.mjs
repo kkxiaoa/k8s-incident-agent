@@ -421,6 +421,8 @@ async function evaluateScenario(scenario, options) {
     const diagnosisSummary = validateTerminalDiagnosis(scenario, terminal);
     result.checks.run = diagnosisSummary.run;
     result.checks.evidenceKinds = diagnosisSummary.evidenceKinds;
+    result.checks.uncitedExpectedEvidence =
+      diagnosisSummary.uncitedExpectedEvidence;
     result.checks.diagnosisCodes = diagnosisSummary.diagnosisCodes;
     result.checks.repair = diagnosisSummary.repair;
 
@@ -789,6 +791,7 @@ function emptyScenarioResult(scenario) {
       uniqueIncident: false,
       run: undefined,
       evidenceKinds: [],
+      uncitedExpectedEvidence: [],
       diagnosisCodes: [],
       panels: [],
       sseReplay: undefined,
@@ -1137,8 +1140,16 @@ function validateTerminalDiagnosis(scenario, detail) {
     ...new Set([...evidenceById.values()].map((item) => item.evidenceKind)),
   ].sort();
   const tools = new Set(detail.evidence.map((item) => item.toolName));
+  const uncollected = scenario.requiredEvidence.filter(
+    (kind) => !evidenceKinds.includes(kind),
+  );
+  if (uncollected.length > 0) {
+    throw contractError(
+      "diagnosis_evidence_missing",
+      `Diagnosis did not collect ${uncollected.join(", ")}`,
+    );
+  }
   if (
-    scenario.requiredEvidence.some((kind) => !evidenceKinds.includes(kind)) ||
     [...tools].some(
       (tool) =>
         !scenario.allowedTools.includes(tool) ||
@@ -1146,8 +1157,8 @@ function validateTerminalDiagnosis(scenario, detail) {
     )
   ) {
     throw contractError(
-      "diagnosis_evidence_invalid",
-      "Diagnosis Evidence does not match the scenario contract",
+      "diagnosis_tools_invalid",
+      "Diagnosis used a tool the scenario does not permit",
     );
   }
   const diagnosisCodes = [];
@@ -1185,18 +1196,24 @@ function validateTerminalDiagnosis(scenario, detail) {
     }
   }
   diagnosisCodes.sort();
-  if (
-    scenario.requiredEvidence.some((kind) => !citedEvidenceKinds.has(kind))
-  ) {
+  // The Runtime requires the target's identity Evidence to be cited and tells
+  // the model so; the scenario's remaining kinds were never put to the model,
+  // so they stay an observation rather than a gate.
+  if (!citedEvidenceKinds.has(scenario.identityEvidence)) {
     throw contractError(
       "diagnosis_evidence_links_invalid",
-      "Diagnosis does not reference every required Evidence kind",
+      `Diagnosis does not reference ${scenario.identityEvidence}`,
     );
   }
   const repair = validateTerminalRepair(scenario, detail, evidenceById);
   return {
     run: { attempt: 1, status: "COMPLETED" },
     evidenceKinds,
+    // Collected and expected by the scenario, yet left out of every root cause.
+    // The reviewer reading the diagnosis decides whether that weakens it.
+    uncitedExpectedEvidence: scenario.requiredEvidence.filter(
+      (kind) => !citedEvidenceKinds.has(kind),
+    ),
     diagnosisCodes,
     repair,
   };

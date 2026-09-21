@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "pvc-binding-pending",
-  "scenario_version": 1,
+  "scenario_version": 2,
   "monitoring_alert_id": "K8sIncidentPersistentVolumeClaimPending",
   "display_name": "PVC binding pending",
   "description": "A PersistentVolumeClaim requests an immediate static StorageClass without an available PersistentVolume.",
@@ -25,6 +25,7 @@
   "expected_root_causes": [
     "The PVC remains unbound while referencing an existing Immediate StorageClass using kubernetes.io/no-provisioner; explain the observed provisioning failure and need for a suitable pre-provisioned volume. Do not mistake a historical not-found Event for the current class state, call every static class invalid, or claim an exhaustive PV inventory that no tool read."
   ],
+  "identity_evidence": "pvc_storage",
   "required_evidence": [
     "pvc_storage"
   ],

@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "image-pull-backoff",
-  "scenario_version": 4,
+  "scenario_version": 5,
   "monitoring_alert_id": "K8sIncidentImagePullBackOff",
   "display_name": "Image pull failure",
   "description": "A Deployment cannot pull its configured image.",
@@ -23,6 +23,7 @@
   "expected_root_causes": [
     "The container image references the reserved invalid registry and the observed pull failure prevents startup; support that cause with workload, Pod and Event Evidence rather than assuming credentials, rate limiting or a missing tag."
   ],
+  "identity_evidence": "workload",
   "required_evidence": [
     "workload",
     "rollout_history",

@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "service-selector-mismatch",
-  "scenario_version": 1,
+  "scenario_version": 2,
   "monitoring_alert_id": "K8sIncidentServiceEndpointsUnavailable",
   "display_name": "Service selector mismatch",
   "description": "A monitored Service selector does not match the labels of its explicitly associated candidate Pods.",
@@ -25,6 +25,7 @@
   "expected_root_causes": [
     "The Service selector does not match the labels of its explicitly associated candidate Pods, leaving no ready endpoint; distinguish selector mismatch from absent candidates or matching but unready Pods."
   ],
+  "identity_evidence": "service_network",
   "required_evidence": [
     "service_network"
   ],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from typing import Annotated, Any, NotRequired, cast
@@ -32,6 +33,7 @@ from langgraph.graph.state import (  # pyright: ignore[reportMissingTypeStubs]
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.runtime import Runtime
 from langgraph.types import Command
+from pydantic import ValidationError
 
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.contracts import DiagnosisCandidate
@@ -52,6 +54,8 @@ _UNPARSABLE_TOOL_CALL_HINT = (
     "Send the call again as well-formed JSON, keeping every identifier exactly "
     "as the tool results gave it."
 )
+_STRUCTURED_OUTPUT_FAULT_LIMIT = 8
+_LOGGER = logging.getLogger(__name__)
 _FINAL_ONLY_HINT = (
     "Budget notice: only the final structured response remains. Deliver the "
     "diagnosis from the Evidence already collected; further tool calls are refused."
@@ -356,6 +360,68 @@ class _CheckpointSafeDiagnosisMiddleware(
         return {"model_calls": model_calls, "tool_calls": tool_calls}
 
 
+def _structured_output_faults(exception: Exception) -> tuple[str, ...]:
+    """Name the rejected fields without carrying what the model wrote.
+
+    The SDK wraps the schema failure in a plain `ValueError` whose text embeds
+    the offending input, so only the path, the rule it broke and that rule's own
+    bound are read off the original error.
+    """
+    cause = getattr(getattr(exception, "source", None), "__cause__", None)
+    if not isinstance(cause, ValidationError):
+        return ()
+    faults: list[str] = []
+    for error in cause.errors(include_input=False, include_url=False)[
+        :_STRUCTURED_OUTPUT_FAULT_LIMIT
+    ]:
+        location = ".".join(str(part) for part in error["loc"]) or "(root)"
+        bounds = ", ".join(
+            f"{name} {value}"
+            for name, value in sorted((error.get("ctx") or {}).items())
+            if name != "error" and isinstance(value, int | float | str | bool)
+        )
+        faults.append(f"{location}: {error['type']}{f' ({bounds})' if bounds else ''}")
+    return tuple(faults)
+
+
+def _structured_output_repair() -> Callable[[Exception], str]:
+    """Hand a schema-rejected diagnosis back once, then keep its own error.
+
+    The rejection is raised inside the model node, so its message never reaches
+    the state the `after_model` repair reads; the retry has to be armed here
+    instead. Re-raising once the allowance is spent keeps the terminal error the
+    accurate `structured_output_invalid` rather than a call-limit one, and the
+    retry itself is an ordinary model call that the budget middleware charges.
+
+    The allowance lives with the agent, which is built per Run, so a Run resumed
+    from its checkpoint is allowed one more; the call budget, which is restored
+    from that same checkpoint, still bounds the total.
+    """
+    remaining = 1
+
+    def handle(exception: Exception) -> str:
+        nonlocal remaining
+        faults = _structured_output_faults(exception)
+        # Rendered into the message: the default formatter drops `extra`, and
+        # the field paths are the only reason this is logged at all.
+        _LOGGER.warning(
+            "structured_diagnosis_rejected faults=%s retried=%s",
+            faults,
+            remaining > 0,
+        )
+        if remaining <= 0:
+            raise exception
+        remaining -= 1
+        return (
+            "The structured diagnosis was rejected by its schema: "
+            + ("; ".join(faults) or "no field detail available")
+            + ". Send it again, correcting exactly those fields and keeping every "
+            "identifier and evidenceId as the tool results gave them."
+        )
+
+    return handle
+
+
 def _checkpoint_safe_response(response: ModelResponse[Any]) -> ModelResponse[Any]:
     structured_response = response.structured_response
     if isinstance(structured_response, DiagnosisCandidate):
@@ -474,7 +540,7 @@ def build_diagnostic_agent(
         response_format=ToolStrategy(
             DiagnosisCandidate,
             tool_message_content="Structured diagnosis accepted.",
-            handle_errors=False,
+            handle_errors=_structured_output_repair(),
         ),
         context_schema=DiagnosticToolContext,
         checkpointer=None,

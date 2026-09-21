@@ -84,25 +84,25 @@ def _deployment(name: str) -> KubernetesTarget:
     [
         (
             "K8sIncidentImagePullBackOff",
-            ("image-pull-backoff", "4"),
+            ("image-pull-backoff", "5"),
             "image-pull-affected-pods",
             "set_container_image",
         ),
         (
             "K8sIncidentCrashLoopBackOff",
-            ("crash-loop-backoff", "2"),
+            ("crash-loop-backoff", "3"),
             "crash-loop-waiting-containers",
             None,
         ),
         (
             "K8sIncidentReadinessProbeFailure",
-            ("readiness-probe-misconfigured", "2"),
+            ("readiness-probe-misconfigured", "3"),
             "readiness-probe-unready-containers",
             None,
         ),
         (
             "K8sIncidentLivenessProbeRestart",
-            ("liveness-probe-misconfigured", "2"),
+            ("liveness-probe-misconfigured", "3"),
             "liveness-probe-restarts",
             None,
         ),
@@ -177,7 +177,7 @@ def test_service_and_pvc_targets_keep_their_own_bounded_capabilities() -> None:
         _target("v1", "Service", "service-selector-mismatch"),
     )
     pvc_policy = policies.resolve(
-        IncidentSource(type="scenario", ref="pvc-binding-pending", revision="1"),
+        IncidentSource(type="scenario", ref="pvc-binding-pending", revision="2"),
         _target("v1", "PersistentVolumeClaim", "pvc-binding-pending"),
     )
 

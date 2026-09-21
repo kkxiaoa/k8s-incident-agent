@@ -53,7 +53,7 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     )
     assert scenario.model_dump(mode="json") == {
         "scenario_id": "image-pull-backoff",
-        "scenario_version": 4,
+        "scenario_version": 5,
         "monitoring_alert_id": "K8sIncidentImagePullBackOff",
         "display_name": "Image pull failure",
         "description": "A Deployment cannot pull its configured image.",
@@ -75,25 +75,26 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     assert "expected_root_causes" not in scenario.model_dump()
     assert "deterministic_verifier" not in scenario.model_dump()
     assert "expected_patch_constraints" not in scenario.model_dump()
+    assert "identity_evidence" not in scenario.model_dump()
     crash_loop = next(
         item for item in scenarios if item.scenario_id == "crash-loop-backoff"
     )
     assert crash_loop.monitoring_alert_id == "K8sIncidentCrashLoopBackOff"
-    assert crash_loop.scenario_version == 2
+    assert crash_loop.scenario_version == 3
     for scenario_id, alert_id in (
         ("readiness-probe-misconfigured", "K8sIncidentReadinessProbeFailure"),
         ("liveness-probe-misconfigured", "K8sIncidentLivenessProbeRestart"),
     ):
         probe = next(item for item in scenarios if item.scenario_id == scenario_id)
         assert probe.monitoring_alert_id == alert_id
-        assert probe.scenario_version == 2
+        assert probe.scenario_version == 3
 
     for scenario_id in ("pvc-binding-pending", "pvc-storage-class-missing"):
         pvc = next(item for item in scenarios if item.scenario_id == scenario_id)
         assert pvc.monitoring_alert_id == ("K8sIncidentPersistentVolumeClaimPending")
         assert pvc.target.api_version == "v1"
         assert pvc.target.kind == "PersistentVolumeClaim"
-        assert pvc.scenario_version == 1
+        assert pvc.scenario_version == 2
 
 
 @pytest.mark.parametrize(
@@ -109,6 +110,8 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
         "missing_patch_constraints",
         "invalid_patch_constraints",
         "capability_drift",
+        "identity_drift",
+        "identity_unrequired",
     ],
 )
 def test_rejects_documents_outside_the_node_producer_contract(
@@ -139,6 +142,12 @@ def test_rejects_documents_outside_the_node_producer_contract(
         del value["expected_patch_constraints"]
     elif mutation == "capability_drift":
         value["allowed_tools"] = ["get_workload", "query_prometheus"]
+    elif mutation == "identity_drift":
+        # Expected by the scenario, but not the identity Evidence of a Deployment.
+        value["identity_evidence"] = "events"
+    elif mutation == "identity_unrequired":
+        # Correct for the target kind, yet absent from what the scenario expects.
+        value["required_evidence"] = ["rollout_history", "pods", "events"]
     else:
         constraints = value["expected_patch_constraints"]
         assert isinstance(constraints, dict)
@@ -151,7 +160,7 @@ def test_rejects_documents_outside_the_node_producer_contract(
 
 @pytest.mark.parametrize(
     ("scenario_id", "scenario_version"),
-    [("image-pull-backoff", 3), ("crash-loop-backoff", 1), ("pvc-binding-pending", 2)],
+    [("image-pull-backoff", 3), ("crash-loop-backoff", 2), ("pvc-binding-pending", 3)],
 )
 def test_rejects_versions_not_owned_by_the_exact_scenario(
     tmp_path: Path,

@@ -7,7 +7,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import (
 from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 from k8s_incident_agent.repair.contracts import RepairAction
 
-DIAGNOSTIC_PROMPT_VERSION = "stage3-dc6-action-eligibility-v11"
+DIAGNOSTIC_PROMPT_VERSION = "stage3-dc8-summary-budget-v12"
 
 
 def build_diagnostic_system_prompt(
@@ -194,10 +194,11 @@ def build_diagnostic_system_prompt(
   values supporting each explanation. Do not split a cause and its consequences into
   separate root causes. Include only as many causes as the observations support;
   the array's maximum length is not a target.
-- summary: Briefly connect the supported causes to observed symptoms and necessary
-  metrics. Mention historical conditions only when they clarify that explanation;
-  do not catalogue every Event or panel field. Keep the summary consistent with
-  root_causes and missing_information.
+- summary: In at most 600 characters, connect the supported causes to observed
+  symptoms and necessary metrics. That character budget applies to this field alone and
+  does not change how much the other fields carry. Mention historical conditions only
+  when they clarify that explanation; do not catalogue every Event or panel field.
+  Keep the summary consistent with root_causes and missing_information.
 - missing_information: Include only unresolved facts that could materially change the
   explanation or its confidence, not every unperformed check. Keep those uncertainties
   and the distinction between observed and inferred claims consistent across fields.

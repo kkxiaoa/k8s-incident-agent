@@ -401,7 +401,7 @@ async def test_deployment_incident_reads_twice_then_is_refused_and_still_diagnos
     # delivers a diagnosis anchored on the identity Evidence alone.
     outcome = await _run_diagnosis(
         tmp_path,
-        trigger=_trigger("crash-loop-backoff", "2", "Deployment"),
+        trigger=_trigger("crash-loop-backoff", "3", "Deployment"),
         responses_for=lambda run_id: [
             _tool_call("get_workload", "call-1"),
             _tool_call("get_workload", "call-2"),
@@ -426,7 +426,7 @@ async def test_service_incident_registers_only_the_service_capability(
 ) -> None:
     outcome = await _run_diagnosis(
         tmp_path,
-        trigger=_trigger("service-selector-mismatch", "1", "Service"),
+        trigger=_trigger("service-selector-mismatch", "2", "Service"),
         responses_for=lambda run_id: [
             _tool_call("get_service_network", "call-1"),
             _diagnosed(run_id, ["call-1"]),
@@ -449,7 +449,7 @@ async def test_recommendations_reach_the_database_through_the_real_agent_chain(
 ) -> None:
     outcome = await _run_diagnosis(
         tmp_path,
-        trigger=_trigger("crash-loop-backoff", "2", "Deployment"),
+        trigger=_trigger("crash-loop-backoff", "3", "Deployment"),
         responses_for=lambda run_id: [
             _tool_call("get_workload", "call-1"),
             _diagnosed(
@@ -483,7 +483,7 @@ async def test_diagnosis_without_recommendations_records_an_empty_list(
 ) -> None:
     outcome = await _run_diagnosis(
         tmp_path,
-        trigger=_trigger("crash-loop-backoff", "2", "Deployment"),
+        trigger=_trigger("crash-loop-backoff", "3", "Deployment"),
         responses_for=lambda run_id: [
             _tool_call("get_workload", "call-1"),
             _diagnosed(run_id, ["call-1"]),

@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "crash-loop-backoff",
-  "scenario_version": 2,
+  "scenario_version": 3,
   "monitoring_alert_id": "K8sIncidentCrashLoopBackOff",
   "display_name": "Container restart loop",
   "description": "A Deployment container repeatedly exits because its startup arguments are invalid.",
@@ -23,6 +23,7 @@
   "expected_root_causes": [
     "Invalid startup command or arguments make the observed container exit and restart; connect the workload configuration, termination or restart observations, and log or Event error rather than naming CrashLoopBackOff alone."
   ],
+  "identity_evidence": "workload",
   "required_evidence": [
     "workload",
     "pods",

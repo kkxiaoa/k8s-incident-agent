@@ -119,8 +119,16 @@ test("the committed scenario catalog exposes seven entries across five families"
   const imagePull = scenarios.find(
     (scenario) => scenario.scenarioId === "image-pull-backoff",
   );
-  assert.equal(imagePull.scenarioVersion, 4);
+  assert.equal(imagePull.scenarioVersion, 5);
   assert.equal(imagePull.requiredEvidence.includes("rollout_history"), true);
+  // The evaluator's cited-Evidence gate must name what the Runtime requires.
+  assert.equal(imagePull.identityEvidence, "workload");
+  for (const scenario of scenarios) {
+    assert.equal(
+      scenario.requiredEvidence.includes(scenario.identityEvidence),
+      true,
+    );
+  }
   assert.equal(imagePull.allowedTools.includes("get_rollout_history"), true);
   assert.deepEqual(imagePull.expectedPatchConstraints, {
     action: "set_container_image",
@@ -938,6 +946,72 @@ test("ImagePull SSE replay rejects duplicate repair lifecycle events", async () 
   assert.equal(imagePull.failure.code, "sse_replay_invalid");
 });
 
+test("a diagnosis citing only non-identity Evidence fails closed", async () => {
+  const harness = createHarness({ citeOnlyNonIdentityEvidence: true });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const scenario = result.artifact.scenarios.find(
+    (item) => item.scenarioId === "crash-loop-backoff",
+  );
+  assert.equal(scenario.status, "failed");
+  assert.equal(scenario.failure.code, "diagnosis_evidence_links_invalid");
+});
+
+test("citing the identity Evidence alone passes and records what was not cited", async () => {
+  // The Runtime asks the model for this one kind; the scenario's other
+  // expectations were never put to it, so they are reported, not enforced.
+  const harness = createHarness({ citeOnlyIdentityEvidence: true });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const scenario = result.artifact.scenarios.find(
+    (item) => item.scenarioId === "crash-loop-backoff",
+  );
+  assert.equal(scenario.status, "pending_manual_review");
+  assert.deepEqual(scenario.checks.uncitedExpectedEvidence, [
+    "pods",
+    "events",
+    "container_logs",
+  ]);
+});
+
+test("Evidence produced by a tool the scenario forbids has its own code", async () => {
+  const harness = createHarness({ forbiddenToolUsed: true });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const scenario = result.artifact.scenarios.find(
+    (item) => item.scenarioId === "crash-loop-backoff",
+  );
+  assert.equal(scenario.status, "failed");
+  assert.equal(scenario.failure.code, "diagnosis_tools_invalid");
+});
+
+test("an uncollected expected Evidence kind is named by its own code", async () => {
+  const harness = createHarness({ uncollectedEvidenceKind: "container_logs" });
+
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation" },
+    harness.dependencies,
+  );
+
+  const scenario = result.artifact.scenarios.find(
+    (item) => item.scenarioId === "crash-loop-backoff",
+  );
+  assert.equal(scenario.status, "failed");
+  assert.equal(scenario.failure.code, "diagnosis_evidence_missing");
+});
+
 test("ImagePull evaluation rejects a proposal that rolls back an execution", async () => {
   const harness = createHarness({
     sourceExecutionId: "70000000-0000-4000-8000-0000000000ff",
@@ -1466,10 +1540,19 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
   }
   if (suffix !== "") return new Response(null, { status: 404 });
 
-  const evidence = scenario.requiredEvidence.map((kind, index) => ({
+  const evidence = scenario.requiredEvidence
+    .filter(
+      (kind) =>
+        options.uncollectedEvidenceKind === undefined ||
+        kind !== options.uncollectedEvidenceKind,
+    )
+    .map((kind, index) => ({
     id: `30000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
     evidenceKind: kind,
-    toolName: EVIDENCE_TOOL[kind],
+    toolName:
+      options.forbiddenToolUsed === true && index === 0
+        ? "execute_shell"
+        : EVIDENCE_TOOL[kind],
   }));
   const diagnosisCode = diagnosisCodeFor(scenario, options);
   const repair = repairProjection(scenario, diagnosisCode, options, evidence);
@@ -1517,7 +1600,19 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
           statement: options.diagnosisStatement ?? "A diagnostic explanation requiring independent semantic review.",
           confidence: "high",
           evidenceIds:
-            options.omitDiagnosisEvidenceLinks === true ? [] : evidence.map((item) => item.id),
+            options.omitDiagnosisEvidenceLinks === true
+              ? []
+              : options.citeOnlyNonIdentityEvidence === true
+                ? evidence
+                    .filter((item) => item.evidenceKind !== scenario.identityEvidence)
+                    .map((item) => item.id)
+                : options.citeOnlyIdentityEvidence === true
+                  ? evidence
+                      .filter(
+                        (item) => item.evidenceKind === scenario.identityEvidence,
+                      )
+                      .map((item) => item.id)
+                  : evidence.map((item) => item.id),
         },
       ],
     },

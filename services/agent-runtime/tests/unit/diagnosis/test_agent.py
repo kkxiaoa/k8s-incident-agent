@@ -245,6 +245,26 @@ def _structured_response(
     )
 
 
+def _schema_rejected_response(
+    evidence_id: str = "00000000-0000-0000-0000-000000000004",
+    call_id: str = "call-rejected",
+) -> AIMessage:
+    # Well-formed JSON the schema still refuses: the summary runs past its limit.
+    args = _diagnosed_candidate(evidence_id).model_dump(mode="json")
+    args["summary"] = "s" * 1100
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "DiagnosisCandidate",
+                "args": args,
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
 def _diagnosed_candidate(evidence_id: str) -> DiagnosisCandidate:
     return DiagnosisCandidate.model_validate(
         {
@@ -737,6 +757,96 @@ async def test_mixed_final_and_evidence_batch_is_checked_as_a_whole(
                 {"messages": [{"role": "user", "content": "Diagnose the target."}]}
             )
     assert calls == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_a_schema_rejected_diagnosis_is_handed_back_once() -> None:
+    # Only the narrative overran its budget; the cluster claims and their Evidence
+    # were sound, so losing the Run over it discards a complete investigation.
+    evidence_id = "00000000-0000-0000-0000-000000000004"
+    model = _ToolCallingFakeModel(
+        responses=[
+            _schema_rejected_response(evidence_id),
+            _structured_response(_diagnosed_candidate(evidence_id)),
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            _build_tools([]),
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+    )
+
+    validated = DiagnosisCandidate.model_validate(result["structured_response"])
+    assert validated.root_causes[0].evidence_ids == [UUID(evidence_id)]
+    assert len(model.capture.requests) == 2
+    assert result["model_calls"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_second_schema_rejection_keeps_its_own_terminal_error() -> None:
+    # A repeated rejection is systematic, and retrying to the end of the budget
+    # would trade the accurate error for a call-limit one.
+    model = _ToolCallingFakeModel(
+        responses=[_schema_rejected_response() for _ in range(6)]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            _build_tools([]),
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    with pytest.raises(StructuredDiagnosisError) as error:
+        await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+        )
+
+    assert error.value.code == "structured_output_invalid"
+    assert len(model.capture.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_rejection_handed_back_names_fields_without_their_content() -> None:
+    evidence_id = "00000000-0000-0000-0000-000000000004"
+    model = _ToolCallingFakeModel(
+        responses=[
+            _schema_rejected_response(evidence_id),
+            _structured_response(_diagnosed_candidate(evidence_id)),
+        ]
+    )
+    agent = _runner(
+        build_diagnostic_agent(
+            model,
+            _build_tools([]),
+            required_evidence=REQUIRED_EVIDENCE,
+            prometheus_panels=PANELS,
+            trigger_panel_id="image-pull-affected-pods",
+        )
+    )
+
+    await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "Diagnose the target."}]}
+    )
+
+    handed_back = [
+        message.text
+        for message in model.capture.requests[-1]
+        if isinstance(message, ToolMessage)
+    ]
+    assert any("summary: string_too_long" in text for text in handed_back)
+    assert any("max_length 1024" in text for text in handed_back)
+    assert not any("s" * 40 in text for text in handed_back)
 
 
 @pytest.mark.asyncio

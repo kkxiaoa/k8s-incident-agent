@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "scenario_id": "liveness-probe-misconfigured",
-  "scenario_version": 2,
+  "scenario_version": 3,
   "monitoring_alert_id": "K8sIncidentLivenessProbeRestart",
   "display_name": "Liveness probe misconfiguration",
   "description": "A healthy Deployment process is repeatedly restarted because its liveness probe targets the wrong numeric port.",
@@ -23,6 +23,7 @@
   "expected_root_causes": [
     "The liveness probe targets a numeric port different from the application's observed serving port; connect that mismatch to Kubelet probe failures and restarts rather than treating every restart as a probe configuration error."
   ],
+  "identity_evidence": "workload",
   "required_evidence": [
     "workload",
     "pods",

@@ -32,10 +32,13 @@ _SCENARIO_ID = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 # Must match each scenario.json; bump the version whenever its evaluator contract
 # (tools, evidence, expectations) changes so results remain traceable by revision.
 _SCENARIO_VERSIONS = {
-    "crash-loop-backoff": 2,
-    "image-pull-backoff": 4,
-    "liveness-probe-misconfigured": 2,
-    "readiness-probe-misconfigured": 2,
+    "crash-loop-backoff": 3,
+    "image-pull-backoff": 5,
+    "liveness-probe-misconfigured": 3,
+    "pvc-binding-pending": 2,
+    "pvc-storage-class-missing": 2,
+    "readiness-probe-misconfigured": 3,
+    "service-selector-mismatch": 2,
 }
 
 
@@ -84,7 +87,7 @@ class _ExpectedPatchConstraints(_StrictContract):
 class _ScenarioDefinition(_StrictContract):
     schema_version: Literal[3]
     scenario_id: str = Field(min_length=1)
-    scenario_version: Literal[1, 2, 4]
+    scenario_version: Literal[2, 3, 5]
     monitoring_alert_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -92,6 +95,7 @@ class _ScenarioDefinition(_StrictContract):
     target: ScenarioTarget
     fixture_manifests: tuple[str, ...] = Field(min_length=1)
     expected_root_causes: tuple[str, ...] = Field(min_length=1)
+    identity_evidence: DiagnosticEvidenceKind
     required_evidence: tuple[DiagnosticEvidenceKind, ...] = Field(min_length=1)
     allowed_tools: tuple[DiagnosticToolName, ...] = Field(min_length=1)
     forbidden_tools: tuple[str, ...] = Field(min_length=1)
@@ -127,6 +131,13 @@ class _ScenarioDefinition(_StrictContract):
             or self.scenario_version != expected_version
             or self.target.name != self.scenario_id
             or set(self.allowed_tools).intersection(self.forbidden_tools)
+            # The evaluator gates on exactly the Evidence the Runtime requires a
+            # root cause to cite, and only this file resolves which kind that is.
+            or self.identity_evidence
+            != investigation_capability(
+                self.target.api_version, self.target.kind
+            ).identity_evidence
+            or self.identity_evidence not in self.required_evidence
             # The evaluator's tool allow-list must mirror the Runtime capability so
             # the two never become independent authorisation sources.
             or set(self.allowed_tools)
