@@ -523,7 +523,6 @@ class _ContainerLogTarget:
     owner: OwnerSummary
     container_name: str
     restart_count: int
-    container_id: str | None = None
     selection_reason: LogSelectionReason | None = None
 
 
@@ -964,6 +963,18 @@ class KubernetesEvidenceAdapter:
                     )
                 ):
                     raise _contract_error()
+                # `previous` is resolved when the request is served, so a restart
+                # between the two reads makes it return the same generation the
+                # current read already returned. Withhold it rather than present
+                # one generation twice as two.
+                restarted = _restarted_container_names(rebound, log_targets)
+                if restarted:
+                    containers = [
+                        _withhold_previous_snapshot(container)
+                        if container.container in restarted
+                        else container
+                        for container in containers
+                    ]
 
             payload = ContainerLogsPayload(
                 source_workload=_source_workload(associations.workload),
@@ -2690,7 +2701,6 @@ def _abnormal_log_targets(
                         owner=owner_summary,
                         container_name=name,
                         restart_count=restart_count,
-                        container_id=_optional_container_id(status.container_id),
                         selection_reason=reason,
                     )
                 )
@@ -2784,14 +2794,13 @@ def _probe_failure_targets(
     return failures
 
 
-def _optional_container_id(value: object) -> str | None:
-    return None if value is None else _required_string(value, allow_empty=True)
-
-
+# Restart count deliberately stays out of this identity: it changes on a normal
+# restart, which is not the workload being replaced underneath the read. The
+# restart is detected separately so the snapshot pair can say so.
 def _associated_container_identities(
     associations: _Associations,
-) -> frozenset[tuple[str, str, str, str, int, str | None]]:
-    identities: set[tuple[str, str, str, str, int, str | None]] = set()
+) -> frozenset[tuple[str, str, str, str]]:
+    identities: set[tuple[str, str, str, str]] = set()
     for associated in associations.pods:
         metadata = _metadata(cast(_PodView, associated.pod).metadata)
         for spec, status in _pod_containers(associated.pod):
@@ -2802,8 +2811,6 @@ def _associated_container_identities(
                 _required_string(metadata.uid),
                 _required_string(associated.owner.uid),
                 _required_string(spec.name),
-                _nonnegative_int(status.restart_count),
-                _optional_container_id(status.container_id),
             )
             if identity in identities:
                 raise _contract_error()
@@ -2811,16 +2818,51 @@ def _associated_container_identities(
     return frozenset(identities)
 
 
+def _restarted_container_names(
+    rebound: _Associations,
+    log_targets: list[_ContainerLogTarget],
+) -> frozenset[str]:
+    counts: dict[tuple[str, str], int] = {}
+    for associated in rebound.pods:
+        metadata = _metadata(cast(_PodView, associated.pod).metadata)
+        for spec, status in _pod_containers(associated.pod):
+            if status is None:
+                continue
+            key = (_required_string(metadata.uid), _required_string(spec.name))
+            counts[key] = _nonnegative_int(status.restart_count)
+    return frozenset(
+        target.container_name
+        for target in log_targets
+        if counts.get((target.pod_uid, target.container_name), target.restart_count)
+        != target.restart_count
+    )
+
+
+def _withhold_previous_snapshot(
+    container: ContainerLogSummary,
+) -> ContainerLogSummary:
+    return container.model_copy(
+        update={
+            "snapshots": [
+                snapshot
+                if snapshot.source == "current"
+                else ContainerLogSnapshot(
+                    source="previous", status="previous_unavailable", lines=[]
+                )
+                for snapshot in container.snapshots
+            ]
+        }
+    )
+
+
 def _log_target_identity(
     target: _ContainerLogTarget,
-) -> tuple[str, str, str, str, int, str | None]:
+) -> tuple[str, str, str, str]:
     return (
         target.pod_name,
         target.pod_uid,
         target.owner.uid,
         target.container_name,
-        target.restart_count,
-        target.container_id,
     )
 
 

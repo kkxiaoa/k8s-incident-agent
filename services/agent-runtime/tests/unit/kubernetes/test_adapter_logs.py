@@ -10,7 +10,6 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     EventsV1Event,
     EventsV1EventList,
     EventsV1EventSeries,
-    V1Container,
     V1ContainerState,
     V1ContainerStateRunning,
     V1ContainerStateTerminated,
@@ -579,21 +578,18 @@ async def test_probe_event_occurring_during_the_request_is_not_future() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["restart", "container", "spec", "owner"])
-async def test_logs_discard_snapshots_after_container_or_owner_drift(
+@pytest.mark.parametrize("change", ["renamed", "owner"])
+async def test_logs_discard_snapshots_after_rename_or_owner_drift(
     change: str,
 ) -> None:
     pod = _crash_loop_pod()
     rebound = _crash_loop_pod()
     rebound_view: Any = rebound
-    if change == "restart":
-        rebound_view.status.container_statuses[0].restart_count += 1
-    elif change == "container":
-        rebound_view.status.container_statuses[
-            0
-        ].container_id = "containerd://replacement"
-    elif change == "spec":
-        rebound_view.spec.containers = [V1Container(name="other", image="app:v1")]
+    if change == "renamed":
+        # Rename spec and status together: a pod whose two halves disagree is
+        # rejected while they are paired, before any identity is compared.
+        rebound_view.spec.containers[0].name = "other"
+        rebound_view.status.container_statuses[0].name = "other"
     else:
         rebound_view.metadata.owner_references[0].uid = "other-rs"
     core = _CoreApi(
@@ -605,6 +601,46 @@ async def test_logs_discard_snapshots_after_container_or_owner_drift(
     with pytest.raises(KubernetesBoundaryError) as failure:
         await adapter.read_container_logs(TARGET)
     assert failure.value.code is KubernetesErrorCode.UPSTREAM_CONTRACT_INVALID
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["restart", "container"])
+async def test_logs_survive_a_restart_between_the_read_and_the_rebind(
+    change: str,
+) -> None:
+    # A container that restarts while its own logs are being read is the normal
+    # state of the workloads this tool exists for, not a workload swapped out
+    # underneath the read. Failing it closed cost the whole diagnosis.
+    pod = _crash_loop_pod()
+    rebound = _crash_loop_pod()
+    rebound_view: Any = rebound
+    if change == "restart":
+        rebound_view.status.container_statuses[0].restart_count += 1
+    else:
+        rebound_view.status.container_statuses[
+            0
+        ].container_id = "containerd://replacement"
+    core = _CoreApi(
+        [pod],
+        {False: _LogResponse(200), True: _LogResponse(200)},
+        rebound_pods=[rebound],
+    )
+    adapter, _ = _adapter(core)
+
+    observation = await adapter.read_container_logs(TARGET)
+
+    assert observation.evidence_kind == "container_logs"
+    container = observation.payload.containers[0]
+    current, previous = container.snapshots
+    assert current.source == "current"
+    # `previous` is resolved when the request is served, so after a restart it
+    # would repeat the generation `current` already carried.
+    assert previous.source == "previous"
+    if change == "restart":
+        assert previous.status == "previous_unavailable"
+        assert previous.lines == []
+    else:
+        assert previous.status in {"available", "no_logs_in_window"}
 
 
 @pytest.mark.asyncio
