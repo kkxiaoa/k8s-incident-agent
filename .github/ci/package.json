@@ -1,0 +1,16 @@
+{
+  "name": "incident-ci-checks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "11.17.0",
+    "github-slugger": "2.0.0",
+    "js-yaml": "4.3.2",
+    "markdown-it": "15.0.2",
+    "mermaid": "11.17.2",
+    "puppeteer": "25.11.0"
+  }
+}

@@ -1,0 +1,8 @@
+# Exact historical sanitizer fixtures only; no path/rule-wide exemptions.
+# Diagnosis recommendation rejection: a short synthetic token literal, no provider credential.
+a2e6cda707262df585c63ca6f26a7af725ccd015:services/agent-runtime/tests/unit/diagnosis/test_validation.py:generic-api-key:1103
+# Deliberately malformed PEM bodies used to test redaction, not parseable private keys.
+205778e341d2544db6cdfad9ea9fecb250fbec5f:services/agent-runtime/tests/unit/security/test_sanitizer.py:private-key:58
+205778e341d2544db6cdfad9ea9fecb250fbec5f:services/agent-runtime/tests/unit/kubernetes/test_adapter_logs.py:private-key:207
+# Synthetic HS256-shaped sanitizer input with an invalid-length signature.
+22c9dabee74a34d909ce288d8c5ff32f08ffe5b1:services/agent-runtime/tests/unit/security/test_sanitizer.py:jwt:35

@@ -58,6 +58,7 @@ test("managed alert rules pass their promtool unit tests on the locked Prometheu
     stdio: "ignore",
   });
   if (available.error !== undefined || available.status !== 0) {
+    assert.notEqual(process.env.CI, "true", "CI requires the locked Prometheus image and a working Docker daemon");
     t.skip(`locked Prometheus image ${image} is not available to docker`);
     return;
   }

@@ -30,6 +30,7 @@ From the repository root, with the pinned tools installed:
 ```sh
 npm ci
 npm run lint
+npx next typegen
 npx tsc --noEmit
 npm test
 npm run openapi:check
@@ -61,6 +62,46 @@ Choose tests for the concrete regression: contract tests for producer boundaries
 integration tests for state/persistence flows, and focused reproduction tests for
 bugs. Documentation-only changes normally need link, command, and factual checks,
 not a full live regression. Report checks you did not run and why.
+
+## Pull-request CI
+
+[CI](.github/workflows/ci.yml) runs on pull requests and pushes to `main` with
+read-only repository access on ephemeral hosted runners. It checks Runtime lint,
+types and unit/execution tests; script/Kustomize/promtool contracts and OpenAPI
+drift; Web lint/types/component tests, a production build and fake E2E; public
+Markdown links, Mermaid rendering, workflow policy and redacted Git-history scans.
+Missing Docker or the locked Prometheus image fails CI rather than skipping rules.
+
+The documentation/check tooling has a separate lockfile, not a production dependency:
+
+```sh
+PUPPETEER_SKIP_DOWNLOAD=true npm ci --prefix .github/ci --ignore-scripts
+npm test --prefix .github/ci
+node .github/ci/check-policy.mjs
+node .github/ci/check-docs.mjs --render
+```
+
+Rendering uses the installed Chrome channel, as do fake E2E tests. Action SHAs and
+download checksums are pinned; application tool versions come from the existing
+repository locks. Hosted OS and Chrome maintenance still follow the runner image.
+CI restores no cross-run caches and uploads no artifacts, traces, credentials or
+databases. No production secrets, model calls, cluster access or publishing are
+part of this workflow. Repository log retention and hosted/fork acceptance are
+separate setup checks, not claims proved by a local run.
+
+The policy script only guards contribution triggers, read-only token permissions,
+secret references/passing, full-SHA external Action/workflow references, and checkout
+credential persistence. Workflow syntax belongs to `actionlint`; runner selection,
+job layout, timeouts, concurrency, cache isolation and artifact contents require
+review. This same-repository check catches accidental regressions; it is not a
+security boundary against a pull request that changes the checker itself, and
+does not inspect the internals of referenced Actions or reusable workflows.
+
+Secret-scan exceptions in [.github/ci/gitleaksignore](.github/ci/gitleaksignore)
+identify reviewed historical synthetic sanitizer fixtures by exact fingerprint.
+Do not exclude a whole test directory or detector rule to suppress a finding.
+Investigate genuine findings privately, revoke/rotate first, and follow
+[SECURITY.md](SECURITY.md); deleting a current file does not remove Git history.
 
 ## Cluster and model tests are separate
 
