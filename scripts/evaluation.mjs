@@ -18,6 +18,7 @@ import { load } from "js-yaml";
 
 import { verifyDeploymentStatus } from "./deployment.mjs";
 import {
+  loadEvaluationDataset,
   loadEvaluationScenarioCatalog,
   runScenarioCommand,
   ScenarioCommandError,
@@ -28,12 +29,12 @@ const KIND_CONTEXT = "kind-k8s-incident-agent";
 const APPLICATION_NAMESPACE = "k8s-incident-agent";
 const MONITORING_NAMESPACE = "k8s-incident-monitoring";
 const ARTIFACT_SCHEMA_VERSION = 2;
+const CATALOG_ARTIFACT_SCHEMA_VERSION = 3;
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_INCIDENT_PAGES = 10;
 const HTTP_TIMEOUT_MILLISECONDS = 15_000;
 const POLL_INTERVAL_MILLISECONDS = 2_000;
 const HEALTH_TIMEOUT_MILLISECONDS = 2 * 60_000;
-const ALERT_TIMEOUT_MILLISECONDS = 7 * 60_000;
 const DIAGNOSIS_TIMEOUT_MILLISECONDS = 5 * 60_000;
 const RESOLUTION_TIMEOUT_MILLISECONDS = 3 * 60_000;
 const POST_RESOLUTION_TIMEOUT_MILLISECONDS = 90_000;
@@ -53,6 +54,13 @@ const RELEASE_PLATFORMS = new Set(["linux/amd64", "linux/arm64"]);
 const RELEASE_LOCK_FILES = new Set([
   "deploy/application/base/workloads/kustomization.yaml",
   "deploy/monitoring/overlays/kind/kustomization.yaml",
+]);
+const HISTORICAL_FAMILIES = new Map([
+  ["image-pull-backoff", ["image-pull-backoff"]],
+  ["crash-loop-backoff", ["crash-loop-backoff"]],
+  ["service-selector-mismatch", ["service-selector-mismatch"]],
+  ["probe-misconfiguration", ["readiness-probe-misconfigured", "liveness-probe-misconfigured"]],
+  ["pvc-pending", ["pvc-binding-pending", "pvc-storage-class-missing"]],
 ]);
 const PROFILE_DEFINITIONS = Object.freeze({
   "kind-evaluation": Object.freeze({
@@ -121,7 +129,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
   const execute = dependencies.execute ?? executeExternalCommand;
   const deploymentStatus =
     dependencies.verifyDeploymentStatus ?? verifyDeploymentStatus;
-  const scenarios =
+  const catalog =
     dependencies.scenarios ??
     loadEvaluationScenarioCatalog(repositoryRoot, dependencies.environment);
   const scenarioRunner = dependencies.runScenarioCommand ?? runScenarioCommand;
@@ -129,23 +137,41 @@ export async function runEvaluationCommand(request, dependencies = {}) {
   if ((request.action === "online") !== (profile === "k3s-online")) {
     throw invalidArguments();
   }
-  const focused = request.scenarioIds !== undefined;
-  if (request.action === "online" && focused) throw invalidArguments();
-  if (request.action === "run") requireEvaluationCatalog(scenarios);
+  if (request.action === "online" &&
+    (request.scenarioIds !== undefined || request.datasetPath !== undefined || request.split !== undefined)) {
+    throw invalidArguments();
+  }
+  if (request.split !== undefined && !["development", "regression", "holdout"].includes(request.split)) {
+    throw invalidArguments();
+  }
+  if (request.split === "holdout") {
+    throw contractError("evaluation_holdout_unavailable", "Holdout requires a private intake boundary");
+  }
+  if (request.action === "run") requireEvaluationCatalog(catalog);
+  const dataset = request.action === "run"
+    ? loadEvaluationDataset(repositoryRoot, catalog, request.datasetPath) : undefined;
+  const scenarios = dataset?.cases ?? catalog;
+  const eligible = scenarios.filter((scenario) => request.action === "online" ||
+    (scenario.profiles.includes(profile) && (request.split === undefined || scenario.split === request.split)));
   if (
-    focused &&
+    request.scenarioIds !== undefined &&
     (!Array.isArray(request.scenarioIds) ||
       request.scenarioIds.length === 0 ||
       new Set(request.scenarioIds).size !== request.scenarioIds.length ||
       request.scenarioIds.some(
-        (id) => !scenarios.some((scenario) => scenario.scenarioId === id),
+        (id) => !eligible.some((scenario) => scenario.scenarioId === id),
       ))
   ) {
     throw invalidArguments();
   }
-  const selectedScenarioIds = focused
-    ? request.scenarioIds
-    : scenarios.map((scenario) => scenario.scenarioId);
+  const selectedScenarioIds = request.scenarioIds ?? eligible.map((scenario) => scenario.scenarioId);
+  if (request.action === "run" && selectedScenarioIds.length === 0) throw invalidArguments();
+  if (request.action === "run" && scenarios.some((scenario) =>
+    selectedScenarioIds.includes(scenario.scenarioId) && scenario.expectedTerminal.outcome !== "diagnosed")) {
+    throw contractError("evaluation_outcome_not_supported", "The live runner does not yet score this expected terminal outcome");
+  }
+  const focused = request.scenarioIds !== undefined || request.split !== undefined ||
+    selectedScenarioIds.length < scenarios.length;
   const release = await loadReleaseIdentity(
     repositoryRoot,
     dependencies.readFile ?? readFile,
@@ -183,6 +209,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
           startedAt,
           completedAt: () => requireDate(now()).toISOString(),
           scenarios,
+          dataset,
           focused,
           selectedScenarioIds,
           scenarioRunner,
@@ -196,7 +223,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
       }
     } catch (error) {
       artifact = {
-        schemaVersion: ARTIFACT_SCHEMA_VERSION,
+        schemaVersion: request.action === "run" ? CATALOG_ARTIFACT_SCHEMA_VERSION : ARTIFACT_SCHEMA_VERSION,
         kind:
           request.action === "online"
             ? "online-boundary-evaluation"
@@ -207,7 +234,11 @@ export async function runEvaluationCommand(request, dependencies = {}) {
         completedAt: requireDate(now()).toISOString(),
         status: "failed",
         ...(request.action === "run"
-          ? { scope: focused ? "focused" : "full", selectedScenarioIds }
+          ? {
+              scope: focused ? "focused" : "full", selectedScenarioIds,
+              dataset: { id: dataset.id, version: dataset.version },
+              ...coverageReport(scenarios.map((scenario) => notRunScenarioResult(scenario, "evaluation_aborted"))),
+            }
           : {}),
         failure: safeFailure(error),
       };
@@ -314,7 +345,8 @@ async function evaluateCatalog(options) {
     results.push(
       options.selectedScenarioIds.includes(scenario.scenarioId)
         ? await evaluateScenario(scenario, options)
-        : { ...emptyScenarioResult(scenario), status: "not_run", cleanup: "not_run" },
+        : notRunScenarioResult(scenario,
+          scenario.profiles.includes(options.profile) ? "not_selected" : "profile_not_supported"),
     );
   }
 
@@ -343,12 +375,11 @@ async function evaluateCatalog(options) {
     }
   }
 
-  const families = summarizeFamilies(results);
   const passed =
     passedScenarios.length === options.selectedScenarioIds.length &&
     (options.focused || infrastructure.status === "passed");
   return {
-    schemaVersion: ARTIFACT_SCHEMA_VERSION,
+    schemaVersion: CATALOG_ARTIFACT_SCHEMA_VERSION,
     kind: "catalog-evaluation",
     profile: options.profile,
     release: options.release,
@@ -357,12 +388,12 @@ async function evaluateCatalog(options) {
     status: passed ? "pending_manual_review" : "failed",
     scope: options.focused ? "focused" : "full",
     selectedScenarioIds: options.selectedScenarioIds,
+    dataset: { id: options.dataset.id, version: options.dataset.version },
     monitoring: {
       initialState: initialHealth.state,
       infrastructure,
     },
-    families,
-    scenarios: results,
+    ...coverageReport(results),
   };
 }
 
@@ -778,7 +809,11 @@ function emptyScenarioResult(scenario) {
   return {
     scenarioId: scenario.scenarioId,
     scenarioVersion: scenario.scenarioVersion,
-    familyId: scenarioFamily(scenario.verifierKind),
+    split: scenario.split,
+    mechanism: scenario.mechanism,
+    sourceGroup: scenario.sourceGroup,
+    expectedTerminal: scenario.expectedTerminal,
+    limitations: scenario.limitations,
     alertId: scenario.alertId,
     status: "failed",
     cleanup: "passed",
@@ -804,16 +839,18 @@ function emptyScenarioResult(scenario) {
   };
 }
 
+function notRunScenarioResult(scenario, reason) {
+  return { ...emptyScenarioResult(scenario), status: "not_run", cleanup: "not_run", reason };
+}
+
 function requireEvaluationCatalog(scenarios) {
-  if (!Array.isArray(scenarios) || scenarios.length !== 7) {
+  if (!Array.isArray(scenarios) || scenarios.length === 0) {
     throw contractError(
       "evaluation_catalog_invalid",
-      "Evaluation catalog must contain the seven approved scenarios",
+      "Evaluation catalog must contain versioned scenarios",
     );
   }
   const scenarioIds = new Set();
-  const families = new Set();
-  let repairExpectations = 0;
   for (const scenario of scenarios) {
     const expectedRepair = scenario?.expectedPatchConstraints;
     if (
@@ -857,53 +894,42 @@ function requireEvaluationCatalog(scenarios) {
       );
     }
     scenarioIds.add(scenario.scenarioId);
-    families.add(scenarioFamily(scenario.verifierKind));
-    if (expectedRepair !== undefined) repairExpectations += 1;
-  }
-  if (families.size !== 5 || repairExpectations !== 1) {
-    throw contractError(
-      "evaluation_catalog_invalid",
-      "Evaluation catalog must cover five fault families and one repair slice",
-    );
   }
 }
 
-function scenarioFamily(verifierKind) {
-  const family = {
-    image_pull_backoff: "image-pull-backoff",
-    crash_loop_backoff: "crash-loop-backoff",
-    service_selector_mismatch: "service-selector-mismatch",
-    readiness_probe_failure: "probe-misconfiguration",
-    liveness_probe_failure: "probe-misconfiguration",
-    pvc_pending: "pvc-pending",
-  }[verifierKind];
-  if (family === undefined) throw upstreamContractError();
-  return family;
+function coverageStatus(statuses) {
+  return statuses.includes("failed") ? "failed"
+    : statuses.includes("not_run") ? "not_run" : "pending_manual_review";
 }
 
-function summarizeFamilies(results) {
+function coverageReport(results) {
   const grouped = new Map();
   for (const result of results) {
-    const statuses = grouped.get(result.familyId) ?? [];
+    const statuses = grouped.get(result.mechanism) ?? [];
     statuses.push(result.status);
-    grouped.set(result.familyId, statuses);
+    grouped.set(result.mechanism, statuses);
   }
-  return [...grouped.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([familyId, statuses]) => ({
+  return {
+    families: [...HISTORICAL_FAMILIES].map(([familyId, ids]) => ({
       familyId,
-      scenarios: statuses.length,
-      status: statuses.includes("failed")
-        ? "failed"
-        : statuses.includes("not_run") ? "not_run" : "pending_manual_review",
-    }));
+      scenarios: ids.length,
+      status: coverageStatus(ids.map((id) => results.find((result) => result.scenarioId === id)?.status ?? "not_run")),
+    })).sort((left, right) => left.familyId.localeCompare(right.familyId)),
+    coverage: {
+      plannedCases: results.length,
+      notRunCases: results.filter((result) => result.status === "not_run").length,
+      mechanisms: [...grouped].sort(([left], [right]) => left.localeCompare(right))
+        .map(([mechanism, statuses]) => ({ mechanism, cases: statuses.length, status: coverageStatus(statuses) })),
+    },
+    scenarios: results,
+  };
 }
 
 async function waitForAlertState(scenario, firing, options) {
   await waitUntil(
     firing ? "alert_firing_timeout" : "alert_clear_timeout",
     () => requireAlertState(scenario, firing, options.fetchImpl),
-    firing ? ALERT_TIMEOUT_MILLISECONDS : RESOLUTION_TIMEOUT_MILLISECONDS,
+    firing ? scenario.alertWaitMilliseconds : RESOLUTION_TIMEOUT_MILLISECONDS,
     options.sleep,
   );
 }
@@ -2537,7 +2563,9 @@ async function writeEvaluationArtifact(repositoryRoot, profile, artifact) {
   await requireDirectoryNotSymlink(directory);
   await chmod(directory, 0o700);
   const suffix = artifact.scope === "focused" ? "-focused" : "";
-  const output = path.join(directory, `${profile}${suffix}.json`);
+  const datasetSuffix = artifact.dataset === undefined ? ""
+    : `-${artifact.dataset.id}-v${artifact.dataset.version}`;
+  const output = path.join(directory, `${profile}${datasetSuffix}${suffix}.json`);
   const temporary = path.join(
     directory,
     `.${profile}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
@@ -2595,18 +2623,24 @@ function parseArguments(argv) {
   const [action, profile, ...rest] = argv;
   if (!new Set(["run", "online"]).has(action)) throw invalidArguments();
   let context;
+  let datasetPath;
+  let split;
   const scenarioIds = [];
   for (let index = 0; index < rest.length; index += 2) {
     const value = rest[index + 1];
     if (!isNormalizedString(value) || value.startsWith("-")) throw invalidArguments();
     if (rest[index] === "--context" && context === undefined) context = value;
     else if (rest[index] === "--scenario" && action === "run") scenarioIds.push(value);
+    else if (rest[index] === "--dataset" && action === "run" && datasetPath === undefined) datasetPath = value;
+    else if (rest[index] === "--split" && action === "run" && split === undefined) split = value;
     else throw invalidArguments();
   }
   return {
     action,
     profile,
     context,
+    datasetPath,
+    split,
     ...(scenarioIds.length > 0 ? { scenarioIds } : {}),
   };
 }
@@ -2717,7 +2751,7 @@ function responseTooLarge() {
 function invalidArguments() {
   return contractError(
     "invalid_arguments",
-    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> [--context <context>] [--scenario <id> ...], or evaluation.mjs online k3s-online --context <context>",
+    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> [--context <context>] [--dataset <manifest.json>] [--split <development|regression>] [--scenario <id> ...], or evaluation.mjs online k3s-online --context <context>",
   );
 }
 

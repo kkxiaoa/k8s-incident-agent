@@ -87,7 +87,7 @@ class _ExpectedPatchConstraints(_StrictContract):
 class _ScenarioDefinition(_StrictContract):
     schema_version: Literal[3]
     scenario_id: str = Field(min_length=1)
-    scenario_version: Literal[2, 3, 5]
+    scenario_version: int = Field(ge=1)
     monitoring_alert_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -127,6 +127,10 @@ class _ScenarioDefinition(_StrictContract):
         expected_version = _SCENARIO_VERSIONS.get(self.scenario_id, 1)
         if (
             not _SCENARIO_ID.fullmatch(self.scenario_id)
+            or (
+                self.scenario_id not in _SCENARIO_VERSIONS
+                and not re.fullmatch(r"case-[0-9]{3,}", self.scenario_id)
+            )
             or self.scenario_id != directory_name
             or self.scenario_version != expected_version
             or self.target.name != self.scenario_id

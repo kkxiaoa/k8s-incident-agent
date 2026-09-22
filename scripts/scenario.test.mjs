@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import {
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -16,7 +18,7 @@ import { promisify } from "node:util";
 
 import { dump, load, loadAll } from "js-yaml";
 
-import { runScenarioCommand } from "./scenario.mjs";
+import { loadEvaluationScenarioCatalog, runScenarioCommand } from "./scenario.mjs";
 
 const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = path.resolve(
@@ -1890,11 +1892,44 @@ test("PVC verifiers prove exact failure evidence and exclude legal WFFC waiting"
   }
 });
 
+test("a neutral revision-one scenario can be added without publishing its oracle", async (t) => {
+  const catalog = mkdtempSync(path.join(os.tmpdir(), "neutral-scenario-"));
+  t.after(() => rm(catalog, { recursive: true, force: true }));
+  const directory = path.join(catalog, "case-001");
+  cpSync(path.join(REPOSITORY_ROOT, "scenarios/crash-loop-backoff"), directory, { recursive: true });
+  const definitionPath = path.join(directory, "scenario.json");
+  const definition = JSON.parse(readFileSync(definitionPath, "utf8"));
+  definition.scenario_id = "case-001";
+  definition.scenario_version = 1;
+  definition.target.name = "case-001";
+  definition.display_name = "Scenario 001";
+  definition.description = "A Deployment is unavailable.";
+  definition.expected_root_causes = ["private-oracle-canary"];
+  writeFileSync(definitionPath, JSON.stringify(definition));
+  const manifests = path.join(directory, "manifests");
+  for (const name of readdirSync(manifests)) {
+    const filename = path.join(manifests, name);
+    writeFileSync(filename, readFileSync(filename, "utf8").replaceAll("crash-loop-backoff", "case-001"));
+  }
+  const environment = { SCENARIO_CATALOG_DIR: catalog };
+  const evaluated = loadEvaluationScenarioCatalog(REPOSITORY_ROOT, environment);
+  const listed = await runScenarioCommand("list", undefined, { repositoryRoot: REPOSITORY_ROOT, environment });
+  assert.equal(evaluated.length, 1);
+  assert.equal(evaluated[0].scenarioVersion, 1);
+  assert.equal(listed[0].scenario_id, "case-001");
+  assert.equal(JSON.stringify(listed).includes("private-oracle-canary"), false);
+  assert.equal(JSON.stringify(listed).includes("split"), false);
+  definition.scenario_version = 2;
+  writeFileSync(definitionPath, JSON.stringify(definition));
+  await assert.rejects(runScenarioCommand("list", undefined, { repositoryRoot: REPOSITORY_ROOT, environment }), { code: "scenario_contract_invalid" });
+});
+
 test("catalog rejects incompatible versions, extra fields, and target drift", async (t) => {
   const cases = [
     ["schema version", (scenario) => { scenario.schema_version = 1; }],
     ["scenario version", (scenario) => { scenario.scenario_version = 0; }],
     ["extra field", (scenario) => { scenario.unconsumed = "value"; }],
+    ["dataset metadata", (scenario) => { scenario.split = "holdout"; }],
     ["missing patch expectation", (scenario) => {
       delete scenario.expected_patch_constraints;
     }],

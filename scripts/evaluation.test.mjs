@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { test, after } from "node:test";
 import path from "node:path";
@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { runEvaluationCommand } from "./evaluation.mjs";
 import {
+  loadEvaluationDataset,
   loadEvaluationScenarioCatalog,
   ScenarioCommandError,
 } from "./scenario.mjs";
@@ -230,7 +231,11 @@ test("catalog checks complete with exact Run references but require manual diagn
   assert.equal(harness.calls.alertmanagerRestarts, 1);
   assert.equal(harness.calls.tunnelClose, 1);
   assert.equal(harness.calls.artifacts.length, 1);
-  assert.equal(result.artifact.schemaVersion, 2);
+  assert.equal(result.artifact.schemaVersion, 3);
+  assert.deepEqual(result.artifact.dataset, { id: "regression", version: 1 });
+  assert.equal(result.artifact.coverage.plannedCases, 7);
+  assert.equal(result.artifact.coverage.notRunCases, 0);
+  assert.equal(result.artifact.coverage.mechanisms.length, 5);
   assert.equal(result.artifact.scope, "full");
   assert.equal(result.artifact.selectedScenarioIds.length, 7);
   for (const scenario of result.artifact.scenarios) {
@@ -320,18 +325,12 @@ test("infrastructure probe ignores another alert for the same Deployment", async
   assert.equal(result.artifact.monitoring.infrastructure.status, "passed");
 });
 
-test("infrastructure recovery cleans a partially applied probe", async () => {
+test("infrastructure recovery cleans a partially applied probe", async (t) => {
   const harness = createHarness();
-  const imagePull = harness.dependencies.scenarios.find(
-    (scenario) => scenario.scenarioId === "image-pull-backoff",
-  );
-  assert.ok(imagePull);
-  harness.dependencies.scenarios = [
-    ...harness.dependencies.scenarios.filter(
-      (scenario) => scenario.scenarioId !== "image-pull-backoff",
-    ),
-    imagePull,
-  ];
+  const datasetPath = datasetFile(t, (manifest) => {
+    const imagePull = manifest.cases.find((entry) => entry.scenario_id === "image-pull-backoff");
+    manifest.cases = [...manifest.cases.filter((entry) => entry !== imagePull), imagePull];
+  });
   const scenarioRunner = harness.dependencies.runScenarioCommand;
   const imagePullActions = [];
   let imagePullApplyCount = 0;
@@ -354,7 +353,7 @@ test("infrastructure recovery cleans a partially applied probe", async () => {
   };
 
   const result = await runEvaluationCommand(
-    { action: "run", profile: "kind-evaluation" },
+    { action: "run", profile: "kind-evaluation", datasetPath },
     harness.dependencies,
   );
 
@@ -675,12 +674,12 @@ test("invalid selections fail before deployment, tunnels, or scenario commands",
   }
 });
 
-test("focused evaluation still requires the full catalog and matching release", async () => {
+test("focused evaluation still requires every planned revision and a matching release", async () => {
   const request = { action: "run", profile: "kind-evaluation", scenarioIds: ["pvc-binding-pending"] };
   const partial = createHarness();
   partial.dependencies.scenarios = partial.dependencies.scenarios.slice(0, 1);
   await assert.rejects(runEvaluationCommand(request, partial.dependencies), {
-    code: "evaluation_catalog_invalid",
+    code: "evaluation_dataset_invalid",
   });
   const dirty = createHarness({ dirtyWorktree: true });
   await assert.rejects(runEvaluationCommand(request, dirty.dependencies), {
@@ -698,6 +697,9 @@ test("CLI rejects missing selection values and online selections", () => {
     ["run", "kind-evaluation", "--scenario"],
     ["run", "kind-evaluation", "--scenario", "--context"],
     ["online", "k3s-online", "--context", "k3s", "--scenario", "pvc-binding-pending"],
+    ["run", "kind-evaluation", "--dataset"],
+    ["run", "kind-evaluation", "--split", "unknown"],
+    ["online", "k3s-online", "--context", "k3s", "--dataset", "regression.json"],
   ]) {
     const result = spawnSync(process.execPath, [
       path.join(REPOSITORY_ROOT, "scripts/evaluation.mjs"), ...args,
@@ -705,6 +707,224 @@ test("CLI rejects missing selection values and online selections", () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /^FAIL invalid_arguments /);
   }
+});
+
+function datasetFile(t, mutate) {
+  const manifest = JSON.parse(readFileSync(path.join(REPOSITORY_ROOT, "evaluation/datasets/regression-v1.json"), "utf8"));
+  mutate(manifest);
+  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "evaluation-dataset-")));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const filename = path.join(directory, "dataset.json");
+  writeFileSync(filename, JSON.stringify(manifest));
+  return filename;
+}
+
+test("dataset selection preserves complete mechanism and historical coverage", async (t) => {
+  const datasetPath = datasetFile(t, (manifest) => {
+    manifest.cases[0].split = "development";
+    manifest.cases[1].profiles = ["k3s-evaluation"];
+  });
+  const harness = createHarness();
+  const result = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", datasetPath, split: "regression" },
+    harness.dependencies,
+  );
+  assert.equal(harness.calls.scenarioApply, 5);
+  assert.equal(result.artifact.status, "pending_manual_review");
+  assert.equal(result.artifact.coverage.plannedCases, 7);
+  assert.equal(result.artifact.coverage.notRunCases, 2);
+  assert.equal(result.artifact.coverage.mechanisms.length, 5);
+  assert.equal(result.artifact.families.reduce((total, family) => total + family.scenarios, 0), 7);
+  const [development, unavailable] = result.artifact.scenarios;
+  assert.equal(development.status, "not_run");
+  assert.equal(development.reason, "not_selected");
+  assert.equal(unavailable.reason, "profile_not_supported");
+  assert.deepEqual(development.expectedTerminal, { outcome: "diagnosed" });
+  assert.deepEqual(development.limitations, ["legacy_name_cues"]);
+  assert.equal(development.scenarioId, "crash-loop-backoff");
+  assert.equal(development.scenarioVersion, 3);
+});
+
+test("a dataset subset no longer requires seven catalog entries or an image repair slice", async (t) => {
+  const datasetPath = datasetFile(t, (manifest) => { manifest.cases = [manifest.cases[0]]; });
+  const harness = createHarness();
+  harness.dependencies.scenarios = [harness.dependencies.scenarios[0]];
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] },
+    harness.dependencies,
+  );
+  assert.equal(artifact.status, "pending_manual_review");
+  assert.equal(harness.calls.scenarioApply, 1);
+  assert.equal(artifact.coverage.plannedCases, 1);
+  assert.equal(artifact.coverage.mechanisms.length, 1);
+  assert.equal(artifact.families.length, 5);
+  assert.equal(artifact.families.filter((family) => family.status === "not_run").length, 4);
+  assert.equal(artifact.families.reduce((total, family) => total + family.scenarios, 0), 7);
+});
+
+test("an eighth neutral case does not inherit historical coverage or create a new mechanism", async (t) => {
+  const scenarios = loadEvaluationScenarioCatalog(REPOSITORY_ROOT);
+  const variant = structuredClone(scenarios[0]);
+  variant.scenarioId = "case-001";
+  variant.scenarioVersion = 1;
+  variant.target.name = "case-001";
+  variant.healthyControlNames = ["case-001-healthy-control"];
+  scenarios.push(variant);
+  const datasetPath = datasetFile(t, (manifest) => {
+    manifest.cases.push({ ...manifest.cases[0], scenario_id: "case-001", scenario_version: 1 });
+  });
+  const harness = createHarness({ scenarios });
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["case-001"] }, harness.dependencies,
+  );
+  assert.equal(artifact.status, "pending_manual_review");
+  assert.equal(artifact.coverage.plannedCases, 8);
+  assert.equal(artifact.coverage.notRunCases, 7);
+  assert.equal(artifact.coverage.mechanisms.length, 5);
+  assert.equal(artifact.families.every((family) => family.status === "not_run"), true);
+  assert.equal(artifact.scenarios.at(-1).scenarioId, "case-001");
+  assert.deepEqual(artifact.scenarios.at(-1).limitations, []);
+});
+
+test("dataset contract errors fail before any external work", async (t) => {
+  const mutations = [
+    ["schema revision", (m) => { m.schema_version = 2; }],
+    ["dataset version", (m) => { m.dataset_version = "1"; }],
+    ["dataset id type", (m) => { m.dataset_id = null; }],
+    ["unsafe dataset id", (m) => { m.dataset_id = "../private"; }],
+    ["extra field", (m) => { m.cases[0].target = { namespace: "default" }; }],
+    ["duplicate case", (m) => { m.cases.push(m.cases[0]); }],
+    ["unknown scenario", (m) => { m.cases[0].scenario_id = "case-999"; }],
+    ["scenario revision", (m) => { m.cases[0].scenario_version = 999; }],
+    ["split", (m) => { m.cases[0].split = "validation"; }],
+    ["cross-split ancestry", (m) => { m.cases[2].split = "development"; }],
+    ["outcome", (m) => { m.cases[0].expected_terminal.outcome = "passed"; }],
+    ["failure without code", (m) => { m.cases[0].expected_terminal = { outcome: "failed" }; }],
+    ["outcome extra field", (m) => { m.cases[0].expected_terminal.answer = "private"; }],
+    ["profile", (m) => { m.cases[0].profiles = ["k3s-online"]; }],
+    ["unbounded wait", (m) => { m.cases[0].alert_wait_seconds = 1801; }],
+  ];
+  for (const [name, mutate] of mutations) {
+    await t.test(name, async (subtest) => {
+      const datasetPath = datasetFile(subtest, mutate);
+      const harness = createHarness();
+      harness.dependencies.execute = async () => assert.fail("external command reached");
+      harness.dependencies.openTunnels = async () => assert.fail("tunnel opened");
+      await assert.rejects(runEvaluationCommand(
+        { action: "run", profile: "kind-evaluation", datasetPath }, harness.dependencies,
+      ), { code: "evaluation_dataset_invalid" });
+      assert.equal(harness.calls.scenarioApply, 0);
+    });
+  }
+});
+
+test("public catalog inputs cannot be relabelled as a private holdout", async (t) => {
+  const datasetPath = datasetFile(t, (manifest) => { manifest.cases[0].split = "holdout"; });
+  for (const selection of [{ datasetPath }, { split: "holdout" }]) {
+    const harness = createHarness();
+    harness.dependencies.execute = async () => assert.fail("external command reached");
+    await assert.rejects(runEvaluationCommand(
+      { action: "run", profile: "kind-evaluation", ...selection }, harness.dependencies,
+    ), { code: "evaluation_holdout_unavailable" });
+    assert.equal(harness.calls.artifacts.length, 0);
+  }
+});
+
+test("non-diagnosed expectations are retained but never scored by the legacy live runner", async (t) => {
+  for (const expected of [{ outcome: "insufficient_evidence" }, { outcome: "failed", error_code: "model_output_invalid" }]) {
+    const datasetPath = datasetFile(t, (manifest) => { manifest.cases[0].expected_terminal = expected; });
+    const harness = createHarness();
+    await assert.rejects(runEvaluationCommand(
+      { action: "run", profile: "kind-evaluation", datasetPath }, harness.dependencies,
+    ), { code: "evaluation_outcome_not_supported" });
+    assert.equal(harness.calls.scenarioApply, 0);
+    const { artifact } = await runEvaluationCommand(
+      { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["pvc-binding-pending"] },
+      harness.dependencies,
+    );
+    assert.equal(artifact.scenarios[0].status, "not_run");
+    assert.equal(artifact.scenarios[0].expectedTerminal.outcome, expected.outcome);
+    if (expected.error_code) assert.equal(artifact.scenarios[0].expectedTerminal.errorCode, expected.error_code);
+  }
+});
+
+test("dataset reader rejects oversized or linked files without exposing their content", async (t) => {
+  const datasetPath = datasetFile(t, () => {});
+  const scenarios = loadEvaluationScenarioCatalog(REPOSITORY_ROOT);
+  const linked = path.join(path.dirname(datasetPath), "linked.json");
+  symlinkSync(datasetPath, linked);
+  assert.throws(() => loadEvaluationDataset(REPOSITORY_ROOT, scenarios, linked), { code: "evaluation_dataset_invalid" });
+  writeFileSync(datasetPath, "sensitive-canary".repeat(80_000));
+  assert.throws(() => loadEvaluationDataset(REPOSITORY_ROOT, scenarios, datasetPath), (error) => {
+    assert.equal(error.code, "evaluation_dataset_invalid");
+    assert.equal(error.message.includes("sensitive-canary"), false);
+    return true;
+  });
+});
+
+test("pre-scenario failure still reports the complete planned denominator", async () => {
+  const harness = createHarness();
+  harness.dependencies.environment.OPERATOR_PASSWORD_FILE = undefined;
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", scenarioIds: ["crash-loop-backoff"] }, harness.dependencies,
+  );
+  assert.equal(artifact.status, "failed");
+  assert.equal(artifact.coverage.plannedCases, 7);
+  assert.equal(artifact.coverage.notRunCases, 7);
+  assert.equal(artifact.scenarios.every((entry) => entry.status === "not_run" && entry.reason === "evaluation_aborted"), true);
+});
+
+test("alert maturity uses the selected case budget instead of the old seven-minute ceiling", async (t) => {
+  const datasetPath = datasetFile(t, (manifest) => { manifest.cases[0].alert_wait_seconds = 540; });
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-05T00:00:00Z") });
+  const harness = createHarness();
+  const fetch = harness.dependencies.fetch;
+  const runner = harness.dependencies.runScenarioCommand;
+  const sleep = harness.dependencies.sleep;
+  let readyAt = 0;
+  harness.dependencies.runScenarioCommand = async (action, id, options) => {
+    readyAt = action === "apply" ? Date.now() + 480_000 : action === "cleanup" ? 0 : readyAt;
+    return runner(action, id, options);
+  };
+  harness.dependencies.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (Date.now() < readyAt && url.port === "19090" && url.searchParams.get("query")?.startsWith("ALERTS{")) {
+      return jsonResponse({ status: "success", data: { resultType: "vector", result: [] } });
+    }
+    return fetch(input, init);
+  };
+  harness.dependencies.sleep = async (milliseconds) => {
+    t.mock.timers.tick(milliseconds);
+    // The repeat notification belongs after the initial firing/diagnosis, not
+    // to the synthetic time spent waiting for the first alert to mature.
+    if (Date.now() > readyAt) await sleep(milliseconds);
+  };
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] }, harness.dependencies,
+  );
+  assert.equal(artifact.status, "pending_manual_review", JSON.stringify(artifact));
+  assert.ok(Date.now() - Date.parse("2026-09-05T00:00:00Z") >= 480_000);
+});
+
+test("dataset artifacts use a separate path and leave historical v2 results untouched", async (t) => {
+  const datasetPath = datasetFile(t, () => {});
+  const root = path.dirname(datasetPath);
+  const outputDirectory = path.join(root, ".runtime/evaluation");
+  mkdirSync(outputDirectory, { recursive: true });
+  const historicalPath = path.join(outputDirectory, "kind-evaluation-focused.json");
+  writeFileSync(historicalPath, '{"schemaVersion":2,"historical":true}\n');
+  const harness = createHarness();
+  harness.dependencies.repositoryRoot = root;
+  const execute = harness.dependencies.execute;
+  harness.dependencies.execute = (command, args, options) => execute(command, args, { ...options, cwd: REPOSITORY_ROOT });
+  delete harness.dependencies.writeArtifact;
+  const { artifact, artifactPath } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] }, harness.dependencies,
+  );
+  assert.equal(artifact.status, "pending_manual_review");
+  assert.equal(path.basename(artifactPath), "kind-evaluation-regression-v1-focused.json");
+  assert.deepEqual(JSON.parse(readFileSync(artifactPath, "utf8")), JSON.parse(JSON.stringify(artifact)));
+  assert.equal(readFileSync(historicalPath, "utf8"), '{"schemaVersion":2,"historical":true}\n');
 });
 
 test("catalog evaluation consumes retained Incident history through pagination", async () => {
@@ -1045,7 +1265,7 @@ test("ImagePull evaluation rejects a proposal digest outside the compiler contra
 });
 
 function createHarness(options = {}) {
-  const scenarios = loadEvaluationScenarioCatalog(REPOSITORY_ROOT);
+  const scenarios = options.scenarios ?? loadEvaluationScenarioCatalog(REPOSITORY_ROOT);
   const headRevision = options.headRevision ?? REVISION;
   const releaseFixture = options.releaseRevision === undefined
     ? RELEASE_FIXTURE

@@ -101,6 +101,8 @@ def test_loads_full_producer_contract_and_returns_only_public_projection(
     "mutation",
     [
         "extra",
+        "dataset_metadata",
+        "schema_version",
         "whitespace",
         "coercion",
         "duplicate",
@@ -122,6 +124,10 @@ def test_rejects_documents_outside_the_node_producer_contract(
     value = _definition(catalog)
     if mutation == "extra":
         value["unexpected"] = True
+    elif mutation == "dataset_metadata":
+        value["split"] = "holdout"
+    elif mutation == "schema_version":
+        value["schema_version"] = 4
     elif mutation == "whitespace":
         value["description"] = " unnormalized"
     elif mutation == "coercion":
@@ -175,6 +181,41 @@ def test_rejects_versions_not_owned_by_the_exact_scenario(
 
     with pytest.raises(RuntimeError, match="Scenario catalog"):
         load_scenario_catalog(catalog)
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "version", "accepted"),
+    [("case-001", 1, True), ("case-001", 2, False), ("new-root-cause", 1, False)],
+)
+def test_neutral_new_scenarios_keep_oracles_out_of_the_runtime_projection(
+    tmp_path: Path, scenario_id: str, version: int, accepted: bool
+) -> None:
+    catalog = tmp_path / "catalog"
+    directory = catalog / scenario_id
+    shutil.copytree(REPOSITORY_ROOT / "scenarios" / "crash-loop-backoff", directory)
+    definition_path = directory / "scenario.json"
+    value = cast(dict[str, object], json.loads(definition_path.read_text()))
+    value["scenario_id"] = scenario_id
+    value["scenario_version"] = version
+    value["display_name"] = "Scenario 001"
+    value["description"] = "A Deployment is unavailable."
+    value["expected_root_causes"] = ["private-oracle-canary"]
+    cast(dict[str, object], value["target"])["name"] = scenario_id
+    definition_path.write_text(json.dumps(value), encoding="utf-8")
+    for filename in (directory / "manifests").iterdir():
+        filename.write_text(
+            filename.read_text().replace("crash-loop-backoff", scenario_id),
+            encoding="utf-8",
+        )
+    if not accepted:
+        with pytest.raises(RuntimeError, match="Scenario catalog"):
+            load_scenario_catalog(catalog)
+        return
+    (scenario,) = load_scenario_catalog(catalog)
+    assert scenario.scenario_id == "case-001"
+    assert scenario.scenario_version == 1
+    assert "private-oracle-canary" not in scenario.model_dump_json()
+    assert "split" not in scenario.model_dump()
 
 
 @pytest.mark.parametrize("mutation", ["missing", "symlink", "oversized"])
