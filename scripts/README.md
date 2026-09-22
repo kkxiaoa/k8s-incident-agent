@@ -28,14 +28,14 @@ npm run doctor
 | `npm run cluster -- status` | `kind-cluster.mjs` | 验证现有集群是否符合固定基线 | 否 |
 | `npm run cluster -- bootstrap-access` | `kind-cluster.mjs` | 安装固定诊断 RBAC 并生成受限 kubeconfig | 是 |
 | `npm run cluster -- down` | `kind-cluster.mjs` | 删除固定 Kind 集群 | 是，破坏性操作 |
-| `npm run deployment -- render <profile>` | `deployment.mjs` | 离线渲染固定安装 profile | 否 |
-| `npm run deployment -- status <profile> --context <context>` | `deployment.mjs` | 只读核对版本、组件、Secret、workload、PVC、NetworkPolicy 对象与 RBAC | 否 |
-| `npm run deployment -- install\|upgrade\|uninstall ... [--preview]` | `deployment.mjs` | 默认预览精确资源集合 | 否 |
-| `npm run deployment -- install\|upgrade\|uninstall ... --confirm` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
-| `npm run deployment -- purge ... --preview\|--confirm <identity>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
-| `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation>` | `deployment.mjs` | 用固定一次性 Job 预览或确认保留 PVC 的 Stage 1 数据 cutover | 是；`--confirm` 额外删除旧业务数据 |
-| `npm run evaluation -- run <evaluation-profile> [--context <context>]` | `evaluation.mjs` | 逐项验证七个 catalog scenario 与五类真实告警/诊断切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
-| `npm run evaluation -- online k3s-online --context <context>` | `evaluation.mjs` | 验证 online profile 的只读 API 与人工入口缺失边界 | 否 |
+| `npm run deployment -- render <profile> --release <release.json>` | `deployment.mjs` | 离线渲染固定安装 profile | 否 |
+| `npm run deployment -- status <profile> --context <context> --release <release.json>` | `deployment.mjs` | 只读核对版本、组件、Secret、workload、PVC、NetworkPolicy 对象与 RBAC | 否 |
+| `npm run deployment -- install\|upgrade\|uninstall ... [--preview] --release <release.json>` | `deployment.mjs` | 默认预览精确资源集合 | 否 |
+| `npm run deployment -- install\|upgrade\|uninstall ... --confirm --release <release.json>` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
+| `npm run deployment -- purge ... --preview\|--confirm <identity> --release <release.json>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
+| `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation> --release <release.json>` | `deployment.mjs` | 用固定一次性 Job 预览或确认保留 PVC 的 Stage 1 数据 cutover | 是；`--confirm` 额外删除旧业务数据 |
+| `npm run evaluation -- run <evaluation-profile> [--context <context>] --release <release.json>` | `evaluation.mjs` | 逐项验证七个 catalog scenario 与五类真实告警/诊断切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
+| `npm run evaluation -- online k3s-online --context <context> --release <release.json>` | `evaluation.mjs` | 验证 online profile 的只读 API 与人工入口缺失边界 | 否 |
 | `npm run scenario -- list` | `scenario.mjs` | 校验并列出版本化场景的公开信息 | 否 |
 | `npm run scenario -- apply <scenario-id>` | `scenario.mjs` | 安装指定 catalog fixture | 是 |
 | `npm run scenario -- verify <scenario-id>` | `scenario.mjs` | 等待并验证场景的确定性证据条件 | 否 |
@@ -126,9 +126,9 @@ npm run scenario -- cleanup image-pull-backoff
 固定 K3s evaluation 安装完成后使用显式 context：
 
 ```bash
-npm run scenario -- apply image-pull-backoff --profile k3s-evaluation --context <context>
-npm run scenario -- verify image-pull-backoff --profile k3s-evaluation --context <context>
-npm run scenario -- cleanup image-pull-backoff --profile k3s-evaluation --context <context>
+npm run scenario -- apply image-pull-backoff --profile k3s-evaluation --context <context> --release <release.json>
+npm run scenario -- verify image-pull-backoff --profile k3s-evaluation --context <context> --release <release.json>
+npm run scenario -- cleanup image-pull-backoff --profile k3s-evaluation --context <context> --release <release.json>
 ```
 
 - `apply` 只应用 catalog 中已经校验的 manifest；
@@ -154,6 +154,13 @@ npm run openapi:check
 `generate` 或 `check`，schema input 和 TypeScript output 均固定在仓库内，不接受
 路径或 URL 参数；执行前需要先在 `services/agent-runtime` 完成 `uv sync --locked`。
 
+## `release.mjs` / `release-smoke.mjs`
+
+构建、内容核验、双平台隔离启动和打包命令见 [Release candidates](../documentation/releases.md)。
+`release.json` 是生成产物，不写回源码；唯一共享 loader 供部署与评估使用。
+CI 候选只在本仓库 main push 的四组质量检查成功后构建，不授予发布/部署权限。
+真实构建、容器运行与集群 live 分别需要授权；离线 mock Docker 测试不算真实 smoke。
+
 ## `evaluation.mjs`
 
 Task 9 的评估入口不接受任意 URL、Namespace、manifest、PromQL、artifact 路径或
@@ -162,9 +169,9 @@ kubectl 参数。Kind 只使用固定 context；K3s 必须显式提供经过 dep
 Alertmanager 的固定临时 port-forward，完成后关闭。
 
 ```bash
-npm run evaluation -- run kind-evaluation
-npm run evaluation -- run k3s-evaluation --context <context>
-npm run evaluation -- online k3s-online --context <context>
+npm run evaluation -- run kind-evaluation --release <release.json>
+npm run evaluation -- run k3s-evaluation --context <context> --release <release.json>
+npm run evaluation -- online k3s-online --context <context> --release <release.json>
 ```
 
 `run` 复用 `scenario.mjs` 已校验的私有评估投影，逐 entry 证明健康基线、真实
@@ -177,16 +184,17 @@ Evidence 及其根因引用、必要 panel、具备完整 lifecycle payload 的 
 unavailable 状态，然后轮换两个 Namespace 的同值 Webhook Secret、重建 Runtime 与
 Alertmanager，并要求 Watchdog 接收时间严格推进后再次证明链路健康。
 
-命令在任何 live 副作用前要求 Git worktree 干净，并从固定的
-`.runtime/release/console-oci` 与 `.runtime/release/runtime-oci` OCI layout 核对 lock 中的
-顶层 digest、`linux/arm64`/`linux/amd64` 两个 child 以及每个 image config 的
-`org.opencontainers.image.revision`。两份 layout 必须来自同一个 committed source
-revision；当前 clean `HEAD` 只能在该 revision 之后修改两个固定 digest-lock 文件，其他
-源码或部署漂移都会 fail closed。这个两提交约束避免 digest lock 对自身 commit 产生不可
-构建的哈希自引用，同时仍拒绝旧镜像、可变 tag、单架构 image 与未提交源码。
+命令在任何 live 副作用前通过共享 `release.mjs` loader 校验显式选择的
+`--release <release.json>`。当前 Git worktree 必须干净，HEAD 与 manifest 的
+`sourceRevision` 完全一致；两组件 OCI 的 index、manifest、config 和全部 layer
+均检查 size/digest，且恰有 linux/amd64、linux/arm64 两个平台、同 source、非 root。
+不再读取源码中的应用 digest lock，不保留“仅两个 lock 文件差异”的祖先提交例外，
+也不回退到 `.runtime/release` 的旧目录。相同已验证 manifest 传给 deployment status
+及 scenario 的 K3s preflight，不重复选择另一份镜像身份。
 
-产物固定原子写入 `.runtime/evaluation/<profile>.json`，目录/文件权限分别为
-`0700`/`0600`。artifact 只包含 release revision/image digest、布尔检查、状态、计数、
+online 产物固定原子写入 `.runtime/evaluation/<profile>.json`；dataset run 使用
+`<profile>-<dataset-id>-v<dataset-version>[-focused].json`，不覆盖历史 v2 结果。
+目录/文件权限分别为 `0700`/`0600`。artifact 包含所选 release manifest、数据集身份、布尔检查、状态、计数、
 Evidence kind、诊断 code 和 panel ID；不包含 Secret、token/hash、原始 Evidence、模型
 陈述、Event note、日志、上游响应或任意凭据。该命令具有上述精确 live 副作用，仍须在
 用户授权后运行；它不会 install/uninstall、purge、删除 Namespace/PVC/PV/Secret，或
@@ -202,21 +210,25 @@ k3s-evaluation
 k3s-online
 ```
 
+所有 deployment 命令必须显式提供 `--release <release.json>`，并使用对应的干净源码。
 `render`、`install|upgrade|uninstall` 默认只执行本地
 `kubectl kustomize`，不会读取 kubeconfig 或访问集群。所有确认写操作和
 `status` 都要求显式 `--context`，先精确核对仓库锁定的 kubectl 与目标
 Kubernetes/K3s 版本；Kind 还要求固定 context。K3s 会继续核对 CoreDNS、
 Traefik、local-path-provisioner 的固定镜像与当前可用性，以及默认 StorageClass。
 确认 install/upgrade 还要求固定单节点 Ready、两个应用 manifest 可解析的
-`docker.io/library/<repository>@<locked-digest>` identity 已导入，并通过 kubectl
+`ghcr.io/kkxiaoa/k8s-incident-agent-<component>@<index-digest>` identity 已导入，并通过 kubectl
 内部投影只返回固定模型 Secret 与两个 namespaced `alertmanager-webhook` Secret 的
 key 是否非空，不把 Secret value 返回给生命周期
 脚本。任何检查失败都不会回退到宽权限、宿主机 Runtime 或内存数据。
-当前lock是每个逻辑镜像一个只含`linux/arm64`与`linux/amd64`的OCI index。containerd
+所选 release 的每个逻辑镜像是一个只含`linux/arm64`与`linux/amd64`的OCI index。containerd
 导入archive后默认只为顶层index保留tag；即使使用`ctr images import --digests`，也
 不会自动生成manifest所引用的应用repository@index。因此operator必须在导入同一
-archive后，使用`ctr images tag <repository>:<build-tag> <repository>@<locked-index-digest>`
+archive后，使用`ctr images tag <imported-reference> <canonical-repository>@<index-digest>`
 为同一index增加精确reference。预检继续要求完整repository@index，不降级为可变tag。
+镜像导入/预取是另行授权的安装准备动作。render/status 基于临时 release Kustomize overlay；
+server dry-run 与实际 apply 使用同一份渲染内容。裸 `kubectl kustomize` 只得到源码模板，
+不是安装产物。第三方 monitoring digest lock 保持不变。
 Kind 静态 hostPath 额外由同一锁定 Runtime image 的受限 init 只调整挂载根
 ownership；migration 和 Runtime 本身仍保持非 root。status 按固定 kubectl 的资源
 列表命令 `apiVersion: v1, kind: List` producer contract 校验，并忽略 RollingUpdate
@@ -276,8 +288,8 @@ identity 返回给操作者；只有同一次确认仍匹配当前对象且 K3s 
 Stage 1.6 数据 cutover 只接受 `kind-evaluation` 与 `k3s-evaluation`：
 
 ```bash
-npm run deployment -- cutover k3s-evaluation --context <context> --preview
-npm run deployment -- cutover k3s-evaluation --context <context> --confirm <cutover-confirmation>
+npm run deployment -- cutover k3s-evaluation --context <context> --preview --release <release.json>
+npm run deployment -- cutover k3s-evaluation --context <context> --confirm <cutover-confirmation> --release <release.json>
 ```
 
 cutover 要求应用 workload 已停止，并重新核对固定集群版本、单 Ready node、

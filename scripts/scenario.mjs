@@ -16,6 +16,7 @@ import {
   verifyDeploymentStatus,
 } from "./deployment.mjs";
 import { runClusterCommand } from "./kind-cluster.mjs";
+import { ReleaseError } from "./release.mjs";
 
 const CLUSTER_NAME = "k8s-incident-agent";
 const CONTEXT_NAME = "kind-k8s-incident-agent";
@@ -296,6 +297,7 @@ export async function runScenarioCommand(
     target,
     repositoryRoot,
     execute,
+    dependencies,
   );
 
   if (action === "apply" || action === "cleanup") {
@@ -352,6 +354,7 @@ async function requireExecutionTargetReady(
   target,
   repositoryRoot,
   execute,
+  releaseSelection,
 ) {
   if (target.profile === "kind-evaluation") {
     try {
@@ -372,10 +375,12 @@ async function requireExecutionTargetReady(
   try {
     await verifyDeploymentStatus(target.profile, target.context, {
       repositoryRoot,
+      release: releaseSelection.release,
+      releasePath: releaseSelection.releasePath,
       execute: adaptDeploymentExecutor(execute),
     });
   } catch (error) {
-    if (error instanceof DeploymentContractError) {
+    if (error instanceof DeploymentContractError || error instanceof ReleaseError) {
       throw new ScenarioCommandError(error.code, error.message);
     }
     throw new ScenarioCommandError(
@@ -2504,6 +2509,10 @@ function parseCliRequest(argv) {
     }
     if (option === "--context" && dependencies.context === undefined) {
       dependencies.context = value;
+      continue;
+    }
+    if (option === "--release" && dependencies.releasePath === undefined && value && !value.startsWith("-")) {
+      dependencies.releasePath = value;
       continue;
     }
     throw invalidArguments("Scenario profile options are invalid or repeated");

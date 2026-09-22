@@ -44,6 +44,12 @@ jobs:
       - name: Unit and isolated execution tests
         working-directory: services/agent-runtime
         run: uv run --locked pytest tests/unit tests/execution --tb=short --show-capture=no
+      - name: Candidate startup fixture against the locked Kubernetes SDK
+        working-directory: services/agent-runtime
+        run: |
+          uv run --locked ruff check --config pyproject.toml ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
+          uv run --locked ruff format --config pyproject.toml --check ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
+          uv run --locked python ../../.github/ci/smoke-runtime.test.py
 
   contracts:
     name: Scripts and deployment contracts
@@ -147,3 +153,54 @@ jobs:
         run: gitleaks git --redact=100 --no-banner --no-color --ignore-gitleaks-allow --gitleaks-ignore-path .github/ci/gitleaksignore --log-opts=--all .
       - name: Public links and actual Mermaid render
         run: node .github/ci/check-docs.mjs --render
+
+  candidate:
+    name: Same-source multi-platform OCI candidate
+    needs: [runtime, contracts, web, docs-security]
+    if: github.repository == 'kkxiaoa/k8s-incident-agent' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Read committed build tool pins
+        id: tools
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const pins = JSON.parse(fs.readFileSync('.github/ci/release-tools.json', 'utf8'));
+          for (const key of ['buildx', 'buildkit', 'qemu']) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${pins[key]}\n`);
+          NODE
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: ${{ steps.tools.outputs.qemu }}
+          platforms: arm64
+          cache-image: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          version: ${{ steps.tools.outputs.buildx }}
+          driver: docker-container
+          driver-opts: image=${{ steps.tools.outputs.buildkit }}
+          cache-binary: false
+      - name: Build both images once from the exact committed export
+        run: node scripts/release.mjs build --output "$RUNNER_TEMP/incident-bundle"
+      - name: Start both exact candidate platforms in isolation
+        run: node scripts/release-smoke.mjs --release "$RUNNER_TEMP/incident-bundle/release.json"
+      - name: Package only verified release content
+        run: node scripts/release.mjs pack --release "$RUNNER_TEMP/incident-bundle/release.json" --output "$RUNNER_TEMP/incident-candidate"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oci-candidate-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/incident-candidate/candidate.tar.gz
+            ${{ runner.temp }}/incident-candidate/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: false

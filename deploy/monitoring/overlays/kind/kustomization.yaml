@@ -17,7 +17,3 @@ patches:
       kind: Deployment
       name: prometheus
       namespace: k8s-incident-monitoring
-images:
-  - name: k8s-incident-agent-runtime
-    newName: k8s-incident-agent-runtime
-    digest: sha256:0b9f9ed634ff529e5a3958788fc9dca18d16a406cbb0159f22b467b460801f0f

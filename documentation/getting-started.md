@@ -114,7 +114,7 @@ AGENT_RUNTIME_URL=http://127.0.0.1:8000 \
 
 Opening a manual scenario creates an Incident/Run; it does **not** inject the fault. Scenario apply/cleanup are separately authorized cluster writes. Online profiles instead receive Alertmanager intake and prohibit manual Incident creation.
 
-The fixed K3s evaluation Origin placeholder is for private evaluation tunneling, not a public URL or working TLS configuration. K3s online must be configured with this project's real HTTPS Origin and independent TLS resources. Current digest locks refer to locally imported OCI artifacts, not published GHCR images; this guide does not claim a one-command public cluster install. Do not borrow sibling certificates, disable TLS/Origin checks, or enable persistent execution to bypass missing prerequisites.
+The fixed K3s evaluation Origin placeholder is for private evaluation tunneling, not a public URL or working TLS configuration. K3s online must be configured with this project's real HTTPS Origin and independent TLS resources. Deployment requires an explicitly selected [release bundle](releases.md) and matching clean source; GHCR repository names do not mean images have been published. This guide does not claim a one-command public cluster install. Do not borrow sibling certificates, disable TLS/Origin checks, or enable persistent execution to bypass missing prerequisites.
 
 ## 6. Sessions and public-readonly mode
 

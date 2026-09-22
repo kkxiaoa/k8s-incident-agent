@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { test, after } from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runEvaluationCommand } from "./evaluation.mjs";
+import { runEvaluationCommand as evaluate } from "./evaluation.mjs";
+import { createReleaseFixture, gitFixtureEnvironment } from "./test-support/release-fixture.mjs";
 import {
   loadEvaluationDataset,
   loadEvaluationScenarioCatalog,
@@ -24,18 +25,7 @@ const AUTH_PASSWORD = randomBytes(32).toString("base64url");
 const AUTH_FILE = path.join(AUTH_DIRECTORY, "password");
 writeFileSync(AUTH_FILE, AUTH_PASSWORD, { mode: 0o600 });
 after(() => rmSync(AUTH_DIRECTORY, { recursive: true, force: true }));
-const RELEASE_FIXTURE = createReleaseFixture(REVISION);
-const releaseLock = (digest) => `
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-images:
-  - name: k8s-incident-agent-console
-    newName: k8s-incident-agent-console
-    digest: ${digest}
-  - name: k8s-incident-agent-runtime
-    newName: k8s-incident-agent-runtime
-    digest: ${digest}
-`;
+const RELEASE_SELECTION = Symbol("test release selection");
 const EVIDENCE_TOOL = Object.freeze({
   workload: "get_workload",
   rollout_history: "get_rollout_history",
@@ -47,53 +37,15 @@ const EVIDENCE_TOOL = Object.freeze({
   metrics: "query_prometheus",
 });
 
-function createReleaseFixture(revision) {
-  const files = new Map();
-  const descriptor = (value, mediaType, extra = {}) => {
-    const content = Buffer.from(JSON.stringify(value));
-    const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
-    files.set(`blobs/sha256/${digest.slice(7)}`, content);
-    return { mediaType, digest, size: content.byteLength, ...extra };
-  };
-  const manifests = ["amd64", "arm64"].map((architecture) => {
-    const config = descriptor(
-      {
-        architecture,
-        os: "linux",
-        config: { Labels: { "org.opencontainers.image.revision": revision } },
-      },
-      "application/vnd.oci.image.config.v1+json",
-    );
-    return descriptor(
-      {
-        schemaVersion: 2,
-        mediaType: "application/vnd.oci.image.manifest.v1+json",
-        config,
-        layers: [],
-      },
-      "application/vnd.oci.image.manifest.v1+json",
-      { platform: { os: "linux", architecture } },
-    );
-  });
-  const top = descriptor(
-    {
-      schemaVersion: 2,
-      mediaType: "application/vnd.oci.image.index.v1+json",
-      manifests,
-    },
-    "application/vnd.oci.image.index.v1+json",
-  );
-  files.set(
-    "index.json",
-    Buffer.from(
-      JSON.stringify({
-        schemaVersion: 2,
-        mediaType: "application/vnd.oci.image.index.v1+json",
-        manifests: [top],
-      }),
-    ),
-  );
-  return { digest: top.digest, files };
+async function runEvaluationCommand(request, dependencies) {
+  const selection = dependencies[RELEASE_SELECTION];
+  const previousPath = process.env.PATH;
+  process.env.PATH = selection.environment.PATH;
+  try {
+    return await evaluate({ releasePath: selection.release, ...request }, dependencies);
+  } finally {
+    process.env.PATH = previousPath;
+  }
 }
 
 test("the committed scenario catalog exposes seven entries across five families", () => {
@@ -965,19 +917,16 @@ test("evaluation rejects OCI images built from another revision", async () => {
   assert.equal(harness.calls.scenarioApply, 0);
 });
 
-test("evaluation accepts a clean digest-only lock commit", async () => {
+test("evaluation rejects the former digest-only lock commit exception", async () => {
   const lockRevision = "d".repeat(40);
   const harness = createHarness({ headRevision: lockRevision });
   harness.state.online = true;
 
-  const result = await runEvaluationCommand(
+  await assert.rejects(runEvaluationCommand(
     { action: "online", profile: "k3s-online", context: "fixed-k3s" },
     harness.dependencies,
-  );
-
-  assert.equal(result.artifact.status, "passed");
-  assert.equal(result.artifact.release.revision, REVISION);
-  assert.equal(result.artifact.release.lockRevision, lockRevision);
+  ), { code: "release_revision_mismatch" });
+  assert.equal(harness.calls.tunnelClose, 0);
 });
 
 test("evaluation rejects source drift after the image revision", async () => {
@@ -1267,9 +1216,9 @@ test("ImagePull evaluation rejects a proposal digest outside the compiler contra
 function createHarness(options = {}) {
   const scenarios = options.scenarios ?? loadEvaluationScenarioCatalog(REPOSITORY_ROOT);
   const headRevision = options.headRevision ?? REVISION;
-  const releaseFixture = options.releaseRevision === undefined
-    ? RELEASE_FIXTURE
-    : createReleaseFixture(options.releaseRevision);
+  const releaseDirectory = mkdtempSync(path.join(AUTH_DIRECTORY, "release-"));
+  const releaseFixture = createReleaseFixture(releaseDirectory, options.releaseRevision ?? REVISION);
+  const releaseEnvironment = gitFixtureEnvironment(releaseDirectory, headRevision, options.dirtyWorktree);
   const scenarioById = new Map(
     scenarios.map((scenario, index) => [
       scenario.scenarioId,
@@ -1307,6 +1256,7 @@ function createHarness(options = {}) {
   };
 
   const dependencies = {
+    [RELEASE_SELECTION]: { release: releaseFixture.release, environment: releaseEnvironment },
     environment: {
       get OPERATOR_ORIGIN() { return state.online ? "https://console.example.test" : "http://127.0.0.1:13000"; },
       OPERATOR_PASSWORD_FILE: AUTH_FILE,
@@ -1324,17 +1274,12 @@ function createHarness(options = {}) {
         active.updatedAt = "2026-09-05T00:00:01.000Z";
       }
     },
-    readFile: async (filename) => {
-      if (filename.endsWith("deploy/application/base/workloads/kustomization.yaml")) {
-        return releaseLock(releaseFixture.digest);
-      }
-      const relative = filename.split(/(?:console|runtime)-oci\//).at(-1);
-      const content = releaseFixture.files.get(relative);
-      if (content === undefined) throw new Error(`Unexpected read: ${filename}`);
-      return content;
+    verifyDeploymentStatus: async (_profile, _context, { release }) => {
+      assert.deepEqual(release, releaseFixture.manifest);
+      return { deployments: "ready" };
     },
-    verifyDeploymentStatus: async () => ({ deployments: "ready" }),
-    runScenarioCommand: async (action, scenarioId) => {
+    runScenarioCommand: async (action, scenarioId, { release }) => {
+      assert.deepEqual(release, releaseFixture.manifest);
       const scenario = scenarioById.get(scenarioId);
       assert.ok(scenario);
       if (action === "apply") {
@@ -1360,28 +1305,7 @@ function createHarness(options = {}) {
         calls.tunnelClose += 1;
       },
     }),
-    execute: async (command, args, executionOptions) => {
-      if (command === "git") {
-        assert.equal(executionOptions.cwd, REPOSITORY_ROOT);
-        if (args[0] === "status") {
-          return options.dirtyWorktree === true ? " M scripts/evaluation.mjs\n" : "";
-        }
-        if (args[0] === "rev-parse") return `${headRevision}\n`;
-        if (args[0] === "merge-base") {
-          if (args[2] === REVISION && args[3] === headRevision) return "";
-          const error = new Error("not an ancestor");
-          error.exitCode = 1;
-          throw error;
-        }
-        if (args[0] === "diff") {
-          if (options.releaseSourceDrift === true) return "src/app/page.tsx\n";
-          return headRevision === REVISION
-            ? ""
-            : "deploy/application/base/workloads/kustomization.yaml\n" +
-                "deploy/monitoring/overlays/kind/kustomization.yaml\n";
-        }
-        assert.fail(`Unexpected git command: ${args.join(" ")}`);
-      }
+    execute: async (command, args) => {
       assert.equal(command, "kubectl");
       const replicas = args.find((value) => value.startsWith("--replicas="));
       const deployment = args.find((value) => value.startsWith("deployment/"));

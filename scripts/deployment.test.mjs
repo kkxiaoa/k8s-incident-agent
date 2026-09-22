@@ -4,15 +4,17 @@ import {
   chmodSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { load, loadAll } from "js-yaml";
+import { createReleaseFixture, gitFixtureEnvironment, releaseImages } from "./test-support/release-fixture.mjs";
 
 const REPOSITORY_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -34,12 +36,11 @@ const REAL_KUBECTL =
   execFileSync("sh", ["-c", "command -v kubectl"], {
     encoding: "utf8",
   }).trim();
-const WORKLOAD_IMAGE_LOCK = load(
-  readFileSync(
-    path.join(APPLICATION_ROOT, "base", "workloads", "kustomization.yaml"),
-    "utf8",
-  ),
-);
+const RELEASE_DIRECTORY = mkdtempSync(path.join(os.tmpdir(), "deployment-release-test-"));
+after(() => rmSync(RELEASE_DIRECTORY, { recursive: true, force: true }));
+const RELEASE = createReleaseFixture(RELEASE_DIRECTORY, "a".repeat(40));
+const GIT_ENVIRONMENT = gitFixtureEnvironment(RELEASE_DIRECTORY, RELEASE.manifest.sourceRevision);
+const WORKLOAD_IMAGE_LOCK = { images: releaseImages(RELEASE.manifest) };
 const CONSOLE_IMAGE = lockedImage("k8s-incident-agent-console");
 const RUNTIME_IMAGE = lockedImage("k8s-incident-agent-runtime");
 const PROMETHEUS_IMAGE =
@@ -74,20 +75,29 @@ function lockedImage(name) {
   const image = WORKLOAD_IMAGE_LOCK.images?.find(
     (candidate) => candidate.name === name,
   );
-  assert.equal(image?.newName, name);
+  assert.equal(image?.newName, `ghcr.io/kkxiaoa/${name}`);
   assert.match(image?.digest ?? "", /^sha256:[a-f0-9]{64}$/);
   return `${image.newName}@${image.digest}`;
 }
 
 function render(relativePath) {
-  return execFileSync(
+  const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "deployment-render-test-")));
+  try {
+    writeFileSync(path.join(directory, "kustomization.yaml"), JSON.stringify({
+      apiVersion: "kustomize.config.k8s.io/v1beta1", kind: "Kustomization",
+      resources: [path.relative(directory, path.join(APPLICATION_ROOT, relativePath))], images: WORKLOAD_IMAGE_LOCK.images,
+    }));
+    return execFileSync(
     KUBECTL_BINARY,
-    ["kustomize", path.join(APPLICATION_ROOT, relativePath)],
+    ["kustomize", directory],
     {
       cwd: REPOSITORY_ROOT,
       encoding: "utf8",
     },
   );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 function documents(rawYaml) {
@@ -1359,10 +1369,11 @@ test("kubectl validates the decoded Patch Validator HMAC key length", () => {
 });
 
 function runDeployment(args, environment = {}) {
-  return spawnSync(process.execPath, [DEPLOYMENT_SCRIPT, ...args], {
+  return spawnSync(process.execPath, [DEPLOYMENT_SCRIPT, ...args, "--release", RELEASE.release], {
     cwd: REPOSITORY_ROOT,
     encoding: "utf8",
-    env: { ...process.env, ...environment },
+    env: { ...process.env, ...environment,
+      PATH: `${path.join(RELEASE_DIRECTORY, "bin")}${path.delimiter}${environment.PATH ?? GIT_ENVIRONMENT.PATH}` },
   });
 }
 
@@ -1597,6 +1608,9 @@ function response(key, args) {
     if (result.status !== 0) process.exitCode = result.status;
     const resources = loadAll(result.stdout);
     for (const item of resources) {
+      if (item?.kind === "Deployment" && item.metadata?.name === "agent-runtime" && process.env.FAKE_RENDER_IMAGE_DRIFT === "1") {
+        item.spec.template.spec.initContainers[0].image = "k8s-incident-agent-runtime:old";
+      }
       if (item?.kind === "ConfigMap" && item.metadata?.name === "agent-runtime-config" &&
           process.env.FAKE_PROFILE !== "kind-evaluation" && process.env.FAKE_OPERATOR_ORIGIN_MISSING !== "1") {
         item.data.OPERATOR_ORIGIN = "https://console.example.test";
@@ -1662,7 +1676,7 @@ function response(key, args) {
         : lockedImages;
     const imageRepository = process.env.FAKE_IMAGE_REPOSITORY_MISMATCH === "1"
       ? "registry.example/"
-      : "docker.io/library/";
+      : "";
     return {
       kind: "List",
       items: [{
@@ -2998,18 +3012,23 @@ test("confirmed online install preflights, applies, waits, and reports the real 
   assert.equal(result.stdout.includes("api-key"), false);
   const calls = fake.calls().map((call) => call.args.join(" "));
   assert.equal(
-    calls.some((call) => call.includes("apply --dry-run=server --kustomize")),
+    calls.some((call) => call.includes("apply --dry-run=server --filename=-")),
     true,
   );
   assert.equal(
-    calls.some((call) => call.includes("apply --kustomize")),
+    calls.some((call) => call.includes("apply --filename=-")),
     true,
   );
   const stdinApplies = fake.calls().filter((call) =>
     call.args.join(" ").includes("apply --filename=-"),
   );
-  assert.equal(stdinApplies.length, 2);
-  const [boundaryApply, clusterRbacApply] = stdinApplies;
+  assert.equal(stdinApplies.length, 3);
+  const [boundaryApply, clusterRbacApply, workloadApply] = stdinApplies;
+  const dryRun = fake.calls().find(call => call.args.includes("--dry-run=server"));
+  assert.equal(workloadApply.input, dryRun.input);
+  const workloads = documents(workloadApply.input).filter(doc => doc.kind === "Deployment");
+  assert.ok(workloads.some(doc => doc.spec.template.spec.containers.some(container => container.image === CONSOLE_IMAGE)));
+  assert.ok(workloads.some(doc => doc.spec.template.spec.containers.some(container => container.image === RUNTIME_IMAGE)));
   const clusterRbacResources = clusterRbacApply.input
     .trim()
     .split("\n---\n")
@@ -3048,12 +3067,8 @@ test("confirmed online install preflights, applies, waits, and reports the real 
       "get validatingadmissionpolicy k8s-incident-agent-patch-validator-dry-run-only",
     ),
   );
-  const workloadApplyIndex = commandCalls.findIndex((call) =>
-    call.includes("apply --kustomize"),
-  );
-  const clusterRbacApplyIndex = commandCalls.lastIndexOf(
-    commandCalls.filter((call) => call.includes("apply --filename=-"))[1],
-  );
+  const workloadApplyIndex = fake.calls().findIndex(call => call.input === workloadApply.input && !call.args.includes("--dry-run=server"));
+  const clusterRbacApplyIndex = fake.calls().findIndex(call => call.input === clusterRbacApply.input);
   const firstRolloutIndex = commandCalls.findIndex((call) =>
     call.includes("rollout status deployment/"),
   );
@@ -3222,6 +3237,14 @@ test("confirmed online install preflights, applies, waits, and reports the real 
   );
 });
 
+test("rendered migration image drift stops before admission or workload writes", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_RENDER_IMAGE_DRIFT: "1" });
+  const result = runDeployment(["install", "k3s-online", "--context", "demo-k3s", "--confirm"], fake.environment);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /release_image_mismatch/);
+  assert.equal(fake.calls().some(call => call.args.includes("apply")), false);
+});
+
 test("confirmed install does not apply workloads before the admission boundary is ready", (t) => {
   const fake = createFakeKubectl(t, {
     FAKE_PATCH_VALIDATOR_POLICY_WARNING: "1",
@@ -3235,7 +3258,8 @@ test("confirmed install does not apply workloads before the admission boundary i
   assert.match(result.stderr, /^FAIL installation_not_ready /);
   const calls = fake.calls().map((call) => call.args.join(" "));
   assert.equal(calls.some((call) => call.includes("apply --filename=-")), true);
-  assert.equal(calls.some((call) => call.includes("apply --kustomize")), false);
+  assert.equal(fake.calls().some(call => call.args.includes("apply") &&
+    !call.args.includes("--dry-run=server") && documents(call.input).some(doc => doc.kind === "Deployment")), false);
   assert.equal(
     calls.some((call) => call.includes("rollout status deployment/")),
     false,
@@ -3633,7 +3657,7 @@ test("uninstall does not depend on a healthy model Secret and preserves the same
   const calls = fake.calls().map((call) => call.args.join(" "));
   assert.equal(calls.some((call) => call.includes("get secret")), false);
   assert.equal(
-    calls.some((call) => call.includes("delete --ignore-not-found=true --wait=true --kustomize")),
+    calls.some((call) => call.includes("delete --ignore-not-found=true --wait=true --filename=-")),
     true,
   );
   const clusterRbacDelete = calls.findIndex((call) =>
@@ -3642,7 +3666,7 @@ test("uninstall does not depend on a healthy model Secret and preserves the same
     ),
   );
   assert.equal(
-    clusterRbacDelete > calls.findIndex((call) => call.includes("--wait=true --kustomize")),
+    clusterRbacDelete > calls.findIndex((call) => call.includes("--wait=true --filename=-")),
     true,
   );
   const validatorShutdown = calls.findIndex((call) =>
@@ -3651,7 +3675,7 @@ test("uninstall does not depend on a healthy model Secret and preserves the same
     ),
   );
   const bundleDelete = calls.findIndex((call) =>
-    call.includes("delete --ignore-not-found=true --wait=true --kustomize"),
+    call.includes("delete --ignore-not-found=true --wait=true --filename=-"),
   );
   assert.equal(validatorShutdown >= 0 && validatorShutdown < bundleDelete, true);
 });

@@ -1,21 +1,21 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { dump, load, loadAll } from "js-yaml";
+import { dump, loadAll } from "js-yaml";
+import { createReleaseFixture, releaseImages } from "./test-support/release-fixture.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const application = path.join(root, "deploy/application");
-const read = (name) => readFileSync(path.join(root, name), "utf8");
 const kubectl = process.env.KUBECTL_BINARY ?? "kubectl";
 
 test("executor component reuses the Runtime image and isolates identity and mounts", () => {
   const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "task7-render-")));
   try {
-    const lock = load(read("deploy/application/base/workloads/kustomization.yaml"));
+    const lock = { images: releaseImages(createReleaseFixture(directory, "a".repeat(40)).manifest) };
     writeFileSync(path.join(directory, "kustomization.yaml"), dump({
       apiVersion: "kustomize.config.k8s.io/v1beta1", kind: "Kustomization",
       components: [path.relative(directory, path.join(application, "executor"))], images: lock.images,

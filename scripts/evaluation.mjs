@@ -6,7 +6,6 @@ import {
   lstat,
   mkdir,
   open,
-  readFile,
   rename,
   unlink,
   writeFile,
@@ -14,9 +13,8 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { load } from "js-yaml";
-
 import { verifyDeploymentStatus } from "./deployment.mjs";
+import { loadRelease, ReleaseError } from "./release.mjs";
 import {
   loadEvaluationDataset,
   loadEvaluationScenarioCatalog,
@@ -45,16 +43,7 @@ const TERMINAL_RUN_STATUSES = new Set(["COMPLETED", "FAILED"]);
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ROOT_CAUSE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
-const RELEASE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
-const RELEASE_REVISION_PATTERN = /^[a-f0-9]{40}$/;
-const OCI_INDEX_MEDIA_TYPE = "application/vnd.oci.image.index.v1+json";
-const OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json";
-const OCI_CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json";
-const RELEASE_PLATFORMS = new Set(["linux/amd64", "linux/arm64"]);
-const RELEASE_LOCK_FILES = new Set([
-  "deploy/application/base/workloads/kustomization.yaml",
-  "deploy/monitoring/overlays/kind/kustomization.yaml",
-]);
+const REPAIR_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const HISTORICAL_FAMILIES = new Map([
   ["image-pull-backoff", ["image-pull-backoff"]],
   ["crash-loop-backoff", ["crash-loop-backoff"]],
@@ -172,15 +161,13 @@ export async function runEvaluationCommand(request, dependencies = {}) {
   }
   const focused = request.scenarioIds !== undefined || request.split !== undefined ||
     selectedScenarioIds.length < scenarios.length;
-  const release = await loadReleaseIdentity(
-    repositoryRoot,
-    dependencies.readFile ?? readFile,
-    execute,
-  );
+  if (!isNormalizedString(request.releasePath)) throw invalidArguments();
+  const release = await loadRelease(request.releasePath, repositoryRoot);
   const startedAt = requireDate(now()).toISOString();
 
   await deploymentStatus(profile, context, {
     repositoryRoot,
+    release,
     execute: adaptDeploymentExecutor(execute),
   });
 
@@ -404,6 +391,7 @@ async function evaluateScenario(scenario, options) {
   try {
     await options.scenarioRunner("cleanup", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
+      release: options.release,
       profile: options.profile,
       context: options.profile === "kind-evaluation" ? undefined : options.context,
       execute: adaptScenarioExecutor(options.execute),
@@ -416,12 +404,14 @@ async function evaluateScenario(scenario, options) {
     applied = true;
     await options.scenarioRunner("apply", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
+      release: options.release,
       profile: options.profile,
       context: options.profile === "kind-evaluation" ? undefined : options.context,
       execute: adaptScenarioExecutor(options.execute),
     });
     await options.scenarioRunner("verify", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
+      release: options.release,
       profile: options.profile,
       context: options.profile === "kind-evaluation" ? undefined : options.context,
       execute: adaptScenarioExecutor(options.execute),
@@ -500,6 +490,7 @@ async function evaluateScenario(scenario, options) {
 
     await options.scenarioRunner("cleanup", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
+      release: options.release,
       profile: options.profile,
       context: options.profile === "kind-evaluation" ? undefined : options.context,
       execute: adaptScenarioExecutor(options.execute),
@@ -532,6 +523,7 @@ async function evaluateScenario(scenario, options) {
       try {
         await options.scenarioRunner("cleanup", scenario.scenarioId, {
           repositoryRoot: options.repositoryRoot,
+          release: options.release,
           profile: options.profile,
           context:
             options.profile === "kind-evaluation" ? undefined : options.context,
@@ -575,6 +567,7 @@ async function evaluateInfrastructureRecovery(probe, options) {
     applied = true;
     await options.scenarioRunner("apply", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
+      release: options.release,
       profile: options.profile,
       context:
         options.profile === "kind-evaluation" ? undefined : options.context,
@@ -582,6 +575,7 @@ async function evaluateInfrastructureRecovery(probe, options) {
     });
     await options.scenarioRunner("verify", scenario.scenarioId, {
       repositoryRoot: options.repositoryRoot,
+      release: options.release,
       profile: options.profile,
       context:
         options.profile === "kind-evaluation" ? undefined : options.context,
@@ -707,6 +701,7 @@ async function evaluateInfrastructureRecovery(probe, options) {
     if (applied) {
       await options.scenarioRunner("cleanup", scenario.scenarioId, {
         repositoryRoot: options.repositoryRoot,
+        release: options.release,
         profile: options.profile,
         context:
           options.profile === "kind-evaluation" ? undefined : options.context,
@@ -1346,7 +1341,7 @@ function validateTerminalRepair(scenario, detail, evidenceById) {
         !hasExactKeys(operation, ["op", "path", "value"]),
     ) ||
     JSON.stringify(repair.patch) !== JSON.stringify(expectedPatch) ||
-    !RELEASE_DIGEST_PATTERN.test(repair.digest ?? "") ||
+    !REPAIR_DIGEST_PATTERN.test(repair.digest ?? "") ||
     gateTimes.some((value) => value === undefined) ||
     gateTimes.some(
       (value, index) => index > 0 && value < gateTimes[index - 1],
@@ -2281,279 +2276,6 @@ async function waitUntil(code, operation, timeoutMilliseconds, sleep) {
   throw contractError(code, "A bounded evaluation condition was not observed");
 }
 
-async function loadReleaseIdentity(repositoryRoot, read, execute) {
-  const worktreeResult = await execute(
-    "git",
-    ["status", "--porcelain=v1", "--untracked-files=all"],
-    {
-      cwd: repositoryRoot,
-      timeoutMilliseconds: HTTP_TIMEOUT_MILLISECONDS,
-    },
-  );
-  if (commandOutput(worktreeResult).trim() !== "") {
-    throw contractError(
-      "release_worktree_dirty",
-      "Evaluation requires a clean committed release worktree",
-    );
-  }
-  const revisionResult = await execute(
-    "git",
-    ["rev-parse", "HEAD"],
-    {
-      cwd: repositoryRoot,
-      timeoutMilliseconds: HTTP_TIMEOUT_MILLISECONDS,
-    },
-  );
-  const lockRevision = commandOutput(revisionResult).trim();
-  if (!RELEASE_REVISION_PATTERN.test(lockRevision)) {
-    throw contractError(
-      "release_revision_invalid",
-      "Release source revision is invalid",
-    );
-  }
-
-  const source = await read(
-    path.join(
-      repositoryRoot,
-      "deploy/application/base/workloads/kustomization.yaml",
-    ),
-    "utf8",
-  );
-  const document = load(requireText(source));
-  if (!isPlainObject(document) || !Array.isArray(document.images)) {
-    throw contractError(
-      "release_contract_invalid",
-      "Application image lock is invalid",
-    );
-  }
-  const images = {};
-  for (const name of [
-    "k8s-incident-agent-console",
-    "k8s-incident-agent-runtime",
-  ]) {
-    const matches = document.images.filter((image) => image?.name === name);
-    if (
-      matches.length !== 1 ||
-      matches[0].newName !== name ||
-      !RELEASE_DIGEST_PATTERN.test(matches[0].digest ?? "")
-    ) {
-      throw contractError(
-        "release_contract_invalid",
-        "Application image lock is invalid",
-      );
-    }
-    images[name === "k8s-incident-agent-console" ? "console" : "runtime"] =
-      matches[0].digest;
-  }
-
-  const sourceRevisions = new Set();
-  for (const image of ["console", "runtime"]) {
-    sourceRevisions.add(await requireReleaseOciLayout(
-      path.join(repositoryRoot, ".runtime", "release", `${image}-oci`),
-      images[image],
-      read,
-    ));
-  }
-  if (sourceRevisions.size !== 1) {
-    throw releaseRevisionMismatch();
-  }
-  const revision = [...sourceRevisions][0];
-  await requireReleaseSourceRevision(
-    repositoryRoot,
-    revision,
-    lockRevision,
-    execute,
-  );
-  return { revision, lockRevision, images };
-}
-
-async function requireReleaseOciLayout(
-  layoutDirectory,
-  expectedDigest,
-  read,
-) {
-  const rootIndex = parseJsonBuffer(
-    await read(path.join(layoutDirectory, "index.json")),
-  );
-  if (
-    rootIndex?.schemaVersion !== 2 ||
-    rootIndex.mediaType !== OCI_INDEX_MEDIA_TYPE ||
-    !Array.isArray(rootIndex.manifests) ||
-    rootIndex.manifests.length !== 1
-  ) {
-    throw releaseArtifactError();
-  }
-  const topDescriptor = rootIndex.manifests[0];
-  if (
-    topDescriptor?.mediaType !== OCI_INDEX_MEDIA_TYPE ||
-    topDescriptor.digest !== expectedDigest
-  ) {
-    throw releaseArtifactError();
-  }
-  const topIndex = await readVerifiedOciJson(
-    layoutDirectory,
-    topDescriptor,
-    read,
-  );
-  if (
-    topIndex?.schemaVersion !== 2 ||
-    topIndex.mediaType !== OCI_INDEX_MEDIA_TYPE ||
-    !Array.isArray(topIndex.manifests) ||
-    topIndex.manifests.length !== RELEASE_PLATFORMS.size
-  ) {
-    throw releaseArtifactError();
-  }
-  const platforms = new Set();
-  const revisions = new Set();
-  for (const manifestDescriptor of topIndex.manifests) {
-    const platform = `${manifestDescriptor?.platform?.os}/${manifestDescriptor?.platform?.architecture}`;
-    if (
-      !RELEASE_PLATFORMS.has(platform) ||
-      platforms.has(platform) ||
-      manifestDescriptor?.mediaType !== OCI_MANIFEST_MEDIA_TYPE
-    ) {
-      throw releaseArtifactError();
-    }
-    platforms.add(platform);
-    const manifest = await readVerifiedOciJson(
-      layoutDirectory,
-      manifestDescriptor,
-      read,
-    );
-    if (
-      manifest?.schemaVersion !== 2 ||
-      manifest.mediaType !== OCI_MANIFEST_MEDIA_TYPE ||
-      manifest.config?.mediaType !== OCI_CONFIG_MEDIA_TYPE ||
-      !Array.isArray(manifest.layers)
-    ) {
-      throw releaseArtifactError();
-    }
-    const config = await readVerifiedOciJson(
-      layoutDirectory,
-      manifest.config,
-      read,
-    );
-    const revision = config?.config?.Labels?.[
-      "org.opencontainers.image.revision"
-    ];
-    if (!RELEASE_REVISION_PATTERN.test(revision ?? "")) {
-      throw releaseRevisionMismatch();
-    }
-    revisions.add(revision);
-  }
-  if (
-    platforms.size !== RELEASE_PLATFORMS.size ||
-    [...RELEASE_PLATFORMS].some((platform) => !platforms.has(platform))
-  ) {
-    throw releaseArtifactError();
-  }
-  if (revisions.size !== 1) throw releaseRevisionMismatch();
-  return [...revisions][0];
-}
-
-async function requireReleaseSourceRevision(
-  repositoryRoot,
-  sourceRevision,
-  lockRevision,
-  execute,
-) {
-  try {
-    await execute(
-      "git",
-      ["merge-base", "--is-ancestor", sourceRevision, lockRevision],
-      {
-        cwd: repositoryRoot,
-        timeoutMilliseconds: HTTP_TIMEOUT_MILLISECONDS,
-      },
-    );
-  } catch {
-    throw releaseRevisionMismatch();
-  }
-  const diffResult = await execute(
-    "git",
-    ["diff", "--name-only", "--no-renames", sourceRevision, lockRevision, "--"],
-    {
-      cwd: repositoryRoot,
-      timeoutMilliseconds: HTTP_TIMEOUT_MILLISECONDS,
-    },
-  );
-  const changedFiles = commandOutput(diffResult)
-    .split("\n")
-    .filter((value) => value.length > 0);
-  if (changedFiles.some((filename) => !RELEASE_LOCK_FILES.has(filename))) {
-    throw releaseRevisionMismatch();
-  }
-}
-
-async function readVerifiedOciJson(layoutDirectory, descriptor, read) {
-  if (
-    !isPlainObject(descriptor) ||
-    !RELEASE_DIGEST_PATTERN.test(descriptor.digest ?? "") ||
-    !Number.isSafeInteger(descriptor.size) ||
-    descriptor.size <= 0 ||
-    descriptor.size > MAX_HTTP_BODY_BYTES
-  ) {
-    throw releaseArtifactError();
-  }
-  const content = requireBuffer(
-    await read(
-      path.join(
-        layoutDirectory,
-        "blobs",
-        "sha256",
-        descriptor.digest.slice("sha256:".length),
-      ),
-    ),
-  );
-  if (
-    content.byteLength !== descriptor.size ||
-    `sha256:${createHash("sha256").update(content).digest("hex")}` !==
-      descriptor.digest
-  ) {
-    throw releaseArtifactError();
-  }
-  return parseJsonBuffer(content);
-}
-
-function parseJsonBuffer(raw) {
-  return parseJson(
-    new TextDecoder("utf-8", { fatal: true }).decode(requireBuffer(raw)),
-  );
-}
-
-function requireBuffer(value) {
-  if (Buffer.isBuffer(value)) return value;
-  if (value instanceof Uint8Array) return Buffer.from(value);
-  throw releaseArtifactError();
-}
-
-function requireText(value) {
-  if (typeof value === "string") return value;
-  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
-    return new TextDecoder("utf-8", { fatal: true }).decode(value);
-  }
-  throw releaseArtifactError();
-}
-
-function commandOutput(result) {
-  if (typeof result === "string") return result;
-  if (typeof result?.stdout === "string") return result.stdout;
-  throw upstreamContractError();
-}
-
-function releaseArtifactError() {
-  return contractError(
-    "release_artifact_invalid",
-    "Fixed OCI release artifact does not match the image lock",
-  );
-}
-
-function releaseRevisionMismatch() {
-  return contractError(
-    "release_revision_mismatch",
-    "OCI image source does not match the clean release-lock revision",
-  );
-}
 
 async function writeEvaluationArtifact(repositoryRoot, profile, artifact) {
   const runtimeDirectory = path.join(repositoryRoot, ".runtime");
@@ -2624,12 +2346,14 @@ function parseArguments(argv) {
   if (!new Set(["run", "online"]).has(action)) throw invalidArguments();
   let context;
   let datasetPath;
+  let releasePath;
   let split;
   const scenarioIds = [];
   for (let index = 0; index < rest.length; index += 2) {
     const value = rest[index + 1];
     if (!isNormalizedString(value) || value.startsWith("-")) throw invalidArguments();
     if (rest[index] === "--context" && context === undefined) context = value;
+    else if (rest[index] === "--release" && releasePath === undefined) releasePath = value;
     else if (rest[index] === "--scenario" && action === "run") scenarioIds.push(value);
     else if (rest[index] === "--dataset" && action === "run" && datasetPath === undefined) datasetPath = value;
     else if (rest[index] === "--split" && action === "run" && split === undefined) split = value;
@@ -2640,6 +2364,7 @@ function parseArguments(argv) {
     profile,
     context,
     datasetPath,
+    releasePath,
     split,
     ...(scenarioIds.length > 0 ? { scenarioIds } : {}),
   };
@@ -2720,7 +2445,7 @@ function parseInstant(value) {
 function safeFailure(error) {
   if (
     error instanceof EvaluationError ||
-    error instanceof ScenarioCommandError
+    error instanceof ScenarioCommandError || error instanceof ReleaseError
   ) {
     return { code: error.code, message: error.message };
   }
@@ -2751,7 +2476,7 @@ function responseTooLarge() {
 function invalidArguments() {
   return contractError(
     "invalid_arguments",
-    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> [--context <context>] [--dataset <manifest.json>] [--split <development|regression>] [--scenario <id> ...], or evaluation.mjs online k3s-online --context <context>",
+    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> --release <release.json> [--context <context>] [--dataset <manifest.json>] [--split <development|regression>] [--scenario <id> ...], or evaluation.mjs online k3s-online --release <release.json> --context <context>",
   );
 }
 

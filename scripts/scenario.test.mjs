@@ -5,20 +5,23 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { dump, load, loadAll } from "js-yaml";
 
 import { loadEvaluationScenarioCatalog, runScenarioCommand } from "./scenario.mjs";
+import { createReleaseFixture, releaseImages } from "./test-support/release-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = path.resolve(
@@ -26,6 +29,9 @@ const REPOSITORY_ROOT = path.resolve(
   "..",
 );
 const APPLICATION_ROOT = path.join(REPOSITORY_ROOT, "deploy", "application");
+const RELEASE_DIRECTORY = realpathSync(mkdtempSync(path.join(os.tmpdir(), "scenario-release-test-")));
+const RELEASE = createReleaseFixture(RELEASE_DIRECTORY, "a".repeat(40)).manifest;
+after(() => rmSync(RELEASE_DIRECTORY, { recursive: true, force: true }));
 const KUBECTL_BINARY = process.env.KUBECTL_BINARY ?? "kubectl";
 const SCENARIO_ID = "image-pull-backoff";
 const CLUSTER_NAME = "k8s-incident-agent";
@@ -854,10 +860,15 @@ function nodeMetricsClusterRbac() {
 }
 
 function k3sStatusFixtures() {
+  writeFileSync(path.join(RELEASE_DIRECTORY, "kustomization.yaml"), JSON.stringify({
+    apiVersion: "kustomize.config.k8s.io/v1beta1", kind: "Kustomization",
+    resources: [path.relative(RELEASE_DIRECTORY, path.join(APPLICATION_ROOT, "overlays", "k3s-evaluation"))],
+    images: releaseImages(RELEASE),
+  }));
   if (cachedK3sStatusFixtures !== undefined) return cachedK3sStatusFixtures;
   const renderedYaml = execFileSync(
     KUBECTL_BINARY,
-    ["kustomize", path.join(APPLICATION_ROOT, "overlays", "k3s-evaluation")],
+    ["kustomize", RELEASE_DIRECTORY],
     { cwd: REPOSITORY_ROOT, encoding: "utf8" },
   );
   const resources = new Map();
@@ -2231,6 +2242,7 @@ test("K3s evaluation uses its explicit context without calling Kind", async (t) 
     execute,
     profile: "k3s-evaluation",
     context: K3S_CONTEXT_NAME,
+    release: RELEASE,
   };
 
   await runScenarioCommand("apply", SCENARIO_ID, dependencies);
@@ -2316,13 +2328,14 @@ test("K3s deployment preflight failure is safe and never falls back to Kind", as
   await assert.rejects(
     runScenarioCommand("apply", SCENARIO_ID, {
       repositoryRoot: missingRepositoryRoot,
+      releasePath: path.join(missingRepositoryRoot, "release.json"),
       environment,
       execute,
       profile: "k3s-evaluation",
       context: K3S_CONTEXT_NAME,
     }),
     (error) => {
-      assert.equal(error?.code, "deployment_precondition_failed");
+      assert.equal(error?.code, "release_artifact_invalid");
       assert.equal(String(error).includes("private"), false);
       return true;
     },
@@ -2361,6 +2374,7 @@ test("K3s evaluation preserves known deployment failure categories", async (t) =
           execute,
           profile: "k3s-evaluation",
           context: K3S_CONTEXT_NAME,
+          release: RELEASE,
         }),
         (error) => {
           assert.equal(error?.code, scenario.code);

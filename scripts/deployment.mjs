@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 import { load, loadAll } from "js-yaml";
+import { loadRelease, ReleaseError } from "./release.mjs";
 
 import {
   loadKindVersionContract,
@@ -126,17 +128,18 @@ async function main() {
     "..",
   );
   const request = parseArguments(process.argv.slice(2));
-  const contract = await loadDeploymentContract(repositoryRoot);
+  const release = await loadRelease(request.releasePath, repositoryRoot);
+  const contract = await loadDeploymentContract(repositoryRoot, release);
   const execute = executeExternalCommand;
 
   if (request.action === "render") {
     const rendered = await renderProfile(contract, request.profile, execute);
     requireRenderedMonitoringContract(
-      indexRenderedManifest(rendered),
+      rendered.resources,
       contract.monitoring,
       request.profile,
     );
-    process.stdout.write(rendered);
+    process.stdout.write(rendered.manifest);
     return;
   }
 
@@ -203,7 +206,8 @@ export async function verifyDeploymentStatus(
   const profile = requireProfile(profileName);
   const normalizedContext = requireContextValue(context);
   const contract =
-    dependencies.contract ?? await loadDeploymentContract(repositoryRoot);
+    dependencies.contract ?? await loadDeploymentContract(repositoryRoot,
+      dependencies.release ?? await loadRelease(dependencies.releasePath, repositoryRoot));
   const execute = dependencies.execute ?? executeExternalCommand;
   return readInstallationStatus(
     contract,
@@ -213,6 +217,17 @@ export async function verifyDeploymentStatus(
 }
 
 function parseArguments(argv) {
+  const releaseIndex = argv.indexOf("--release");
+  const releasePath = argv[releaseIndex + 1];
+  if (releaseIndex < 2 || typeof releasePath !== "string" || !releasePath.trim() || releasePath.startsWith("-")) {
+    throw usageError();
+  }
+  const args = [...argv];
+  args.splice(releaseIndex, 2);
+  return { ...parseProfileArguments(args), releasePath };
+}
+
+function parseProfileArguments(argv) {
   if (!Array.isArray(argv) || argv.length < 2) {
     throw usageError();
   }
@@ -386,26 +401,21 @@ function requireProfile(name) {
 function usageError() {
   return new DeploymentContractError(
     "usage_invalid",
-    "expected render, status, install, upgrade, uninstall, purge, or cutover with a fixed deployment profile",
+    "expected render, status, install, upgrade, uninstall, purge, or cutover with a fixed deployment profile and --release <release.json>",
   );
 }
 
-async function loadDeploymentContract(repositoryRoot) {
+async function loadDeploymentContract(repositoryRoot, release) {
   const applicationRoot = path.join(repositoryRoot, "deploy", "application");
   const monitoringRoot = path.join(repositoryRoot, "deploy", "monitoring");
   const [
     rawK3s,
-    rawImageLock,
     rawMonitoringImageLock,
     rawAlertCatalog,
     rawNodeMetricsClusterRbac,
     kind,
   ] = await Promise.all([
     readFile(path.join(applicationRoot, "versions.json"), "utf8"),
-    readFile(
-      path.join(applicationRoot, "base", "workloads", "kustomization.yaml"),
-      "utf8",
-    ),
     readFile(
       path.join(monitoringRoot, "base", "workloads", "kustomization.yaml"),
       "utf8",
@@ -440,14 +450,8 @@ async function loadDeploymentContract(repositoryRoot) {
     );
   }
 
-  const imageLock = load(rawImageLock);
-  if (imageLock === null || typeof imageLock !== "object") {
-    throw new DeploymentContractError(
-      "image_lock_invalid",
-      "Kustomize image lock is invalid",
-    );
-  }
-  const images = normalizeImageLock(imageLock.images);
+  const images = Object.fromEntries(Object.entries(release.images).map(([component, image]) =>
+    [`k8s-incident-agent-${component}`, `${image.repository}@${image.indexDigest}`]));
   const monitoringImageLock = load(rawMonitoringImageLock);
   if (monitoringImageLock === null || typeof monitoringImageLock !== "object") {
     throw new DeploymentContractError(
@@ -507,41 +511,6 @@ async function loadCutoverContract(contract) {
   };
 }
 
-function normalizeImageLock(rawImages) {
-  if (!Array.isArray(rawImages) || rawImages.length !== 2) {
-    throw new DeploymentContractError(
-      "image_lock_invalid",
-      "Kustomize image lock must contain exactly two images",
-    );
-  }
-  const images = {};
-  for (const entry of rawImages) {
-    const name = requireString(entry?.name, "locked image name");
-    const newName = requireString(entry?.newName, "locked image repository");
-    const digest = requireString(entry?.digest, "locked image digest");
-    if (
-      name !== newName ||
-      !["k8s-incident-agent-console", "k8s-incident-agent-runtime"].includes(
-        name,
-      ) ||
-      !/^sha256:[a-f0-9]{64}$/.test(digest) ||
-      images[name] !== undefined
-    ) {
-      throw new DeploymentContractError(
-        "image_lock_invalid",
-        "Kustomize image lock is not immutable or uses an unexpected identity",
-      );
-    }
-    images[name] = `${newName}@${digest}`;
-  }
-  if (Object.keys(images).length !== 2) {
-    throw new DeploymentContractError(
-      "image_lock_invalid",
-      "Kustomize image lock is incomplete",
-    );
-  }
-  return images;
-}
 
 function normalizeMonitoringContract(
   rawVersions,
@@ -864,13 +833,35 @@ function buildCutoverJob(contract, mode, planDigest) {
 }
 
 async function renderProfile(contract, profile, execute) {
-  return executeCommand(
-    execute,
-    "kubectl",
-    ["kustomize", profilePath(contract, profile.overlay)],
-    READ_TIMEOUT_MILLISECONDS,
-    "Kustomize render",
-  );
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "incident-release-overlay-")));
+  try {
+    await writeFile(path.join(directory, "kustomization.yaml"), JSON.stringify({
+      apiVersion: "kustomize.config.k8s.io/v1beta1", kind: "Kustomization",
+      resources: [path.relative(directory, profilePath(contract, profile.overlay))],
+      images: Object.entries(contract.images).map(([name, reference]) => {
+        const [newName, digest] = reference.split("@");
+        return { name, newName, digest };
+      }),
+    }));
+    const manifest = await executeCommand(execute, "kubectl", ["kustomize", directory],
+      READ_TIMEOUT_MILLISECONDS, "release Kustomize render");
+    const resources = indexRenderedManifest(manifest);
+    for (const [name, component] of [["agent-runtime", "runtime"], ["incident-console", "console"], ["patch-validator", "runtime"]]) {
+      const workload = requireRenderedResource(resources, "Deployment", name, APPLICATION_NAMESPACE);
+      const pod = workload.spec?.template?.spec;
+      const containers = [...(pod?.containers ?? []), ...(pod?.initContainers ?? [])];
+      if (containers.length === 0 || containers.some(container => container.image !== contract.images[`k8s-incident-agent-${component}`])) {
+        throw new DeploymentContractError("release_image_mismatch", "Rendered application images differ from the selected release");
+      }
+    }
+    const prometheus = requireRenderedResource(resources, "Deployment", "prometheus", MONITORING_NAMESPACE);
+    if ((prometheus.spec?.template?.spec?.initContainers ?? []).some(container => container.image !== contract.images["k8s-incident-agent-runtime"])) {
+      throw new DeploymentContractError("release_image_mismatch", "Rendered monitoring initialization differs from the selected release");
+    }
+    return { manifest, resources };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 async function runCutover(contract, request, execute) {
@@ -2230,14 +2221,8 @@ async function previewLifecycleAction(
 ) {
   const directory =
     action === "uninstall" ? profile.uninstall : profile.overlay;
-  const rendered = await executeCommand(
-    execute,
-    "kubectl",
-    ["kustomize", profilePath(contract, directory)],
-    READ_TIMEOUT_MILLISECONDS,
-    "Kustomize preview",
-  );
-  const desiredResources = indexRenderedManifest(rendered);
+  const rendered = await renderProfile(contract, { ...profile, overlay: directory }, execute);
+  const desiredResources = rendered.resources;
   requireRenderedMonitoringContract(
     desiredResources,
     contract.monitoring,
@@ -2269,13 +2254,11 @@ async function confirmApply(contract, request, execute) {
     },
   );
   await requireCutoverObjectsAbsent(request, execute);
-  const overlayPath = profilePath(contract, request.profile.overlay);
-  const desiredManifest = await renderProfile(
+  const { manifest: desiredManifest, resources: desiredResources } = await renderProfile(
     contract,
     request.profile,
     execute,
   );
-  const desiredResources = indexRenderedManifest(desiredManifest);
   requireRenderedMonitoringContract(
     desiredResources,
     contract.monitoring,
@@ -2288,9 +2271,10 @@ async function confirmApply(contract, request, execute) {
   await runKubectl(
     execute,
     request.context,
-    ["apply", "--dry-run=server", "--kustomize", overlayPath],
+    ["apply", "--dry-run=server", "--filename=-"],
     WRITE_TIMEOUT_MILLISECONDS,
     "server-side admission preview",
+    desiredManifest,
   );
   await applyAdmissionBoundary(request, execute, desiredResources);
   await waitForAdmissionPolicyReady(request, execute, desiredResources);
@@ -2300,9 +2284,10 @@ async function confirmApply(contract, request, execute) {
   await runKubectl(
     execute,
     request.context,
-    ["apply", "--kustomize", overlayPath],
+    ["apply", "--filename=-"],
     WRITE_TIMEOUT_MILLISECONDS,
     `${request.action} apply`,
+    desiredManifest,
   );
   for (const [namespace, deployment] of [
     [APPLICATION_NAMESPACE, "agent-runtime"],
@@ -2483,6 +2468,8 @@ async function confirmUninstall(contract, request, execute) {
     readOptionalPvc(request, execute, APPLICATION_NAMESPACE, RUNTIME_PVC),
     readOptionalPvc(request, execute, MONITORING_NAMESPACE, PROMETHEUS_PVC),
   ]);
+  const uninstallManifest = await renderProfile(contract,
+    { ...request.profile, overlay: request.profile.uninstall }, execute);
   await runKubectl(
     execute,
     request.context,
@@ -2505,11 +2492,11 @@ async function confirmUninstall(contract, request, execute) {
       "delete",
       "--ignore-not-found=true",
       "--wait=true",
-      "--kustomize",
-      profilePath(contract, request.profile.uninstall),
+      "--filename=-",
     ],
     WRITE_TIMEOUT_MILLISECONDS,
     "workload uninstall",
+    uninstallManifest.manifest,
   );
   let nodeMetricsClusterRbac = "not-enabled";
   if (request.profile.nodeMetrics) {
@@ -2890,7 +2877,7 @@ async function readInstallationStatus(
       renderProfile(contract, request.profile, execute),
     ]);
 
-  const desiredResources = indexRenderedManifest(desiredManifest);
+  const desiredResources = desiredManifest.resources;
   const configurationDigests = requireRenderedMonitoringContract(
     desiredResources,
     contract.monitoring,
@@ -3355,10 +3342,7 @@ async function requireSingleNodeImages(
       "the fixed Kubernetes node is not ready",
     );
   }
-  const expectedImageNames = expectedImages.map(
-    (image) => `docker.io/library/${image}`,
-  );
-  if (expectedImageNames.some((expected) => !imageNames.includes(expected))) {
+  if (expectedImages.some((expected) => !imageNames.includes(expected))) {
     throw new DeploymentContractError(
       "image_unavailable",
       "the fixed deployment images are not available on the Kubernetes node",
@@ -5576,7 +5560,7 @@ if (isMainModule) {
   try {
     await main();
   } catch (error) {
-    if (error instanceof DeploymentContractError) {
+    if (error instanceof DeploymentContractError || error instanceof ReleaseError) {
       process.stderr.write(`FAIL ${error.code} ${error.message}\n`);
     } else {
       process.stderr.write("FAIL unexpected deployment lifecycle failed\n");
