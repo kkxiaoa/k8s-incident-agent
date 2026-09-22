@@ -54,9 +54,12 @@ for (const [name, env, expected] of [["executes both exact platforms", {}, 0],
       { cwd: root, env: { ...process.env, ...f.environment, ...env }, encoding: "utf8" });
     assert.equal(result.status, expected, result.stderr);
     const calls = readFileSync(f.log, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const copies = calls.filter(args => args[0] === "run" && args.includes("copy"));
     const runs = calls.filter(args => args[0] === "run" && args.includes("--pull=never"));
     assert.ok(calls.filter(args => args[0] === "run").every(args => args.includes("--network=none")));
     if (expected === 0) {
+      assert.equal(copies.length, 4);
+      assert.ok(copies.every(args => args.includes("/var/tmp:rw,nosuid,nodev,mode=1777")));
       assert.equal(runs.length, 4);
       assert.deepEqual(JSON.parse(result.stdout).checks.map(check => [check.component, check.platform]),
         [["console", "linux/amd64"], ["console", "linux/arm64"], ["runtime", "linux/amd64"], ["runtime", "linux/arm64"]]);

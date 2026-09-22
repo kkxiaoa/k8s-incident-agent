@@ -66,6 +66,7 @@ async function main() {
         const archiveName = `${component}-${architecture}.tar`;
         await container(["--user", `${process.getuid()}:${process.getgid()}`, "--read-only",
           "--tmpfs", "/tmp:rw,nosuid,nodev,mode=1777",
+          "--tmpfs", "/var/tmp:rw,nosuid,nodev,mode=1777",
           "--volume", `${layout}:/input:ro`, "--volume", `${scratch}:/output:rw`,
           tools.skopeo, "--override-os", "linux", "--override-arch", architecture, "copy",
           "oci:/input", `docker-archive:/output/${archiveName}`], scratch, 10 * 60_000);
