@@ -47,8 +47,9 @@ jobs:
       - name: Candidate startup fixture against the locked Kubernetes SDK
         working-directory: services/agent-runtime
         run: |
-          uv run --locked ruff check --config pyproject.toml ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
-          uv run --locked ruff format --config pyproject.toml --check ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
+          uv run --locked ruff check --config ../../.github/ci/ruff.toml ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
+          uv run --locked ruff format --config ../../.github/ci/ruff.toml --check ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
+          uv run --locked pyright --project pyproject.toml ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
           uv run --locked python ../../.github/ci/smoke-runtime.test.py
       - name: Bounded publication archive importer
         working-directory: services/agent-runtime

@@ -19,10 +19,10 @@ from argon2.profiles import RFC_9106_LOW_MEMORY
 
 
 class KubernetesStub(BaseHTTPRequestHandler):
-    def log_message(self, *_args):
+    def log_message(self, format: str, *args: object) -> None:
         pass
 
-    def reply(self, status, body):
+    def reply(self, status: int, body: object) -> None:
         encoded = json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -30,7 +30,7 @@ class KubernetesStub(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         if self.path != "/version/":
             self.reply(404, {})
             return
@@ -49,7 +49,7 @@ class KubernetesStub(BaseHTTPRequestHandler):
             },
         )
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         if self.path != "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews":
             self.reply(404, {})
             return
@@ -93,7 +93,7 @@ class KubernetesStub(BaseHTTPRequestHandler):
         )
 
 
-def main():
+def main() -> None:
     architecture, raw_command = sys.argv[1:]
     expected = "x86_64" if architecture == "amd64" else "aarch64"
     if platform.machine() != expected:
