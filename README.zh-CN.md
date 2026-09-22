@@ -16,6 +16,51 @@
 
 部分诊断场景已有固定 Kind/K3s live 证据，但不是统计准确率基线，不代表全部扩充告警已验收或生产环境兼容。公开 HTTPS 演示和正式安装产物尚未提供。
 
+## 系统架构
+
+<!-- Component diagram source: README.md#architecture. Keep this block identical. -->
+
+```mermaid
+---
+config:
+  layout: elk
+  elk:
+    considerModelOrder: NODES_AND_EDGES
+    forceNodeModelOrder: true
+---
+flowchart TB
+    browser["Browser / Console UI"]
+    bff["Next.js BFF<br/>Fixed Runtime upstream"]
+    alerts["Alertmanager"]
+    runtime["FastAPI Runtime<br/>Auth, incident ledger, deterministic graph<br/>Bounded read-only diagnostic Agent"]
+    business[("Business SQLite")]
+    checkpoint[("Workflow checkpoint SQLite")]
+    model["Model API<br/>Tool selection and inference only"]
+    validator["Patch Validator<br/>Separate dry-run identity"]
+    kube["Kubernetes API<br/>Fixed sandbox scope"]
+    metrics["Managed Prometheus"]
+    executor["Controlled Executor<br/>Separate write identity; opt-in"]
+    browser -->|"Same-origin REST / SSE"| bff
+    bff -->|"Bounded proxy; session forwarded"| runtime
+    alerts -->|"Authenticated webhook"| runtime
+    runtime --> business
+    runtime --> checkpoint
+    runtime <-->|"Bounded diagnosis context / tool calls"| model
+    runtime -->|"Typed read-only tools"| kube
+    runtime -->|"Catalog queries"| metrics
+    metrics -->|"Alert rules"| alerts
+    runtime -->|"Authenticated fixed validation request"| validator
+    validator -->|"Read + dryRun=All"| kube
+    %% Layout only: keep the opt-in writer below Runtime.
+    runtime ~~~ executor
+    executor -.->|"Authenticated claim / report"| runtime
+    executor -.->|"One exact approved PATCH"| kube
+```
+
+箭头表示允许的通信链路，不代表共享权限。Model API 选择工具，由 Runtime 执行已注册的只读工具。虚线 Executor 链路已实现但默认关闭，尚未完成最终 live 验收。
+
+详见[架构与工作流说明](documentation/architecture.md)及[数据模型](documentation/data-model.md)。
+
 ## 本地体验 UI——合成数据
 
 无需 Kubernetes 集群或模型 API Key。这是开发 fixture，**不是真实诊断或自动恢复演示**。
@@ -70,6 +115,8 @@ npm run build
 [贡献指南](CONTRIBUTING.md) 列出完整检查和额外的 kubectl／Docker／Chrome 前置条件。`npm test` 并非只安装 npm 依赖即可运行；真实模型和集群评估是需单独授权的操作。
 
 - [启动与配置](documentation/getting-started.md)
+- [架构、流程图、数据模型与精选决策](documentation/README.md)
+- [安全边界](documentation/security.md) · [评估证据与限制](documentation/evaluation.md)
 - [运维脚本](scripts/README.md)
 - [监控与告警目录](monitoring/catalog/README.md)
 - [故障注入场景与安全说明](scenarios/README.md)

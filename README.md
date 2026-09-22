@@ -16,6 +16,51 @@ The product targets supported real Kubernetes environments. **Today, validation 
 
 Selected diagnosis scenarios have fixed Kind/K3s live evidence. That is not a statistical accuracy benchmark, complete coverage of the expanded alerts, or proof of production compatibility. Public HTTPS demo and published installation artifacts are not yet available.
 
+## Architecture
+
+<!-- Canonical component diagram. Keep README.zh-CN.md's diagram identical. -->
+
+```mermaid
+---
+config:
+  layout: elk
+  elk:
+    considerModelOrder: NODES_AND_EDGES
+    forceNodeModelOrder: true
+---
+flowchart TB
+    browser["Browser / Console UI"]
+    bff["Next.js BFF<br/>Fixed Runtime upstream"]
+    alerts["Alertmanager"]
+    runtime["FastAPI Runtime<br/>Auth, incident ledger, deterministic graph<br/>Bounded read-only diagnostic Agent"]
+    business[("Business SQLite")]
+    checkpoint[("Workflow checkpoint SQLite")]
+    model["Model API<br/>Tool selection and inference only"]
+    validator["Patch Validator<br/>Separate dry-run identity"]
+    kube["Kubernetes API<br/>Fixed sandbox scope"]
+    metrics["Managed Prometheus"]
+    executor["Controlled Executor<br/>Separate write identity; opt-in"]
+    browser -->|"Same-origin REST / SSE"| bff
+    bff -->|"Bounded proxy; session forwarded"| runtime
+    alerts -->|"Authenticated webhook"| runtime
+    runtime --> business
+    runtime --> checkpoint
+    runtime <-->|"Bounded diagnosis context / tool calls"| model
+    runtime -->|"Typed read-only tools"| kube
+    runtime -->|"Catalog queries"| metrics
+    metrics -->|"Alert rules"| alerts
+    runtime -->|"Authenticated fixed validation request"| validator
+    validator -->|"Read + dryRun=All"| kube
+    %% Layout only: keep the opt-in writer below Runtime.
+    runtime ~~~ executor
+    executor -.->|"Authenticated claim / report"| runtime
+    executor -.->|"One exact approved PATCH"| kube
+```
+
+Arrows show allowed communication, not shared authority. The Model API selects tools; Runtime executes the registered read-only tools. Dashed Executor paths are implemented but disabled by default and have not completed final live acceptance.
+
+See [architecture and workflow details](documentation/architecture.md) and the [data model](documentation/data-model.md).
+
 ## Try the UI locally — synthetic data
 
 No Kubernetes cluster or model API key is needed. This is a development fixture, **not a real diagnosis or automatic-repair demo**.
@@ -70,6 +115,8 @@ npm run build
 [Contributing](CONTRIBUTING.md) lists the full checks and additional kubectl/Docker/Chrome prerequisites. `npm test` is not an npm-only check; live model and cluster evaluations are separate, explicitly authorized operations.
 
 - [Getting started and configuration](documentation/getting-started.md)
+- [Architecture, diagrams, data model and selected decisions](documentation/README.md)
+- [Security boundaries](documentation/security.md) · [Evaluation evidence and limitations](documentation/evaluation.md)
 - [Operational scripts](scripts/README.md)
 - [Monitoring and alert catalog](monitoring/catalog/README.md)
 - [Fault-injection scenarios and safety](scenarios/README.md)
