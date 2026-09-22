@@ -103,6 +103,7 @@ test("fixed profiles keep public demo disabled with access controls only in Runt
     const rendered = documents(render(`overlays/${profile}`));
     const runtime = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "agent-runtime-config");
     const consoleConfig = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "incident-console-config");
+    assert.equal(Object.hasOwn(consoleConfig.data, "YAML_ASSISTANT_URL"), false);
     for (const [key, value] of Object.entries({ CONSOLE_ACCESS_MODE: "private", PUBLIC_DEMO_DATA_APPROVED: "false" })) {
       assert.equal(runtime.data[key], value);
       assert.equal(Object.hasOwn(consoleConfig.data, key), false);
@@ -2100,7 +2101,9 @@ function response(key, args) {
         }
         : {
           AGENT_RUNTIME_URL: "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000",
-          YAML_ASSISTANT_URL: "/k8s-yaml-assistant",
+          ...(process.env.FAKE_YAML_ASSISTANT_URL === undefined ? {} : {
+            YAML_ASSISTANT_URL: process.env.FAKE_YAML_ASSISTANT_URL,
+          }),
         },
     };
   }
@@ -3370,6 +3373,15 @@ test("render gate rejects a panel whose producer no profile scrapes", (t) => {
     assert.match(result.stderr, /renders no kubelet-network scrape job/, profile);
     const calls = fake.calls().map((call) => call.args.join(" "));
     assert.equal(calls.some((call) => call.includes(" apply")), false, profile);
+  }
+});
+
+test("status accepts an installation with or without optional sibling navigation", (t) => {
+  for (const environment of [{}, { FAKE_YAML_ASSISTANT_URL: "https://yaml.example.test/editor/" }]) {
+    const fake = createFakeKubectl(t, environment);
+    const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).deployments, "ready");
   }
 });
 

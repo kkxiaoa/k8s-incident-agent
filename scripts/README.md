@@ -293,9 +293,16 @@ confirmation。confirm 会先运行一个全新 preview Job，再重读全部外
 用户 confirmation 仍匹配时，才把该次 Runtime `planDigest` 传给新的 confirm Job。
 不接受 image、PVC、Namespace、manifest、路径、SQL、Run ID、环境变量或任意命令参数。
 
-完整安装顺序、Secret 边界和命令见本地 Work 的
-`docs/work/stage-1-5-k3s-installable-baseline/installation.md`。真实 image import、
-apply、uninstall、purge 与 NetworkPolicy enforcement 都需要对应 live 授权。
+公开的本地启动步骤和真实环境前置条件见
+[Getting started](../documentation/getting-started.md)。当前模板不是可直接安装到任意
+集群的发行包；最终镜像发布与公开 HTTPS 安装仍待验收。真实 image import、apply、
+uninstall、purge 与 NetworkPolicy enforcement 都需要对应 live 授权。
+
+Console 默认不配置兄弟项目入口。确实部署了独立 YAML 编写助手时，可在本项目
+`incident-console-config` 中显式设置 `YAML_ASSISTANT_URL` 并重启 Console；不要修改
+兄弟资源。该值只是普通导航，既不是安装依赖也不是 Runtime 上游。
+URL 的合法性由 Console 现有配置边界校验（无凭据的 HTTP(S) URL 或同源绝对路径，
+禁止 query/fragment）；deployment status 不再要求固定兄弟 path，也不探测外部链接。
 
 ## 测试与静态检查
 
