@@ -127,9 +127,20 @@ jobs:
       - name: Production build
         run: npm run build
       - name: Fake E2E on the existing Chrome channel
+        id: e2e
         run: |
           google-chrome --version
           npm run test:e2e
+      - name: Upload fake E2E failure screenshots
+        if: failure() && steps.e2e.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fake-e2e-failure-screenshots
+          path: .next/playwright-results/**/test-failed-*.png
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 3
+          overwrite: false
 
   docs-security:
     name: Public docs and CI security
