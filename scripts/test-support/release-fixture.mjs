@@ -20,7 +20,9 @@ export function createReleaseFixture(bundle, revision, options = {}) {
       writeFileSync(filename, bytes);
       return { descriptor: { mediaType, digest, size: bytes.length }, filename };
     }
-    const layer = blob(gzipSync(Buffer.from(`synthetic ${component} layer`)), "application/vnd.oci.image.layer.v1.tar+gzip");
+    const layerContent = Buffer.from(`synthetic ${component} layer`);
+    const layer = blob(gzipSync(layerContent), "application/vnd.oci.image.layer.v1.tar+gzip");
+    const diffId = `sha256:${createHash("sha256").update(layerContent).digest("hex")}`;
     files[`${component}Layer`] = layer.filename;
     const children = [];
     const platforms = {};
@@ -28,7 +30,7 @@ export function createReleaseFixture(bundle, revision, options = {}) {
       const config = blob({ architecture: options.configArchitecture ?? architecture, os: "linux",
         config: { User: options.user ?? "10001:10001", Cmd: component === "console" ? ["node", "server.js"] : ["uvicorn", "k8s_incident_agent.api:create_runtime_app", "--factory"], Labels: {
           "org.opencontainers.image.revision": component === "runtime" ? (options.runtimeRevision ?? revision) : revision,
-        } } }, type("config"));
+        } }, rootfs: { type: "layers", diff_ids: [diffId] } }, type("config"));
       const child = blob({ schemaVersion: 2, mediaType: type("manifest"),
         config: config.descriptor, layers: [layer.descriptor] }, type("manifest"));
       children.push({ ...child.descriptor, platform: { architecture, os: "linux" } });

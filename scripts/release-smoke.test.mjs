@@ -20,7 +20,13 @@ function smokeFixture(t) {
     for (const digest of Object.values(identity.platforms)) {
       const manifest = readBlob(digest);
       const config = readBlob(manifest.config.digest);
-      images[manifest.config.digest] = { Id: manifest.config.digest, Os: config.os, Architecture: config.architecture, Config: config.config };
+      images[manifest.config.digest] = {
+        Id: `sha256:${"f".repeat(64)}`,
+        Os: config.os,
+        Architecture: config.architecture,
+        Config: config.config,
+        RootFS: { Type: config.rootfs.type, Layers: config.rootfs.diff_ids },
+      };
     }
   }
   const log = path.join(directory, "docker.jsonl");
@@ -32,11 +38,12 @@ fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
 const images = ${JSON.stringify(images)};
 if (args[0] === 'run' && args.includes('copy')) {
   const destination = args.find(value => value.endsWith(':/output:rw')).slice(0, -11);
-  const archive = args.at(-1).split('/').at(-1);
+  const archive = args.at(-1).split('/').at(-1).split(':')[0];
   fs.writeFileSync(path.join(destination, archive), 'synthetic transport');
 } else if (args[0] === 'image' && args[1] === 'inspect') {
-  const image = images[args[2]];
+  const image = images['sha256:' + args[2].split('-').at(-1)];
   if (process.env.SMOKE_TEST_WRONG_PLATFORM === '1') image.Architecture = 'wrong';
+  if (process.env.SMOKE_TEST_WRONG_ROOTFS === '1') image.RootFS.Layers = ['sha256:' + '0'.repeat(64)];
   console.log(JSON.stringify([image]));
 } else if (args[0] === 'run' && args.includes('--pull=never')) {
   if (process.env.SMOKE_TEST_FAIL === '1') process.exit(3);
@@ -47,7 +54,8 @@ if (args[0] === 'run' && args.includes('copy')) {
 
 for (const [name, env, expected] of [["executes both exact platforms", {}, 0],
   ["stops on startup failure", { SMOKE_TEST_FAIL: "1" }, 1],
-  ["rejects a substituted image", { SMOKE_TEST_WRONG_PLATFORM: "1" }, 1]]) {
+  ["rejects a substituted image", { SMOKE_TEST_WRONG_PLATFORM: "1" }, 1],
+  ["rejects substituted rootfs", { SMOKE_TEST_WRONG_ROOTFS: "1" }, 1]]) {
   test(`candidate smoke orchestration ${name} (fake Docker boundary, not smoke evidence)`, t => {
     const f = smokeFixture(t);
     const result = spawnSync(process.execPath, [path.join(root, "scripts/release-smoke.mjs"), "--release", f.fixture.release],

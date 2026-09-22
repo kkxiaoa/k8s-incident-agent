@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { loadRelease, ReleaseError } from "./release.mjs";
 
 const exec = promisify(execFile);
@@ -63,19 +63,22 @@ async function main() {
         const architecture = platform.split("/")[1];
         const manifest = JSON.parse(await readFile(path.join(layout, "blobs/sha256", digest.slice(7)), "utf8"));
         const configId = manifest.config.digest;
+        const config = JSON.parse(await readFile(path.join(layout, "blobs/sha256", configId.slice(7)), "utf8"));
         const archiveName = `${component}-${architecture}.tar`;
+        const localReference = `k8s-incident-agent-smoke:${component}-${architecture}-${configId.slice(7)}`;
         await container(["--user", `${process.getuid()}:${process.getgid()}`, "--read-only",
           "--tmpfs", "/tmp:rw,nosuid,nodev,mode=1777",
           "--tmpfs", "/var/tmp:rw,nosuid,nodev,mode=1777",
           "--volume", `${layout}:/input:ro`, "--volume", `${scratch}:/output:rw`,
           tools.skopeo, "--override-os", "linux", "--override-arch", architecture, "copy",
-          "oci:/input", `docker-archive:/output/${archiveName}`], scratch, 10 * 60_000);
+          "oci:/input", `docker-archive:/output/${archiveName}:${localReference}`], scratch, 10 * 60_000);
         await command("docker", ["load", "--input", path.join(scratch, archiveName)], 10 * 60_000);
         await rm(path.join(scratch, archiveName));
-        const [image] = JSON.parse(await command("docker", ["image", "inspect", configId]));
-        if (image?.Id !== configId || image?.Os !== "linux" || image?.Architecture !== architecture ||
-            image?.Config?.User !== "10001:10001" || !Array.isArray(image?.Config?.Cmd) || image.Config.Cmd.length === 0 ||
-            image.Config.Entrypoint?.length) {
+        const [image] = JSON.parse(await command("docker", ["image", "inspect", localReference]));
+        if (!/^sha256:[a-f0-9]{64}$/.test(image?.Id) || image?.Os !== "linux" || image?.Architecture !== architecture ||
+            !Array.isArray(config?.config?.Cmd) || config.config.Cmd.length === 0 ||
+            !isDeepStrictEqual(image?.Config, config.config) ||
+            !isDeepStrictEqual(image?.RootFS, { Type: config?.rootfs?.type, Layers: config?.rootfs?.diff_ids })) {
           throw new ReleaseError("release_smoke_failed", "Imported platform image differs from the verified candidate config");
         }
         const args = ["--platform", platform, "--pull=never", "--read-only", "--pids-limit=128", "--memory=1g",
