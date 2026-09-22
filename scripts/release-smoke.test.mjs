@@ -72,7 +72,7 @@ for (const [name, env, expected] of [["executes both exact platforms", {}, 0],
       assert.deepEqual(JSON.parse(result.stdout).checks.map(check => [check.component, check.platform]),
         [["console", "linux/amd64"], ["console", "linux/arm64"], ["runtime", "linux/amd64"], ["runtime", "linux/arm64"]]);
       for (const args of runs) {
-        assert.ok(args.some(value => /^sha256:[a-f0-9]{64}$/.test(value)));
+        assert.ok(args.includes(`sha256:${"f".repeat(64)}`));
         assert.ok(args.includes("--read-only"));
         assert.ok(!args.some(value => value.includes("docker.sock") || value.startsWith("--env-file")));
       }

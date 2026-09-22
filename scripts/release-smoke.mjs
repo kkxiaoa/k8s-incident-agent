@@ -88,10 +88,10 @@ async function main() {
             "--volume", `${tls}:/smoke/tls:ro`,
             "--volume", `${tls}:/var/run/secrets/kubernetes.io/serviceaccount:ro`,
             "--volume", `${path.join(root, ".github/ci/smoke-runtime.py")}:/smoke/runtime.py:ro`,
-            "--entrypoint", "python", configId, "/smoke/runtime.py");
+            "--entrypoint", "python", image.Id, "/smoke/runtime.py");
         } else {
           args.push("--volume", `${path.join(root, ".github/ci/smoke-console.mjs")}:/smoke/console.mjs:ro`,
-            "--entrypoint", "node", configId, "/smoke/console.mjs");
+            "--entrypoint", "node", image.Id, "/smoke/console.mjs");
         }
         await container([...args, architecture, JSON.stringify(image.Config.Cmd)], scratch, 3 * 60_000);
         results.push({ component, platform, status: "passed" });
