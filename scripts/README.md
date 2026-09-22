@@ -154,10 +154,12 @@ npm run openapi:check
 `generate` 或 `check`，schema input 和 TypeScript output 均固定在仓库内，不接受
 路径或 URL 参数；执行前需要先在 `services/agent-runtime` 完成 `uv sync --locked`。
 
-## `release.mjs` / `release-smoke.mjs`
+## `release.mjs` / `release-smoke.mjs` / `publish.mjs`
 
-构建、内容核验、双平台隔离启动和打包命令见 [Release candidates](../documentation/releases.md)。
+构建、内容核验、双平台隔离启动、打包及人工发布说明见 [Candidates and approved releases](../documentation/releases.md)。
 `release.json` 是生成产物，不写回源码；唯一共享 loader 供部署与评估使用。
+
+`publish.mjs select/publish` 仅供受保护 release workflow 使用，不在发布时重建镜像；失败保留 draft/部分上传状态，同版本只允许相同内容续传。正式安装前可在对应的干净源码 checkout 执行 `node scripts/publish.mjs fetch --version vX.Y.Z --output <new-directory>`，只接受已正式发布且完整通过校验的 bundle；需要锁定版本的 `python3`，不需要 Docker 或集群连接。归档导入器 `release-archive.py` 由该命令内部调用，不是绕过批准状态的安装入口。
 CI 候选只在本仓库 main push 的四组质量检查成功后构建，不授予发布/部署权限。
 真实构建、容器运行与集群 live 分别需要授权；离线 mock Docker 测试不算真实 smoke。
 
@@ -306,8 +308,8 @@ confirmation。confirm 会先运行一个全新 preview Job，再重读全部外
 不接受 image、PVC、Namespace、manifest、路径、SQL、Run ID、环境变量或任意命令参数。
 
 公开的本地启动步骤和真实环境前置条件见
-[Getting started](../documentation/getting-started.md)。当前模板不是可直接安装到任意
-集群的发行包；最终镜像发布与公开 HTTPS 安装仍待验收。真实 image import、apply、
+[Getting started](../documentation/getting-started.md)。这些模板只用于固定 profile，
+不能直接安装到任意集群。真实 image import、apply、
 uninstall、purge 与 NetworkPolicy enforcement 都需要对应 live 授权。
 
 Console 默认不配置兄弟项目入口。确实部署了独立 YAML 编写助手时，可在本项目

@@ -1,0 +1,106 @@
+name: Publish approved candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful owning-main CI run ID (all jobs in the same attempt)
+        required: true
+        type: string
+      artifact_id:
+        description: Exact OCI candidate artifact ID from that run
+        required: true
+        type: string
+      version:
+        description: New stable version, e.g. v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: incident-release-publication
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  select:
+    if: github.repository == 'kkxiaoa/k8s-incident-agent' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      runId: ${{ steps.candidate.outputs.runId }}
+      attempt: ${{ steps.candidate.outputs.attempt }}
+      artifactId: ${{ steps.candidate.outputs.artifactId }}
+      source: ${{ steps.candidate.outputs.source }}
+      artifactDigest: ${{ steps.candidate.outputs.artifactDigest }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Bind candidate identity before approval
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.artifact_id }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node scripts/publish.mjs select
+
+  publish:
+    needs: select
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    steps:
+      - name: Check out trusted publication tooling
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Check out the selected source as data
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.select.outputs.source }}
+          path: candidate-source
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: tooling/.nvmrc
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version-file: tooling/services/agent-runtime/pyproject.toml
+          enable-cache: false
+      - name: Install the trusted tooling's Python pin without project dependencies
+        working-directory: tooling/services/agent-runtime
+        run: |
+          uv python install
+          dirname "$(uv python find)" >> "$GITHUB_PATH"
+      - name: Verify approval, import bounded data and publish without rebuilding
+        working-directory: tooling
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          CANDIDATE_RUN_ID: ${{ needs.select.outputs.runId }}
+          CANDIDATE_ARTIFACT_ID: ${{ needs.select.outputs.artifactId }}
+          CANDIDATE_ATTEMPT: ${{ needs.select.outputs.attempt }}
+          CANDIDATE_SOURCE: ${{ needs.select.outputs.source }}
+          CANDIDATE_DIGEST: ${{ needs.select.outputs.artifactDigest }}
+          CANDIDATE_SOURCE_DIR: ${{ github.workspace }}/candidate-source
+        run: node scripts/publish.mjs publish

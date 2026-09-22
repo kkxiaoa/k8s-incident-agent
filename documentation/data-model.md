@@ -1,6 +1,6 @@
 # Data model
 
-Status: migration target `20260919_0013`, checked against source `46dbefd`. There are 13 business tables, plus Alembic metadata. This does not assert that any retained installation has been migrated or contains particular records.
+The business schema targets migration `20260919_0013`: 13 business tables plus Alembic metadata. The diagram describes the schema, not the migration state or contents of an installation.
 
 Authority: [ORM models](../services/agent-runtime/src/k8s_incident_agent/persistence/models.py), [migration history](../services/agent-runtime/migrations/versions), and [repository invariants](../services/agent-runtime/src/k8s_incident_agent/persistence/repositories.py). The diagram shows all 13 business tables with selected columns and **actual database foreign keys**, not every field or application-level association. `PK`, `FK` and `UK` mean primary key, foreign key and individually unique key; compound uniqueness is listed separately.
 

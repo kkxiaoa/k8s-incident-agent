@@ -1,6 +1,6 @@
 # Evaluation and evidence
 
-Status: description of existing checks and evidence at `46dbefd`, not a new evaluator or a claim that planned acceptance has run.
+How to run scenario checks, interpret their evidence and distinguish deterministic assertions from diagnosis-quality judgments.
 
 ## Different checks answer different questions
 
@@ -38,18 +38,8 @@ For example, `OOMKilled` without a memory trend can establish the recorded termi
 
 When changing tools, prompts, model settings or diagnostic behavior, retain the bad case, exact source/model configuration, trace references and the before/after judgment. Use the production multi-turn Agent path where diagnosis behavior is being assessed. A hand-crafted replay or a fake page proves only its declared scope. Share bounded, reviewed summaries—not credentials, raw sensitive logs or unrestricted traces.
 
-## Current evidence and gaps
+## Environment and result scope
 
-The latest recorded seven-scenario K3s evidence is associated with source `3fcd376` and release-lock revision `d92218a`: four accepted automatic scenario checks from the full-run attempt plus three from final targeted runs. The aggregate covers seven selected scenario checks; artifacts remain `pending_manual_review`. It is **not** seven-scene semantic acceptance, a statistical success rate, or a fresh live run of the documentation revision `46dbefd`.
+Bind each result to its source, image digests, scenario version, selected checks and tested environment. Evidence from one release or environment does not establish compatibility for another. Kind is the development/CI baseline; K3s profiles target a fixed single-node sandbox. The scenario count is not the number of Kubernetes faults the product can diagnose or repair.
 
-Earlier fixed Kind/K3s seven-scenario results belong to their historical releases; they are not a current compatibility matrix. Kind is the development/CI baseline, K3s the first fixed deployment target. The scenario count is not the number of Kubernetes fault types the product can diagnose or repair.
-
-Outstanding qualifications:
-
-- Expanded metric collection has partial K3s TLS/RBAC/filtering/budget evidence. The init-container exclusion live counterexample, target-down behavior and final consumer convergence are not closed.
-- Six new discovery alerts are implemented: OOM termination, abnormal exit, near-limit memory, CPU throttling, additional probe failures and unschedulable Pods. Abnormal-exit firing was observed, but its own full Incident intake path was not established; the other five dedicated new-scenario checks remain unrun. Slow startup reuses the Deployment-unavailable discovery path; it is not an additional dedicated alert.
-- Final controlled execution, recovery, separately approved rollback and restart/failure-boundary acceptance on the final release remain incomplete. Offline tests and implemented manifests do not close this gate.
-- A public HTTPS demonstration and supported arbitrary-cluster compatibility have not been accepted.
-- A systematic diagnosis-quality evaluation framework, calibrated quality baseline and broader held-out coverage are not claimed here. Designing that work does not turn current harness output into its results.
-
-Keep these distinctions when publishing release notes. If a check was not run, say so; if a gate is deferred, preserve it. No aggregate “accuracy” or “all live tests passed” claim follows from the evidence above.
+Metric collection, alert firing, Incident intake, diagnosis, controlled execution and recovery are separate assertions. Neither a firing alert nor an offline contract test proves that the complete chain succeeded. Report only the checks actually executed; focused runs and synthetic fixtures are not statistical accuracy benchmarks.

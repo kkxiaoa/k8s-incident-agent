@@ -4,7 +4,7 @@
 
 An evidence-first Kubernetes incident response agent: discover failures, investigate with bounded read-only tools, and prepare controlled remediation for human review.
 
-The product targets supported real Kubernetes environments. **Today, validation is limited to fixed Kind and single-node K3s sandboxes—not production clusters or arbitrary Kubernetes installations.**
+The product targets supported real Kubernetes environments. **Use the fixed Kind and single-node K3s sandbox profiles; production clusters and arbitrary Kubernetes installations are outside their supported scope.**
 
 ## What it does
 
@@ -12,9 +12,7 @@ The product targets supported real Kubernetes environments. **Today, validation 
 - Combines Kubernetes workload, event, bounded log and catalog-driven Prometheus evidence. Missing evidence stays missing; model inference is not presented as a cluster fact.
 - Shows monitoring, diagnosis, recommendations, proposals and live progress in a Chinese-language Console.
 - Separates broad diagnostic recommendations from executable remediation. The current controlled action is an evidence-bound Deployment container-image change, not arbitrary YAML or shell execution.
-- Implements isolated dry-run validation, exact human approval, execution receipts, recovery observation and separately approved rollback. **Execution is disabled by default; this newer execution/recovery chain has not completed final cluster live acceptance.** An unknown write outcome stays frozen; it is not automatically retried.
-
-Selected diagnosis scenarios have fixed Kind/K3s live evidence. That is not a statistical accuracy benchmark, complete coverage of the expanded alerts, or proof of production compatibility. Public HTTPS demo and published installation artifacts are not yet available.
+- Separates isolated dry-run validation, exact human approval, execution receipts, recovery observation and separately approved rollback. **Execution is disabled by default.** An unknown write outcome stays frozen; it is not automatically retried.
 
 ## Architecture
 
@@ -57,7 +55,7 @@ flowchart TB
     executor -.->|"One exact approved PATCH"| kube
 ```
 
-Arrows show allowed communication, not shared authority. The Model API selects tools; Runtime executes the registered read-only tools. Dashed Executor paths are implemented but disabled by default and have not completed final live acceptance.
+Arrows show allowed communication, not shared authority. The Model API selects tools; Runtime executes the registered read-only tools. Dashed paths belong to the separately gated Executor; execution is disabled by default.
 
 See [architecture and workflow details](documentation/architecture.md) and the [data model](documentation/data-model.md).
 
@@ -101,7 +99,7 @@ For dependency setup, authentication, real Runtime configuration, troubleshootin
 
 ## Safety and access
 
-Default access is private, with one operator and a one-hour sliding idle session. There is no registration, multi-role system or SSO. An explicitly enabled public-readonly mode allows viewing reviewed data; **all manual business actions still require authentication**. Public mode is not an authentication bypass and has not completed public HTTPS acceptance.
+Default access is private, with one operator and a one-hour sliding idle session. There is no registration, multi-role system or SSO. An explicitly enabled public-readonly mode allows viewing reviewed data; **all manual business actions still require authentication**. Public mode is not an authentication bypass; non-loopback access requires HTTPS.
 
 The browser never holds Kubernetes credentials or accesses Prometheus/database directly. The diagnostic Agent has no write or shell tools. The isolated executor must enforce the exact still-valid approved change; UI controls and prompts cannot replace server-side gates. See [Security policy](SECURITY.md).
 

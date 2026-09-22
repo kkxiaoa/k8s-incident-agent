@@ -1,6 +1,6 @@
 # Security and safety boundaries
 
-Status: implemented safeguards at `46dbefd`, with final controlled-execution and public HTTPS live acceptance still outstanding. This is an explanation of the design and source contracts, not a security certification. For vulnerability reporting and supported scope, use [SECURITY.md](../SECURITY.md).
+Read/write identities, authentication and safety contracts. This guide is not a security certification. For vulnerability reporting and supported scope, use [SECURITY.md](../SECURITY.md).
 
 ## Access is enforced by Runtime
 
@@ -48,12 +48,12 @@ Tool output is projected into bounded evidence contracts with redaction/truncati
 
 K3s node-metric collection uses a separate Prometheus identity and an explicitly scoped kubelet endpoint with TLS verification. The shared kubelet HTTP response can contain other workloads' samples **before** filtering. Namespace/Pod-role/regular-container filtering before TSDB storage limits retained metrics; it does not isolate the source response. Enabling this collection on a shared node requires authorization for that read boundary. The Agent receives no `nodes/proxy` or general Node-read capability. Current Kind profiles leave this collector disabled rather than weakening TLS to accept their kubelet certificates.
 
-Evidence queries are catalog-defined, time-bounded and attached to the applicable resource lifecycle. Missing series, stale monitoring or absent termination reasons remain unavailable evidence. Six additional discovery rules and monitoring-health rules are implemented, but [their live coverage is incomplete](evaluation.md#current-evidence-and-gaps). Discovery alerts are not automatically added to the narrower recovery-gate set. Watchdog/monitoring-health alerts describe the observability pipeline and do not create workload Incidents.
+Evidence queries are catalog-defined, time-bounded and attached to the applicable resource lifecycle. Missing series, stale monitoring or absent termination reasons remain unavailable evidence. Discovery alerts are not automatically added to the narrower recovery-gate set. Watchdog/monitoring-health alerts describe the observability pipeline and do not create workload Incidents.
 
 The managed Prometheus configuration sets both 15-day and 1600 MB retention limits; the size bound can shorten the retained time range. Neither that setting nor bounded API output constitutes a complete retention policy for all Runtime audit/trace data. Review storage, exports and backups separately; do not publish raw live artifacts or infer a cleanup command is safe for sibling resources.
 
 Source: [monitoring configuration](../deploy/monitoring/base/workloads/config-maps.yaml), [K3s collector and filtering](../deploy/monitoring/components/node-metrics/scrape-config.yaml), [catalog](../monitoring/catalog/catalog.json).
 
-## Not yet a production security boundary
+## Deployment scope
 
-The current system assumes one operator, a fixed sandbox and a single Runtime. Arbitrary-cluster compatibility, tenant isolation, high availability, broader write actions and public HTTPS deployment are not established by this implementation. Execution is disabled by default; final image/profile/live acceptance remains outstanding. Do not expose Runtime's internal services or reuse another project's certificates, credentials or resources to bypass these gates.
+The system assumes one operator, a fixed sandbox and a single Runtime. Arbitrary-cluster compatibility, tenant isolation, high availability and broader write actions are outside this deployment scope. Execution is disabled by default; enabling it requires environment-specific safety validation. Non-loopback access requires HTTPS. Do not expose Runtime's internal services or reuse another project's certificates, credentials or resources to bypass these gates.

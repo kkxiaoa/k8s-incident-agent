@@ -1,14 +1,14 @@
 # Architecture
 
-Status: implemented architecture at `46dbefd`; qualifications below distinguish code from deployment and live acceptance. See [evaluation status](evaluation.md#current-evidence-and-gaps).
+Components, trust boundaries and workflow contracts. See [evaluation and evidence](evaluation.md) for how to interpret validation results.
 
-K8s Incident Agent handles runtime incidents, not general Kubernetes administration or pre-deployment YAML authoring. The product targets supported real Kubernetes environments; current validation is limited to fixed Kind and single-node K3s sandboxes.
+K8s Incident Agent handles runtime incidents, not general Kubernetes administration or pre-deployment YAML authoring. The product targets supported real Kubernetes environments; the installation profiles are scoped to fixed Kind and single-node K3s sandboxes.
 
 ## Components and trust boundaries
 
 The [component diagram in the README](../README.md#architecture) shows the overall topology. The sections below explain its trust boundaries and detailed workflows.
 
-Arrows show allowed communication, not shared authority. Dashed Executor paths are implemented but disabled by default and have not completed final live acceptance. The [Executor manifests](../deploy/application/executor/kustomization.yaml) are separate from the current application profiles; their presence is not an installed worker or permission to enable execution.
+Arrows show allowed communication, not shared authority. Dashed paths belong to the separately gated Executor; execution is disabled by default. The [Executor manifests](../deploy/application/executor/kustomization.yaml) are separate from the current application profiles; their presence is not an installed worker or permission to enable execution.
 
 The browser holds neither kubeconfig nor service-to-service keys and cannot reach Kubernetes, Prometheus or SQLite directly. The BFF handles a fixed upstream, transport/error adaptation and SSE cancellation; it is not an authorization database or an arbitrary URL proxy. FastAPI owns authentication, business state and server-side safety gates.
 

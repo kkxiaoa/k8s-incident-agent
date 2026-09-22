@@ -4,7 +4,7 @@
 
 面向 Kubernetes 运行期故障的 evidence-first 响应 Agent：发现异常，通过有界只读工具调查，并准备可供人工审核的受控修复建议。
 
-产品目标是服务受支持的真实 Kubernetes 环境。**当前验证仅覆盖固定 Kind 与单节点 K3s 沙箱，不连接生产集群，也不承诺任意 Kubernetes 安装兼容。**
+产品目标是服务受支持的真实 Kubernetes 环境。**请使用固定 Kind 与单节点 K3s 沙箱 profile；生产集群和任意 Kubernetes 安装不在这些 profile 的支持范围内。**
 
 ## 项目能力
 
@@ -12,9 +12,7 @@
 - 综合 Kubernetes workload、Event、有界日志与目录驱动的 Prometheus 证据；保留证据不足语义，不把模型推断写成集群事实。
 - 中文 Console 展示监控、诊断、处置建议、提案与实时进展。
 - 通用诊断建议与可执行修复分离：当前受控 action 是绑定证据的 Deployment 容器镜像变更，不接受任意 YAML 或 shell。
-- 已实现独立 dry-run、精确人工审批、执行回执、恢复观察及另行批准的回滚。**执行默认关闭，这套新增执行／恢复链路尚未完成最终集群 live 验收。**未知写入结果保持冻结，不自动重试。
-
-部分诊断场景已有固定 Kind/K3s live 证据，但不是统计准确率基线，不代表全部扩充告警已验收或生产环境兼容。公开 HTTPS 演示和正式安装产物尚未提供。
+- 分离独立 dry-run、精确人工审批、执行回执、恢复观察及另行批准的回滚。**执行默认关闭。**未知写入结果保持冻结，不自动重试。
 
 ## 系统架构
 
@@ -57,7 +55,7 @@ flowchart TB
     executor -.->|"One exact approved PATCH"| kube
 ```
 
-箭头表示允许的通信链路，不代表共享权限。Model API 选择工具，由 Runtime 执行已注册的只读工具。虚线 Executor 链路已实现但默认关闭，尚未完成最终 live 验收。
+箭头表示允许的通信链路，不代表共享权限。Model API 选择工具，由 Runtime 执行已注册的只读工具。虚线链路属于单独受门禁约束的 Executor，执行默认关闭。
 
 详见[架构与工作流说明](documentation/architecture.md)及[数据模型](documentation/data-model.md)。
 
@@ -101,7 +99,7 @@ fixture 加载 19 条诊断／修复生命周期案例和合成监控趋势，�
 
 ## 安全与访问
 
-默认 private，单操作者、1 小时空闲滑动会话；不提供注册、多角色或 SSO。显式启用公开只读模式后，公众可查看已获公开许可的数据，**全部人工业务操作仍需登录**。公开模式不是跳过鉴权，公网 HTTPS 验收尚未完成。
+默认 private，单操作者、1 小时空闲滑动会话；不提供注册、多角色或 SSO。显式启用公开只读模式后，公众可查看已获公开许可的数据，**全部人工业务操作仍需登录**。公开模式不是跳过鉴权；非回环访问必须使用 HTTPS。
 
 浏览器不持有 Kubernetes 凭据，也不直连 Prometheus 或数据库；诊断 Agent 没有写工具或 shell。独立 Executor 必须校验完全一致且仍有效的已批准变更，UI 和 Prompt 不能代替服务端门禁。参见[安全政策](SECURITY.md)。
 

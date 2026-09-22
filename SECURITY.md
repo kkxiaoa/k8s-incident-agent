@@ -5,11 +5,9 @@
 Do not report vulnerabilities, credentials, kubeconfigs, session cookies, raw
 cluster logs, or private infrastructure details in public issues or pull requests.
 
-The intended private reporting channel is the repository's
+Use the repository's
 [Security advisories page](https://github.com/kkxiaoa/k8s-incident-agent/security/advisories).
-Use **Report a vulnerability** when that button is available. Private reporting
-has not yet been verified for this repository; maintainers must enable and verify
-it as part of publication acceptance before announcing a public release. If the button is unavailable, request a private contact
+Select **Report a vulnerability** when that button is available. If it is unavailable, request a private contact
 channel without including vulnerability details. Do not send a report to an
 unverified address or post the report publicly as a fallback.
 
@@ -21,16 +19,14 @@ through its issuer; deleting a file does not invalidate a credential.
 
 ## Support scope
 
-This is a development-stage project. Security fixes target the current development
-line; there is no established maintained-release matrix, backport commitment,
-response-time guarantee, or production-readiness claim. Include the exact revision
+Security fixes target the development line. This policy does not promise release
+backports, a response-time guarantee, or production readiness. Include the exact revision
 in reports. An accepted design, passing unit test, or successful container start
 is not proof that a cluster deployment is safe.
 
-The currently validated environments are fixed Kind and single-node K3s sandbox
-baselines. Other distributions, versions, network/storage configurations, and
-production environments are not implicitly supported. Public HTTPS demo deployment
-and the complete live approval/execution/recovery validation remain pending.
+The deployment profiles target fixed Kind and single-node K3s sandbox baselines.
+Other distributions, versions, network/storage configurations, and production
+environments are not implicitly supported.
 
 ## Trust boundaries
 
@@ -43,7 +39,7 @@ and the complete live approval/execution/recovery validation remain pending.
 - Patch validation uses an isolated identity and API-server-enforced dry-run.
   The separate Controlled Executor is intended to apply only an exact, still-valid
   approved change in the fixed sandbox scope. Execution is disabled by default;
-  enabling it requires the outstanding deployment and live safety gates.
+  enabling it requires environment-specific deployment and live safety checks.
 - A successful write is not proof of recovery. An unknown write outcome must not
   cause an automatic retry or an unapproved rollback.
 - `private` is the default access mode. Explicit `public_demo` allows anonymous

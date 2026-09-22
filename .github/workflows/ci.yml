@@ -50,6 +50,12 @@ jobs:
           uv run --locked ruff check --config pyproject.toml ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
           uv run --locked ruff format --config pyproject.toml --check ../../.github/ci/smoke-runtime.py ../../.github/ci/smoke-runtime.test.py
           uv run --locked python ../../.github/ci/smoke-runtime.test.py
+      - name: Bounded publication archive importer
+        working-directory: services/agent-runtime
+        run: |
+          uv run --locked ruff check --config pyproject.toml ../../scripts/release-archive.py ../../scripts/release-archive.test.py
+          uv run --locked ruff format --config pyproject.toml --check ../../scripts/release-archive.py ../../scripts/release-archive.test.py
+          uv run --locked python ../../scripts/release-archive.test.py
 
   contracts:
     name: Scripts and deployment contracts
@@ -89,7 +95,9 @@ jobs:
           docker pull "$image"
           docker image inspect "$image" --format '{{.Id}}'
       - name: Script contracts, Kustomize and promtool
-        run: node --test 'scripts/*.test.mjs'
+        run: |
+          export PATH="$PWD/services/agent-runtime/.venv/bin:$PATH"
+          node --test 'scripts/*.test.mjs'
       - name: OpenAPI and generated types drift
         run: npm run openapi:check
 

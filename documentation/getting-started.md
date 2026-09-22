@@ -1,6 +1,6 @@
 # Getting started
 
-Status: current development instructions. The local UI fixture is usable without Kubernetes or a model. Real deployment requires separately provisioned sandbox infrastructure; published images and a public HTTPS installation have not yet been accepted.
+Run a synthetic local UI without Kubernetes or a model, or configure a real Runtime against separately provisioned sandbox infrastructure.
 
 [English overview](../README.md) · [中文概览](../README.zh-CN.md)
 
@@ -15,7 +15,7 @@ npm ci
 uv sync --project services/agent-runtime --locked
 ```
 
-uv can install the pinned Python when it is absent. The first installation needs network access. The manual fixture uses the resulting `services/agent-runtime/.venv/bin/python`; the commands here target macOS/Linux POSIX development, not a validated Windows setup.
+uv can install the pinned Python when it is absent. The first installation needs network access. The manual fixture uses the resulting `services/agent-runtime/.venv/bin/python`; these commands are for macOS/Linux POSIX shells, not Windows.
 
 Do not copy private configuration from somebody else's workspace. The fake path needs neither `.env` files nor a kubeconfig, model key, Docker, kubectl or a running sibling project.
 
@@ -124,7 +124,7 @@ Default mode is `private`. An installer may select `CONSOLE_ACCESS_MODE=public_d
 
 Anonymous users can read history, monitoring, diagnosis/evidence, proposals, approval/execution/recovery results and live progress. All manual create/diagnose/prepare/edit/refresh/withdraw/approve/reject/rollback actions still require login and their existing state/safety gates. Online still forbids manual Incident creation. No guest identity or guest task budget exists.
 
-Public mode does not expose internal Webhook/Validator/Executor routes or raw traces, and does not enable execution. Anonymous reads retain instance-wide limits: 600/minute, 8 concurrent reads and 16 SSE streams; anonymous SSE reconnects after at most five minutes. These are application bounds, not public-network flood protection. Proposal approval expires independently after 15 minutes. Public HTTPS/network acceptance remains pending; do not expose the fake service as a substitute.
+Public mode does not expose internal Webhook/Validator/Executor routes or raw traces, and does not enable execution. Anonymous reads retain instance-wide limits: 600/minute, 8 concurrent reads and 16 SSE streams; anonymous SSE reconnects after at most five minutes. These are application bounds, not public-network flood protection. Proposal approval expires independently after 15 minutes. Do not expose the fake service to public networks.
 
 ## 7. Checks and troubleshooting
 
@@ -140,7 +140,7 @@ These tests use fresh synthetic credentials and their own fake Runtime, not your
 
 | Symptom | Check |
 | --- | --- |
-| Cannot clone before publication | The repository may still be private; access/visibility is separate from these local instructions. |
+| Cannot clone | Check the repository URL and your access permissions. |
 | Fake refuses startup | Absolute verifier path, initialized file, Python virtualenv, and port 18080. |
 | Login or mutation rejected | Use the password, not verifier contents; exact Origin/hostname; session expiry; proposal expiry; execution disabled. |
 | Empty monitoring in fake | Some snapshots deliberately model unavailable evidence; they are not live charts. |

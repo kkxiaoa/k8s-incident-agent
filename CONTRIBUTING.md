@@ -84,10 +84,11 @@ node .github/ci/check-docs.mjs --render
 Rendering uses the installed Chrome channel, as do fake E2E tests. Action SHAs and
 download checksums are pinned; application tool versions come from the existing
 repository locks. Hosted OS and Chrome maintenance still follow the runner image.
-CI restores no cross-run caches and uploads no artifacts, traces, credentials or
-databases. No production secrets, model calls, cluster access or publishing are
-part of this workflow. Repository log retention and hosted/fork acceptance are
-separate setup checks, not claims proved by a local run.
+CI restores no cross-run caches and does not upload traces, credentials or
+databases. Only the owning-main candidate job uploads the bounded OCI transport
+artifact described in [releases](documentation/releases.md). No production secrets,
+model calls, cluster access or publishing are part of this workflow. Maintainers
+configure log retention and check hosted/fork behavior separately from local checks.
 
 The policy script only guards contribution triggers, read-only token permissions,
 secret references/passing, full-SHA external Action/workflow references, and checkout

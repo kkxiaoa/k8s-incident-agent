@@ -1,6 +1,6 @@
 # Selected architecture decisions
 
-Status: accepted design choices, summarized for contributors at `46dbefd`. These are selected current decisions, not a copy of internal planning history or a proposal to change the architecture. Implementation and live qualifications remain in [architecture](../architecture.md), [security](../security.md) and [evaluation](../evaluation.md).
+Architectural choices, trade-offs and reconsideration criteria for contributors. Component contracts and safety boundaries are described in [architecture](../architecture.md), [security](../security.md) and [evaluation](../evaluation.md).
 
 ## 1. One diagnostic Agent inside a deterministic workflow
 
@@ -28,7 +28,7 @@ Source: [server client](../../src/lib/agent-runtime/server-client.ts), [database
 
 **Decision.** Separate diagnostic Runtime, Patch Validator and Controlled Executor identities. Validator combines scoped RBAC with an admission policy requiring dry-run. Executor consumes exact, unexpired approval from the ledger and independently enforces the compiled change. HMAC authenticates internal messages; it is not human approval. Ambiguous writes freeze the target, with no automatic PATCH retry. Recovery is separately observed; rollback needs a new approval.
 
-**Consequences.** More explicit services and keys are justified by distinct authority, not by a general microservice strategy. A UI-only gate or prompt promise cannot replace these controls. Current execution stays disabled by default and lacks final live acceptance. Broader writes or enabling a different environment require new evidence and explicit authorization.
+**Consequences.** More explicit services and keys are justified by distinct authority, not by a general microservice strategy. A UI-only gate or prompt promise cannot replace these controls. Execution is disabled by default. Broader writes or enabling a different environment require new evidence and explicit authorization.
 
 Source: [Validator admission policy](../../deploy/application/base/workloads/patch-validator-admission.yaml), [execution worker](../../services/agent-runtime/src/k8s_incident_agent/execution/worker.py), [security boundaries](../security.md).
 
@@ -38,6 +38,6 @@ Source: [Validator admission policy](../../deploy/application/base/workloads/pat
 
 **Decision.** Use catalog-driven managed Prometheus/Alertmanager evidence. K3s-only node collection has a separate, explicitly authorized shared-response boundary and filters before storage; it does not broaden diagnostic RBAC. Kind remains a development/CI baseline, not the product's supported-environment definition. Public-readonly mode exposes reviewed history and live progress, while every manual business action still requires the single operator session. Anonymous visitor identity and anonymous Run execution are not part of this design.
 
-**Consequences.** Public readers share a dataset, not isolated personal workspaces. Data review, read limits, monitoring health and incomplete live coverage remain visible responsibilities. SSO, multiple roles, tenants, autonomous repair and arbitrary cluster compatibility are outside the current delivery. Reconsider this decision before accepting any of those requirements or collecting shared-node data under a different trust model.
+**Consequences.** Public readers share a dataset, not isolated personal workspaces. Data review, read limits, monitoring health and environment-specific validation are installer responsibilities. SSO, multiple roles, tenants, autonomous repair and arbitrary cluster compatibility are outside the current delivery. Reconsider this decision before accepting any of those requirements or collecting shared-node data under a different trust model.
 
-Source: [monitoring catalog](../../monitoring/catalog/catalog.json), [public-read access](../../services/agent-runtime/src/k8s_incident_agent/auth/public_demo.py), [evaluation gaps](../evaluation.md#current-evidence-and-gaps).
+Source: [monitoring catalog](../../monitoring/catalog/catalog.json), [public-read access](../../services/agent-runtime/src/k8s_incident_agent/auth/public_demo.py), [evaluation scope](../evaluation.md#environment-and-result-scope).

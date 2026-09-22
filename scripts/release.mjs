@@ -198,7 +198,9 @@ async function packRelease(releasePath, outputDirectory, repositoryRoot) {
     const listing = path.join(scratch, "files");
     await writeFile(listing, `${[...files].sort().join("\n")}\n`);
     const archive = path.join(output, "candidate.tar.gz");
-    await command("tar", ["-czf", archive, "--no-recursion", "-T", listing], bundleRoot, 10 * 60_000);
+    // Host extended attributes can add AppleDouble files outside the verified graph.
+    await command("tar", ["-czf", archive, "--no-xattrs", ...(process.platform === "darwin" ? ["--no-mac-metadata"] : []),
+      "--no-recursion", "-T", listing], bundleRoot, 10 * 60_000);
     const hash = createHash("sha256");
     for await (const chunk of createReadStream(archive)) hash.update(chunk);
     await writeFile(path.join(output, "SHA256SUMS"), `${hash.digest("hex")}  candidate.tar.gz\n`, { flag: "wx", mode: 0o600 });
