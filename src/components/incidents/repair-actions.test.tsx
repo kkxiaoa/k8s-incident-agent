@@ -55,10 +55,30 @@ describe("repair lifecycle actions", () => {
   });
 
   it("explains a failed state read without presenting it as a submission in progress", async () => {
-    const { props, rerender, user } = setup();
+    const { props, rerender, user, onAction } = setup();
     rerender(<RepairActions {...props} busy busyReason="无法核对最新保存状态，请检查最新状态后再操作。" />);
-    await user.hover(screen.getByRole("button", { name: "审阅并批准" }));
+    await user.click(screen.getByRole("button", { name: "审阅并批准" }));
+    const submit = screen.getByRole("button", { name: "批准并执行" });
+    expect(submit).toBeDisabled();
+    await user.hover(submit);
     expect(screen.getByRole("tooltip")).toHaveTextContent("无法核对最新保存状态");
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["审阅并批准", "批准并执行"],
+    ["拒绝提案", "确认拒绝提案"],
+    ["调整提案", "生成新提案"],
+  ])("allows local %s during refresh but never submits before the saved state is checked", async (openLabel, submitLabel) => {
+    const { props, rerender, user, onAction } = setup();
+    rerender(<RepairActions {...props} busy refreshing />);
+    await user.click(screen.getByRole("button", { name: openLabel }));
+    const submit = screen.getByRole("button", { name: submitLabel });
+    expect(submit).toBeDisabled();
+    await user.click(submit);
+    expect(onAction).not.toHaveBeenCalled();
+    rerender(<RepairActions {...props} />);
+    expect(submit).toBeEnabled();
   });
 
   it("can only prepare a historical diagnostic proposal, never approve it", async () => {
