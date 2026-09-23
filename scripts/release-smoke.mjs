@@ -10,6 +10,22 @@ import { loadRelease, ReleaseError } from "./release.mjs";
 const exec = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+function matchesCandidateConfig(actual, expected) {
+  if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false;
+  if (!Object.entries(expected).every(([key, value]) => isDeepStrictEqual(actual[key], value))) return false;
+  // Docker container.Config (including API 1.48) adds zero values absent from
+  // OCI config. Ignore inspection metadata, but not added launch behavior.
+  const defaults = {
+    Hostname: "", Domainname: "", User: "", WorkingDir: "", StopSignal: "", MacAddress: "",
+    AttachStdin: false, AttachStdout: false, AttachStderr: false,
+    Tty: false, OpenStdin: false, StdinOnce: false, ArgsEscaped: false, NetworkDisabled: false,
+    Env: [], Cmd: [], Entrypoint: [], Shell: [], OnBuild: [], ExposedPorts: {}, Volumes: {},
+    Healthcheck: null, StopTimeout: null,
+  };
+  return Object.entries(defaults).every(([key, value]) =>
+    Object.hasOwn(expected, key) || actual[key] == null || isDeepStrictEqual(actual[key], value));
+}
+
 async function command(program, args, timeout = 120_000) {
   try {
     return (await exec(program, args, { timeout, maxBuffer: 2 * 1024 * 1024 })).stdout;
@@ -77,7 +93,7 @@ async function main() {
         const [image] = JSON.parse(await command("docker", ["image", "inspect", localReference]));
         if (!/^sha256:[a-f0-9]{64}$/.test(image?.Id) || image?.Os !== "linux" || image?.Architecture !== architecture ||
             !Array.isArray(config?.config?.Cmd) || config.config.Cmd.length === 0 ||
-            !isDeepStrictEqual(image?.Config, config.config) ||
+            !matchesCandidateConfig(image?.Config, config.config) ||
             !isDeepStrictEqual(image?.RootFS, { Type: config?.rootfs?.type, Layers: config?.rootfs?.diff_ids })) {
           throw new ReleaseError("release_smoke_failed", "Imported platform image differs from the verified candidate config");
         }

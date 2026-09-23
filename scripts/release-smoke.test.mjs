@@ -9,7 +9,7 @@ import { createReleaseFixture, gitFixtureEnvironment } from "./test-support/rele
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function smokeFixture(t) {
+function smokeFixture(t, transform = () => {}) {
   const directory = mkdtempSync(path.join(os.tmpdir(), "release-smoke-test-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const fixture = createReleaseFixture(directory, "a".repeat(40));
@@ -27,6 +27,7 @@ function smokeFixture(t) {
         Config: config.config,
         RootFS: { Type: config.rootfs.type, Layers: config.rootfs.diff_ids },
       };
+      transform(images[manifest.config.digest]);
     }
   }
   const log = path.join(directory, "docker.jsonl");
@@ -52,12 +53,34 @@ if (args[0] === 'run' && args.includes('copy')) {
   return { fixture, log, environment };
 }
 
-for (const [name, env, expected] of [["executes both exact platforms", {}, 0],
+// Docker 28.0.4 container.Config serializes these zero values without omitempty.
+// Reproduced with API 1.48 against the same locally imported OCI images.
+const legacyDefaults = {
+  Hostname: "", Domainname: "", AttachStdin: false, AttachStdout: false,
+  AttachStderr: false, Tty: false, OpenStdin: false, StdinOnce: false,
+  Image: "", OnBuild: null, Volumes: null, Entrypoint: null,
+};
+const additions = values => image => Object.assign(image.Config, values);
+
+for (const [name, env, expected, transform] of [["executes both exact platforms", {}, 0],
+  ["accepts Docker API 1.48 defaults", {}, 0, additions(legacyDefaults)],
+  ["accepts additional inspection metadata", {}, 0, additions({ Image: "transport-reference", AdditionalMetadata: "ignored" })],
+  ["accepts empty optional startup fields", {}, 0, additions({ Env: [], Entrypoint: [], Volumes: {}, WorkingDir: "", Healthcheck: null })],
+  ["rejects changed candidate command", {}, 1, additions({ Cmd: ["unexpected-command"] })],
+  ["rejects changed candidate user", {}, 1, additions({ User: "0" })],
+  ["rejects changed source revision", {}, 1, additions({ Labels: { "org.opencontainers.image.revision": "b".repeat(40) } })],
+  ["rejects missing declared config", {}, 1, image => { delete image.Config.User; }],
+  ["rejects missing inspect config", {}, 1, image => { delete image.Config; }],
+  ...Object.entries({ Entrypoint: ["unexpected-command"], Env: ["UNEXPECTED=1"], WorkingDir: "/unexpected",
+    Volumes: { "/unexpected": {} }, ExposedPorts: { "9999/tcp": {} }, StopSignal: "SIGKILL",
+    Healthcheck: { Test: ["CMD", "false"] }, Shell: ["sh"], OnBuild: ["RUN false"],
+    StopTimeout: 0, ArgsEscaped: true, NetworkDisabled: true, Tty: true,
+  }).map(([key, value]) => [`rejects added non-default ${key}`, {}, 1, additions({ [key]: value })]),
   ["stops on startup failure", { SMOKE_TEST_FAIL: "1" }, 1],
   ["rejects a substituted image", { SMOKE_TEST_WRONG_PLATFORM: "1" }, 1],
   ["rejects substituted rootfs", { SMOKE_TEST_WRONG_ROOTFS: "1" }, 1]]) {
   test(`candidate smoke orchestration ${name} (fake Docker boundary, not smoke evidence)`, t => {
-    const f = smokeFixture(t);
+    const f = smokeFixture(t, transform);
     const result = spawnSync(process.execPath, [path.join(root, "scripts/release-smoke.mjs"), "--release", f.fixture.release],
       { cwd: root, env: { ...process.env, ...f.environment, ...env }, encoding: "utf8" });
     assert.equal(result.status, expected, result.stderr);
@@ -79,6 +102,7 @@ for (const [name, env, expected] of [["executes both exact platforms", {}, 0],
     } else {
       assert.match(result.stderr, /release_smoke_failed/);
       assert.ok(runs.length < 4);
+      if (!env.SMOKE_TEST_FAIL) assert.equal(runs.length, 0);
     }
   });
 }
