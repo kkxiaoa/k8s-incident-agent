@@ -217,8 +217,9 @@ async function markReleased(selection) {
       { method: "POST", body: { labels: [taggedLabel] } });
     if (names.includes(pendingLabel)) await jsonRequest(`/issues/${id(selection.releasePr)}/labels/${encodeURIComponent(pendingLabel)}`,
       { method: "DELETE" });
-  } catch {
-    throw new Error(`${selection.version} is published but release PR #${selection.releasePr} is still pending; dispatch again to finish labeling`);
+  } catch (error) {
+    throw new Error(`${selection.version} is published but release PR #${selection.releasePr} is still pending: ${error.message}. ` +
+      "Dispatch again to finish labeling");
   }
 }
 

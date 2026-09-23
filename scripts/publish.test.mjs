@@ -281,7 +281,7 @@ test("real pack/import/OCI validation, changelog notes, publication, tagged rele
 
 test("a label failure after publication is finished by a fresh dispatch without republishing", async t => {
   const h = await harness(t); h.state.failLabels = true;
-  await assert.rejects(publishCandidate(h.options), /v0\.1\.0 is published but release PR #12 is still pending/);
+  await assert.rejects(publishCandidate(h.options), /v0\.1\.0 is published but release PR #12 is still pending: GitHub POST failed \(502\)/);
   assert.equal(h.state.release.draft, false);
   h.state.failLabels = false;
   const count = h.state.mutations.length;
