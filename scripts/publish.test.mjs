@@ -123,6 +123,8 @@ async function harness(t) {
     if (endpoint === "/actions/artifacts/55") return json(state.artifact);
     if (endpoint === "/actions/artifacts/55/zip") {
       state.downloads.push(endpoint);
+      // GitHub redirects this endpoint for the API media type and answers 415 to application/octet-stream.
+      if (options.headers.Accept !== "application/vnd.github+json") return json({ message: "Unsupported 'Accept' header" }, 415);
       return new Response(null, { status: 302, headers: { location: "https://test.blob.core.windows.net/artifact.zip?signed=test" } });
     }
     if (endpoint === "/releases" && method === "GET") return json(state.release ? [state.release] : []);
@@ -154,7 +156,12 @@ async function harness(t) {
       state[`bytes${asset.id}`] = bytes;
       return json(asset, 201);
     }
-    if (endpoint.startsWith("/releases/assets/")) return new Response(state[`bytes${endpoint.split("/").at(-1)}`]);
+    if (endpoint.startsWith("/releases/assets/")) {
+      const assetId = Number(endpoint.split("/").at(-1));
+      // Without application/octet-stream GitHub returns the asset metadata, not its bytes.
+      if (options.headers.Accept !== "application/octet-stream") return json(state.assets.find(asset => asset.id === assetId));
+      return new Response(state[`bytes${assetId}`]);
+    }
     if (endpoint === "/git/ref/tags/v0.1.0") return json(state.ref ?? {}, state.ref ? 200 : 404);
     if (endpoint === "/git/refs" && method === "POST") { state.ref = { object: { type: "commit", sha: body.sha } }; return json(state.ref, 201); }
     throw new Error(`Unhandled test boundary ${method} ${endpoint}`);

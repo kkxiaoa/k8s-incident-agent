@@ -80,8 +80,9 @@ async function pages(endpoint, field) {
   throw new Error("GitHub pagination budget exceeded");
 }
 
-async function download(endpoint, filename, expectedDigest, limit) {
-  let res = await response(`${apiRoot}${endpoint}`, { headers: headers("application/octet-stream") });
+// Artifact archives redirect only for the API media type (octet-stream gets 415); release assets need octet-stream.
+async function download(endpoint, filename, expectedDigest, limit, accept) {
+  let res = await response(`${apiRoot}${endpoint}`, { headers: headers(accept) });
   if (res.status === 302) {
     const location = new URL(res.headers.get("location"));
     requireValue(location.protocol === "https:" && !location.username && !location.password && !location.port &&
@@ -417,7 +418,7 @@ export async function fetchPublishedRelease(tag, output, sourceDirectory) {
   const transport = path.join(output, "transport");
   await mkdir(transport, { mode: 0o700 });
   for (const asset of assets) await download(`/releases/assets/${id(asset.id)}`, path.join(transport, asset.name), asset.digest,
-    asset.name === "candidate.tar.gz" ? gib : 2 * 1024 * 1024);
+    asset.name === "candidate.tar.gz" ? gib : 2 * 1024 * 1024, "application/octet-stream");
   const manifest = await unpack(transport, path.join(output, "bundle"), sourceDirectory);
   requireValue(manifest.sourceRevision === release.target_commitish &&
     await fileDigest(path.join(output, "bundle/release.json")) === assets.find(item => item.name === "release.json").digest,
