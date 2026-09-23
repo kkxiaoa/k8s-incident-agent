@@ -17,7 +17,7 @@ test("publication has a manual owning-main boundary and one protected writer", (
   assert.equal(workflow.jobs.publish.needs, "select");
   assert.equal(workflow.jobs.publish.environment, "release");
   assert.deepEqual(workflow.jobs.publish.permissions,
-    { contents: "write", packages: "write", actions: "read", "pull-requests": "read", issues: "write" });
+    { contents: "write", packages: "write", actions: "read", "pull-requests": "write", issues: "write" });
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
 });
 

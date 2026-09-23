@@ -55,12 +55,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: release
-    # issues:write only moves the release PR from autorelease: pending to tagged after publication.
+    # pull-requests/issues write only move the release PR from autorelease: pending to tagged after publication.
     permissions:
       contents: write
       packages: write
       actions: read
-      pull-requests: read
+      pull-requests: write
       issues: write
     steps:
       - name: Check out trusted publication tooling
