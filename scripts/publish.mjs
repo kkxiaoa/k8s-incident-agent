@@ -15,6 +15,10 @@ const apiRoot = `https://api.github.com/repos/${repository}`;
 const sha = /^[a-f0-9]{40}$/;
 const digest = /^sha256:[a-f0-9]{64}$/;
 const gib = 1024 ** 3;
+// Release Please defaults for a single root package on main (release-please-config.json does not override them).
+const releaseBranch = "release-please--branches--main";
+const pendingLabel = "autorelease: pending";
+const taggedLabel = "autorelease: tagged";
 
 function requireValue(value, message) {
   if (!value) throw new Error(message);
@@ -141,6 +145,82 @@ export async function selectCandidate(runId, artifactId) {
   return { runId, attempt, artifactId, source: run.head_sha, artifactDigest: artifact.digest };
 }
 
+/** Reads one file at an immutable commit as bounded data; nothing from the release source is executed. */
+async function sourceText(filePath, ref) {
+  const res = await response(`${apiRoot}/contents/${filePath}?ref=${ref}`, { headers: headers("application/vnd.github.raw+json") });
+  requireValue(res.status === 200, `Release source lacks ${filePath} (${res.status})`);
+  return (await limitedBytes(res, 2 * 1024 * 1024)).toString("utf8");
+}
+
+async function releasePullRequest(number) {
+  const pr = await jsonRequest(`/pulls/${id(number)}`);
+  const labels = Array.isArray(pr.labels) ? pr.labels.map(label => label?.name) : [];
+  requireValue(pr.number === id(number) && pr.merged === true && pr.base?.ref === "main" &&
+    pr.base.repo?.full_name === repository && pr.head?.ref === releaseBranch && pr.head.repo?.full_name === repository &&
+    sha.test(pr.merge_commit_sha ?? "") && labels.includes(pendingLabel),
+  "Select a merged Release Please PR that is still pending publication");
+  let manifest;
+  try { manifest = JSON.parse(await sourceText(".release-please-manifest.json", pr.merge_commit_sha)); }
+  catch { throw new Error("Release PR merge commit has no readable release manifest"); }
+  // The title is what Release Please derived; the manifest is what the approved commit records.
+  const title = /^chore\(main\): release (\d+\.\d+\.\d+)$/.exec(pr.title ?? "");
+  requireValue(title && manifest !== null && typeof manifest === "object" && Object.keys(manifest).length === 1 &&
+    manifest["."] === title[1], "Release PR title and manifest version differ");
+  return { releasePr: pr.number, version: version(`v${title[1]}`), source: pr.merge_commit_sha };
+}
+
+async function candidateFor(source) {
+  const result = await jsonRequest(`/actions/workflows/ci.yml/runs?head_sha=${source}&event=push&branch=main&per_page=100`);
+  const runs = result.workflow_runs;
+  requireValue(Array.isArray(runs) && runs.length === 1 && result.total_count === 1,
+    "The release source needs exactly one owning-main CI run");
+  // Only the run's latest attempt is eligible, matching selectCandidate.
+  const name = `oci-candidate-${source}-${id(runs[0].run_attempt)}`;
+  const artifacts = (await pages(`/actions/runs/${id(runs[0].id)}/artifacts`, "artifacts")).filter(item => item?.name === name);
+  requireValue(artifacts.length === 1, "The release source has no single candidate from its latest CI attempt");
+  return selectCandidate(runs[0].id, artifacts[0].id);
+}
+
+/** The read-only selection job and approved publisher derive the same release from one Release Please PR. */
+export async function selectRelease(number) {
+  const release = await releasePullRequest(number);
+  const candidate = await candidateFor(release.source);
+  requireValue(candidate.source === release.source, "Candidate source differs from the release PR merge commit");
+  return { releasePr: release.releasePr, version: release.version, ...candidate };
+}
+
+/** The Release body is the approved source's own changelog entry plus where its artifacts came from. */
+async function releaseNotes(selection) {
+  const number = selection.version.slice(1);
+  const lines = (await sourceText("CHANGELOG.md", selection.source)).split("\n");
+  const heading = line => /^#{2,3} \[?v?\d+\.\d+\.\d+/.test(line);
+  const starts = lines.flatMap((line, index) =>
+    heading(line) && (line.startsWith(`## ${number} `) || line.startsWith(`## [${number}](`)) ? [index] : []);
+  requireValue(starts.length === 1, `CHANGELOG.md needs exactly one ${selection.version} entry`);
+  const end = lines.findIndex((line, index) => index > starts[0] && heading(line));
+  // The heading date is when the release PR was generated, not when the release became installable.
+  const entry = lines.slice(starts[0] + 1, end === -1 ? undefined : end).join("\n").trim();
+  requireValue(entry, `CHANGELOG.md ${selection.version} entry is empty`);
+  const body = `${entry}\n\n---\n\nRelease PR: #${selection.releasePr}\nSource: ${selection.source}\n` +
+    `Candidate CI: https://github.com/${repository}/actions/runs/${selection.runId}/attempts/${selection.attempt}\n` +
+    `Artifact: ${selection.artifactId}\n\nInstall with the exact OCI digests in release.json; see documentation/releases.md.`;
+  requireValue(body.length <= 125_000, "Release notes exceed the GitHub release body limit");
+  return body;
+}
+
+/** While the merged PR keeps the pending label, Release Please treats it as unreleased and holds the next release PR. */
+async function markReleased(selection) {
+  try {
+    const names = (await pages(`/issues/${id(selection.releasePr)}/labels`)).map(label => label?.name);
+    if (!names.includes(taggedLabel)) await jsonRequest(`/issues/${id(selection.releasePr)}/labels`,
+      { method: "POST", body: { labels: [taggedLabel] } });
+    if (names.includes(pendingLabel)) await jsonRequest(`/issues/${id(selection.releasePr)}/labels/${encodeURIComponent(pendingLabel)}`,
+      { method: "DELETE" });
+  } catch {
+    throw new Error(`${selection.version} is published but release PR #${selection.releasePr} is still pending; dispatch again to finish labeling`);
+  }
+}
+
 async function approveDispatch() {
   requireValue(process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_EVENT_NAME === "workflow_dispatch" &&
     process.env.GITHUB_REF === "refs/heads/main" && process.env.GITHUB_RUN_ATTEMPT === "1", "Publish requires a fresh owning-main manual dispatch");
@@ -248,10 +328,11 @@ async function uploadAsset(releaseId, file, existing) {
 
 /** Called only by the protected publication job; no build or artifact code execution. */
 export async function publishCandidate(options) {
-  const tag = version(options.version);
   await approveDispatch();
-  const selection = await selectCandidate(options.runId, options.artifactId);
+  const selection = await selectRelease(options.releasePr);
   sameSelection(selection, options);
+  const tag = selection.version;
+  const notes = await releaseNotes(selection);
   const scratch = await realpath(await mkdtemp(path.join(os.tmpdir(), "incident-publish-")));
   try {
     const archive = path.join(scratch, "artifact.zip");
@@ -268,8 +349,8 @@ export async function publishCandidate(options) {
     let release = await releaseByVersion(tag);
     const ref = await checkTag(tag, manifest.sourceRevision);
     if (release) requireValue(release.target_commitish === manifest.sourceRevision && release.prerelease === false &&
-      typeof release.draft === "boolean",
-      "Existing release version belongs to another candidate");
+      typeof release.draft === "boolean" && (release.draft === false || release.body === notes),
+      "Existing release version belongs to another candidate or its notes changed");
     const existingAssets = release ? await pages(`/releases/${id(release.id)}/assets`) : [];
     requireValue(existingAssets.every(item => Object.hasOwn(assets, item.name)) &&
       new Set(existingAssets.map(item => item.name)).size === existingAssets.length, "Unexpected or duplicate release attachments");
@@ -285,11 +366,11 @@ export async function publishCandidate(options) {
     if (release?.draft === false) {
       requireValue(ref && existingAssets.length === 3 && Object.values(present).every(Boolean), "Published release is incomplete; refuse mutation");
       for (const image of Object.values(manifest.images)) await registryVerify(registry, image, tag, true);
+      await markReleased(selection);
       return { version: tag, source: manifest.sourceRevision, status: "already-published" };
     }
     if (!release) release = await jsonRequest("/releases", { method: "POST", body: {
-      tag_name: tag, target_commitish: manifest.sourceRevision, name: tag, draft: true, prerelease: false,
-      body: `Source: ${manifest.sourceRevision}\nCandidate CI: https://github.com/${repository}/actions/runs/${selection.runId}/attempts/${selection.attempt}\nArtifact: ${selection.artifactId}\n\nBoth platforms passed container startup checks in candidate CI. Cluster diagnosis, controlled repair and public HTTPS acceptance remain deferred. Use exact OCI digests from release.json.`,
+      tag_name: tag, target_commitish: manifest.sourceRevision, name: tag, draft: true, prerelease: false, body: notes,
     } });
     for (const file of Object.values(assets)) {
       await uploadAsset(release.id, file, existingAssets.find(item => item.name === file.name));
@@ -314,9 +395,10 @@ export async function publishCandidate(options) {
     requireValue(await checkTag(tag, manifest.sourceRevision), "Version tag creation not confirmed; retain draft");
     const current = await jsonRequest(`/releases/${id(release.id)}`);
     requireValue(current.draft === true && current.tag_name === tag && current.target_commitish === manifest.sourceRevision &&
-      current.prerelease === false, "Draft changed before publication; inspect remote state");
+      current.prerelease === false && current.body === notes, "Draft changed before publication; inspect remote state");
     const published = await jsonRequest(`/releases/${id(release.id)}`, { method: "PATCH", body: { draft: false, make_latest: "false" } });
     requireValue(published.draft === false && published.tag_name === tag, "Publication not confirmed; inspect remote state before retry");
+    await markReleased(selection);
     return { version: tag, source: manifest.sourceRevision, status: "published" };
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
@@ -349,14 +431,15 @@ export async function fetchPublishedRelease(tag, output, sourceDirectory) {
 async function main() {
   const [action, ...args] = process.argv.slice(2);
   if (action === "select" && args.length === 0) {
-    version(process.env.RELEASE_VERSION);
     await protectedEnvironment();
-    const selection = await selectCandidate(process.env.CANDIDATE_RUN_ID, process.env.CANDIDATE_ARTIFACT_ID);
+    const selection = await selectRelease(process.env.RELEASE_PR);
+    const notes = await releaseNotes(selection);
     for (const [key, value] of Object.entries(selection)) await appendFile(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
     await appendFile(process.env.GITHUB_STEP_SUMMARY,
-      `Release ${process.env.RELEASE_VERSION}\n\nSource: ${selection.source}\n\nCI run: ${selection.runId}, attempt: ${selection.attempt}\n\nArtifact: ${selection.artifactId}\n\nZIP digest: ${selection.artifactDigest}\n`);
+      `Release ${selection.version} from release PR #${selection.releasePr}\n\nSource: ${selection.source}\n\nCI run: ${selection.runId}, attempt: ${selection.attempt}\n\nArtifact: ${selection.artifactId}\n\nZIP digest: ${selection.artifactDigest}\n\n## Release notes to publish\n\n${notes}\n`);
   } else if (action === "publish" && args.length === 0) {
-    console.log(JSON.stringify(await publishCandidate({ version: process.env.RELEASE_VERSION, runId: process.env.CANDIDATE_RUN_ID,
+    console.log(JSON.stringify(await publishCandidate({ releasePr: process.env.RELEASE_PR, version: process.env.RELEASE_VERSION,
+      runId: process.env.CANDIDATE_RUN_ID,
       artifactId: process.env.CANDIDATE_ARTIFACT_ID, attempt: process.env.CANDIDATE_ATTEMPT, source: process.env.CANDIDATE_SOURCE,
       artifactDigest: process.env.CANDIDATE_DIGEST, sourceDirectory: process.env.CANDIDATE_SOURCE_DIR })));
   } else if (action === "fetch" && args.length === 4 && args[0] === "--version" && args[2] === "--output") {

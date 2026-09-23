@@ -1,0 +1,29 @@
+name: Release PR
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-please-pr
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    name: Update the release PR
+    if: github.repository == 'kkxiaoa/k8s-incident-agent' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Labels go through the issues API; the release itself is created by release.yml.
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          skip-github-release: true
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

@@ -3,22 +3,15 @@ name: Publish approved candidate
 on:
   workflow_dispatch:
     inputs:
-      run_id:
-        description: Successful owning-main CI run ID (all jobs in the same attempt)
-        required: true
-        type: string
-      artifact_id:
-        description: Exact OCI candidate artifact ID from that run
-        required: true
-        type: string
-      version:
-        description: New stable version, e.g. v0.1.0
+      release_pr:
+        description: Merged Release Please PR number; version and candidate are derived from its merge commit
         required: true
         type: string
 
 permissions:
   contents: read
   actions: read
+  pull-requests: read
 
 concurrency:
   group: incident-release-publication
@@ -34,6 +27,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
+      releasePr: ${{ steps.candidate.outputs.releasePr }}
+      version: ${{ steps.candidate.outputs.version }}
       runId: ${{ steps.candidate.outputs.runId }}
       attempt: ${{ steps.candidate.outputs.attempt }}
       artifactId: ${{ steps.candidate.outputs.artifactId }}
@@ -48,13 +43,11 @@ jobs:
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
-      - name: Bind candidate identity before approval
+      - name: Bind release PR, version and candidate before approval
         id: candidate
         env:
           GH_TOKEN: ${{ github.token }}
-          CANDIDATE_RUN_ID: ${{ inputs.run_id }}
-          CANDIDATE_ARTIFACT_ID: ${{ inputs.artifact_id }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_PR: ${{ inputs.release_pr }}
         run: node scripts/publish.mjs select
 
   publish:
@@ -62,10 +55,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: release
+    # issues:write only moves the release PR from autorelease: pending to tagged after publication.
     permissions:
       contents: write
       packages: write
       actions: read
+      pull-requests: read
+      issues: write
     steps:
       - name: Check out trusted publication tooling
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -96,7 +92,8 @@ jobs:
         working-directory: tooling
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_PR: ${{ needs.select.outputs.releasePr }}
+          RELEASE_VERSION: ${{ needs.select.outputs.version }}
           CANDIDATE_RUN_ID: ${{ needs.select.outputs.runId }}
           CANDIDATE_ARTIFACT_ID: ${{ needs.select.outputs.artifactId }}
           CANDIDATE_ATTEMPT: ${{ needs.select.outputs.attempt }}

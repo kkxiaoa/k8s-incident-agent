@@ -115,6 +115,7 @@ npm run build
 - [Getting started and configuration](documentation/getting-started.md)
 - [Architecture, diagrams, data model and selected decisions](documentation/README.md)
 - [Security boundaries](documentation/security.md) · [Evaluation evidence and limitations](documentation/evaluation.md)
+- [Versions, changelog and approved releases](documentation/releases.md)
 - [Operational scripts](scripts/README.md)
 - [Monitoring and alert catalog](monitoring/catalog/README.md)
 - [Fault-injection scenarios and safety](scenarios/README.md)

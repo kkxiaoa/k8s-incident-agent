@@ -9,7 +9,7 @@ Guides to the product's architecture, operation, safety boundaries and developme
 | [Data model](data-model.md) | Business SQLite, actual foreign keys, audit records and separate workflow checkpoints |
 | [Security and safety](security.md) | Read/write identities, public-readonly access, exact approval and unknown outcomes |
 | [Evaluation and evidence](evaluation.md) | What deterministic checks and live evidence prove—and what they do not |
-| [Release candidates](releases.md) | Exact-source OCI bundles, isolated smoke and explicit release selection |
+| [Release candidates](releases.md) | Exact-source OCI bundles, isolated smoke, the release PR and approved publication |
 | [Selected architecture decisions](decisions/README.md) | Accepted choices, trade-offs and conditions for reconsidering them |
 
 For commands and source contracts, see [contributing](../CONTRIBUTING.md), [operational scripts](../scripts/README.md), the [monitoring catalog](../monitoring/catalog/README.md) and [fault-injection scenarios](../scenarios/README.md). Vulnerability reporting is governed by [SECURITY.md](../SECURITY.md).

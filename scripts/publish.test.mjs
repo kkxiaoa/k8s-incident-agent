@@ -6,13 +6,20 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { fetchPublishedRelease, publishCandidate, selectCandidate } from "./publish.mjs";
+import { fetchPublishedRelease, publishCandidate, selectCandidate, selectRelease } from "./publish.mjs";
 import { createReleaseFixture } from "./test-support/release-fixture.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repository = "kkxiaoa/k8s-incident-agent";
 const hash = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+// First-release shape produced by release-please 17.6.0 (DefaultChangelogNotes + Changelog updater); the entry
+// text stands in for the maintainer-written summary.
+const firstChangelog = "# Changelog\n\n## 0.1.0 (2026-09-24)\n\n\n### Features\n\n" +
+  "* **console:** show incident recommendations ([aaaaaaa](https://github.com/kkxiaoa/k8s-incident-agent/commit/" +
+  `${"a".repeat(40)}))\n`;
+const firstEntry = "### Features\n\n* **console:** show incident recommendations ([aaaaaaa](https://github.com/kkxiaoa/" +
+  `k8s-incident-agent/commit/${"a".repeat(40)}))`;
 let directory, source, revision, fixture, archive;
 
 before(async () => {
@@ -58,8 +65,13 @@ async function harness(t) {
   const artifact = { id: 55, name: `oci-candidate-${revision}-2`, expired: false,
     expires_at: new Date(Date.now() + 3600_000).toISOString(), size_in_bytes: archive.length, digest: hash(archive),
     workflow_run: { id: 11, repository_id: 44, head_repository_id: 44, head_branch: "main", head_sha: revision } };
+  const pr = { number: 12, merged: true, title: "chore(main): release 0.1.0", merge_commit_sha: revision,
+    base: { ref: "main", repo: { full_name: repository } },
+    head: { ref: "release-please--branches--main", repo: { full_name: repository } },
+    labels: [{ name: "autorelease: pending" }] };
   const state = { run, jobs, artifact, approved: true, reviewers: true, release: null, assets: [], ref: null,
-    mutations: [], downloads: [], zip: archive, failAsset: null, paginate: false };
+    mutations: [], downloads: [], zip: archive, failAsset: null, paginate: false, pr, runs: [run], artifacts: [artifact],
+    files: { ".release-please-manifest.json": '{\n  ".": "0.1.0"\n}\n', "CHANGELOG.md": firstChangelog }, failLabels: false };
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   globalThis.fetch = async (input, options = {}) => {
@@ -75,6 +87,28 @@ async function harness(t) {
     const body = typeof options.body === "string" ? JSON.parse(options.body) : null;
     if (method !== "GET") state.mutations.push({ method, endpoint, body });
     if (endpoint === "/actions/workflows/ci.yml") return json({ id: 33 });
+    if (endpoint === "/pulls/12") return json(state.pr);
+    if (endpoint.startsWith("/contents/")) {
+      assert.equal(url.searchParams.get("ref"), state.pr.merge_commit_sha);
+      assert.equal(options.headers.Accept, "application/vnd.github.raw+json");
+      const text = state.files[endpoint.slice("/contents/".length)];
+      return text === undefined ? json({ message: "Not Found" }, 404) : new Response(text);
+    }
+    if (endpoint === "/actions/workflows/ci.yml/runs") {
+      assert.deepEqual(Object.fromEntries(url.searchParams), { head_sha: revision, event: "push", branch: "main", per_page: "100" });
+      return json({ total_count: state.runs.length, workflow_runs: state.runs });
+    }
+    if (endpoint === "/actions/runs/11/artifacts") return json({ total_count: state.artifacts.length, artifacts: state.artifacts });
+    if (endpoint === "/issues/12/labels" && method === "GET") return json(state.pr.labels);
+    if (endpoint.startsWith("/issues/12/labels") && state.failLabels) return json({}, 502);
+    if (endpoint === "/issues/12/labels" && method === "POST") {
+      state.pr.labels.push(...body.labels.map(name => ({ name })));
+      return json(state.pr.labels);
+    }
+    if (endpoint === "/issues/12/labels/autorelease%3A%20pending" && method === "DELETE") {
+      state.pr.labels = state.pr.labels.filter(label => label.name !== "autorelease: pending");
+      return json(state.pr.labels);
+    }
     if (endpoint === "/actions/runs/11") return json(state.run);
     if (endpoint === "/actions/runs/22") return json({ path: ".github/workflows/release.yml", event: "workflow_dispatch",
       head_branch: "main", head_sha: revision, run_attempt: 1, repository: { full_name: repository } });
@@ -125,7 +159,7 @@ async function harness(t) {
     if (endpoint === "/git/refs" && method === "POST") { state.ref = { object: { type: "commit", sha: body.sha } }; return json(state.ref, 201); }
     throw new Error(`Unhandled test boundary ${method} ${endpoint}`);
   };
-  const options = { version: "v0.1.0", runId: 11, attempt: 2, artifactId: 55, source: revision,
+  const options = { releasePr: 12, version: "v0.1.0", runId: 11, attempt: 2, artifactId: 55, source: revision,
     artifactDigest: artifact.digest, sourceDirectory: source };
   return { state, options, folder, readRegistry, patchRegistry };
 }
@@ -160,7 +194,45 @@ for (const [name, mutate] of [
 test("manual inputs never become executable shell or paths", async t => {
   const h = await harness(t);
   await assert.rejects(selectCandidate("11;touch bad", 55), /identity/);
-  await assert.rejects(publishCandidate({ ...h.options, version: "v1.0.0;bad" }), /stable version/);
+  await assert.rejects(selectRelease("12;touch bad"), /identity/);
+  await assert.rejects(publishCandidate({ ...h.options, releasePr: "../12" }), /identity/);
+  assert.deepEqual(h.state.mutations, []);
+});
+
+test("a release PR binds its version, merge commit and that commit's latest-attempt candidate", async t => {
+  const h = await harness(t);
+  assert.deepEqual(await selectRelease("12"), { releasePr: 12, version: "v0.1.0", runId: 11, attempt: 2,
+    artifactId: 55, source: revision, artifactDigest: h.state.artifact.digest });
+  assert.deepEqual(h.state.mutations, []);
+});
+
+for (const [name, mutate, message] of [
+  ["unmerged PR", s => { s.pr.merged = false; }, /still pending/],
+  ["feature branch PR", s => { s.pr.head.ref = "feature"; }, /still pending/],
+  ["fork head", s => { s.pr.head.repo.full_name = "someone/k8s-incident-agent"; }, /still pending/],
+  ["other base branch", s => { s.pr.base.ref = "release"; }, /still pending/],
+  ["already tagged PR", s => { s.pr.labels = [{ name: "autorelease: tagged" }]; }, /still pending/],
+  ["title/manifest version drift", s => { s.files[".release-please-manifest.json"] = '{".": "0.1.1"}'; }, /version differ/],
+  ["extra manifest package", s => { s.files[".release-please-manifest.json"] = '{".": "0.1.0", "web": "0.1.0"}'; }, /version differ/],
+  ["missing manifest", s => { delete s.files[".release-please-manifest.json"]; }, /readable release manifest/],
+  ["unparsable title", s => { s.pr.title = "Release 0.1.0"; }, /version differ/],
+  ["merge commit without CI", s => { s.runs = []; }, /exactly one owning-main CI run/],
+  ["duplicate CI runs", s => { s.runs = [s.run, { ...s.run, id: 12 }]; }, /exactly one owning-main CI run/],
+  ["candidate only from an earlier attempt", s => { s.artifacts = [{ ...s.artifact, id: 54, name: `oci-candidate-${revision}-1` }]; },
+    /latest CI attempt/],
+]) test(`release selection rejects ${name} without mutation`, async t => {
+  const h = await harness(t); mutate(h.state);
+  await assert.rejects(selectRelease(12), message);
+  assert.deepEqual(h.state.mutations, []);
+});
+
+for (const [name, changelog, message] of [
+  ["missing entry", "# Changelog\n\n## 0.0.9 (2026-09-01)\n\n* older\n", /exactly one v0\.1\.0 entry/],
+  ["duplicate entry", `${firstChangelog}\n## 0.1.0 (2026-09-25)\n\n* again\n`, /exactly one v0\.1\.0 entry/],
+  ["empty entry", "# Changelog\n\n## 0.1.0 (2026-09-24)\n\n\n## 0.0.9 (2026-09-01)\n\n* older\n", /entry is empty/],
+]) test(`publication stops before writes when CHANGELOG.md has ${name}`, async t => {
+  const h = await harness(t); h.state.files["CHANGELOG.md"] = changelog;
+  await assert.rejects(publishCandidate(h.options), message);
   assert.deepEqual(h.state.mutations, []);
 });
 
@@ -176,18 +248,60 @@ for (const [name, mutate, message] of [
   assert.deepEqual(h.state.mutations, []);
 });
 
-test("real pack/import/OCI validation, simulated publication, install download and idempotent retry", async t => {
+test("real pack/import/OCI validation, changelog notes, publication, tagged release PR and install download", async t => {
   const h = await harness(t);
   assert.equal((await publishCandidate(h.options)).status, "published");
   assert.equal(h.state.release.draft, false);
   assert.equal(h.state.ref.object.sha, revision);
+  const notes = h.state.release.body;
+  assert.ok(notes.startsWith(`${firstEntry}\n\n---\n`));
+  assert.doesNotMatch(notes, /## 0\.1\.0|2026-09-24|Changelog/);
+  for (const fact of ["Release PR: #12", `Source: ${revision}`,
+    `https://github.com/${repository}/actions/runs/11/attempts/2`, "Artifact: 55", "release.json"]) assert.ok(notes.includes(fact), fact);
+  // Only a published release moves the PR out of pending, so Release Please can open the next one.
+  const publication = h.state.mutations.findIndex(item => item.method === "PATCH");
+  assert.deepEqual(h.state.mutations.slice(publication + 1).map(item => [item.method, item.endpoint]), [
+    ["POST", "/issues/12/labels"], ["DELETE", "/issues/12/labels/autorelease%3A%20pending"]]);
+  assert.deepEqual(h.state.pr.labels, [{ name: "autorelease: tagged" }]);
   assert.deepEqual(await fetchPublishedRelease("v0.1.0", path.join(h.folder, "installed"), source), fixture.manifest);
   const count = h.state.mutations.length;
-  assert.equal((await publishCandidate(h.options)).status, "already-published");
+  await assert.rejects(publishCandidate(h.options), /still pending/);
   assert.equal(h.state.mutations.length, count);
   const registry = await h.readRegistry();
   assert.equal(registry.calls.filter(args => args.includes("copy")).length, 2);
   for (const filename of registry.authFiles) await assert.rejects(access(filename));
+});
+
+test("a label failure after publication is finished by a fresh dispatch without republishing", async t => {
+  const h = await harness(t); h.state.failLabels = true;
+  await assert.rejects(publishCandidate(h.options), /v0\.1\.0 is published but release PR #12 is still pending/);
+  assert.equal(h.state.release.draft, false);
+  h.state.failLabels = false;
+  const count = h.state.mutations.length;
+  assert.equal((await publishCandidate(h.options)).status, "already-published");
+  assert.deepEqual(h.state.mutations.slice(count).map(item => [item.method, item.endpoint]), [
+    ["POST", "/issues/12/labels"], ["DELETE", "/issues/12/labels/autorelease%3A%20pending"]]);
+  assert.deepEqual(h.state.pr.labels, [{ name: "autorelease: tagged" }]);
+});
+
+test("only the release version's own changelog entry becomes the notes", async t => {
+  const h = await harness(t);
+  h.state.files["CHANGELOG.md"] = "# Changelog\n\n## [0.1.10](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.1.9...v0.1.10) " +
+    "(2026-10-01)\n\n\n### Bug Fixes\n\n* later fix\n\n## 0.1.0 (2026-09-24)\n\n\n### Features\n\n* first capability\n\n" +
+    "## 0.0.9 (2026-09-01)\n\n* older\n";
+  assert.equal((await publishCandidate(h.options)).status, "published");
+  assert.ok(h.state.release.body.startsWith("### Features\n\n* first capability\n\n---\n"));
+  assert.doesNotMatch(h.state.release.body, /later fix|older/);
+});
+
+test("a reused draft whose notes were edited stops before any write", async t => {
+  const h = await harness(t); h.state.failAsset = "candidate.tar.gz";
+  await assert.rejects(publishCandidate(h.options), /attachment upload failed/);
+  h.state.failAsset = null;
+  h.state.release.body = "Edited by hand";
+  const count = h.state.mutations.length;
+  await assert.rejects(publishCandidate(h.options), /notes changed/);
+  assert.equal(h.state.mutations.length, count);
 });
 
 test("partial second-image upload leaves a draft; fresh approval resumes only missing content", async t => {
@@ -237,11 +351,13 @@ test("same version with a conflicting registry digest refuses all publication wr
 });
 
 test("conflicting or incomplete existing attachment is retained without overwrite", async t => {
-  const h = await harness(t);
-  h.state.release = { id: 88, tag_name: "v0.1.0", target_commitish: revision, draft: true, prerelease: false };
+  const h = await harness(t); h.state.failAsset = "release.json";
+  await assert.rejects(publishCandidate(h.options), /attachment upload failed/);
+  h.state.failAsset = null;
   h.state.assets = [{ id: 200, name: "release.json", state: "starter", size: 0, digest: null }];
+  const count = h.state.mutations.length;
   await assert.rejects(publishCandidate(h.options), /conflicts or is incomplete/);
-  assert.deepEqual(h.state.mutations, []);
+  assert.equal(h.state.mutations.length, count);
 });
 
 test("version source conflicts stop before registry and attachment writes", async t => {
@@ -267,6 +383,8 @@ test("incomplete published release cannot be installed or silently repaired", as
   const h = await harness(t);
   await publishCandidate(h.options);
   h.state.assets.pop();
+  // A still-pending PR (labeling not finished) reaches the already-published branch.
+  h.state.pr.labels = [{ name: "autorelease: pending" }];
   const before = h.state.mutations.length;
   await assert.rejects(fetchPublishedRelease("v0.1.0", path.join(h.folder, "incomplete"), source), /incomplete/);
   await assert.rejects(publishCandidate(h.options), /incomplete/);
