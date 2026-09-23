@@ -115,6 +115,7 @@ npm run build
 - [启动与配置](documentation/getting-started.md)
 - [架构、流程图、数据模型与精选决策](documentation/README.md)
 - [安全边界](documentation/security.md) · [评估证据与限制](documentation/evaluation.md)
+- [版本、更新日志与发布](documentation/releases.md)
 - [运维脚本](scripts/README.md)
 - [监控与告警目录](monitoring/catalog/README.md)
 - [故障注入场景与安全说明](scenarios/README.md)

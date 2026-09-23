@@ -16,6 +16,11 @@ assistant. Contributions should preserve that boundary.
 - Never replace a real failure with a hard-coded diagnosis, a fake tool success,
   an implicit in-memory fallback, or a UI-only safety check. Deterministic fixtures
   belong in tests or the scenario catalog, not in production fallback paths.
+- Write commit messages as [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
+  (`feat:`, `fix:`, …; `!` or a `BREAKING CHANGE:` footer for breaking changes). They
+  drive the version and `CHANGELOG.md` entries of the release PR, so edit
+  `CHANGELOG.md` and `.release-please-manifest.json` only in that PR; see
+  [releases](documentation/releases.md).
 - For security concerns, follow [SECURITY.md](SECURITY.md), not a public bug report.
 
 ## Local checks
@@ -87,8 +92,10 @@ repository locks. Hosted OS and Chrome maintenance still follow the runner image
 CI restores no cross-run caches and does not upload traces, credentials or
 databases. Only the owning-main candidate job uploads the bounded OCI transport
 artifact described in [releases](documentation/releases.md). No production secrets,
-model calls, cluster access or publishing are part of this workflow. Maintainers
-configure log retention and check hosted/fork behavior separately from local checks.
+model calls, cluster access or publishing are part of this workflow; release PR
+maintenance and approved publication are separate workflows with their own
+permissions. Maintainers configure log retention and check hosted/fork behavior
+separately from local checks.
 
 The policy script only guards contribution triggers, read-only token permissions,
 secret references/passing, full-SHA external Action/workflow references, and checkout
