@@ -26,6 +26,8 @@ Build exports the committed tree with `git archive`; ignored credentials, retain
 
 Smoke requires Docker, `openssl`, and actual amd64/arm64 execution support (native or QEMU). It pulls the pinned Skopeo utility and imports each selected platform into the local Docker store, verifies its platform, revision, config and rootfs against the OCI graph, then runs the verified daemon image ID with no external network, no host ports, a read-only filesystem and temporary writable data. The daemon ID need not equal the OCI config digest across Docker stores. Imported image cache remains local; only the invocation's containers and scratch data are removed.
 
+Config verification matches every field declared by the OCI candidate. Docker-added inspection metadata and absent/null/empty defaults are tolerated; additional non-default startup settings (such as an entrypoint, environment variables or volumes) are rejected. Platform, source revision and rootfs checks remain exact.
+
 - Console: launch the image's real command and require `/api/healthz` = 204.
 - Runtime: migrate an empty temporary database, launch its real Uvicorn factory and require healthy startup with model diagnosis unavailable. A loopback TLS Kubernetes stub supplies version/access-review responses; generated test credentials have no cluster authority. No model or real Kubernetes calls are made.
 
