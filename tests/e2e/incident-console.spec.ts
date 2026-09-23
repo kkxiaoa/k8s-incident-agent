@@ -144,11 +144,17 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   await page.goto(
     "/incidents/10000000-0000-4000-8000-000000000005",
   );
-  await expect(page.locator(".metric-panel")).toHaveCount(8);
+  const metrics = page.getByRole("region", { name: "Incident 指标", exact: true });
+  await expect(metrics).toBeVisible();
+  await expect(metrics.locator(".metric-panel")).toHaveCount(8);
   // The alert's trigger panel leads on its own row; context panels stay paired.
-  const dualContainer = await page.locator(".monitoring-panels").boundingBox();
-  const leadPanel = await page.locator(".metric-panel--lead").boundingBox();
-  const context = page.locator(".metric-panel:not(.metric-panel--lead)");
+  await expect(metrics.locator(".monitoring-panels")).toBeVisible();
+  await expect(metrics.locator(".metric-panel--lead")).toBeVisible();
+  const dualContainer = await metrics.locator(".monitoring-panels").boundingBox();
+  const leadPanel = await metrics.locator(".metric-panel--lead").boundingBox();
+  const context = metrics.locator(".metric-panel:not(.metric-panel--lead)");
+  await expect(context.nth(0)).toBeVisible();
+  await expect(context.nth(1)).toBeVisible();
   const firstPanel = await context.nth(0).boundingBox();
   const secondPanel = await context.nth(1).boundingBox();
   expect(dualContainer).not.toBeNull();
@@ -171,9 +177,9 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   await page.goto(
     "/incidents/10000000-0000-4000-8000-000000000006",
   );
-  await expect(page.locator(".monitoring-panels--single .metric-panel")).toHaveCount(1);
-  const singleContainer = await page.locator(".monitoring-panels--single").boundingBox();
-  const singlePanel = await page.locator(".monitoring-panels--single .metric-panel").boundingBox();
+  await expect(metrics.locator(".monitoring-panels--single .metric-panel")).toBeVisible();
+  const singleContainer = await metrics.locator(".monitoring-panels--single").boundingBox();
+  const singlePanel = await metrics.locator(".monitoring-panels--single .metric-panel").boundingBox();
   expect(singleContainer).not.toBeNull();
   expect(singlePanel).not.toBeNull();
   expect(Math.abs((singleContainer?.width ?? 0) - (singlePanel?.width ?? 0))).toBeLessThanOrEqual(1);

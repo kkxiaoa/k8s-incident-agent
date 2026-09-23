@@ -14,6 +14,8 @@ async function seed(page: Page) {
 }
 
 async function prepare(page: Page) {
+  // The first event connection starts a persisted-detail refresh after hydration.
+  await expect(page.getByText("实时追踪中", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "准备修复提案", exact: true }).click();
   await expect(page).toHaveURL(/\?runId=/);
   await expect(page.getByRole("button", { name: "审阅并批准", exact: true })).toBeEnabled();
@@ -261,6 +263,44 @@ test("double click and a second tab converge on the saved decision without optim
   await expect(second.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toContainText("已批准，等待执行领取");
   await expect(second.getByRole("button", { name: "审阅并批准", exact: true })).toHaveCount(0);
   await second.close();
+});
+
+test("focus refresh does not swallow opening review and keeps submission disabled", async ({ page, context }) => {
+  const incidentId = await seed(page);
+  const url = await prepare(page);
+  const runId = new URL(url).searchParams.get("runId");
+  const second = await context.newPage();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    await second.goto(url);
+    await expect(second.getByRole("region", { name: "诊断结论", exact: true })).toContainText("引用第 1 次诊断运行");
+    await expect(second.getByText("实时追踪中", { exact: true })).toBeVisible();
+    const button = second.getByRole("button", { name: "审阅并批准", exact: true });
+    await expect(button).toBeEnabled();
+    await second.route((target) => target.pathname === `/api/runtime/incidents/${incidentId}` && target.searchParams.get("runId") === runId, async (route) => {
+      const response = await route.fetch();
+      await gate;
+      await route.fulfill({ response });
+    });
+    await button.scrollIntoViewIfNeeded();
+    const before = await button.boundingBox();
+    await second.mouse.move(before!.x + before!.width / 2, before!.y + before!.height / 2);
+    await second.mouse.down();
+    await second.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(second.getByText("正在核对持久化状态，提交暂不可用…", { exact: true })).toBeVisible();
+    await second.mouse.up();
+    const confirmation = second.getByRole("group", { name: "确认审阅并批准", exact: true });
+    await expect(confirmation).toBeVisible();
+    const submit = confirmation.getByRole("button", { name: "批准并执行", exact: true });
+    await expect(submit).toBeDisabled();
+    release();
+    await expect(submit).toBeEnabled();
+  } finally {
+    release();
+    await second.unrouteAll({ behavior: "wait" });
+    await second.close();
+  }
 });
 
 test("rejection is explicit and replayed from saved detail", async ({ page }) => {

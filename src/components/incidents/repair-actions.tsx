@@ -104,20 +104,21 @@ export function RepairActions({ detail, busy, busyReason, refreshing, onAction, 
         {run.status === "WAITING_APPROVAL" && run.waitingExpiresAt ? <ApprovalCountdown /> : null}
       </div>
       {run.status === "WAITING_APPROVAL" && run.waitingExpiresAt ? <p>批准截止时间：<LocalTimestamp timestamp={run.waitingExpiresAt} /></p> : null}
+      {/* Opening a saved review is local; refresh locks still guard every submission. */}
       {!confirming ? <div className="repair-actions__buttons">
         {visible.filter((action) => action !== "refresh" && action !== "edit").map((action) => <ActionButton key={action} type="button"
           disabledReason={unavailableReason(action)}
           className={action === "approve" || action === "prepare" ? "primary-button" : "secondary-button"}
-          disabled={busy || refreshing || actions[action] !== null || (deadlineReached && (action === "approve" || action === "reject"))}
+          disabled={(action === "prepare" && (busy || refreshing)) || actions[action] !== null || (deadlineReached && (action === "approve" || action === "reject"))}
           onClick={() => action === "prepare" ? void submit(action) : setConfirming(action)}>{LABELS[action]}</ActionButton>)}
         {canAdjust ? <ActionButton type="button" className="secondary-button"
           disabledReason={busy || refreshing ? pendingReason : unavailableReason(actions.refresh === "not_applicable" ? "edit" : "refresh")}
-          disabled={busy || refreshing || (actions.refresh !== null && actions.edit !== null)}
+          disabled={actions.refresh !== null && actions.edit !== null}
           onClick={() => setConfirming(actions.refresh === null ? "refresh" : "edit")}>{run.status === "WAITING_APPROVAL" && actions.approve !== "proposal_expired" ? "调整提案" : "重新生成提案"}</ActionButton> : null}
       </div> : null}
       {reasons.map((reason) => <p className="repair-actions__reason" key={reason}>{ACTION_UNAVAILABLE_LABELS[reason]}</p>)}
       {actions.approve === "authentication_required" ? <p><a href="/login">登录</a>后可审批这份提案。</p> : null}
-      {refreshing || busy ? <p role="status"><ShimmerText>{refreshing ? "正在核对持久化状态，操作暂不可用…" : "正在提交并读取保存结果…"}</ShimmerText></p> : null}
+      {refreshing || busy ? <p role="status"><ShimmerText>{refreshing ? "正在核对持久化状态，提交暂不可用…" : "正在提交并读取保存结果…"}</ShimmerText></p> : null}
       {error ? <p className="page-alert" role="alert">{error}</p> : null}
       {confirming ? <div className={`repair-confirmation${confirming === "approve" || confirming === "rollback" ? " repair-confirmation--caution" : ""}`}
         role="group" aria-label={adjustment ? "调整提案" : `确认${LABELS[confirming]}`}>
