@@ -1,10 +1,18 @@
 "use client";
 
-import { useEffect, useId, useState, type ButtonHTMLAttributes, type CSSProperties, type SyntheticEvent } from "react";
+import { useEffect, useId, useState, useSyncExternalStore, type ButtonHTMLAttributes, type CSSProperties, type SyntheticEvent } from "react";
 
-export function ActionButton({ disabledReason, disabled, id, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & {
+function subscribeToHydration(): () => void {
+  return () => undefined;
+}
+
+export function ActionButton({ disabledReason: suppliedReason, disabled: suppliedDisabled, id, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & {
   disabledReason?: string;
 }) {
+  // SSR controls must not accept clicks before React can handle them.
+  const hydrated = useSyncExternalStore(subscribeToHydration, () => true, () => false);
+  const disabled = !hydrated || suppliedDisabled;
+  const disabledReason = hydrated ? suppliedReason : "页面正在加载，请稍候。";
   const generatedId = useId();
   const buttonId = id ?? generatedId;
   const hintId = `${buttonId}-hint`;

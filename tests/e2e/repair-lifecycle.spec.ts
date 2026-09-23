@@ -75,6 +75,38 @@ test("a new Run arriving over SSE is offered without changing the current select
   }
 });
 
+for (const [phase, actionName] of [["preparation", "准备修复提案"], ["approval", "审阅并批准"]]) {
+  test(`repair ${phase} waits for hydration when page scripts are delayed`, async ({ page, context }) => {
+    const incidentId = await seed(page);
+    const url = actionName === "准备修复提案" ? `/incidents/${incidentId}` : await prepare(page);
+    const loading = await context.newPage();
+    let releaseScripts!: () => void;
+    const scriptsReady = new Promise<void>((resolve) => { releaseScripts = resolve; });
+    await loading.route(/\/_next\/static\/.*\.js(?:\?|$)/, async (route) => {
+      await scriptsReady;
+      await route.continue();
+    });
+    try {
+      await loading.goto(url, { waitUntil: "commit" });
+      const action = loading.getByRole("button", { name: actionName, exact: true });
+      await expect(action).toBeVisible();
+      await expect(action).toBeDisabled();
+      releaseScripts();
+      await expect(action).toBeEnabled();
+      if (actionName === "准备修复提案") {
+        await prepare(loading);
+      } else {
+        await action.click();
+        await expect(loading.getByRole("group", { name: "确认审阅并批准", exact: true })).toBeVisible();
+      }
+    } finally {
+      releaseScripts();
+      await loading.unrouteAll({ behavior: "wait" });
+      await loading.close();
+    }
+  });
+}
+
 test("approval deadline stays synchronized across stage and action anchors", async ({ page }) => {
   await page.clock.install();
   const incidentId = await seed(page);
@@ -215,13 +247,16 @@ test("double click and a second tab converge on the saved decision without optim
   const second = await context.newPage();
   await second.goto(url);
   await second.getByRole("button", { name: "审阅并批准", exact: true }).click();
+  const secondConfirmation = second.getByRole("group", { name: "确认审阅并批准", exact: true });
+  await expect(secondConfirmation).toBeVisible();
+  await expect(secondConfirmation.getByRole("button", { name: "批准并执行", exact: true })).toBeEnabled();
   let decisions = 0;
   page.on("request", (request) => { if (request.url().endsWith("/approvals")) decisions++; });
   await page.getByRole("button", { name: "审阅并批准", exact: true }).click();
   await page.getByRole("button", { name: "批准并执行", exact: true }).dblclick();
   await expect(page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toContainText("已批准，等待执行领取");
   expect(decisions).toBe(1);
-  await expect(second.getByRole("button", { name: "批准并执行", exact: true })).toBeDisabled();
+  await expect(secondConfirmation.getByRole("button", { name: "批准并执行", exact: true })).toBeDisabled();
   await second.reload();
   await expect(second.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toContainText("已批准，等待执行领取");
   await expect(second.getByRole("button", { name: "审阅并批准", exact: true })).toHaveCount(0);

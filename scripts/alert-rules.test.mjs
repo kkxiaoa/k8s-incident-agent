@@ -72,6 +72,9 @@ test("managed alert rules pass their promtool unit tests on the locked Prometheu
     [
       "run",
       "--rm",
+      // Linux bind mounts retain mkdtemp's private owner permissions.
+      "--user",
+      `${process.getuid()}:${process.getgid()}`,
       "--network",
       "none",
       "--volume",

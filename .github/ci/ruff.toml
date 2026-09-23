@@ -1,0 +1,4 @@
+extend = "../../services/agent-runtime/pyproject.toml"
+
+[lint.isort]
+known-first-party = ["k8s_incident_agent"]
