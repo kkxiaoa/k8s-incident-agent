@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { waitForLiveEvents } from "./live-events";
 import { login } from "./operator-session";
 
 const runtimeUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_RUNTIME_PORT ?? "18080"}`;
@@ -47,6 +48,7 @@ test("operator preparation and withdrawal work; logout leaves read-only history 
   const incidentId = await seed(page);
   await login(page);
   await page.goto(`/incidents/${incidentId}`);
+  await waitForLiveEvents(page);
   await page.getByRole("button", { name: "准备修复提案", exact: true }).click();
   await expect(page).toHaveURL(/\?runId=/);
   const preparedUrl = page.url();
@@ -81,6 +83,7 @@ test("operator preparation and withdrawal work; logout leaves read-only history 
   await page.setViewportSize({ width: 1280, height: 720 });
   await login(page);
   await page.goto(preparedUrl);
+  await waitForLiveEvents(page);
   await page.getByRole("button", { name: "撤回我的申请", exact: true }).click();
   await page.getByRole("button", { name: "确认撤回申请", exact: true }).click();
   await expect(page.getByRole("navigation", { name: "事件处理阶段" })).toContainText("已撤回");
@@ -90,6 +93,7 @@ test("expired login clears an open confirmation without replaying it after login
   const incidentId = await seed(page);
   await login(page);
   await page.goto(`/incidents/${incidentId}`);
+  await waitForLiveEvents(page);
   await page.getByRole("button", { name: "准备修复提案", exact: true }).click();
   await expect(page).toHaveURL(/\?runId=/);
   const preparedUrl = page.url();

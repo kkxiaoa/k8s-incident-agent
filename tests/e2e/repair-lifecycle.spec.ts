@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { waitForLiveEvents } from "./live-events";
 import { login } from "./operator-session";
 
 const runtimeUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_RUNTIME_PORT ?? "18080"}`;
@@ -14,8 +15,7 @@ async function seed(page: Page) {
 }
 
 async function prepare(page: Page) {
-  // The first event connection starts a persisted-detail refresh after hydration.
-  await expect(page.getByText("实时追踪中", { exact: true })).toBeVisible();
+  await waitForLiveEvents(page);
   await page.getByRole("button", { name: "准备修复提案", exact: true }).click();
   await expect(page).toHaveURL(/\?runId=/);
   await expect(page.getByRole("button", { name: "审阅并批准", exact: true })).toBeEnabled();
@@ -275,7 +275,7 @@ test("focus refresh does not swallow opening review and keeps submission disable
   try {
     await second.goto(url);
     await expect(second.getByRole("region", { name: "诊断结论", exact: true })).toContainText("引用第 1 次诊断运行");
-    await expect(second.getByText("实时追踪中", { exact: true })).toBeVisible();
+    await waitForLiveEvents(second);
     const button = second.getByRole("button", { name: "审阅并批准", exact: true });
     await expect(button).toBeEnabled();
     await second.route((target) => target.pathname === `/api/runtime/incidents/${incidentId}` && target.searchParams.get("runId") === runId, async (route) => {
