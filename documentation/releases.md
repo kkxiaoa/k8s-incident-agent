@@ -31,6 +31,8 @@ Config verification matches every field declared by the OCI candidate. Docker-ad
 - Console: launch the image's real command and require `/api/healthz` = 204.
 - Runtime: migrate an empty temporary database, launch its real Uvicorn factory and require healthy startup with model diagnosis unavailable. A loopback TLS Kubernetes stub supplies version/access-review responses; generated test credentials have no cluster authority. No model or real Kubernetes calls are made.
 
+Each startup must succeed within five minutes, a hang bound sized for QEMU emulation rather than a performance target. A failed step reports its component, platform, exit status and a bounded tail of its error output (for startup, including the candidate's own output) as one escaped line.
+
 This proves packaging/startup only when actually executed successfully. Mock-Docker orchestration tests do not count as those four smoke results. The standalone `pack` command verifies content, **not** previous smoke success; CI ordering and later publication provenance must establish that evidence.
 
 ## Candidate CI and transport

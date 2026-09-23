@@ -4,23 +4,33 @@ import { setTimeout as delay } from "node:timers/promises";
 
 // Runs inside the exact candidate image, without a network interface or host ports.
 const [architecture, rawCommand] = process.argv.slice(2);
+// A hang bound, not a startup target: an emulated platform starts many times slower.
+const startupSeconds = 300;
+const deadline = performance.now() + startupSeconds * 1000;
 assert.equal(process.arch, architecture === "amd64" ? "x64" : "arm64");
 const [program, ...args] = JSON.parse(rawCommand);
-const child = spawn(program, args, { stdio: "ignore", env: { ...process.env, HOSTNAME: "127.0.0.1" } });
+const child = spawn(program, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOSTNAME: "127.0.0.1" } });
+let output = "";
+for (const stream of [child.stdout, child.stderr]) {
+  stream.setEncoding("utf8");
+  stream.on("data", chunk => { output = (output + chunk).slice(-2000); });
+}
+const running = () => child.exitCode === null && child.signalCode === null;
 try {
   let ready = false;
-  for (let attempt = 0; attempt < 120 && child.exitCode === null; attempt++) {
+  while (!ready && running() && performance.now() < deadline) {
     try {
       const response = await fetch("http://127.0.0.1:3000/api/healthz", { signal: AbortSignal.timeout(1000) });
       ready = response.status === 204;
-      if (ready) break;
     } catch { /* The real server has not started yet. */ }
-    await delay(500);
+    if (!ready) await delay(500);
   }
-  assert.ok(ready, "Candidate Console did not become ready");
+  const outcome = running() ? `within ${startupSeconds} s` : `and exited with ${child.exitCode ?? child.signalCode}`;
+  // Shown only on failure; the smoke holds no credential with authority.
+  assert.ok(ready, `Candidate Console did not become ready ${outcome}; output tail:\n${output}`);
 } finally {
   child.kill("SIGTERM");
   const stop = setTimeout(() => child.kill("SIGKILL"), 5000);
-  await new Promise(resolve => { if (child.exitCode !== null) resolve(); else child.once("exit", resolve); });
+  await new Promise(resolve => { if (!running()) resolve(); else child.once("exit", resolve); });
   clearTimeout(stop);
 }

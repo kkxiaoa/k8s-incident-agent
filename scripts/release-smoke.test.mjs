@@ -47,7 +47,10 @@ if (args[0] === 'run' && args.includes('copy')) {
   if (process.env.SMOKE_TEST_WRONG_ROOTFS === '1') image.RootFS.Layers = ['sha256:' + '0'.repeat(64)];
   console.log(JSON.stringify([image]));
 } else if (args[0] === 'run' && args.includes('--pull=never')) {
-  if (process.env.SMOKE_TEST_FAIL === '1') process.exit(3);
+  if (process.env.SMOKE_TEST_FAIL === '1') {
+    fs.writeSync(2, process.env.SMOKE_TEST_STDERR ?? '');
+    process.exit(3);
+  }
 } else if (!['pull', 'load', 'container'].includes(args[0])) process.exit(2);
 `, { mode: 0o755 });
   return { fixture, log, environment };
@@ -106,3 +109,15 @@ for (const [name, env, expected, transform] of [["executes both exact platforms"
     }
   });
 }
+
+test("candidate smoke failure names the check and keeps bounded container output on one line (fake Docker boundary, not smoke evidence)", t => {
+  const f = smokeFixture(t);
+  const stderr = `${"x".repeat(5000)}\n::error::forged\nRuntimeError: Candidate Runtime did not become ready`;
+  const result = spawnSync(process.execPath, [path.join(root, "scripts/release-smoke.mjs"), "--release", f.fixture.release],
+    { cwd: root, env: { ...process.env, ...f.environment, SMOKE_TEST_FAIL: "1", SMOKE_TEST_STDERR: stderr }, encoding: "utf8" });
+  assert.equal(result.status, 1, result.stderr);
+  const lines = result.stderr.trim().split("\n");
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^FAIL release_smoke_failed: console linux\/amd64 startup failed during isolated candidate smoke \(exit 3\): "x+\\n::error::forged\\nRuntimeError: Candidate Runtime did not become ready"$/);
+  assert.equal(JSON.parse(lines[0].slice(lines[0].indexOf(": \"") + 2)), stderr.slice(-4000));
+});
