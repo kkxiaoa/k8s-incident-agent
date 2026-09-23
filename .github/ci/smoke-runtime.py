@@ -13,9 +13,15 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import IO
 
 from argon2 import PasswordHasher
 from argon2.profiles import RFC_9106_LOW_MEMORY
+
+# A hang bound, not a startup target: an emulated platform compiles every
+# imported module from source many times slower than a native one.
+STARTUP_SECONDS = 300
+OUTPUT_TAIL_BYTES = 2000
 
 
 class KubernetesStub(BaseHTTPRequestHandler):
@@ -93,8 +99,60 @@ class KubernetesStub(BaseHTTPRequestHandler):
         )
 
 
+def start_candidate(raw_command: str, output: IO[bytes], deadline: float) -> None:
+    subprocess.run(
+        ["alembic", "upgrade", "head"],
+        check=True,
+        timeout=deadline - time.monotonic(),
+        stdout=output,
+        stderr=subprocess.STDOUT,
+    )
+    child = subprocess.Popen(
+        json.loads(raw_command), stdout=output, stderr=subprocess.STDOUT
+    )
+    try:
+        while time.monotonic() < deadline:
+            if child.poll() is not None:
+                raise RuntimeError(
+                    "Candidate Runtime stopped during startup "
+                    f"with exit code {child.returncode}"
+                )
+            try:
+                with urllib.request.urlopen(
+                    "http://127.0.0.1:8000/healthz", timeout=1
+                ) as response:
+                    result = json.load(response)
+                    if (
+                        response.status == 200
+                        and result["status"] == "ok"
+                        and result["diagnosis"]["status"] == "unavailable"
+                    ):
+                        return
+            except (urllib.error.URLError, TimeoutError):
+                pass
+            time.sleep(0.5)
+        raise RuntimeError(
+            "Candidate Runtime did not become ready without model credentials "
+            f"within {STARTUP_SECONDS} s"
+        )
+    finally:
+        child.terminate()
+        try:
+            child.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+
+
+def output_tail(path: Path) -> str:
+    with path.open("rb") as output:
+        output.seek(max(0, path.stat().st_size - OUTPUT_TAIL_BYTES))
+        return output.read().decode(errors="replace")
+
+
 def main() -> None:
     architecture, raw_command = sys.argv[1:]
+    deadline = time.monotonic() + STARTUP_SECONDS
     expected = "x86_64" if architecture == "amd64" else "aarch64"
     if platform.machine() != expected:
         raise RuntimeError("Candidate architecture differs from requested platform")
@@ -120,45 +178,16 @@ def main() -> None:
     context.load_cert_chain("/smoke/tls/ca.crt", "/smoke/tls/key.pem")
     server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    subprocess.run(
-        ["alembic", "upgrade", "head"],
-        check=True,
-        timeout=60,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    child = subprocess.Popen(
-        json.loads(raw_command), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    try:
-        for _attempt in range(120):
-            if child.poll() is not None:
-                raise RuntimeError("Candidate Runtime stopped during startup")
-            try:
-                with urllib.request.urlopen(
-                    "http://127.0.0.1:8000/healthz", timeout=1
-                ) as response:
-                    result = json.load(response)
-                    if (
-                        response.status == 200
-                        and result["status"] == "ok"
-                        and result["diagnosis"]["status"] == "unavailable"
-                    ):
-                        return
-            except (urllib.error.URLError, TimeoutError):
-                pass
-            time.sleep(0.5)
-        raise RuntimeError(
-            "Candidate Runtime did not become ready without model credentials"
-        )
-    finally:
-        child.terminate()
+    path = Path("/tmp/candidate-output")
+    with path.open("wb") as output:
         try:
-            child.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            child.kill()
-            child.wait()
-        server.shutdown()
+            start_candidate(raw_command, output, deadline)
+        except Exception:
+            # Shown only on failure; the smoke holds no credential with authority.
+            print(f"Candidate output tail:\n{output_tail(path)}", file=sys.stderr)
+            raise
+        finally:
+            server.shutdown()
 
 
 if __name__ == "__main__":

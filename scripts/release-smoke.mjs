@@ -26,19 +26,23 @@ function matchesCandidateConfig(actual, expected) {
     Object.hasOwn(expected, key) || actual[key] == null || isDeepStrictEqual(actual[key], value));
 }
 
-async function command(program, args, timeout = 120_000) {
+async function command(program, args, timeout = 120_000, step = program) {
   try {
     return (await exec(program, args, { timeout, maxBuffer: 2 * 1024 * 1024 })).stdout;
-  } catch {
-    throw new ReleaseError("release_smoke_failed", `${program} failed during isolated candidate smoke`);
+  } catch (error) {
+    const status = error.killed ? `stopped after ${timeout / 1000} s` : `exit ${error.code ?? error.signal}`;
+    // One JSON line: candidate output cannot start a line with a workflow command.
+    const tail = String(error.stderr ?? "").trim().slice(-4000);
+    throw new ReleaseError("release_smoke_failed",
+      `${step} failed during isolated candidate smoke (${status})${tail ? `: ${JSON.stringify(tail)}` : ""}`);
   }
 }
 
-async function container(args, scratch, timeout) {
+async function container(args, scratch, timeout, step) {
   const cidFile = path.join(scratch, `${randomUUID()}.cid`);
   try {
     return await command("docker", ["run", "--rm", "--cidfile", cidFile,
-      "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges", ...args], timeout);
+      "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges", ...args], timeout, step);
   } finally {
     const id = await readFile(cidFile, "utf8").catch(() => "");
     if (/^[a-f0-9]{64}$/.test(id.trim())) {
@@ -80,6 +84,7 @@ async function main() {
         const manifest = JSON.parse(await readFile(path.join(layout, "blobs/sha256", digest.slice(7)), "utf8"));
         const configId = manifest.config.digest;
         const config = JSON.parse(await readFile(path.join(layout, "blobs/sha256", configId.slice(7)), "utf8"));
+        const check = `${component} ${platform}`;
         const archiveName = `${component}-${architecture}.tar`;
         const localReference = `k8s-incident-agent-smoke:${component}-${architecture}-${configId.slice(7)}`;
         await container(["--user", `${process.getuid()}:${process.getgid()}`, "--read-only",
@@ -87,15 +92,15 @@ async function main() {
           "--tmpfs", "/var/tmp:rw,nosuid,nodev,mode=1777",
           "--volume", `${layout}:/input:ro`, "--volume", `${scratch}:/output:rw`,
           tools.skopeo, "--override-os", "linux", "--override-arch", architecture, "copy",
-          "oci:/input", `docker-archive:/output/${archiveName}:${localReference}`], scratch, 10 * 60_000);
-        await command("docker", ["load", "--input", path.join(scratch, archiveName)], 10 * 60_000);
+          "oci:/input", `docker-archive:/output/${archiveName}:${localReference}`], scratch, 10 * 60_000, `${check} conversion`);
+        await command("docker", ["load", "--input", path.join(scratch, archiveName)], 10 * 60_000, `${check} import`);
         await rm(path.join(scratch, archiveName));
-        const [image] = JSON.parse(await command("docker", ["image", "inspect", localReference]));
+        const [image] = JSON.parse(await command("docker", ["image", "inspect", localReference], 120_000, `${check} inspection`));
         if (!/^sha256:[a-f0-9]{64}$/.test(image?.Id) || image?.Os !== "linux" || image?.Architecture !== architecture ||
             !Array.isArray(config?.config?.Cmd) || config.config.Cmd.length === 0 ||
             !matchesCandidateConfig(image?.Config, config.config) ||
             !isDeepStrictEqual(image?.RootFS, { Type: config?.rootfs?.type, Layers: config?.rootfs?.diff_ids })) {
-          throw new ReleaseError("release_smoke_failed", "Imported platform image differs from the verified candidate config");
+          throw new ReleaseError("release_smoke_failed", `${check} imported image differs from the verified candidate config`);
         }
         const args = ["--platform", platform, "--pull=never", "--read-only", "--pids-limit=128", "--memory=1g",
           "--tmpfs", "/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700"];
@@ -109,7 +114,8 @@ async function main() {
           args.push("--volume", `${path.join(root, ".github/ci/smoke-console.mjs")}:/smoke/console.mjs:ro`,
             "--entrypoint", "node", image.Id, "/smoke/console.mjs");
         }
-        await container([...args, architecture, JSON.stringify(image.Config.Cmd)], scratch, 3 * 60_000);
+        // Exceeds the in-container startup deadline, which reports its own failure.
+        await container([...args, architecture, JSON.stringify(image.Config.Cmd)], scratch, 7 * 60_000, `${check} startup`);
         results.push({ component, platform, status: "passed" });
       }
     }
