@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.1.0...v0.1.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **release:** let the publisher relabel the release PR ([5e4736e](https://github.com/kkxiaoa/k8s-incident-agent/commit/5e4736e59955f5b152712f527b4d5c947f921469))
+* **release:** request artifact archives with the API media type ([6b34a98](https://github.com/kkxiaoa/k8s-incident-agent/commit/6b34a983cc43af634ee85f6716066f7ede9631a6))
+
 ## 0.1.0 (2026-09-23)
 
 
