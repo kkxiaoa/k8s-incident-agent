@@ -16,11 +16,12 @@ assistant. Contributions should preserve that boundary.
 - Never replace a real failure with a hard-coded diagnosis, a fake tool success,
   an implicit in-memory fallback, or a UI-only safety check. Deterministic fixtures
   belong in tests or the scenario catalog, not in production fallback paths.
-- Write commit messages as [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
-  (`feat:`, `fix:`, …; `!` or a `BREAKING CHANGE:` footer for breaking changes). They
-  drive the version and `CHANGELOG.md` entries of the release PR, so edit
-  `CHANGELOG.md` and `.release-please-manifest.json` only in that PR; see
-  [releases](documentation/releases.md).
+- Title pull requests, and preferably commits, as [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
+  (`feat:`, `fix:`, …; `!` for breaking changes). Pull requests are squash-merged, so
+  the title becomes the commit on `main` that drives the version and `CHANGELOG.md`
+  entry of the release PR; add any `BREAKING CHANGE:` or `Release-As:` footer at the
+  end of the squash commit message. Edit `CHANGELOG.md` and
+  `.release-please-manifest.json` only in that PR; see [releases](documentation/releases.md).
 - For security concerns, follow [SECURITY.md](SECURITY.md), not a public bug report.
 
 ## Local checks
