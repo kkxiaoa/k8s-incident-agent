@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   getAgentRuntimeBaseUrl,
+  getIcpRecord,
   getIncidentIntakeMode,
   getYamlAssistantUrl,
 } from "./server-config";
@@ -121,6 +122,32 @@ describe("getAgentRuntimeBaseUrl", () => {
     expect(getAgentRuntimeBaseUrl().href).toBe(
       "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000/",
     );
+  });
+});
+
+describe("getIcpRecord", () => {
+  it("is absent until a deployment supplies its filing number", () => {
+    delete process.env.PUBLIC_ICP_RECORD;
+    expect(getIcpRecord()).toBeNull();
+
+    vi.stubEnv("PUBLIC_ICP_RECORD", "京ICP备12345678号-1");
+    expect(getIcpRecord()).toBe("京ICP备12345678号-1");
+
+    vi.stubEnv("PUBLIC_ICP_RECORD", "粤ICP备2024012345号");
+    expect(getIcpRecord()).toBe("粤ICP备2024012345号");
+  });
+
+  it.each([
+    "<b>京ICP备12345678号</b>",
+    "京ICP备12345678号 https://example.test",
+    "京ICP证030173号",
+    "ICP备12345678号",
+    " 京ICP备12345678号",
+    "京ICP备12345号",
+  ])("rejects anything other than a plain filing number", (value) => {
+    vi.stubEnv("PUBLIC_ICP_RECORD", value);
+
+    expect(() => getIcpRecord()).toThrow("Agent Runtime configuration is invalid.");
   });
 });
 

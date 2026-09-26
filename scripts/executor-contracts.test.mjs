@@ -69,7 +69,7 @@ test("executor component reuses the Runtime image and isolates identity and moun
 });
 
 test("fixed profiles neither enable nor grant the Executor", () => {
-  for (const profile of ["kind-evaluation", "k3s-evaluation", "k3s-online"]) {
+  for (const profile of ["kind-evaluation", "k3s-evaluation", "k3s-online", "k3s-public"]) {
     const output = execFileSync(kubectl, ["kustomize", path.join(application, "overlays", profile)], { encoding: "utf8" });
     assert.doesNotMatch(output, /sandbox-executor|executor-auth|EXECUTOR_HMAC_KEY_FILE/);
   }

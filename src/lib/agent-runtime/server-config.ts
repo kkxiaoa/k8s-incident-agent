@@ -106,3 +106,17 @@ export function getYamlAssistantUrl(): string | null {
   }
   return url.href;
 }
+
+// MIIT non-commercial filing numbers, e.g. "京ICP备12345678号-1"; plain text only.
+const ICP_RECORD = /^\p{Script=Han}ICP备\d{6,12}号(?:-\d{1,3})?$/u;
+
+export function getIcpRecord(): string | null {
+  const configuredValue = process.env.PUBLIC_ICP_RECORD;
+  if (configuredValue === undefined || configuredValue.trim() === "") {
+    return null;
+  }
+  if (!ICP_RECORD.test(configuredValue)) {
+    throw new Error(INVALID_CONFIGURATION_MESSAGE);
+  }
+  return configuredValue;
+}
