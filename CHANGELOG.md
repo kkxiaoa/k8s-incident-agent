@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.1.1...v0.2.0) (2026-09-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deploy:** add a host-bound public K3s profile with an ICP footer ([#14](https://github.com/kkxiaoa/k8s-incident-agent/issues/14))
+
+### Features
+
+* **deploy:** add a host-bound public K3s profile with an ICP footer ([#14](https://github.com/kkxiaoa/k8s-incident-agent/issues/14)) ([cd606b8](https://github.com/kkxiaoa/k8s-incident-agent/commit/cd606b8b75f5e6cfcd186cdca5cabbff44812836))
+* **deploy:** constrain release deployment and preserve runtime state ([#16](https://github.com/kkxiaoa/k8s-incident-agent/issues/16)) ([cdfbaf2](https://github.com/kkxiaoa/k8s-incident-agent/commit/cdfbaf263f92e2fc75d1db83e8b22eac78c722c1))
+
 ## [0.1.1](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.1.0...v0.1.1) (2026-09-24)
 
 
