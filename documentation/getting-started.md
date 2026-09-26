@@ -58,7 +58,9 @@ Alternatively supply these variables to the command directly. The fake command o
 
 `YAML_ASSISTANT_URL` is optional. Unset/empty means no sibling navigation. If you actually operate that app, set an ordinary HTTP(S) URL or a same-origin absolute path such as `/yaml-assistant`. Credentials, query strings, fragments and protocol-relative URLs are rejected by the Console configuration validator. This link is not a startup dependency, Runtime endpoint, or authenticated handoff.
 
-Cluster templates likewise omit the link by default. Configure it only in this project's Console ConfigMap and roll out the Console when needed; do not edit the sibling's resources. Deployment status checks the fixed Runtime connection, not availability of an external navigation target.
+The private cluster profiles omit the link; the `k3s-public` profile points it at `https://yaml.kubesmith.cloud/`. Elsewhere, configure it only in this project's Console ConfigMap and roll out the Console when needed; do not edit the sibling's resources. Deployment status checks only the values the profile renders into the Console ConfigMap (for `k3s-public`, the fixed link); keys you add yourself are not compared, and the external target is never probed.
+
+`PUBLIC_ICP_RECORD` is optional. Set to a plain MIIT filing number such as `京ICP备12345678号-1`, the Console footer shows it as a link to `https://beian.miit.gov.cn/`; any other value fails configuration. Leave it unset unless the site is served under a Chinese ICP filing.
 
 ## 5. Real Runtime: prerequisites, then startup
 

@@ -121,6 +121,41 @@ test("fixed profiles keep public demo disabled with access controls only in Runt
   }
 });
 
+test("public profile fixes its origin and navigation but leaves data approval to the installer", () => {
+  const rendered = documents(render("overlays/k3s-public"));
+  const runtimeConfig = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "agent-runtime-config");
+  const consoleConfig = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "incident-console-config");
+  assert.equal(runtimeConfig.data.OPERATOR_ORIGIN, "https://incident.kubesmith.cloud");
+  assert.equal(runtimeConfig.data.CONSOLE_ACCESS_MODE, "public_demo");
+  // CD must never approve public data; the Runtime refuses public_demo without it.
+  assert.equal(Object.hasOwn(runtimeConfig.data, "PUBLIC_DEMO_DATA_APPROVED"), false);
+  assert.equal(rendered.some(item => item.metadata?.name === "agent-runtime-public-approval"), false);
+  // Migration and Runtime both validate Settings: every container loading the CD-managed
+  // config also reads the approval key, and its containers otherwise match k3s-online.
+  const runtimePod = resources => resources.find(item => item.kind === "Deployment" && item.metadata.name === "agent-runtime").spec.template.spec;
+  const publicPod = runtimePod(rendered);
+  const onlinePod = runtimePod(documents(render("overlays/k3s-online")));
+  const approval = { name: "PUBLIC_DEMO_DATA_APPROVED", valueFrom: { configMapKeyRef: { name: "agent-runtime-public-approval", key: "PUBLIC_DEMO_DATA_APPROVED" } } };
+  const loadsRuntimeConfig = container => container.envFrom?.some(source => source.configMapRef?.name === "agent-runtime-config");
+  // No entry references another, so env order carries no meaning here.
+  const byEnvName = containers => containers.map(container => container.env ? { ...container, env: container.env.toSorted((a, b) => a.name.localeCompare(b.name)) } : container);
+  for (const field of ["initContainers", "containers"]) {
+    assert.deepEqual(
+      byEnvName(publicPod[field]),
+      byEnvName(onlinePod[field].map(container => loadsRuntimeConfig(container) ? { ...container, env: [...(container.env ?? []), approval] } : container)),
+      field,
+    );
+  }
+  assert.deepEqual(
+    [...publicPod.initContainers, ...publicPod.containers].filter(loadsRuntimeConfig).map(container => container.name),
+    ["migrate", "runtime"],
+  );
+  assert.equal(consoleConfig.data.YAML_ASSISTANT_URL, "https://yaml.kubesmith.cloud/");
+  for (const key of ["CONSOLE_ACCESS_MODE", "PUBLIC_DEMO_DATA_APPROVED"]) {
+    assert.equal(Object.hasOwn(consoleConfig.data, key), false);
+  }
+});
+
 function identity(document) {
   return [
     document.kind,
@@ -164,6 +199,7 @@ test("profile overlays change platform storage, ingress, intake and operator ori
   const kind = indexDocuments(render("overlays/kind-evaluation"));
   const evaluation = indexDocuments(render("overlays/k3s-evaluation"));
   const online = indexDocuments(render("overlays/k3s-online"));
+  const publicDemo = indexDocuments(render("overlays/k3s-public"));
 
   const kindPvc = getResource(
     kind,
@@ -191,7 +227,7 @@ test("profile overlays change platform storage, ingress, intake and operator ori
     false,
   );
 
-  for (const profile of [evaluation, online]) {
+  for (const profile of [evaluation, online, publicDemo]) {
     const pvc = getResource(
       profile,
       "PersistentVolumeClaim",
@@ -203,20 +239,42 @@ test("profile overlays change platform storage, ingress, intake and operator ori
       [...profile.values()].some((resource) => resource.kind === "PersistentVolume"),
       false,
     );
-    const ingress = getResource(
-      profile,
-      "Ingress",
-      "incident-console",
-      "k8s-incident-agent",
-    );
-    assert.equal(ingress.spec.ingressClassName, "traefik");
-    assert.equal(ingress.spec.rules[0].http.paths[0].backend.service.name, "incident-console");
   }
+  // A host-less rule also answers the node address and outranks neighbouring
+  // IngressRoutes, so private profiles are reached only through port-forward and
+  // do not admit Traefik to the Console either.
+  for (const profile of [evaluation, online]) {
+    assert.equal(
+      [...profile.values()].some((resource) => resource.kind === "Ingress"),
+      false,
+    );
+    assert.equal(
+      profile.has("NetworkPolicy/k8s-incident-agent/allow-traefik-to-console"),
+      false,
+    );
+  }
+  assert.equal(
+    publicDemo.has("NetworkPolicy/k8s-incident-agent/allow-traefik-to-console"),
+    true,
+  );
+  const publicIngress = getResource(
+    publicDemo,
+    "Ingress",
+    "incident-console",
+    "k8s-incident-agent",
+  );
+  assert.equal(publicIngress.spec.ingressClassName, "traefik");
+  assert.deepEqual(publicIngress.spec.rules.map((rule) => rule.host), ["incident.kubesmith.cloud"]);
+  assert.deepEqual(publicIngress.spec.tls, [
+    { hosts: ["incident.kubesmith.cloud"], secretName: "incident-console-tls" },
+  ]);
+  assert.equal(publicIngress.spec.rules[0].http.paths[0].backend.service.name, "incident-console");
 
   for (const [profile, expectedMode] of [
     [kind, "manual"],
     [evaluation, "manual"],
     [online, "online"],
+    [publicDemo, "online"],
   ]) {
     for (const name of ["agent-runtime-config", "incident-console-config"]) {
       assert.equal(
@@ -569,8 +627,9 @@ test("Console and Runtime exposure and RBAC stay within the fixed read-only boun
       "ClusterIP",
     );
   }
+  // Only the public profile routes to the Console, and never to the Runtime.
   const ingress = getResource(
-    resources,
+    indexDocuments(render("overlays/k3s-public")),
     "Ingress",
     "incident-console",
     "k8s-incident-agent",
@@ -1134,7 +1193,6 @@ test("NetworkPolicy render has default deny plus only the required L3/L4 paths",
       "allow-runtime-patch-validator-egress",
       "allow-runtime-prometheus-egress",
       "allow-runtime-to-patch-validator",
-      "allow-traefik-to-console",
       "default-deny",
     ],
   );
@@ -1268,6 +1326,8 @@ test("uninstall renders only non-data resources and never a Namespace or volume"
       "Role/k8s-incident-scenarios/prometheus-pod-discovery",
       "RoleBinding/k8s-incident-scenarios/prometheus-pod-discovery",
       "NetworkPolicy/k8s-incident-monitoring/allow-prometheus-kubelet-egress",
+      "Ingress/k8s-incident-agent/incident-console",
+      "NetworkPolicy/k8s-incident-agent/allow-traefik-to-console",
     ]) {
       assert.equal(indexed.has(key), profile === "uninstall/k3s", `${profile}: ${key}`);
     }
@@ -1390,6 +1450,7 @@ function createFakeKubectl(t, overrides = {}) {
   const executable = path.join(directory, "kubectl");
   const rendered = {
     k3s: indexDocuments(render("overlays/k3s-online")),
+    "k3s-public": indexDocuments(render("overlays/k3s-public")),
     kind: indexDocuments(render("overlays/kind-evaluation")),
   };
   const resourceFixtures = Object.fromEntries(
@@ -1446,6 +1507,11 @@ function nodeMetricsEnabled() {
   return process.env.FAKE_PROFILE !== "kind-evaluation";
 }
 
+function fixtureProfile() {
+  if (process.env.FAKE_PROFILE === "kind-evaluation") return "kind";
+  return process.env.FAKE_PROFILE === "k3s-public" ? "k3s-public" : "k3s";
+}
+
 function boundClusterRbac(kind) {
   const document = structuredClone(
     nodeMetricsClusterRbac.find((candidate) => candidate.kind === kind),
@@ -1470,7 +1536,7 @@ function saveState(value) {
 }
 
 function fixture(kind, name, namespace) {
-  const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
+  const profile = fixtureProfile();
   return structuredClone(resourceFixtures[profile][kind + "/" + namespace + "/" + name]);
 }
 
@@ -2112,12 +2178,14 @@ function response(key, args) {
           PATCH_VALIDATOR_HMAC_KEY_FILE: "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key",
           OPERATOR_VERIFIER_FILE: "/var/run/secrets/k8s-incident-agent/operator/password-verifier",
           OPERATOR_ORIGIN: process.env.FAKE_OPERATOR_ORIGIN_DRIFT === "1" ? "https://other.example.test" : process.env.FAKE_PROFILE === "kind-evaluation" ? "http://127.0.0.1:13000" : "https://console.example.test",
+          CONSOLE_ACCESS_MODE: process.env.FAKE_PROFILE === "k3s-public" && process.env.FAKE_ACCESS_MODE_DRIFT !== "1" ? "public_demo" : "private",
+          ...(process.env.FAKE_PROFILE === "k3s-public" ? {} : { PUBLIC_DEMO_DATA_APPROVED: "false" }),
         }
         : {
           AGENT_RUNTIME_URL: "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000",
-          ...(process.env.FAKE_YAML_ASSISTANT_URL === undefined ? {} : {
-            YAML_ASSISTANT_URL: process.env.FAKE_YAML_ASSISTANT_URL,
-          }),
+          ...(process.env.FAKE_YAML_ASSISTANT_URL === undefined
+            ? process.env.FAKE_PROFILE === "k3s-public" ? { YAML_ASSISTANT_URL: "https://yaml.kubesmith.cloud/" } : {}
+            : { YAML_ASSISTANT_URL: process.env.FAKE_YAML_ASSISTANT_URL }),
         },
     };
   }
@@ -2136,7 +2204,7 @@ function response(key, args) {
     return document;
   }
   if (key === "get networkpolicies --namespace k8s-incident-agent --output=json") {
-    const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
+    const profile = fixtureProfile();
     const current = state();
     const items = process.env.FAKE_CUTOVER === "1"
       ? current.policyPresent
@@ -2155,7 +2223,7 @@ function response(key, args) {
     };
   }
   if (key === "get networkpolicies --namespace k8s-incident-monitoring --output=json") {
-    const profile = process.env.FAKE_PROFILE === "kind-evaluation" ? "kind" : "k3s";
+    const profile = fixtureProfile();
     const items = structuredClone(
       networkPolicyFixtures[profile]["k8s-incident-monitoring"],
     );
@@ -2263,20 +2331,17 @@ function response(key, args) {
     if (!present) return "";
     return boundClusterRbac(clusterRbac[1] === "clusterrole" ? "ClusterRole" : "ClusterRoleBinding");
   }
-  if (key === "get ingress incident-console --namespace k8s-incident-agent --output=json") {
-    return {
-      kind: "Ingress",
-      metadata: { name: "incident-console", namespace: "k8s-incident-agent" },
-      spec: {
-        ingressClassName: "traefik",
-        rules: [{ http: { paths: [{ backend: { service: { name: "incident-console", port: { name: "http" } } } }] } }],
-      },
-      status: {
-        loadBalancer: {
-          ingress: process.env.FAKE_INGRESS_UNAVAILABLE === "1" ? [] : [{ ip: "192.0.2.10" }],
-        },
+  if (key === "get ingress incident-console --namespace k8s-incident-agent --ignore-not-found=true --output=json") {
+    if (process.env.FAKE_PROFILE !== "k3s-public" && process.env.FAKE_STRAY_INGRESS !== "1") return "";
+    const document = structuredClone(resourceFixtures["k3s-public"]["Ingress/k8s-incident-agent/incident-console"]);
+    if (process.env.FAKE_INGRESS_DRIFT === "host") document.spec.rules[0].host = "other.kubesmith.cloud";
+    if (process.env.FAKE_INGRESS_DRIFT === "tls") delete document.spec.tls;
+    document.status = {
+      loadBalancer: {
+        ingress: process.env.FAKE_INGRESS_UNAVAILABLE === "1" ? [] : [{ ip: "192.0.2.10" }],
       },
     };
+    return document;
   }
   if (key.startsWith("auth can-i ")) {
     const patchValidator = key.includes(
@@ -2980,7 +3045,7 @@ test("confirmed online install preflights, applies, waits, and reports the real 
     cluster: "k3s",
     deployments: "ready",
     runtime: { status: "ok", diagnosis: { status: "ready", reason: null } },
-    ingress: "traefik-ready",
+    ingress: "not-installed",
     intakeMode: "online",
     networkPolicies: "matched",
     networkPolicyEnforcement: "requires-live-probe",
@@ -3477,13 +3542,48 @@ test("status rejects monitoring component, storage, config, network, and RBAC dr
 });
 
 test("status rejects an Ingress without a Traefik address", (t) => {
-  const fake = createFakeKubectl(t, { FAKE_INGRESS_UNAVAILABLE: "1" });
+  const fake = createFakeKubectl(t, { FAKE_PROFILE: "k3s-public", FAKE_INGRESS_UNAVAILABLE: "1" });
   const result = runDeployment(
-    ["status", "k3s-online", "--context", "demo-k3s"],
+    ["status", "k3s-public", "--context", "demo-k3s"],
     fake.environment,
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^FAIL installation_not_ready /);
+});
+
+test("public status accepts only the rendered host-bound Ingress and public configuration", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_PROFILE: "k3s-public" });
+  const result = runDeployment(["status", "k3s-public", "--context", "demo-k3s"], fake.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const status = JSON.parse(result.stdout);
+  assert.equal(status.profile, "k3s-public");
+  assert.equal(status.ingress, "traefik-ready");
+  assert.equal(status.intakeMode, "online");
+  const calls = fake.calls().map((call) => call.args.join(" "));
+  assert.equal(calls.some((call) => call.includes(" apply")), false);
+});
+
+test("public status rejects drift in exposure host, TLS, access mode and sibling navigation", (t) => {
+  for (const [environment, message] of [
+    [{ FAKE_INGRESS_DRIFT: "host" }, /Console Ingress is not ready through Traefik/],
+    [{ FAKE_INGRESS_DRIFT: "tls" }, /Console Ingress is not ready through Traefik/],
+    [{ FAKE_ACCESS_MODE_DRIFT: "1" }, /Console access mode differs from the rendered profile/],
+    [{ FAKE_YAML_ASSISTANT_URL: "https://yaml.example.test/editor/" }, /Console ConfigMap does not match the selected profile/],
+  ]) {
+    const fake = createFakeKubectl(t, { FAKE_PROFILE: "k3s-public", ...environment });
+    const result = runDeployment(["status", "k3s-public", "--context", "demo-k3s"], fake.environment);
+    assert.equal(result.status, 1, JSON.stringify(environment));
+    assert.match(result.stderr, message);
+  }
+});
+
+test("private K3s status rejects a Console Ingress the profile does not render", (t) => {
+  for (const profile of ["k3s-evaluation", "k3s-online"]) {
+    const fake = createFakeKubectl(t, { FAKE_STRAY_INGRESS: "1", ...(profile === "k3s-evaluation" ? { FAKE_DEPLOYMENT_INTAKE_MODE: "manual" } : {}) });
+    const result = runDeployment(["status", profile, "--context", "demo-k3s"], fake.environment);
+    assert.equal(result.status, 1, profile);
+    assert.match(result.stderr, /Console Ingress exists although the profile does not expose the Console/);
+  }
 });
 
 test("status ignores an old terminating Console Pod after rollout", (t) => {

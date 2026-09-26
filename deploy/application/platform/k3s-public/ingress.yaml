@@ -8,8 +8,15 @@ metadata:
     app.kubernetes.io/part-of: k8s-incident-agent
 spec:
   ingressClassName: traefik
+  # Only the public host: a rule without a host also answers requests to the
+  # node address and outranks neighbouring IngressRoutes on the same Traefik.
+  tls:
+    - hosts:
+        - incident.kubesmith.cloud
+      secretName: incident-console-tls
   rules:
-    - http:
+    - host: incident.kubesmith.cloud
+      http:
         paths:
           - path: /
             pathType: Prefix

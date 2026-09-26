@@ -41,6 +41,10 @@ async function createFromHome(page: Page): Promise<void> {
     "href",
     "http://127.0.0.1:3001/",
   );
+  const record = page.getByRole("contentinfo").getByRole("link", { name: "京ICP备00000000号-1" });
+  await expect(record).toHaveAttribute("href", "https://beian.miit.gov.cn/");
+  await expect(record).toHaveAttribute("target", "_blank");
+  await expect(record).toHaveAttribute("rel", "noreferrer");
   await expect(page.getByRole("region", { name: "监控链路" })).toBeVisible();
   await expect(page.getByLabel("Runtime：正常")).toBeVisible();
   await expect(page.getByText(/Local Kind|Stage \d/)).toHaveCount(0);

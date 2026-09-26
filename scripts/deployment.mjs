@@ -106,6 +106,13 @@ const PROFILE_DEFINITIONS = Object.freeze({
     overlay: "overlays/k3s-online",
     uninstall: "uninstall/k3s",
   }),
+  "k3s-public": Object.freeze({
+    platform: "k3s",
+    intakeMode: "online",
+    nodeMetrics: true,
+    overlay: "overlays/k3s-public",
+    uninstall: "uninstall/k3s",
+  }),
 });
 const CUTOVER_PROFILES = new Set(["kind-evaluation", "k3s-evaluation"]);
 const CUTOVER_ADMISSION_RESOURCES = Object.freeze([
@@ -2918,7 +2925,13 @@ async function readInstallationStatus(
   if (runtimeConfig.data.OPERATOR_ORIGIN !== desiredRuntimeConfig.data.OPERATOR_ORIGIN) {
     throw stateError("Operator origin differs from the rendered profile");
   }
-  requireConsoleConfig(consoleConfig);
+  if (runtimeConfig.data.CONSOLE_ACCESS_MODE !== desiredRuntimeConfig.data.CONSOLE_ACCESS_MODE) {
+    throw stateError("Console access mode differs from the rendered profile");
+  }
+  requireConsoleConfig(
+    consoleConfig,
+    requireRenderedResource(desiredResources, "ConfigMap", "incident-console-config", APPLICATION_NAMESPACE),
+  );
   requireNetworkPolicies(
     applicationNetworkPolicies,
     desiredResources,
@@ -3052,16 +3065,18 @@ async function readInstallationStatus(
     MONITORING_NAMESPACE,
     "monitoring",
   );
-  if (request.profile.platform === "k3s") {
-    const ingress = await readJsonResource(execute, request.context, [
-      "get",
-      "ingress",
-      "incident-console",
-      "--namespace",
-      APPLICATION_NAMESPACE,
-      "--output=json",
-    ], "Console Ingress");
-    requireReadyIngress(ingress);
+  // Only a profile that renders the Console Ingress may expose it; any other
+  // Ingress with this name would answer requests the profile never approved.
+  const desiredIngress = desiredResources.get(
+    renderedResourceKey("Ingress", "incident-console", APPLICATION_NAMESPACE),
+  ) ?? null;
+  const ingress = await readOptionalConsoleIngress(request, execute);
+  if (desiredIngress === null) {
+    if (ingress !== null) {
+      throw stateError("Console Ingress exists although the profile does not expose the Console");
+    }
+  } else {
+    requireReadyIngress(ingress, desiredIngress);
   }
   await Promise.all([
     requireDiagnosticAccess(request, execute),
@@ -3091,8 +3106,7 @@ async function readInstallationStatus(
     cluster: request.profile.platform,
     deployments: "ready",
     runtime: { status: "ok", diagnosis: { status: diagnosis.status, reason: diagnosis.reason } },
-    ingress:
-      request.profile.platform === "k3s" ? "traefik-ready" : "not-installed",
+    ingress: desiredIngress === null ? "not-installed" : "traefik-ready",
     intakeMode: request.profile.intakeMode,
     networkPolicies: "matched",
     networkPolicyEnforcement: "requires-live-probe",
@@ -3963,6 +3977,26 @@ async function readPurgeTarget(request, execute) {
   };
 }
 
+async function readOptionalConsoleIngress(request, execute) {
+  const output = await runKubectl(
+    execute,
+    request.context,
+    [
+      "get",
+      "ingress",
+      "incident-console",
+      "--namespace",
+      APPLICATION_NAMESPACE,
+      "--ignore-not-found=true",
+      "--output=json",
+    ],
+    READ_TIMEOUT_MILLISECONDS,
+    "Console Ingress",
+  );
+  if (output.trim() === "") return null;
+  return parseJsonObject(output, "Console Ingress");
+}
+
 async function readOptionalPvc(request, execute, namespace, name) {
   const output = await runKubectl(
     execute,
@@ -4637,29 +4671,29 @@ function requireRuntimeConfig(document, profile) {
   }
 }
 
-function requireConsoleConfig(document) {
+function requireConsoleConfig(document, desired) {
   if (
     document.kind !== "ConfigMap" ||
     document.metadata?.name !== "incident-console-config" ||
     document.metadata?.namespace !== APPLICATION_NAMESPACE ||
     Object.hasOwn(document.data ?? {}, "INCIDENT_INTAKE_MODE") ||
     document.data?.AGENT_RUNTIME_URL !==
-      "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000"
+      "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000" ||
+    Object.entries(desired.data ?? {}).some(([key, value]) => document.data?.[key] !== value)
   ) {
     throw stateError("Console ConfigMap does not match the selected profile");
   }
 }
 
-function requireReadyIngress(document) {
-  const backend = document.spec?.rules?.[0]?.http?.paths?.[0]?.backend?.service;
-  const addresses = document.status?.loadBalancer?.ingress;
+function requireReadyIngress(document, desired) {
+  const addresses = document?.status?.loadBalancer?.ingress;
   if (
-    document.kind !== "Ingress" ||
+    document?.kind !== "Ingress" ||
     document.metadata?.name !== "incident-console" ||
     document.metadata?.namespace !== APPLICATION_NAMESPACE ||
     document.spec?.ingressClassName !== "traefik" ||
-    backend?.name !== "incident-console" ||
-    backend?.port?.name !== "http" ||
+    !isDeepStrictEqual(document.spec?.rules, desired.spec?.rules) ||
+    !isDeepStrictEqual(document.spec?.tls, desired.spec?.tls) ||
     !Array.isArray(addresses) ||
     addresses.length === 0 ||
     !addresses.some(

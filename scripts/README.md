@@ -209,6 +209,7 @@ Evidence kind、诊断 code 和 panel ID；不包含 Secret、token/hash、原�
 kind-evaluation
 k3s-evaluation
 k3s-online
+k3s-public
 ```
 
 所有 deployment 命令必须显式提供 `--release <release.json>`，并使用对应的干净源码。
@@ -238,6 +239,28 @@ ownership；migration 和 Runtime 本身仍保持非 root。status 按固定 kub
 Console 与 Runtime 的 Deployment Pod template；base 为 `manual`，`k3s-online`
 overlay 改为 `online` 并触发 rollout。ConfigMap 不重复保存该值，status 会
 核对实际容器 env 与 rollout generation，防止 profile 已升级但进程仍使用旧 mode。
+
+只有 `k3s-public` 渲染 Console Ingress 与放行 Traefik 访问 Console 的 NetworkPolicy
+`allow-traefik-to-console`：Ingress 只匹配 `incident.kubesmith.cloud`，并使用本项目的
+TLS Secret `incident-console-tls`（证书单独签发）。`k3s-evaluation` 与 `k3s-online` 不渲染
+这两个对象，只能经 port-forward 访问：没有 host 的规则会同时响应节点地址，并在同一 Traefik 上
+压过相邻站点的 IngressRoute。status 按渲染结果核对：公开 profile 要求 host、TLS 与后端一致
+且 Traefik 已分配地址；其他 profile 发现 `incident-console` Ingress 或多出的 NetworkPolicy 即失败。
+v0.1.1 及更早版本的私有 K3s 安装带有这两个对象，从 `k3s-public` 切换到私有 profile 也会留下它们；
+`upgrade` 不删除渲染结果之外的已有对象，清理前会在最后的 status 核对处失败。先确认它们带有
+`app.kubernetes.io/part-of: k8s-incident-agent` 标签，再手动删除，然后重新执行 status：
+
+```bash
+kubectl --context <context> --namespace k8s-incident-agent get ingress/incident-console networkpolicy/allow-traefik-to-console --show-labels --ignore-not-found
+kubectl --context <context> --namespace k8s-incident-agent delete ingress incident-console --ignore-not-found
+kubectl --context <context> --namespace k8s-incident-agent delete networkpolicy allow-traefik-to-console --ignore-not-found
+```
+
+`k3s-public` 在 `k3s-online` 之上固定 `OPERATOR_ORIGIN=https://incident.kubesmith.cloud`、
+`CONSOLE_ACCESS_MODE=public_demo` 与 `YAML_ASSISTANT_URL=https://yaml.kubesmith.cloud/`。
+公开数据批准不由部署写入：migration 与 Runtime 容器只从安装者预先创建的 ConfigMap
+`agent-runtime-public-approval` 读取 `PUBLIC_DEMO_DATA_APPROVED` 一个键；对象或键缺失时 Pod 无法启动，
+值为假或无法解析时 Runtime 拒绝以公开模式启动。
 
 所有 profile 都渲染 digest 锁定的 Prometheus、Alertmanager
 与 kube-state-metrics。operator 固定核对三个独立 ServiceAccount、当前
@@ -314,11 +337,17 @@ confirmation。confirm 会先运行一个全新 preview Job，再重读全部外
 不能直接安装到任意集群。真实 image import、apply、
 uninstall、purge 与 NetworkPolicy enforcement 都需要对应 live 授权。
 
-Console 默认不配置兄弟项目入口。确实部署了独立 YAML 编写助手时，可在本项目
+私有 profile 默认不配置兄弟项目入口，`k3s-public` 固定指向 `https://yaml.kubesmith.cloud/`。
+其他环境确实部署了独立 YAML 编写助手时，可在本项目
 `incident-console-config` 中显式设置 `YAML_ASSISTANT_URL` 并重启 Console；不要修改
 兄弟资源。该值只是普通导航，既不是安装依赖也不是 Runtime 上游。
 URL 的合法性由 Console 配置边界校验（无凭据的 HTTP(S) URL 或同源绝对路径，
-禁止 query/fragment）；deployment status 不核对兄弟项目地址，也不探测外部链接。
+禁止 query/fragment）；deployment status 只核对 profile 渲染出的值（即 `k3s-public` 的固定地址），
+自行添加的键不参与比较，也不探测外部链接。
+
+Console 页脚可显示 ICP 备案号：在 `incident-console-config` 中设置 `PUBLIC_ICP_RECORD`，
+只接受“省份简称 + ICP备 + 编号 + 号（可带 -N）”形式的纯文本，例如 `京ICP备12345678号-1`；
+链接固定为 `https://beian.miit.gov.cn/`，未设置时不显示，其他值使 Console 配置失败。
 
 ## 测试与静态检查
 

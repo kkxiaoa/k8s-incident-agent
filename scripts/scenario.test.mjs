@@ -1303,8 +1303,10 @@ function k3sStatusResponse(args, options, fixtures) {
   }
   if (
     key ===
-    "get ingress incident-console --namespace k8s-incident-agent --output=json"
+    "get ingress incident-console --namespace k8s-incident-agent --ignore-not-found=true --output=json"
   ) {
+    // Mirrors the render: private profiles expose no Console Ingress.
+    if (!fixtures.resources.has("Ingress/k8s-incident-agent/incident-console")) return "";
     const ingress = requireRenderedResource(
       fixtures,
       "Ingress",
