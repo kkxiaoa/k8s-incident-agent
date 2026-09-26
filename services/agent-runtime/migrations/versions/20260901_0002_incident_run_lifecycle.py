@@ -20,13 +20,13 @@ _BUSINESS_TABLES = (
 
 
 def upgrade() -> None:
-    _require_empty_business_tables("Stage 1.6 upgrade")
+    _require_empty_business_tables("Incident/Run lifecycle upgrade")
     _drop_stage_one_tables()
     _create_stage_one_six_tables()
 
 
 def downgrade() -> None:
-    _require_empty_business_tables("Stage 1.6 downgrade")
+    _require_empty_business_tables("Incident/Run lifecycle downgrade")
     _drop_stage_one_six_tables()
     _create_stage_one_tables()
 
@@ -40,7 +40,7 @@ def _require_empty_business_tables(operation: str) -> None:
         if row_count != 0:
             raise RuntimeError(
                 f"{operation} requires an empty business database; "
-                "use the explicit Stage 1 data reset"
+                "use the explicit runtime reset-stage-one-data command"
             )
 
 

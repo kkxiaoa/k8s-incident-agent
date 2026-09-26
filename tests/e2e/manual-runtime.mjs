@@ -33,7 +33,7 @@ try {
   process.once("SIGINT", () => { void stop(); });
   process.once("SIGTERM", () => { void stop(); });
   console.log("Fake Runtime ready: http://127.0.0.1:18080 (test data only; no cluster access)");
-  console.log(`Manual repair showcase: ${count} Task 7–10 cases available in the Incident list.`);
+  console.log(`Manual repair showcase: ${count} diagnosis and repair lifecycle cases available in the Incident list.`);
 } catch {
   await vite.close();
   console.error("Fake Runtime startup failed. Check the verifier file, Runtime virtualenv and port 18080.");

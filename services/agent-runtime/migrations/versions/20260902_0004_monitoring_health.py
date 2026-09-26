@@ -37,6 +37,6 @@ def downgrade() -> None:
     ).scalar_one()
     if row_count != 0:
         raise RuntimeError(
-            "Stage 2 monitoring downgrade requires an empty monitoring source state"
+            "Monitoring health downgrade requires an empty monitoring source state"
         )
     op.drop_table("monitoring_source_state")

@@ -103,7 +103,7 @@ class ResetOutcome(StrEnum):
 
 class StageOneResetError(RuntimeError):
     def __init__(self, code: str, phase: _ResetPhase) -> None:
-        super().__init__("Stage 1 data reset failed safely")
+        super().__init__("Runtime data reset failed safely")
         self.code = code
         self.phase = phase
 
@@ -175,7 +175,7 @@ class _BusinessState(StrEnum):
     MISSING = "missing"
     EMPTY = "empty"
     STAGE_ONE = "stage_one"
-    STAGE_ONE_SIX = "stage_one_six"
+    TARGET = "target"
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,13 +378,13 @@ def _inspect_business_database(
         if head in _SOURCE_HEADS and user_tables == _EXPECTED_LEGACY_BUSINESS_TABLES:
             state = _BusinessState.STAGE_ONE
         elif head == _TARGET_HEAD and user_tables == _EXPECTED_BUSINESS_TABLES:
-            state = _BusinessState.STAGE_ONE_SIX
+            state = _BusinessState.TARGET
         elif head is None and not user_tables:
             state = _BusinessState.EMPTY
         else:
             raise RuntimeError("Business database is not in an allowed reset state")
 
-        if state in (_BusinessState.STAGE_ONE, _BusinessState.STAGE_ONE_SIX):
+        if state in (_BusinessState.STAGE_ONE, _BusinessState.TARGET):
             table_names = (
                 _LEGACY_BUSINESS_TABLES
                 if state is _BusinessState.STAGE_ONE

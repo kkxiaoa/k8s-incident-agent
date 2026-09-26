@@ -1,4 +1,4 @@
-"""Create the Stage 1 business tables."""
+"""Create the initial business tables."""
 
 from collections.abc import Sequence
 

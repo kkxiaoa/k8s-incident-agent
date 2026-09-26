@@ -1,6 +1,6 @@
 # 项目脚本
 
-本目录存放 K8s Incident Agent 的本地开发、安装与验收脚本。Kind 和 Scenario 命令仍只服务固定本地沙箱；`deployment.mjs` 额外服务 Stage 1.5 固定 Kind/K3s profile，但只接受仓库内 manifest、固定 Namespace 和显式 kubeconfig context，不接受任意 manifest 路径或 `kubectl` 参数。
+本目录存放 K8s Incident Agent 的本地开发、安装与验收脚本。Kind 命令只服务固定本地沙箱；Scenario 命令服务固定 Kind 沙箱与经显式 context 指定的 `k3s-evaluation`；`deployment.mjs` 服务固定的 Kind/K3s 安装 profile，但只接受仓库内 manifest、固定 Namespace 和显式 kubeconfig context，不接受任意 manifest 路径或 `kubectl` 参数。
 
 除非特别说明，命令都应在仓库根目录执行。
 
@@ -33,7 +33,7 @@ npm run doctor
 | `npm run deployment -- install\|upgrade\|uninstall ... [--preview] --release <release.json>` | `deployment.mjs` | 默认预览精确资源集合 | 否 |
 | `npm run deployment -- install\|upgrade\|uninstall ... --confirm --release <release.json>` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
 | `npm run deployment -- purge ... --preview\|--confirm <identity> --release <release.json>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
-| `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation> --release <release.json>` | `deployment.mjs` | 用固定一次性 Job 预览或确认保留 PVC 的 Stage 1 数据 cutover | 是；`--confirm` 额外删除旧业务数据 |
+| `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation> --release <release.json>` | `deployment.mjs` | 用固定一次性 Job 预览或确认早期 Runtime 业务库（Alembic `20260814_0001`/`20260901_0002`）的数据 cutover，保留 PVC | 是；`--confirm` 额外删除旧业务数据 |
 | `npm run evaluation -- run <evaluation-profile> [--context <context>] --release <release.json>` | `evaluation.mjs` | 逐项验证七个 catalog scenario 与五类真实告警/诊断切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
 | `npm run evaluation -- online k3s-online --context <context> --release <release.json>` | `evaluation.mjs` | 验证 online profile 的只读 API 与人工入口缺失边界 | 否 |
 | `npm run scenario -- list` | `scenario.mjs` | 校验并列出版本化场景的公开信息 | 否 |
@@ -115,7 +115,7 @@ SCENARIO_CATALOG_DIR=/absolute/path/to/scenarios npm run scenario -- list
 
 ### 安装、验证与清理
 
-Kind evaluation 保持原有固定入口：
+Kind evaluation 使用固定入口：
 
 ```bash
 npm run scenario -- apply image-pull-backoff
@@ -165,7 +165,7 @@ CI 候选只在本仓库 main push 的四组质量检查成功后构建，不授
 
 ## `evaluation.mjs`
 
-Task 9 的评估入口不接受任意 URL、Namespace、manifest、PromQL、artifact 路径或
+评估入口不接受任意 URL、Namespace、manifest、PromQL、artifact 路径或
 kubectl 参数。Kind 只使用固定 context；K3s 必须显式提供经过 deployment status
 门禁的 context。命令会在本机回环建立 Runtime、Console、Prometheus 与
 Alertmanager 的固定临时 port-forward，完成后关闭。
@@ -190,12 +190,11 @@ Alertmanager，并要求 Watchdog 接收时间严格推进后再次证明链路�
 `--release <release.json>`。当前 Git worktree 必须干净，HEAD 与 manifest 的
 `sourceRevision` 完全一致；两组件 OCI 的 index、manifest、config 和全部 layer
 均检查 size/digest，且恰有 linux/amd64、linux/arm64 两个平台、同 source、非 root。
-不再读取源码中的应用 digest lock，不保留“仅两个 lock 文件差异”的祖先提交例外，
-也不回退到 `.runtime/release` 的旧目录。相同已验证 manifest 传给 deployment status
+应用镜像身份只来自该 manifest。相同已验证 manifest 传给 deployment status
 及 scenario 的 K3s preflight，不重复选择另一份镜像身份。
 
 online 产物固定原子写入 `.runtime/evaluation/<profile>.json`；dataset run 使用
-`<profile>-<dataset-id>-v<dataset-version>[-focused].json`，不覆盖历史 v2 结果。
+`<profile>-<dataset-id>-v<dataset-version>[-focused].json`，与普通 run 及其他数据集版本的结果互不覆盖。
 目录/文件权限分别为 `0700`/`0600`。artifact 包含所选 release manifest、数据集身份、布尔检查、状态、计数、
 Evidence kind、诊断 code 和 panel ID；不包含 Secret、token/hash、原始 Evidence、模型
 陈述、Event note、日志、上游响应或任意凭据。该命令具有上述精确 live 副作用，仍须在
@@ -230,7 +229,8 @@ archive后，使用`ctr images tag <imported-reference> <canonical-repository>@<
 为同一index增加精确reference。预检继续要求完整repository@index，不降级为可变tag。
 镜像导入/预取是另行授权的安装准备动作。render/status 基于临时 release Kustomize overlay；
 server dry-run 与实际 apply 使用同一份渲染内容。裸 `kubectl kustomize` 只得到源码模板，
-不是安装产物。第三方 monitoring digest lock 保持不变。
+不是安装产物。第三方 monitoring 镜像 digest 由 `deploy/application/versions.json` 与
+`deploy/monitoring/base/workloads/kustomization.yaml` 共同锁定，deployment 校验两者一致，不随 release 变化。
 Kind 静态 hostPath 额外由同一锁定 Runtime image 的受限 init 只调整挂载根
 ownership；migration 和 Runtime 本身仍保持非 root。status 按固定 kubectl 的资源
 列表命令 `apiVersion: v1, kind: List` producer contract 校验，并忽略 RollingUpdate
@@ -239,7 +239,7 @@ Console 与 Runtime 的 Deployment Pod template；base 为 `manual`，`k3s-onlin
 overlay 改为 `online` 并触发 rollout。ConfigMap 不重复保存该值，status 会
 核对实际容器 env 与 rollout generation，防止 profile 已升级但进程仍使用旧 mode。
 
-Stage 2 Task 2 已让三个 profile 同时渲染 digest 锁定的 Prometheus、Alertmanager
+所有 profile 都渲染 digest 锁定的 Prometheus、Alertmanager
 与 kube-state-metrics。operator 固定核对三个独立 ServiceAccount、当前
 Pod/ReplicaSet 最小 KSM RBAC 与 allow/deny、resource/metric allowlist、15秒
 scrape/evaluation、15天与1600MB TSDB上限、Prometheus保留PVC、配置/rule与catalog、
@@ -247,7 +247,7 @@ scrape/evaluation、15天与1600MB TSDB上限、Prometheus保留PVC、配置/rul
 NetworkPolicy对象。Runtime与Alertmanager分别挂载本Namespace中同名Secret的
 `token`；两个对象的同值只能由安装流程和真实Webhook验收证明，status不读取明文。
 
-Stage 3 DC-3 为两个 K3s profile 引入 Kustomize Component
+K3s profile 启用 Kustomize Component
 `deploy/monitoring/components/node-metrics`：Prometheus 以自身 projected token /
 集群 CA 严格 TLS 读取固定单节点 kubelet 的 `/metrics/resource|cadvisor|probes`，
 通过 `k8s-incident-scenarios` 内 `pods` `list/watch` 的 pod-role 服务发现为每个
@@ -262,7 +262,7 @@ ClusterRole/ClusterRoleBinding，供操作者与 CI 读取完整对象集合。
 operator 精确核对 `prometheus.yaml` 的 `scrape_config_files`、node-metrics scrape
 配置、Pod 发现 Role/RoleBinding、新增 egress NetworkPolicy、credential/scrape
 挂载与含 scrape 数据的配置 digest；并要求告警目录里每个面板的 `producer` 都有同名
-scrape job，否则渲染失败——不启用 node-metrics 的 profile 按 ADR-0011 豁免三条
+scrape job，否则渲染失败——不启用 node-metrics 的 profile 豁免三条
 kubelet job，其余 producer 一律强制；`nodes/metrics` 的 ClusterRole/ClusterRoleBinding
 不在 overlay 中，由 install/upgrade 在 admission boundary 就绪后把
 `deploy/monitoring/components/node-metrics/cluster-rbac.yaml` 的 `__REGISTERED_NODE__`
@@ -287,7 +287,9 @@ identity 返回给操作者；只有同一次确认仍匹配当前对象且 K3s 
 对象删除证明底层数据已清理，因此该脚本拒绝 Kind purge；Prometheus PVC 当前没有
 自动purge入口。
 
-Stage 1.6 数据 cutover 只接受 `kind-evaluation` 与 `k3s-evaluation`：
+Runtime 数据 cutover 只处理 Alembic head 为 `20260814_0001` 或 `20260901_0002` 的早期业务库：清除其业务数据、
+checkpoint 与 artifact 并重建空业务库，PVC 保留；缺失、空库或已完成 cutover 的空库只做收尾，其他状态一律拒绝。
+只接受 `kind-evaluation` 与 `k3s-evaluation`：
 
 ```bash
 npm run deployment -- cutover k3s-evaluation --context <context> --preview --release <release.json>
@@ -315,8 +317,8 @@ uninstall、purge 与 NetworkPolicy enforcement 都需要对应 live 授权。
 Console 默认不配置兄弟项目入口。确实部署了独立 YAML 编写助手时，可在本项目
 `incident-console-config` 中显式设置 `YAML_ASSISTANT_URL` 并重启 Console；不要修改
 兄弟资源。该值只是普通导航，既不是安装依赖也不是 Runtime 上游。
-URL 的合法性由 Console 现有配置边界校验（无凭据的 HTTP(S) URL 或同源绝对路径，
-禁止 query/fragment）；deployment status 不再要求固定兄弟 path，也不探测外部链接。
+URL 的合法性由 Console 配置边界校验（无凭据的 HTTP(S) URL 或同源绝对路径，
+禁止 query/fragment）；deployment status 不核对兄弟项目地址，也不探测外部链接。
 
 ## 测试与静态检查
 

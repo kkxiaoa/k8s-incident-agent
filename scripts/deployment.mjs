@@ -43,9 +43,9 @@ const NODE_METRICS_NETWORK_POLICIES = Object.freeze([
   "allow-prometheus-kubernetes-api-egress",
   "allow-prometheus-kubelet-egress",
 ]);
-// The producers any profile forgoes when it renders without node-metrics, which
-// today is Kind alone: ADR-0011 keeps it on that path because kubeadm self-signs
-// the kubelet serving certificate, which the ServiceAccount CA cannot validate.
+// The producers a profile forgoes when it renders without node-metrics, which only
+// Kind does: kubeadm self-signs the kubelet serving certificate, which the
+// ServiceAccount CA cannot validate.
 const NODE_METRICS_SCRAPE_JOBS = Object.freeze([
   "kubelet-resource",
   "kubelet-cadvisor",
