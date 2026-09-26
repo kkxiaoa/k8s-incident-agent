@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ScrollTop } from "@/components/ui/scroll-top";
 import { OperatorAccess } from "@/components/ui/operator-access";
 import { UiIcon } from "@/components/ui/ui-icon";
-import { getYamlAssistantUrl } from "@/lib/agent-runtime/server-config";
+import { getIcpRecord, getYamlAssistantUrl } from "@/lib/agent-runtime/server-config";
 
 import "./globals.css";
 
@@ -20,6 +20,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   const yamlAssistantUrl = getYamlAssistantUrl();
+  const icpRecord = getIcpRecord();
 
   return (
     <html lang="zh-CN" data-scroll-behavior="smooth">
@@ -58,6 +59,16 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           {children}
           <footer className="site-footer">
             <span>Evidence-first Kubernetes incident response</span>
+            {icpRecord === null ? null : (
+              <a
+                className="site-footer__record"
+                href="https://beian.miit.gov.cn/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {icpRecord}
+              </a>
+            )}
             <span>
               Runtime 是 Incident、Run、Evidence 与 Diagnosis 的权威来源
             </span>
