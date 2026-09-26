@@ -871,6 +871,18 @@ async function renderProfile(contract, profile, execute) {
   }
 }
 
+/** Render a fixed profile from a checked-out release source, after the version checks and with the render checks install and upgrade apply. */
+export async function renderSourceProfile(repositoryRoot, release, profileName, context, execute = executeExternalCommand) {
+  const profile = requireProfile(profileName);
+  const contract = await loadDeploymentContract(repositoryRoot, release);
+  // The render depends on the embedded Kustomize, and the release was verified only on the pinned cluster.
+  await requireClusterPrerequisites(contract, { profile, context }, execute, { components: false, images: false, secret: false });
+  const rendered = await renderProfile(contract, profile, execute);
+  requireRenderedMonitoringContract(rendered.resources, contract.monitoring, profile);
+  requireRuntimeConfig(rendered.resources.get(`ConfigMap/${APPLICATION_NAMESPACE}/agent-runtime-config`), profile);
+  return rendered.resources;
+}
+
 async function runCutover(contract, request, execute) {
   const target = await prepareCutoverTarget(contract, request, execute);
   const previewReset = await executeCutoverJob(
@@ -1644,7 +1656,7 @@ async function waitForCutoverDeletion(request, execute, podNames) {
   }
 }
 
-async function requireCutoverObjectsAbsent(request, execute) {
+export async function requireCutoverObjectsAbsent(request, execute) {
   const [job, pods] = await Promise.all([
     readOptionalCutoverJob(request, execute),
     readCutoverPods(request, execute),
@@ -4685,7 +4697,7 @@ function requireConsoleConfig(document, desired) {
   }
 }
 
-function requireReadyIngress(document, desired) {
+export function requireReadyIngress(document, desired) {
   const addresses = document?.status?.loadBalancer?.ingress;
   if (
     document?.kind !== "Ingress" ||
@@ -5554,7 +5566,7 @@ async function executeCommandResult(
   }
 }
 
-function executeExternalCommand(command, args, options) {
+export function executeExternalCommand(command, args, options) {
   return new Promise((resolve, reject) => {
     const child = execFile(
       command,

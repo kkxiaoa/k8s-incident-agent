@@ -1,0 +1,9 @@
+# Bootstrap-only: the restricted deploy identity, its admission limits and the backup volume.
+# No deployment profile includes this directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - service-accounts.yaml
+  - rbac.yaml
+  - admission-policy.yaml
+  - backup-pvc.yaml

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import https from "node:https";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { after, before, test } from "node:test";
-import { loadRelease } from "./release.mjs";
+import { ghcrRegistry, loadRelease, verifyRegistryRelease } from "./release.mjs";
 import { createReleaseFixture } from "./test-support/release-fixture.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -201,4 +203,126 @@ fs.cpSync(path.join(process.env.RELEASE_TEST_FIXTURE, component + '-oci'), dest,
     cwd: source, env: { ...env, RELEASE_TEST_BUILD_FAIL: "1" },
   }), error => /release_command_failed/.test(error.stderr));
   await assert.rejects(access(path.join(failed, "release.json")));
+});
+
+// The registry path reads the same fixture graph; content checks live in the GHCR client.
+function fixtureRegistry(f) {
+  const blob = (repository, digest) => path.join(f.bundle, `${repository.split("-").at(-1)}-oci`, "blobs", "sha256", digest.slice(7));
+  return {
+    async describe(repository, digest) {
+      const bytes = await readFile(blob(repository, digest));
+      return { mediaType: JSON.parse(bytes).mediaType, digest, size: bytes.length };
+    },
+    read: async (repository, descriptor) => JSON.parse(await readFile(blob(repository, descriptor.digest))),
+  };
+}
+
+test("published registry images pass the same OCI rules as a bundle", async t => {
+  const f = await fixture(t);
+  assert.deepEqual(await verifyRegistryRelease(f.manifest, source, fixtureRegistry(f)), f.manifest);
+});
+
+for (const [name, options, mutate, code] of [
+  ["mixed image source", { runtimeRevision: "f".repeat(40) }, undefined, "release_revision_mismatch"],
+  ["root image", { user: "0:0" }, undefined, "release_artifact_invalid"],
+  ["config platform mismatch", { configArchitecture: "amd64" }, undefined, "release_artifact_invalid"],
+  ["different source", {}, m => { m.sourceRevision = "f".repeat(40); }, "release_revision_mismatch"],
+  ["wrong child digest", {}, m => { m.images.console.platforms["linux/arm64"] = `sha256:${"e".repeat(64)}`; }, "release_artifact_invalid"],
+  ["foreign repository", {}, m => { m.images.console.repository = "ghcr.io/another/project"; }, "release_contract_invalid"],
+]) {
+  test(`registry release rejects ${name}`, async t => {
+    const f = await fixture(t, options);
+    mutate?.(f.manifest);
+    await assert.rejects(verifyRegistryRelease(f.manifest, source, fixtureRegistry(f)), { code });
+  });
+}
+
+async function testCertificates(t) {
+  const dir = await mkdtemp(path.join(directory, "tls-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const openssl = args => execFileSync("openssl", args, { cwd: dir, stdio: "pipe" });
+  const key = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"];
+  openssl(["req", "-x509", ...key, "-days", "1", "-subj", "/CN=registry-test-ca", "-keyout", "ca.key", "-out", "ca.pem"]);
+  openssl(["req", ...key, "-subj", "/CN=ghcr.io", "-keyout", "leaf.key", "-out", "leaf.csr"]);
+  await writeFile(path.join(dir, "ext"), "subjectAltName=DNS:ghcr.io,DNS:pkg-containers.githubusercontent.com\n");
+  openssl(["x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "1", "-extfile", "ext", "-out", "leaf.pem"]);
+  const read = name => readFile(path.join(dir, name));
+  return { ca: await read("ca.pem"), key: await read("leaf.key"), cert: await read("leaf.pem") };
+}
+
+test("GHCR reads use the host proxy, stay on package hosts and drop the credential at the CDN", async t => {
+  const f = await fixture(t);
+  const blobs = new Map();
+  for (const component of ["console", "runtime"]) {
+    const dir = path.join(f.bundle, `${component}-oci`, "blobs", "sha256");
+    for (const name of await readdir(dir)) {
+      const bytes = await readFile(path.join(dir, name));
+      let mediaType = "application/octet-stream";
+      try { mediaType = JSON.parse(bytes).mediaType ?? mediaType; } catch { /* layer */ }
+      blobs.set(`sha256:${name}`, { bytes, mediaType });
+    }
+  }
+  const tls = await testCertificates(t);
+  const seen = { connects: [], cdnAuthorization: [] };
+  let scenario = {};
+  const server = https.createServer({ key: tls.key, cert: tls.cert }, (req, res) => {
+    const host = req.headers.host;
+    const url = new URL(req.url, `https://${host}`);
+    const registry = url.pathname.match(/^\/v2\/kkxiaoa\/k8s-incident-agent-(?:console|runtime)\/(manifests|blobs)\/(sha256:[a-f0-9]{64})$/);
+    const cdn = url.pathname.match(/^\/ghcr1\/blobs\/(sha256:[a-f0-9]{64})$/);
+    if (host === "ghcr.io" && url.pathname === "/token") {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ token: "fixture-token" }));
+    } else if (host === "ghcr.io" && registry && req.headers.authorization !== "Bearer fixture-token") {
+      res.writeHead(401).end();
+    } else if (host === "ghcr.io" && registry && scenario.unavailable) {
+      res.writeHead(503).end();
+    } else if (host === "ghcr.io" && registry?.[1] === "blobs") {
+      res.writeHead(307, { location: `https://${scenario.cdnHost ?? "pkg-containers.githubusercontent.com"}/ghcr1/blobs/${registry[2]}?signed=1` }).end();
+    } else if (host === "ghcr.io" && registry && blobs.has(registry[2])) {
+      const blob = blobs.get(registry[2]);
+      res.writeHead(200, { "content-type": blob.mediaType, "content-length": blob.bytes.length, "docker-content-digest": registry[2] });
+      res.end(req.method === "HEAD" ? undefined : blob.bytes);
+    } else if (host === "pkg-containers.githubusercontent.com" && cdn && blobs.has(cdn[1])) {
+      seen.cdnAuthorization.push(req.headers.authorization ?? null);
+      const bytes = Buffer.from(blobs.get(cdn[1]).bytes);
+      if (scenario.tamper) bytes[bytes.length - 2] ^= 1;
+      res.writeHead(200, { "content-type": "application/octet-stream", "content-length": bytes.length }).end(bytes);
+    } else {
+      res.writeHead(404).end();
+    }
+  });
+  const proxy = net.createServer(client => {
+    client.once("data", chunk => {
+      const [method, authority] = chunk.toString("latin1").split("\r\n")[0].split(" ");
+      seen.connects.push(authority);
+      if (method !== "CONNECT") return client.end("HTTP/1.1 405 Method Not Allowed\r\n\r\n");
+      const upstream = net.connect(server.address().port, "127.0.0.1", () => {
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        upstream.pipe(client);
+        client.pipe(upstream);
+      });
+      upstream.on("error", () => client.destroy());
+      client.on("error", () => upstream.destroy());
+    });
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  await new Promise(resolve => proxy.listen(0, "127.0.0.1", resolve));
+  const agent = new https.Agent({ proxyEnv: { HTTPS_PROXY: `http://127.0.0.1:${proxy.address().port}` }, ca: tls.ca });
+  t.after(() => { agent.destroy(); server.close(); proxy.close(); });
+
+  assert.deepEqual(await verifyRegistryRelease(f.manifest, source, ghcrRegistry(agent)), f.manifest);
+  assert.deepEqual([...new Set(seen.connects)].sort(), ["ghcr.io:443", "pkg-containers.githubusercontent.com:443"]);
+  assert.ok(seen.cdnAuthorization.length > 0);
+  assert.deepEqual([...new Set(seen.cdnAuthorization)], [null]);
+
+  for (const [name, value, code] of [
+    ["redirect outside the package hosts", { cdnHost: "objects.example.com" }, "release_artifact_invalid"],
+    ["tampered blob", { tamper: true }, "release_artifact_invalid"],
+    ["unavailable registry", { unavailable: true }, "release_registry_unavailable"],
+  ]) {
+    scenario = value;
+    seen.connects.length = 0;
+    await assert.rejects(verifyRegistryRelease(f.manifest, source, ghcrRegistry(agent)), { code }, name);
+    assert.ok(!seen.connects.includes("objects.example.com:443"), name);
+  }
 });
