@@ -240,3 +240,11 @@
   color: var(--faint);
   font-size: 0.68rem;
 }
+
+.site-footer__record {
+  color: inherit;
+}
+
+.site-footer__record:hover {
+  text-decoration: underline;
+}

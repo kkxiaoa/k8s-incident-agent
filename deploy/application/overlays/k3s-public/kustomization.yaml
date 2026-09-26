@@ -1,0 +1,61 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../k3s-online
+  - ../../platform/k3s-public
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: agent-runtime-config
+        namespace: k8s-incident-agent
+      data:
+        OPERATOR_ORIGIN: https://incident.kubesmith.cloud
+        CONSOLE_ACCESS_MODE: public_demo
+  # CD never approves public data: the installer's approval lives in a
+  # bootstrap-owned ConfigMap, and the Runtime refuses public_demo without it.
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: agent-runtime-config
+      namespace: k8s-incident-agent
+    patch: |-
+      - op: remove
+        path: /data/PUBLIC_DEMO_DATA_APPROVED
+  # Migration and Runtime both validate Settings, so both read the approval. Only
+  # that key is projected: container env outranks every envFrom source, and a
+  # missing object or key keeps the Pod from starting.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: agent-runtime
+        namespace: k8s-incident-agent
+      spec:
+        template:
+          spec:
+            initContainers:
+              - name: migrate
+                env:
+                  - name: PUBLIC_DEMO_DATA_APPROVED
+                    valueFrom:
+                      configMapKeyRef:
+                        name: agent-runtime-public-approval
+                        key: PUBLIC_DEMO_DATA_APPROVED
+            containers:
+              - name: runtime
+                env:
+                  - name: PUBLIC_DEMO_DATA_APPROVED
+                    valueFrom:
+                      configMapKeyRef:
+                        name: agent-runtime-public-approval
+                        key: PUBLIC_DEMO_DATA_APPROVED
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: incident-console-config
+        namespace: k8s-incident-agent
+      data:
+        YAML_ASSISTANT_URL: https://yaml.kubesmith.cloud/
