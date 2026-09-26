@@ -43,7 +43,7 @@ async function createFromHome(page: Page): Promise<void> {
   );
   await expect(page.getByRole("region", { name: "监控链路" })).toBeVisible();
   await expect(page.getByLabel("Runtime：正常")).toBeVisible();
-  await expect(page.getByText(/Local Kind|Stage 1/)).toHaveCount(0);
+  await expect(page.getByText(/Local Kind|Stage \d/)).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "离线评估入口" })).toBeVisible();
   await page.getByRole("button", { name: "创建 Incident" }).click();
   await expect(page).toHaveURL(/\/incidents\/[0-9a-f-]+$/);

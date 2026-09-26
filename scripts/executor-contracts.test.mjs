@@ -13,7 +13,7 @@ const application = path.join(root, "deploy/application");
 const kubectl = process.env.KUBECTL_BINARY ?? "kubectl";
 
 test("executor component reuses the Runtime image and isolates identity and mounts", () => {
-  const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "task7-render-")));
+  const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "executor-render-")));
   try {
     const lock = { images: releaseImages(createReleaseFixture(directory, "a".repeat(40)).manifest) };
     writeFileSync(path.join(directory, "kustomization.yaml"), dump({
@@ -68,7 +68,7 @@ test("executor component reuses the Runtime image and isolates identity and moun
   }
 });
 
-test("existing profiles do not enable or grant the new Executor before Task 12", () => {
+test("fixed profiles neither enable nor grant the Executor", () => {
   for (const profile of ["kind-evaluation", "k3s-evaluation", "k3s-online"]) {
     const output = execFileSync(kubectl, ["kustomize", path.join(application, "overlays", profile)], { encoding: "utf8" });
     assert.doesNotMatch(output, /sandbox-executor|executor-auth|EXECUTOR_HMAC_KEY_FILE/);

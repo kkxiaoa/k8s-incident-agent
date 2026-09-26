@@ -20,7 +20,7 @@ _STAGE_ONE_SIX_TABLES = (
 
 
 def upgrade() -> None:
-    _require_empty_tables(_STAGE_ONE_SIX_TABLES, "Stage 2 upgrade")
+    _require_empty_tables(_STAGE_ONE_SIX_TABLES, "Alertmanager intake upgrade")
     with op.batch_alter_table("incidents") as batch:
         batch.alter_column(
             "trigger_ref",
@@ -73,7 +73,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     _require_empty_tables(
         ("alert_signals", *_STAGE_ONE_SIX_TABLES),
-        "Stage 2 downgrade",
+        "Alertmanager intake downgrade",
     )
     op.drop_table("alert_signals")
     with op.batch_alter_table("incidents") as batch:

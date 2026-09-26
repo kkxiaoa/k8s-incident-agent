@@ -772,7 +772,7 @@ def test_repair_migration_downgrade_rejects_local_gate_failure(
         ).fetchone() == ("20260907_0005",)
 
 
-def test_stage_one_six_upgrade_rejects_nonempty_stage_one_before_ddl(
+def test_lifecycle_upgrade_rejects_nonempty_initial_tables_before_ddl(
     tmp_path: Path,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
@@ -802,7 +802,7 @@ def test_stage_one_six_upgrade_rejects_nonempty_stage_one_before_ddl(
         ).fetchone() == ("20260814_0001",)
 
 
-def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
+def test_alertmanager_intake_downgrade_rejects_nonempty_head_before_ddl(
     tmp_path: Path,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")
@@ -832,7 +832,7 @@ def test_stage_two_downgrade_rejects_nonempty_head_before_ddl(
         ).fetchone() == ("20260919_0013",)
 
 
-def test_stage_two_upgrade_rejects_nonempty_stage_one_six_before_ddl(
+def test_alertmanager_intake_upgrade_rejects_nonempty_lifecycle_tables_before_ddl(
     tmp_path: Path,
 ) -> None:
     paths = RuntimePaths.prepare(tmp_path / "runtime")

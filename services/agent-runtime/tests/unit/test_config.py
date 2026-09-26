@@ -195,7 +195,7 @@ def test_retention_days_outside_safe_range_are_rejected(
         ("PATCH_VALIDATOR_TIMEOUT_SECONDS", "0"),
     ],
 )
-def test_task_11_budgets_must_be_positive(
+def test_runtime_budgets_and_timeouts_must_be_positive(
     monkeypatch: pytest.MonkeyPatch,
     name: str,
     value: str,

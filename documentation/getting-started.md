@@ -37,7 +37,7 @@ For rotation or a forgotten password, initialize a **new** file path, update `OP
 
 ## 3. Run the synthetic UI fixture
 
-Use the two terminal commands in either README. Ports 18080 and 3000 must be free; do not stop an unrelated process to free them. The current manual fixture fixes `http://127.0.0.1:3000` as its Origin. For isolated automated tests, the existing Playwright configuration supports `PLAYWRIGHT_WEB_PORT` and `PLAYWRIGHT_RUNTIME_PORT`.
+Use the two terminal commands in either README. Ports 18080 and 3000 must be free; do not stop an unrelated process to free them. The manual fixture fixes `http://127.0.0.1:3000` as its Origin. For isolated automated tests, the Playwright configuration supports `PLAYWRIGHT_WEB_PORT` and `PLAYWRIGHT_RUNTIME_PORT`.
 
 The fixture reads only the verifier you explicitly pass. It uses synthetic in-memory incidents and a Python password-verification subprocess, not the production database or Kubernetes clients. It binds to loopback; test-control endpoints must never be exposed publicly.
 
@@ -56,7 +56,7 @@ INCIDENT_INTAKE_MODE=manual
 
 Alternatively supply these variables to the command directly. The fake command overrides the Runtime URL to port 18080. Never define `NEXT_PUBLIC_AGENT_RUNTIME_URL`: the upstream is server-only. An absent or invalid Runtime configuration fails; it does not fall back to synthetic data.
 
-`YAML_ASSISTANT_URL` is optional. Unset/empty means no sibling navigation. If you actually operate that app, set an ordinary HTTP(S) URL or a same-origin absolute path such as `/yaml-assistant`. Credentials, query strings, fragments and protocol-relative URLs are rejected by the existing Console validator. This link is not a startup dependency, Runtime endpoint, or authenticated handoff.
+`YAML_ASSISTANT_URL` is optional. Unset/empty means no sibling navigation. If you actually operate that app, set an ordinary HTTP(S) URL or a same-origin absolute path such as `/yaml-assistant`. Credentials, query strings, fragments and protocol-relative URLs are rejected by the Console configuration validator. This link is not a startup dependency, Runtime endpoint, or authenticated handoff.
 
 Cluster templates likewise omit the link by default. Configure it only in this project's Console ConfigMap and roll out the Console when needed; do not edit the sibling's resources. Deployment status checks the fixed Runtime connection, not availability of an external navigation target.
 

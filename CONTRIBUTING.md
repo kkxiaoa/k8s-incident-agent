@@ -75,7 +75,8 @@ not a full live regression. Report checks you did not run and why.
 read-only repository access on ephemeral hosted runners. It checks Runtime lint,
 types and unit/execution tests; script/Kustomize/promtool contracts and OpenAPI
 drift; Web lint/types/component tests, a production build and fake E2E; public
-Markdown links, Mermaid rendering, workflow policy and redacted Git-history scans.
+Markdown links, internal plan identifiers in tracked text, Mermaid rendering,
+workflow policy and redacted Git-history scans.
 Missing Docker or the locked Prometheus image fails CI rather than skipping rules.
 
 The documentation/check tooling has a separate lockfile, not a production dependency:
@@ -131,7 +132,9 @@ Include a concise summary, the behavior/safety contract, validation results,
 unverified items, and any deployment or migration implications. Use synthetic,
 sanitized reproductions. Never attach real secrets, session traffic, databases,
 raw traces, or private cluster logs. Keep generated OpenAPI/types and public
-documentation synchronized when their contracts change.
+documentation synchronized when their contracts change. Public documentation
+describes capabilities, contracts and procedures; development progress, task
+status and verification snapshots belong in the pull request.
 
 Use English Conventional Commit subjects, for example:
 `fix(monitoring): preserve missing-data semantics`.

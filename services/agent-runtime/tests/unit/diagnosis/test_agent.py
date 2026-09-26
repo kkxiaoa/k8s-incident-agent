@@ -210,7 +210,7 @@ def _tool_call(name: str, call_id: str) -> AIMessage:
 def _unparsable_structured_response(
     call_id: str = "call-unparsable",
 ) -> AIMessage:
-    # What DeepSeek actually produced in DC-8 layer 3: a structured tool call
+    # What DeepSeek actually produced in a live evaluation run: a structured tool call
     # whose arguments are truncated mid-JSON. LangChain routes it to
     # invalid_tool_calls, which the agent factory never inspects.
     return AIMessage(

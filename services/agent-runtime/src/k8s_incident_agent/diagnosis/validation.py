@@ -29,8 +29,9 @@ from k8s_incident_agent.security.sanitizer import sanitize_untrusted_text
 
 # A size guard on one serialized diagnosis, deliberately below the sum of the
 # field limits: those admit ~62 KB of CJK text, which no useful diagnosis needs.
-# Raised with DC-5 so a result carrying recommendations keeps the headroom the
-# earlier fields had. Exceeding it fails the Run closed as structured_output_invalid.
+# It adds 8 KB to the 16 KB sized for the other fields, so recommendations do not
+# take the other fields' headroom. Exceeding it fails the Run closed as
+# structured_output_invalid.
 _MAX_DIAGNOSIS_BYTES: Final = 24 * 1024
 
 

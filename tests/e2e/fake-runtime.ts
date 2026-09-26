@@ -795,8 +795,8 @@ function seedShowcase(): void {
 }
 
 /**
- * Manual walkthrough seed for the DC-4A discovery alerts: the standard showcase
- * plus one Incident per new alert, and a monitoring chain that is degraded by
+ * Manual walkthrough seed for the discovery alerts: the standard showcase
+ * plus one Incident per discovery alert, and a monitoring chain that is degraded by
  * two health alerts. Tests keep using seedShowcase, which stays healthy.
  */
 function seedAlertIncident(ref: string, targetName: string) {
@@ -1382,7 +1382,7 @@ function demoPanel(record: FakeIncident, panelId: string, window: string, anchor
   };
 }
 
-/** Trigger panels of the DC-4A discovery alerts, copied from the catalog. */
+/** Trigger panels of the discovery alerts, copied from the catalog. */
 const DISCOVERY_PANELS = {
   K8sIncidentContainerOOMKilled: {
     panelId: "oom-killed-containers",
@@ -1745,25 +1745,25 @@ function repairFixture(outcome = "passed"): FakeIncident {
 export function seedManualRepairShowcase(): number {
   if (incidents.size !== 0) throw new Error("Manual showcase requires an empty fake Runtime");
   const cases = [
-    ["T10 · 诊断建议 → 准备修复", "diagnosis"],
-    ["T10 · 待审批 / 历史镜像 / 刷新", "waiting"],
-    ["T10 · 已拒绝，可重新准备", "rejected"],
-    ["T10 · 提案过期，可重新准备", "expired"],
-    ["T7 · 已批准，等待领取", "pending"],
-    ["T7 · 已领取，等待写入结果", "claimed"],
-    ["T7 · UNKNOWN，禁止重试", "unknown"],
-    ["T8 · 写入已确认，恢复观察中", "observing"],
-    ["T8 · 工作负载与告警恢复成功", "recovered"],
-    ["T8 · 监控不可用，不能证明恢复", "monitoring_unavailable"],
-    ["T9 · 回滚提案，必须另行批准", "rollback-waiting"],
-    ["T9 · 已回滚，恢复已验证", "rollback-recovered"],
-    ["T9 · 已回滚，但恢复无法证明", "rollback-monitoring_unavailable"],
-    ["T9 · 回滚结果 UNKNOWN，保持占用", "rollback-unknown"],
-    ["DC-7 · 仅诊断与建议（两步）", "advice-only"],
-    ["DC-7 · 证据不足，未提出建议（两步）", "advice-empty"],
-    ["DC-7 · 记录于建议功能之前（两步）", "advice-legacy"],
-    ["DC-7 · 运行失败，未到门禁（两步）", "run-failed"],
-    ["DC-7 · 准备门禁未通过（五步）", "policy-denied"],
+    ["提案 · 诊断建议 → 准备修复", "diagnosis"],
+    ["提案 · 待审批 / 历史镜像 / 刷新", "waiting"],
+    ["提案 · 已拒绝，可重新准备", "rejected"],
+    ["提案 · 已过期，可重新准备", "expired"],
+    ["执行 · 已批准，等待领取", "pending"],
+    ["执行 · 已领取，等待写入结果", "claimed"],
+    ["执行 · UNKNOWN，禁止重试", "unknown"],
+    ["恢复 · 写入已确认，恢复观察中", "observing"],
+    ["恢复 · 工作负载与告警恢复成功", "recovered"],
+    ["恢复 · 监控不可用，不能证明恢复", "monitoring_unavailable"],
+    ["回滚 · 回滚提案须另行批准", "rollback-waiting"],
+    ["回滚 · 已回滚，恢复已验证", "rollback-recovered"],
+    ["回滚 · 已回滚，但恢复无法证明", "rollback-monitoring_unavailable"],
+    ["回滚 · 结果 UNKNOWN，保持占用", "rollback-unknown"],
+    ["诊断 · 仅诊断与建议（两步）", "advice-only"],
+    ["诊断 · 证据不足，未提出建议（两步）", "advice-empty"],
+    ["诊断 · 记录于建议功能之前（两步）", "advice-legacy"],
+    ["诊断 · 运行失败，未到门禁（两步）", "run-failed"],
+    ["提案 · 准备门禁未通过（五步）", "policy-denied"],
   ] as const;
   const now = new Date().toISOString();
   showcaseEnabled = true;

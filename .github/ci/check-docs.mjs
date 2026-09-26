@@ -8,6 +8,9 @@ import GithubSlugger from "github-slugger";
 
 const markdown = new MarkdownIt({ html: true });
 const privatePath = /^(?:docs|\.runtime|\.codex|\.codex-log|\.ssh)(?:\/|$)/;
+// Plan, task and decision-record identifiers point into the ignored internal records;
+// the published tree describes capabilities, contracts and procedures only.
+const internalIdentifier = /\b(?:Stage ?\d+(?:\.\d+)*|Tasks? ?\d+|Milestone [A-Z\d]\b|(?:DC|OS)-\d+[A-Z]?\b|ADR-\d{4}\b)/g;
 
 export function inspectMarkdown(source) {
   const tokens = markdown.parse(source, {});
@@ -69,14 +72,33 @@ export function checkLinks(documents, publicFiles) {
   return failures;
 }
 
+// Release Please writes the changelog from merged pull request titles, and this
+// check's own tests must spell out the identifiers it rejects.
+const identifierExemptions = new Set(["CHANGELOG.md", ".github/ci/check-docs.test.mjs"]);
+
+export function findInternalIdentifiers(file, source) {
+  if (identifierExemptions.has(file)) return [];
+  return source.split("\n").flatMap((line, index) =>
+    [...line.matchAll(internalIdentifier)].map(match => `${file}:${index + 1}: internal identifier "${match[0]}"`));
+}
+
 async function main() {
   // Git's public surface excludes local ignored docs, databases and credentials.
   const files = new Set(execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { encoding: "utf8" }).split("\0").filter(Boolean));
   const privateFiles = [...files].filter(f => privatePath.test(f));
   if (privateFiles.length) throw new Error(`Private paths in publication surface: ${privateFiles.join(", ")}`);
   const documents = new Map();
-  for (const file of files) if (file.endsWith(".md")) documents.set(file, inspectMarkdown(await readFile(file, "utf8")));
-  const failures = checkLinks(documents, files);
+  const failures = [];
+  let textFiles = 0;
+  for (const file of files) {
+    const content = await readFile(file);
+    if (content.includes(0)) continue;
+    const source = content.toString("utf8");
+    textFiles++;
+    failures.push(...findInternalIdentifiers(file, source));
+    if (file.endsWith(".md")) documents.set(file, inspectMarkdown(source));
+  }
+  failures.push(...checkLinks(documents, files));
   const en = documents.get("README.md")?.diagrams[0];
   const zh = documents.get("README.zh-CN.md")?.diagrams[0];
   if (!en || en !== zh) failures.push("README component diagrams must be present and identical");
@@ -97,7 +119,7 @@ async function main() {
       await rm(directory, { recursive: true, force: true });
     }
   }
-  console.log(`Public docs: ${documents.size} files, ${[...documents.values()].reduce((n, d) => n + d.links.length, 0)} links, ${diagrams.length} Mermaid blocks${process.argv.includes("--render") ? " rendered" : " (render not requested)"}`);
+  console.log(`Public docs: ${documents.size} files, ${[...documents.values()].reduce((n, d) => n + d.links.length, 0)} links, ${diagrams.length} Mermaid blocks${process.argv.includes("--render") ? " rendered" : " (render not requested)"}; ${textFiles} text files checked for internal identifiers`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

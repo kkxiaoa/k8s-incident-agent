@@ -1,4 +1,4 @@
-"""Import only the OS-5 transport files; never execute archive content."""
+"""Import only a release bundle's manifest and OCI layouts; never execute archive content."""
 
 import hashlib
 import re
