@@ -1,0 +1,141 @@
+# Limits what the deploy identity can write even if the gateway host were misused: no host
+# access or privileges, only the project's accounts, only released or pinned images, Jobs of
+# the gateway's two fixed shapes, and no entry that answers other sites' requests on the
+# shared Traefik.
+# The third-party digests follow deploy/application/versions.json; changing them is a bootstrap update.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: k8s-incident-agent-deploy-gateway
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["services"]
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["ingresses"]
+  matchConditions:
+    - name: deploy-gateway-only
+      expression: request.userInfo.username == 'system:serviceaccount:k8s-incident-agent:deploy-gateway'
+  validations:
+    - expression: >-
+        !(object.kind in ['Deployment', 'Job']) ||
+        (!(has(object.spec.template.spec.hostNetwork) && object.spec.template.spec.hostNetwork) &&
+        !(has(object.spec.template.spec.hostPID) && object.spec.template.spec.hostPID) &&
+        !(has(object.spec.template.spec.hostIPC) && object.spec.template.spec.hostIPC))
+      message: Deploy gateway workloads must not use host namespaces
+    - expression: >-
+        !(object.kind in ['Deployment', 'Job']) || !has(object.spec.template.spec.volumes) ||
+        object.spec.template.spec.volumes.all(volume, !has(volume.hostPath))
+      message: Deploy gateway workloads must not mount host paths
+    - expression: >-
+        !(object.kind in ['Deployment', 'Job']) ||
+        (object.spec.template.spec.containers +
+        (has(object.spec.template.spec.initContainers) ? object.spec.template.spec.initContainers : [])).all(container,
+        !has(container.securityContext) ||
+        ((!has(container.securityContext.privileged) || !container.securityContext.privileged) &&
+        (!has(container.securityContext.capabilities) || !has(container.securityContext.capabilities.add) ||
+        size(container.securityContext.capabilities.add) == 0)))
+      message: Deploy gateway workloads must not be privileged or add capabilities
+    - expression: >-
+        !(object.kind in ['Deployment', 'Job']) ||
+        (object.spec.template.spec.containers +
+        (has(object.spec.template.spec.initContainers) ? object.spec.template.spec.initContainers : [])).all(container,
+        !has(container.ports) || container.ports.all(port, !has(port.hostPort) || port.hostPort == 0))
+      message: Deploy gateway workloads must not bind host ports
+    - expression: >-
+        !(object.kind in ['Deployment', 'Job']) ||
+        (object.spec.template.spec.containers +
+        (has(object.spec.template.spec.initContainers) ? object.spec.template.spec.initContainers : [])).all(container,
+        container.image.matches(r'^ghcr\.io/kkxiaoa/k8s-incident-agent-(console|runtime)@sha256:[a-f0-9]{64}$') ||
+        container.image in [
+        'quay.io/prometheus/prometheus@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893',
+        'quay.io/prometheus/alertmanager@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d',
+        'registry.k8s.io/kube-state-metrics/kube-state-metrics@sha256:42cfe3723a5f058171c627537fb57a3ea0f26e4380fa18555a95cb1a1b4cfc5b'])
+      message: Deploy gateway workloads may run only released or pinned images
+    - expression: >-
+        object.kind != 'Deployment' ||
+        (has(object.spec.template.spec.serviceAccountName) &&
+        object.spec.template.spec.serviceAccountName in (request.namespace == 'k8s-incident-agent'
+        ? ['agent-runtime', 'incident-console', 'patch-validator']
+        : ['alertmanager', 'kube-state-metrics', 'prometheus']))
+      message: Deploy gateway Deployments must keep their project ServiceAccount
+    - expression: >-
+        object.kind != 'Job' ||
+        (request.namespace == 'k8s-incident-agent' &&
+        object.spec.template.spec.serviceAccountName == 'deploy-jobs' &&
+        has(object.spec.template.spec.automountServiceAccountToken) &&
+        !object.spec.template.spec.automountServiceAccountToken &&
+        (!has(object.spec.template.spec.volumes) || object.spec.template.spec.volumes.all(volume,
+        has(volume.persistentVolumeClaim) && volume.persistentVolumeClaim.claimName == volume.name &&
+        volume.name in ['runtime-data', 'runtime-backup'])))
+      message: Deploy gateway Jobs run without credentials and mount only Runtime data and backups
+    # Creating a Pod grants use of every Secret in its namespace, so a Job may only run the
+    # image prefetch or the Runtime backup: no other command, hook, probe, port or Secret, and
+    # a name label that no NetworkPolicy opens.
+    - expression: >-
+        object.kind != 'Job' ||
+        (has(object.spec.template.metadata) && has(object.spec.template.metadata.labels) &&
+        'app.kubernetes.io/name' in object.spec.template.metadata.labels &&
+        object.spec.template.metadata.labels['app.kubernetes.io/name'] in ['deploy-prefetch', 'runtime-backup'] &&
+        (!has(object.spec.template.spec.initContainers) || size(object.spec.template.spec.initContainers) == 0) &&
+        (!has(object.spec.template.spec.imagePullSecrets) || size(object.spec.template.spec.imagePullSecrets) == 0) &&
+        object.spec.template.spec.containers.all(container,
+        !has(container.lifecycle) && !has(container.livenessProbe) && !has(container.readinessProbe) &&
+        !has(container.startupProbe) && (!has(container.ports) || size(container.ports) == 0) &&
+        (!has(container.args) || size(container.args) == 0) &&
+        (!has(container.envFrom) || size(container.envFrom) == 0) &&
+        (!has(container.env) || container.env.all(variable,
+        variable.name == 'RUNTIME_DATA_DIR' && !has(variable.valueFrom) &&
+        has(variable.value) && variable.value == '/var/lib/k8s-incident-agent/runtime')) &&
+        (!has(container.volumeMounts) || container.volumeMounts.all(mount,
+        !has(mount.subPath) && !has(mount.subPathExpr) &&
+        ((mount.name == 'runtime-data' && mount.mountPath == '/var/lib/k8s-incident-agent') ||
+        (mount.name == 'runtime-backup' && mount.mountPath == '/var/backups/k8s-incident-agent')))) &&
+        has(container.command) &&
+        (container.command == ['/bin/true'] ||
+        container.command == ['runtime', 'backup', '--destination', '/var/backups/k8s-incident-agent'])))
+      message: Deploy gateway Jobs run only the image prefetch or the Runtime backup
+    - expression: >-
+        object.kind != 'Service' ||
+        ((!has(object.spec.type) || object.spec.type == 'ClusterIP') &&
+        (!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0))
+      message: Deploy gateway Services stay cluster-internal
+    - expression: >-
+        object.kind != 'Ingress' ||
+        (!has(object.spec.defaultBackend) && has(object.spec.rules) && size(object.spec.rules) > 0 &&
+        object.spec.rules.all(rule, has(rule.host) && rule.host == 'incident.kubesmith.cloud' &&
+        has(rule.http) && rule.http.paths.all(entry,
+        has(entry.backend.service) && entry.backend.service.name == 'incident-console')))
+      message: Deploy gateway Ingresses route only the project hostname to the Console
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: k8s-incident-agent-deploy-gateway
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  policyName: k8s-incident-agent-deploy-gateway
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: ["k8s-incident-agent", "k8s-incident-monitoring"]

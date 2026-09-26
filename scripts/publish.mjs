@@ -405,8 +405,7 @@ export async function publishCandidate(options) {
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
 
-/** Only a complete, published Release can become an installation bundle via this entry. */
-export async function fetchPublishedRelease(tag, output, sourceDirectory) {
+async function publishedRelease(tag) {
   version(tag);
   const release = await jsonRequest(`/releases/tags/${tag}`);
   requireValue(release.draft === false && release.prerelease === false && release.tag_name === tag && sha.test(release.target_commitish),
@@ -415,6 +414,32 @@ export async function fetchPublishedRelease(tag, output, sourceDirectory) {
   const assets = await pages(`/releases/${id(release.id)}/assets`);
   requireValue(assets.length === 3 && ["candidate.tar.gz", "SHA256SUMS", "release.json"].every(name =>
     assets.filter(item => item.name === name && item.state === "uploaded" && digest.test(item.digest)).length === 1), "Published release is incomplete");
+  return { release, assets };
+}
+
+async function confirmPublication(release, tag, manifest) {
+  const latest = await jsonRequest(`/releases/${id(release.id)}`);
+  requireValue(latest.draft === false && latest.tag_name === tag && latest.target_commitish === manifest.sourceRevision &&
+    latest.prerelease === false && await checkTag(tag, manifest.sourceRevision), "Release publication changed during download");
+}
+
+/** A published release's manifest alone, for hosts that pull the images from the registry. */
+export async function fetchPublishedManifest(tag, output) {
+  const { release, assets } = await publishedRelease(tag);
+  const asset = assets.find(item => item.name === "release.json");
+  await mkdir(output, { mode: 0o700 });
+  const filename = path.join(output, "release.json");
+  await download(`/releases/assets/${id(asset.id)}`, filename, asset.digest, 2 * 1024 * 1024, "application/octet-stream");
+  let manifest;
+  try { manifest = JSON.parse(await readFile(filename, "utf8")); } catch { throw new Error("Published manifest is not valid JSON"); }
+  requireValue(manifest?.sourceRevision === release.target_commitish, "Published manifest differs from its release source");
+  await confirmPublication(release, tag, manifest);
+  return manifest;
+}
+
+/** Only a complete, published Release can become an installation bundle via this entry. */
+export async function fetchPublishedRelease(tag, output, sourceDirectory) {
+  const { release, assets } = await publishedRelease(tag);
   await mkdir(output, { mode: 0o700 });
   const transport = path.join(output, "transport");
   await mkdir(transport, { mode: 0o700 });
@@ -424,9 +449,7 @@ export async function fetchPublishedRelease(tag, output, sourceDirectory) {
   requireValue(manifest.sourceRevision === release.target_commitish &&
     await fileDigest(path.join(output, "bundle/release.json")) === assets.find(item => item.name === "release.json").digest,
   "Published manifest differs from bundle/source");
-  const latest = await jsonRequest(`/releases/${id(release.id)}`);
-  requireValue(latest.draft === false && latest.tag_name === tag && latest.target_commitish === manifest.sourceRevision &&
-    latest.prerelease === false && await checkTag(tag, manifest.sourceRevision), "Release publication changed during download");
+  await confirmPublication(release, tag, manifest);
   return manifest;
 }
 

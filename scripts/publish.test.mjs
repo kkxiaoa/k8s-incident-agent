@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { fetchPublishedRelease, publishCandidate, selectCandidate, selectRelease } from "./publish.mjs";
+import { fetchPublishedManifest, fetchPublishedRelease, publishCandidate, selectCandidate, selectRelease } from "./publish.mjs";
 import { createReleaseFixture } from "./test-support/release-fixture.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -279,6 +279,23 @@ test("real pack/import/OCI validation, changelog notes, publication, tagged rele
   for (const filename of registry.authFiles) await assert.rejects(access(filename));
 });
 
+test("a registry-pulling host downloads only the published manifest and checks its digest", async t => {
+  const h = await harness(t);
+  await publishCandidate(h.options);
+  const rest = globalThis.fetch;
+  const downloads = [];
+  globalThis.fetch = (url, options = {}) => {
+    const endpoint = new URL(url).pathname;
+    if (endpoint.includes("/releases/assets/") && options.headers?.Accept === "application/octet-stream") downloads.push(Number(endpoint.split("/").at(-1)));
+    return rest(url, options);
+  };
+  assert.deepEqual(await fetchPublishedManifest("v0.1.0", path.join(h.folder, "manifest")), fixture.manifest);
+  assert.deepEqual(downloads.map(assetId => h.state.assets.find(asset => asset.id === assetId).name), ["release.json"]);
+  const manifestAsset = h.state.assets.find(asset => asset.name === "release.json");
+  h.state[`bytes${manifestAsset.id}`] = Buffer.from(JSON.stringify({ ...fixture.manifest, sourceRevision: "f".repeat(40) }));
+  await assert.rejects(fetchPublishedManifest("v0.1.0", path.join(h.folder, "tampered")), /digest mismatch/);
+});
+
 test("a label failure after publication is finished by a fresh dispatch without republishing", async t => {
   const h = await harness(t); h.state.failLabels = true;
   await assert.rejects(publishCandidate(h.options), /v0\.1\.0 is published but release PR #12 is still pending: GitHub POST failed \(502\)/);
@@ -319,6 +336,8 @@ test("partial second-image upload leaves a draft; fresh approval resumes only mi
   assert.equal(h.state.ref, null);
   await assert.rejects(fetchPublishedRelease("v0.1.0", path.join(h.folder, "draft-install"), source), /Only a published/);
   await assert.rejects(access(path.join(h.folder, "draft-install")));
+  await assert.rejects(fetchPublishedManifest("v0.1.0", path.join(h.folder, "draft-manifest")), /Only a published/);
+  await assert.rejects(access(path.join(h.folder, "draft-manifest")));
   assert.equal((await publishCandidate(h.options)).status, "published");
   const registry = await h.readRegistry();
   assert.equal(registry.calls.filter(args => args.includes("copy") && args.at(-1).includes("-console:")).length, 1);
@@ -394,6 +413,7 @@ test("incomplete published release cannot be installed or silently repaired", as
   h.state.pr.labels = [{ name: "autorelease: pending" }];
   const before = h.state.mutations.length;
   await assert.rejects(fetchPublishedRelease("v0.1.0", path.join(h.folder, "incomplete"), source), /incomplete/);
+  await assert.rejects(fetchPublishedManifest("v0.1.0", path.join(h.folder, "incomplete-manifest")), /incomplete/);
   await assert.rejects(publishCandidate(h.options), /incomplete/);
   assert.equal(h.state.mutations.length, before);
 });

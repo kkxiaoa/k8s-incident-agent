@@ -349,6 +349,118 @@ Console 页脚可显示 ICP 备案号：在 `incident-console-config` 中设置 
 只接受“省份简称 + ICP备 + 编号 + 号（可带 -N）”形式的纯文本，例如 `京ICP备12345678号-1`；
 链接固定为 `https://beian.miit.gov.cn/`，未设置时不显示，其他值使 Console 配置失败。
 
+## `deploy-gateway.mjs`
+
+受限部署入口：在固定 K3s 主机上由专用部署用户的 SSH 强制命令调用，配置文件路径是它唯一的
+命令行参数。网关程序、专用用户、强制命令、主机配置与部署身份都由集群管理员在主机初始化
+（bootstrap）时安装，调用方无法修改。调用方只能经 stdin 发送一行 JSON：
+
+```json
+{"version":"vX.Y.Z","profile":"k3s-public"}
+```
+
+版本必须是已正式发布的稳定版本；profile 只能是 `k3s-evaluation` 或 `k3s-public`，并且在主机
+配置允许的集合内（`k3s-online` 不设置 `OPERATOR_ORIGIN`，install 与 upgrade 同样拒绝它）。
+SSH 会话请求的命令（`SSH_ORIGINAL_COMMAND`）、多余字段或多行输入一律拒绝。网关丢弃 SSH 会话
+带来的环境变量，子进程只使用固定的最小环境。主机配置是不超过 4 KiB 的 JSON 文件，字段固定为
+`schemaVersion`（`1`）、`profiles`、`kubeconfig`（部署身份 kubeconfig 的绝对路径）、`context`、
+`workRoot`（网关工作目录）与 `registryProxy`（访问 GHCR 的 HTTP 代理，可为 `null`）。
+
+执行顺序：
+
+1. 经 GitHub API 核对 release 已正式发布、tag 指向 `sourceRevision`、附件齐全，只下载
+   `release.json` 并按附件 digest 校验；
+2. 按 release tag 浅取回源码，核对提交号，拒绝 symlink 与 submodule；
+3. 经 `registryProxy` 向 GHCR 核验两个镜像的 index、双平台、非 root 与源码 revision 标签，
+   规则与 `release.mjs` 核验本地 bundle 相同，不下载镜像层；
+4. 核对主机 kubectl 与 K3s 版本等于 release 锁定的基线，再用网关自身的代码渲染所选 profile，并
+   执行 install / upgrade 在 apply 前做的同一组渲染检查。
+   两个项目 Namespace 内的 ConfigMap、Service、Deployment、NetworkPolicy 与 Ingress 属于日常
+   更新；Namespace、ServiceAccount、RBAC、准入策略与 PVC 属于 bootstrap，必须与集群现状一致
+   （标签以及 Namespace、PVC 的 spec 允许服务端默认值，RBAC 规则与绑定、ServiceAccount 的
+   token 挂载和准入策略须完全相同）；其他类型直接拒绝。工作负载不能使用宿主机 namespace、
+   hostPath、hostPort、特权、新增 capability 或项目以外的 ServiceAccount。公开数据只由安装者批准：release
+   不能带批准 ConfigMap，ConfigMap 中的 `PUBLIC_DEMO_DATA_APPROVED` 不能为真，容器 env 只能以
+   `configMapKeyRef` 引用 `agent-runtime-public-approval`，`CONSOLE_ACCESS_MODE` 只能出现在
+   `agent-runtime-config`（Runtime 读取环境变量时不区分大小写，任何大小写写法都按同一个键处理）；
+5. apply 只更新、不删除，因此集群中带 `app.kubernetes.io/part-of=k8s-incident-agent` 标签的
+   日常类型对象必须恰好是渲染结果（bootstrap 创建的公开数据批准 ConfigMap 除外）：缺少的对象
+   先由 bootstrap 创建，多出的对象（例如改用不渲染 Console Ingress 的 profile 时遗留的 Ingress）
+   先由 bootstrap 删除。Deployment 引用运行版本未使用的 Secret（或 Secret 中的键）时拒绝：Secret
+   由 bootstrap 创建，网关无权读取它们。网关 Job 需要的 `deploy-jobs` 与 `runtime-backup` 不存在时
+   拒绝；留有未完成的 Runtime 数据 cutover 时拒绝，与 install / upgrade 相同；
+6. 渲染结果为公开访问模式时要求 `agent-runtime-public-approval` 已批准，随后对全部日常对象做
+   服务端 dry-run；
+7. 预拉取 Job 让节点按 digest 拉取两个镜像，旧版本在此期间照常服务。网关 Job 的 Pod 不带项目标签，
+   结束后不计入 status 对项目 Pod 的核对；
+8. Runtime 缩容到 0 并等待 Pod 退出，备份 Job 用新版本 Runtime 镜像的 `runtime backup` 保存数据。
+   新版本的迁移不认识现有数据的 Alembic head 时（即降级到不兼容的版本），备份以
+   `schema_unknown` 拒绝，旧版本恢复运行；
+9. apply 日常对象，Runtime 以新镜像启动时由 `migrate` 初始化容器迁移数据库；网关等待全部
+   Deployment rollout，渲染出 Ingress 时还核对它与渲染一致且已由 Traefik 分配地址。
+
+结果以一行 JSON 写到 stdout：`status`、`version`、`profile`、`sourceRevision`、被替换的 Runtime
+镜像 `previousRuntimeImage`、`backup` 以及备份时数据的 `alembicHead`。每进入一个阶段，在 stderr
+写一行 `phase <名称>`；失败时 stdout 输出 `status: "failed"` 及 `code`、`phase`、`message`，
+退出码为 1。drain 阶段读到运行中的 Runtime 之后失败时还带 `previousRuntimeImage`，备份完成
+之后失败时再带 `backup` 与 `alembicHead`。读不到 `runtime` 容器的镜像时（容器或镜像缺失，或镜像
+引用超过 512 个字符），`previousRuntimeImage` 为 `null`。
+
+失败处理：
+
+- 缩容或备份失败时集群对象尚未改变，网关把 Runtime 恢复为原副本数后报告原失败，备份命令给出的
+  拒绝原因附在 `message` 末尾；恢复本身失败时返回 `runtime_not_restored`，需要人工把
+  `agent-runtime` 扩回原副本数。
+- apply 及之后的失败只停止并报告，不自动回滚、不清库、不 purge；apply 阶段失败时 Runtime 可能
+  仍为 0 副本，需要人工核对。
+- 输出只是尽力而为：SSH 连接中断后网关照常完成本次部署或失败处理，结果需在集群中核对。
+- 同一时刻只允许一次部署。网关进程被强制终止时不会执行恢复与清理，先人工确认没有部署在进行、
+  核对 `agent-runtime` 的副本数，再删除 `workRoot` 下的 `deploy.lock`。
+
+网关只部署与自身兼容的 release：部署契约不兼容时在渲染阶段拒绝，需要先经 bootstrap 更新网关；
+Runtime 镜像不含 `runtime backup` 的版本在备份阶段失败，集群保持原版本。
+
+`deploy/application/gateway/` 只由 bootstrap 应用，任何 profile 都不包含它：
+
+- `deploy-gateway` ServiceAccount 只能按名称读取并 patch 渲染出的日常对象、列出两个项目
+  Namespace 内的日常类型对象与应用 Namespace 的 Pod、缩放 Runtime、创建 Job 并读取其状态与日志，
+  按名称读取 bootstrap 对象与 Job 所需的 `deploy-jobs`、`runtime-backup`；没有直接读取 Secret、
+  ServiceAccount token、PV 或 exec 的权限，也不能写 RBAC、Namespace 或准入策略。它能更新挂载
+  Secret 与 Runtime 数据的项目 Deployment：kubeconfig 在网关之外被使用、或已发布的 release 被篡改
+  时，Secret 可被间接读取，Runtime 数据与集群内的全部备份可被删改。因此 kubeconfig 须与这些
+  Secret 同等保护，只保存在主机上、仅部署用户可读；备份 PVC 防的是升级失败，要抵御这类情况，
+  恢复点须拷到集群之外。release 新增或删除日常对象时，需同步更新这里的对象名称。
+- 准入策略 `k8s-incident-agent-deploy-gateway` 只约束该身份的写入：禁止宿主机 namespace、
+  hostPath、hostPort、特权与新增 capability；Deployment 只能使用项目 ServiceAccount；Job 只能运行
+  网关的两条固定命令（预拉取运行 `/bin/true`，备份运行 `runtime backup`），不能带 lifecycle 钩子、
+  探针、端口、额外参数或 Secret 引用，Pod 的 `app.kubernetes.io/name` 只能是 `deploy-prefetch` 或
+  `runtime-backup`（不会被任何 NetworkPolicy 放行），以 `deploy-jobs` 运行、不挂载凭据、只按固定
+  路径挂载 `runtime-data` 与 `runtime-backup`；镜像只能是
+  本项目 GHCR 仓库的 digest 或 `deploy/application/versions.json` 锁定的第三方 digest；Service
+  只能是 ClusterIP 且不带 externalIPs；Ingress 只能把 `incident.kubesmith.cloud` 路由到
+  `incident-console`。网关生成的 Job 形状或第三方 digest 变化时须同步更新该策略。
+- `runtime-backup` PVC（5Gi，local-path）保存备份。
+
+`runtime backup --destination <绝对路径>` 持有 Runtime 自身的锁（Runtime 仍在运行时以
+`runtime_in_use` 拒绝），用 SQLite 在线备份复制业务库与 checkpoint 并做完整性检查，复制 run
+artifact，在 `backup.json` 中记录 Alembic head 与每个文件的 SHA-256；数据的 Alembic head 不在
+所用镜像的迁移中时以 `schema_unknown` 拒绝。备份目录按 UTC 时间命名（如
+`20260926T071500Z`），成功后只保留最近 3 份（刚完成的一份始终保留），不触碰其他目录。网关
+每次部署在备份阶段生成一份，所以保留的是最近 3 次部署之前的数据；需要长期保留的恢复点应另行
+拷出备份 PVC。成功时在 stdout 输出一行 JSON（`backup`、`alembicHead`、`files`、`bytes`、
+`removed`），失败时在 stderr 输出 `{"error":{"code":…,"phase":"backup"}}` 并以 1 退出。
+
+恢复是需要另行授权的人工操作：
+
+1. 按 `backup.json` 的 `alembicHead` 选择要运行的 release：它的迁移必须包含这个 head，例如
+   升级失败后回到该次部署输出（成功或失败）中 `previousRuntimeImage` 对应的升级前版本；
+2. Runtime 缩容为 0 后，用同时挂载两个 PVC、以 UID 10001 运行的一次性 Pod，把 Runtime 数据
+   目录中的两个数据库、它们的 `-wal` / `-shm` 文件以及 `runs/` 整体移出另存，避免遗留的 WAL
+   与恢复的数据库错配；
+3. 按 `backup.json` 核对所选备份各文件的 SHA-256，把其中的 `incidents.sqlite3`、
+   `checkpoints.sqlite3` 与 `runs/` 放回（文件 0600、目录 0700），确认没有 `-wal` / `-shm`；
+4. 让 Deployment 使用第 1 步选定的 release 后扩容，`migrate` 会把数据迁移到该版本的 Alembic head。
+
 ## 测试与静态检查
 
 默认测试入口会运行本目录全部 `*.test.mjs`：

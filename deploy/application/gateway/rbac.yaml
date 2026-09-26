@@ -1,0 +1,226 @@
+# Daily deploys update only the objects bootstrap created, by name. Anything a release
+# adds or drops needs a bootstrap update, which the gateway reports instead of attempting;
+# listing the daily types is how it finds an object a release no longer renders.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deploy-gateway
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "patch"]
+    resourceNames: ["agent-runtime-config", "incident-console-config"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    resourceNames: ["agent-runtime-public-approval"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "patch"]
+    resourceNames: ["agent-runtime", "incident-console", "patch-validator"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+    resourceNames: ["agent-runtime", "incident-console", "patch-validator"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch"]
+    resourceNames: ["agent-runtime"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "patch"]
+    resourceNames:
+      - allow-alertmanager-to-runtime
+      - allow-console-runtime-egress
+      - allow-console-to-runtime
+      - allow-dns-egress
+      - allow-patch-validator-kubernetes-egress
+      - allow-runtime-https-egress
+      - allow-runtime-patch-validator-egress
+      - allow-runtime-prometheus-egress
+      - allow-runtime-to-patch-validator
+      - allow-traefik-to-console
+      - default-deny
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "patch"]
+    resourceNames: ["incident-console"]
+  - apiGroups: [""]
+    resources: ["configmaps", "services"]
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
+    resourceNames: ["agent-runtime", "deploy-jobs", "incident-console", "patch-validator"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get"]
+    resourceNames: ["runtime-backup", "runtime-data"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deploy-gateway
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deploy-gateway
+subjects:
+  - kind: ServiceAccount
+    name: deploy-gateway
+    namespace: k8s-incident-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deploy-gateway
+  namespace: k8s-incident-monitoring
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "patch"]
+    resourceNames: ["alertmanager-config", "prometheus-config", "prometheus-rules", "prometheus-scrape-node-metrics"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "patch"]
+    resourceNames: ["alertmanager", "kube-state-metrics", "prometheus"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+    resourceNames: ["alertmanager", "kube-state-metrics", "prometheus"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "patch"]
+    resourceNames:
+      - allow-alertmanager-runtime-egress
+      - allow-dns-egress
+      - allow-kube-state-metrics-api-egress
+      - allow-prometheus-alertmanager-egress
+      - allow-prometheus-kube-state-metrics-egress
+      - allow-prometheus-kubelet-egress
+      - allow-prometheus-kubernetes-api-egress
+      - allow-prometheus-to-alertmanager
+      - allow-prometheus-to-kube-state-metrics
+      - allow-runtime-to-prometheus
+      - default-deny
+  - apiGroups: [""]
+    resources: ["configmaps", "services"]
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get"]
+    resourceNames: ["alertmanager", "kube-state-metrics", "prometheus"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get"]
+    resourceNames: ["prometheus-data"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deploy-gateway
+  namespace: k8s-incident-monitoring
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deploy-gateway
+subjects:
+  - kind: ServiceAccount
+    name: deploy-gateway
+    namespace: k8s-incident-agent
+---
+# Read-only view of bootstrap-owned scenario RBAC, for drift checks.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deploy-gateway
+  namespace: k8s-incident-scenarios
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get"]
+    resourceNames: ["diagnostic-agent-read", "managed-monitoring-read", "patch-validator-dry-run", "prometheus-pod-discovery"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deploy-gateway
+  namespace: k8s-incident-scenarios
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deploy-gateway
+subjects:
+  - kind: ServiceAccount
+    name: deploy-gateway
+    namespace: k8s-incident-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-incident-agent-deploy-gateway-read
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+    resourceNames: ["k8s-incident-agent", "k8s-incident-monitoring", "k8s-incident-scenarios"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["get"]
+    resourceNames: ["k8s-incident-agent-storage-class-read"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingadmissionpolicies", "validatingadmissionpolicybindings"]
+    verbs: ["get"]
+    resourceNames: ["k8s-incident-agent-patch-validator-dry-run-only"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-incident-agent-deploy-gateway-read
+  labels:
+    app.kubernetes.io/part-of: k8s-incident-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-incident-agent-deploy-gateway-read
+subjects:
+  - kind: ServiceAccount
+    name: deploy-gateway
+    namespace: k8s-incident-agent

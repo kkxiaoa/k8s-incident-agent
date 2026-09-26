@@ -1,0 +1,15 @@
+# Holds the last three Runtime backups taken before each gateway upgrade.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: runtime-backup
+  namespace: k8s-incident-agent
+  labels:
+    app.kubernetes.io/name: runtime-backup
+    app.kubernetes.io/part-of: k8s-incident-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi

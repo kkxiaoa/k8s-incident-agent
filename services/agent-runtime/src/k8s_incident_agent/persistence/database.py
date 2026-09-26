@@ -112,9 +112,12 @@ async def create_business_database(paths: RuntimePaths) -> BusinessDatabase:
     return database
 
 
+def alembic_script_directory() -> ScriptDirectory:
+    return ScriptDirectory.from_config(Config(str(_SERVICE_ROOT / "alembic.ini")))
+
+
 async def require_alembic_head(database: BusinessDatabase) -> None:
-    config = Config(str(_SERVICE_ROOT / "alembic.ini"))
-    expected_heads = set(ScriptDirectory.from_config(config).get_heads())
+    expected_heads = set(alembic_script_directory().get_heads())
     async with database.engine.connect() as connection:
         has_version_table = await connection.run_sync(_has_alembic_version_table)
         if not has_version_table:

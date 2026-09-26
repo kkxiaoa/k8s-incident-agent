@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +25,9 @@ const REPOSITORIES = {
   console: "ghcr.io/kkxiaoa/k8s-incident-agent-console",
   runtime: "ghcr.io/kkxiaoa/k8s-incident-agent-runtime",
 };
+// GHCR serves blobs through a redirect to GitHub's package CDN.
+const REGISTRY_HOSTS = new Set(["ghcr.io", "pkg-containers.githubusercontent.com"]);
+const REGISTRY_TIMEOUT = 30_000;
 
 export class ReleaseError extends Error {
   constructor(code, message) {
@@ -89,22 +93,56 @@ async function readContent(filename, descriptor, json) {
     requireContract(size === actual.size && (!descriptor || `sha256:${hash.digest("hex")}` === descriptor.digest),
       "release_artifact_invalid", "OCI content checksum does not match");
     if (!json) return;
-    try {
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
-    } catch {
-      throw new ReleaseError("release_artifact_invalid", "Release JSON is invalid");
-    }
+    return decodeJson(Buffer.concat(chunks));
   } finally {
     await handle.close();
   }
 }
 
-async function inspectImage(bundleRoot, component, revision, files) {
+function decodeJson(bytes) {
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new ReleaseError("release_artifact_invalid", "Release JSON is invalid");
+  }
+}
+
+function indexShape(value) {
+  return object(value) && value.schemaVersion === 2 && (!value.mediaType || value.mediaType === INDEX) && Array.isArray(value.manifests);
+}
+
+// A transport bundle's OCI layout; `files` records the verified graph for packing.
+function bundleLayout(bundleRoot, component, files) {
   const layout = path.join(bundleRoot, `${component}-oci`);
-  for (const dir of [layout, path.join(layout, "blobs"), path.join(layout, "blobs", "sha256")]) await directory(dir);
-  const header = await readContent(path.join(layout, "oci-layout"), undefined, true);
-  files?.add(`${component}-oci/oci-layout`);
-  requireContract(header?.imageLayoutVersion === "1.0.0", "release_artifact_invalid", "Unsupported OCI layout");
+  return {
+    async index() {
+      for (const dir of [layout, path.join(layout, "blobs"), path.join(layout, "blobs", "sha256")]) await directory(dir);
+      const header = await readContent(path.join(layout, "oci-layout"), undefined, true);
+      files?.add(`${component}-oci/oci-layout`);
+      requireContract(header?.imageLayoutVersion === "1.0.0", "release_artifact_invalid", "Unsupported OCI layout");
+      const root = await readContent(path.join(layout, "index.json"), undefined, true);
+      files?.add(`${component}-oci/index.json`);
+      requireContract(indexShape(root) && root.manifests.length === 1, "release_artifact_invalid", "OCI layout must select exactly one image index");
+      return root.manifests[0];
+    },
+    async read(descriptor, json) {
+      const value = await readContent(path.join(layout, "blobs", "sha256", descriptor.digest.slice(7)), descriptor, json);
+      files?.add(`${component}-oci/blobs/sha256/${descriptor.digest.slice(7)}`);
+      return value;
+    },
+  };
+}
+
+// A published image in the registry, addressed from the release manifest's index digest.
+function registryLayout(registry, image) {
+  return {
+    index: () => registry.describe(image.repository, image.indexDigest),
+    // Layers are not fetched here: the node's pull verifies them by digest against these checked manifests.
+    read: (descriptor, json) => json ? registry.read(image.repository, descriptor) : undefined,
+  };
+}
+
+async function inspectImage(layout, component, revision) {
   const seen = new Map();
   async function blob(descriptor, mediaTypes, json = true) {
     requireContract(object(descriptor) && mediaTypes.has(descriptor.mediaType) && DIGEST.test(descriptor.digest)
@@ -116,18 +154,12 @@ async function inspectImage(bundleRoot, component, revision, files) {
         "release_artifact_invalid", "Conflicting OCI descriptors");
       return previous.value;
     }
-    const value = await readContent(path.join(layout, "blobs", "sha256", descriptor.digest.slice(7)), descriptor, json);
-    files?.add(`${component}-oci/blobs/sha256/${descriptor.digest.slice(7)}`);
+    const value = await layout.read(descriptor, json);
     seen.set(descriptor.digest, { size: descriptor.size, mediaType: descriptor.mediaType, value });
     return value;
   }
-  function indexShape(value) {
-    return object(value) && value.schemaVersion === 2 && (!value.mediaType || value.mediaType === INDEX) && Array.isArray(value.manifests);
-  }
-  const root = await readContent(path.join(layout, "index.json"), undefined, true);
-  files?.add(`${component}-oci/index.json`);
-  requireContract(indexShape(root) && root.manifests.length === 1, "release_artifact_invalid", "OCI layout must select exactly one image index");
-  const index = await blob(root.manifests[0], new Set([INDEX]));
+  const root = await layout.index();
+  const index = await blob(root, new Set([INDEX]));
   requireContract(indexShape(index) && index.manifests.length === PLATFORMS.length,
     "release_artifact_invalid", "Release index must contain exactly two runnable platforms without attestations");
   const platforms = {};
@@ -145,7 +177,7 @@ async function inspectImage(bundleRoot, component, revision, files) {
     for (const layer of manifest.layers) await blob(layer, LAYERS, false);
     platforms[platform] = child.digest;
   }
-  return { repository: REPOSITORIES[component], indexDigest: root.manifests[0].digest, platforms };
+  return { repository: REPOSITORIES[component], indexDigest: root.digest, platforms };
 }
 
 function validateManifest(manifest) {
@@ -178,7 +210,7 @@ async function verifyRelease(releasePath, repositoryRoot) {
     requireContract(manifest.sourceRevision === revision, "release_revision_mismatch", "Release source does not match the current committed source");
     const files = new Set(["release.json"]);
     for (const component of Object.keys(REPOSITORIES)) {
-      const actual = await inspectImage(bundleRoot, component, revision, files);
+      const actual = await inspectImage(bundleLayout(bundleRoot, component, files), component, revision);
       requireContract(isDeepStrictEqual(actual, manifest.images[component]), "release_artifact_invalid", "OCI content differs from the release manifest");
     }
     requireContract(await sourceRevision(repositoryRoot) === revision, "release_revision_mismatch", "Source changed during verification");
@@ -187,6 +219,106 @@ async function verifyRelease(releasePath, repositoryRoot) {
     if (error instanceof ReleaseError) throw error;
     throw new ReleaseError("release_artifact_invalid", "Release files are missing, inaccessible or unsafe");
   }
+}
+
+/** Verify a published manifest against its registry images and the checked-out source it names. */
+export async function verifyRegistryRelease(manifest, repositoryRoot, registry) {
+  try {
+    validateManifest(manifest);
+    const revision = await sourceRevision(repositoryRoot);
+    requireContract(manifest.sourceRevision === revision, "release_revision_mismatch", "Release source does not match the checked-out source");
+    for (const component of Object.keys(REPOSITORIES)) {
+      const image = manifest.images[component];
+      const actual = await inspectImage(registryLayout(registry, image), component, revision);
+      requireContract(isDeepStrictEqual(actual, image), "release_artifact_invalid", "Registry content differs from the release manifest");
+    }
+    requireContract(await sourceRevision(repositoryRoot) === revision, "release_revision_mismatch", "Source changed during verification");
+    return manifest;
+  } catch (error) {
+    if (error instanceof ReleaseError) throw error;
+    throw new ReleaseError("release_registry_unavailable", "Published images could not be read from the registry");
+  }
+}
+
+/** Anonymous reads of the published images; `agent` carries the host's route to the registry. */
+export function ghcrRegistry(agent) {
+  const tokens = new Map();
+  const endpoint = (repository, kind, digest) => `https://ghcr.io/v2/${repository.slice("ghcr.io/".length)}/${kind}/${digest}`;
+  async function authorization(repository) {
+    if (!tokens.has(repository)) {
+      const scope = encodeURIComponent(`repository:${repository.slice("ghcr.io/".length)}:pull`);
+      const res = await registryRequest(agent, `https://ghcr.io/token?scope=${scope}&service=ghcr.io`, {}, "GET", 64 * 1024);
+      requireRegistryStatus(res.status);
+      let token;
+      try { token = JSON.parse(res.body.toString("utf8")).token; } catch { token = undefined; }
+      requireContract(typeof token === "string" && token !== "", "release_registry_unavailable", "Registry issued no pull token");
+      tokens.set(repository, `Bearer ${token}`);
+    }
+    return tokens.get(repository);
+  }
+  return {
+    async describe(repository, digest) {
+      const res = await registryRequest(agent, endpoint(repository, "manifests", digest),
+        { accept: INDEX, authorization: await authorization(repository) }, "HEAD", 0);
+      requireRegistryStatus(res.status);
+      requireContract(res.headers["docker-content-digest"] === digest, "release_artifact_invalid", "Registry serves a different image index");
+      return { mediaType: String(res.headers["content-type"] ?? "").split(";")[0].trim(), digest, size: Number(res.headers["content-length"]) };
+    },
+    async read(repository, descriptor) {
+      const res = await registryRequest(agent, endpoint(repository, descriptor.mediaType === CONFIG ? "blobs" : "manifests", descriptor.digest),
+        { accept: descriptor.mediaType, authorization: await authorization(repository) }, "GET", descriptor.size);
+      requireRegistryStatus(res.status);
+      requireContract(res.body.length === descriptor.size && `sha256:${createHash("sha256").update(res.body).digest("hex")}` === descriptor.digest,
+        "release_artifact_invalid", "OCI content checksum does not match");
+      return decodeJson(res.body);
+    },
+  };
+}
+
+function requireRegistryStatus(status) {
+  requireContract(status < 500 && status !== 429, "release_registry_unavailable", `Registry is unavailable (${status})`);
+  requireContract(status === 200, "release_artifact_invalid", `Registry refused the published content (${status})`);
+}
+
+// One bounded exchange. A blob redirect may go once to the package CDN, whose signed URL
+// replaces the registry credential.
+function registryRequest(agent, url, headers, method, limit, redirects = 1) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    if (target.protocol !== "https:" || !REGISTRY_HOSTS.has(target.hostname) || target.port || target.username || target.password) {
+      reject(new ReleaseError("release_artifact_invalid", "Registry redirected outside the package hosts"));
+      return;
+    }
+    const request = https.request(target, { method, agent, headers, timeout: REGISTRY_TIMEOUT }, response => {
+      const location = response.headers.location;
+      if ([301, 302, 303, 307, 308].includes(response.statusCode) && location && redirects > 0) {
+        response.resume();
+        const forwarded = { ...headers };
+        delete forwarded.authorization;
+        let next;
+        try {
+          next = new URL(location, target).href;
+        } catch {
+          reject(new ReleaseError("release_artifact_invalid", "Registry returned an invalid redirect"));
+          return;
+        }
+        registryRequest(agent, next, forwarded, method, limit, redirects - 1).then(resolve, reject);
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      response.on("data", chunk => {
+        size += chunk.length;
+        if (size > limit) request.destroy(new ReleaseError("release_artifact_invalid", "Registry content exceeds its descriptor"));
+        else chunks.push(chunk);
+      });
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) }));
+      response.on("error", () => reject(new ReleaseError("release_registry_unavailable", "Registry response was interrupted")));
+    });
+    request.on("timeout", () => request.destroy(new ReleaseError("release_registry_unavailable", "Registry request timed out")));
+    request.on("error", error => reject(error instanceof ReleaseError ? error : new ReleaseError("release_registry_unavailable", "Registry is unreachable")));
+    request.end();
+  });
 }
 
 async function packRelease(releasePath, outputDirectory, repositoryRoot) {
@@ -239,7 +371,7 @@ async function buildRelease(outputDirectory, repositoryRoot) {
         "--build-arg", `SOURCE_REVISION=${revision}`, "--build-arg", `SOURCE_VERSION=sha-${revision}`,
         "--file", component === "console" ? "Dockerfile.console" : "services/agent-runtime/Dockerfile",
         "--output", `type=oci,dest=${path.join(output, `${component}-oci`)},tar=false`, "."], source, 60 * 60_000);
-      images[component] = await inspectImage(output, component, revision);
+      images[component] = await inspectImage(bundleLayout(output, component), component, revision);
     }
     requireContract(await sourceRevision(root) === revision, "release_revision_mismatch", "Source changed during the build");
     const manifest = { schemaVersion: 1, sourceRevision: revision, images };

@@ -4,6 +4,7 @@ import json
 import re
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, NoReturn
@@ -13,6 +14,7 @@ from pydantic_settings import SettingsError
 
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.persistence.repositories import PruneTarget
+from k8s_incident_agent.runtime.backup import RuntimeBackupError, backup_runtime_data
 from k8s_incident_agent.runtime.operator import initialize_operator
 from k8s_incident_agent.runtime.reset import (
     ResetPlan,
@@ -28,6 +30,11 @@ type _ExecutionMode = Literal["preview", "confirm"]
 type _RuntimeCommand = Literal["prune", "reset-stage-one-data"]
 
 
+@dataclass(frozen=True, slots=True)
+class _BackupRequest:
+    destination: Path
+
+
 class _OperatorArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         # Mistaken password arguments must not be echoed by argparse.
@@ -39,7 +46,7 @@ class _OperatorArgumentParser(argparse.ArgumentParser):
 
 def _parse_args(
     argv: Sequence[str] | None,
-) -> tuple[_RuntimeCommand, _ExecutionMode, str | None] | Path:
+) -> tuple[_RuntimeCommand, _ExecutionMode, str | None] | Path | _BackupRequest:
     arguments_list = list(sys.argv[1:] if argv is None else argv)
     parser_type = (
         _OperatorArgumentParser
@@ -55,6 +62,10 @@ def _parse_args(
         allow_abbrev=False,
     )
     _add_reset_mode_arguments(reset_parser)
+    backup_parser = subparsers.add_parser("backup", allow_abbrev=False)
+    backup_parser.add_argument(
+        "--destination", required=True, type=Path, metavar="ABSOLUTE_PATH"
+    )
     operator_parser = subparsers.add_parser("operator", allow_abbrev=False)
     operator_commands = operator_parser.add_subparsers(required=True)
     initializer = operator_commands.add_parser("init", allow_abbrev=False)
@@ -65,6 +76,8 @@ def _parse_args(
     command_name = arguments.command
     if command_name == "operator":
         return arguments.output
+    if command_name == "backup":
+        return _BackupRequest(arguments.destination)
     if command_name not in ("prune", "reset-stage-one-data"):
         raise RuntimeError("Unknown Runtime command")
     mode: _ExecutionMode = "preview" if arguments.preview else "confirm"
@@ -175,10 +188,45 @@ def _emit_reset_error(
     )
 
 
+def _run_backup(destination: Path) -> int:
+    try:
+        result = backup_runtime_data(Settings(), destination, datetime.now(UTC))
+    except (OSError, SettingsError, ValidationError):
+        code = "configuration_invalid"
+    except RuntimeBackupError as error:
+        code = error.code
+    else:
+        print(
+            json.dumps(
+                {
+                    "alembicHead": result.alembic_head,
+                    "backup": result.name,
+                    "bytes": result.size,
+                    "files": result.files,
+                    "removed": list(result.removed),
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        return 0
+    print(
+        json.dumps(
+            {"error": {"code": code, "phase": "backup"}},
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+    )
+    return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parsed = _parse_args(argv)
     if isinstance(parsed, Path):
         return initialize_operator(parsed)
+    if isinstance(parsed, _BackupRequest):
+        return _run_backup(parsed.destination)
     command_name, mode, expected_plan_digest = parsed
     if command_name == "reset-stage-one-data":
         try:
