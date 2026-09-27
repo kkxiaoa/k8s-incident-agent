@@ -48,7 +48,7 @@ async function response(url, options = {}) {
   }
 }
 
-async function jsonRequest(endpoint, { method = "GET", body, missing = false } = {}) {
+export async function jsonRequest(endpoint, { method = "GET", body, missing = false } = {}) {
   const res = await response(`${apiRoot}${endpoint}`, { method, headers: { ...headers(), "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (missing && res.status === 404) return null;
@@ -111,11 +111,11 @@ async function command(program, args, timeout = 120_000) {
   catch { throw new Error(`${program} failed in release preparation; remote partial state is retained`); }
 }
 
-async function protectedEnvironment() {
-  const environment = await jsonRequest("/environments/release");
-  requireValue(environment.name === "release" && environment.protection_rules?.some(rule =>
+export async function protectedEnvironment(name) {
+  const environment = await jsonRequest(`/environments/${name}`);
+  requireValue(environment.name === name && environment.protection_rules?.some(rule =>
     rule.type === "required_reviewers" && rule.reviewers?.length > 0),
-  "Configure required reviewers on the release Environment before publishing");
+  `Configure required reviewers on the ${name} Environment first`);
   return environment;
 }
 
@@ -223,19 +223,21 @@ async function markReleased(selection) {
   }
 }
 
-async function approveDispatch() {
+/** A protected job acts only for a fresh owning-main dispatch of its workflow that a reviewer approved. */
+export async function approveDispatch(workflow, name) {
   requireValue(process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_EVENT_NAME === "workflow_dispatch" &&
-    process.env.GITHUB_REF === "refs/heads/main" && process.env.GITHUB_RUN_ATTEMPT === "1", "Publish requires a fresh owning-main manual dispatch");
+    process.env.GITHUB_REF === "refs/heads/main" && process.env.GITHUB_RUN_ATTEMPT === "1", "This job requires a fresh owning-main manual dispatch");
   const runId = id(process.env.GITHUB_RUN_ID);
   const run = await jsonRequest(`/actions/runs/${runId}`);
-  requireValue(run.path === ".github/workflows/release.yml" && run.event === "workflow_dispatch" && run.head_branch === "main" &&
+  requireValue(run.path === workflow && run.event === "workflow_dispatch" && run.head_branch === "main" &&
     run.head_sha === process.env.GITHUB_SHA && run.run_attempt === 1 && run.repository?.full_name === repository,
-  "Unexpected publication workflow source");
-  const environment = await protectedEnvironment();
+  `Unexpected workflow source for the ${name} Environment`);
+  const environment = await protectedEnvironment(name);
   const approvals = await jsonRequest(`/actions/runs/${runId}/approvals`);
   requireValue(Array.isArray(approvals) && approvals.some(review => review.state === "approved" &&
-    review.environments?.some(item => item.id === environment.id && item.name === "release")),
-  "No recorded human approval for this release dispatch");
+    review.environments?.some(item => item.id === environment.id && item.name === name)),
+  `No recorded human approval for this ${name} dispatch`);
+  return environment;
 }
 
 function sameSelection(actual, expected) {
@@ -330,7 +332,7 @@ async function uploadAsset(releaseId, file, existing) {
 
 /** Called only by the protected publication job; no build or artifact code execution. */
 export async function publishCandidate(options) {
-  await approveDispatch();
+  await approveDispatch(".github/workflows/release.yml", "release");
   const selection = await selectRelease(options.releasePr);
   sameSelection(selection, options);
   const tag = selection.version;
@@ -456,7 +458,7 @@ export async function fetchPublishedRelease(tag, output, sourceDirectory) {
 async function main() {
   const [action, ...args] = process.argv.slice(2);
   if (action === "select" && args.length === 0) {
-    await protectedEnvironment();
+    await protectedEnvironment("release");
     const selection = await selectRelease(process.env.RELEASE_PR);
     const notes = await releaseNotes(selection);
     for (const [key, value] of Object.entries(selection)) await appendFile(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);

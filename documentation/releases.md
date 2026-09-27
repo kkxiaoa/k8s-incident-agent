@@ -88,7 +88,7 @@ node scripts/publish.mjs fetch --version v0.1.0 --output /absolute/new-release-d
 
 The public download does not require a token; `GH_TOKEN` is optional for GitHub API rate limits. This entry rejects drafts, prereleases, incomplete releases, a mismatched source tag, inconsistent attachments and altered OCI content. On success use `/absolute/new-release-download/bundle/release.json` below. A failed download is not an installation bundle; its new output directory is retained for inspection, never overwritten on retry. Source tooling must include this download command; for an older source without it, invoke the trusted tooling's absolute script path from the clean candidate checkout.
 
-Local candidate commands intentionally remain available for development/evaluation. They do not assert publication approval. Formal installation/CD must use the approved-release download boundary, not point it at a draft's raw attachments to bypass this check. CD and public HTTPS are not enabled by this workflow.
+Local candidate commands intentionally remain available for development/evaluation. They do not assert publication approval. Formal installation/CD must use the approved-release download boundary, not point it at a draft's raw attachments to bypass this check. CD and public HTTPS are not enabled by this workflow; deployment is the separate [restricted deployment](#restricted-deployment) workflow.
 
 ## Deployment and evaluation
 
@@ -106,6 +106,31 @@ The final command performs live scenario operations and requires separate author
 Deployment creates a temporary Kustomize release overlay. Preview/status use that derived content; server dry-run and actual apply receive the same rendered manifest. All application/init images resolve to canonical repository plus exact index digest. Bare `kubectl kustomize` renders source templates only, not an installation-ready release. Third-party monitoring image digests are locked in both `deploy/application/versions.json` and `deploy/monitoring/base/workloads/kustomization.yaml`; deployment requires the two to agree, independent of the release.
 
 Node-image preflight still requires the exact canonical references to be present; importing or prefetching images is a separately authorized installation step. Fixed context/namespace, credential, RBAC, admission, retention, ordinary uninstall and destructive confirmation boundaries remain in force. Selecting a release bundle neither enables Executor nor authorizes purge, other cluster operations or changes to sibling projects.
+
+## Restricted deployment
+
+[Deployment](../.github/workflows/deploy.yml) accepts two inputs: `version`, a published stable version, and `profile`, either `k3s-evaluation` or `k3s-public`. It hands them to the fixed K3s host's deployment gateway, described in [`scripts/README.md`](../scripts/README.md#deploy-gatewaymjs). It runs only from the owning repository's `main`, one attempt per dispatch. Deployment approval is separate from publication approval: a published release is deployed only after someone approves this workflow's `deploy` Environment.
+
+Before enabling it, a maintainer must:
+
+- Create the `deploy` Environment with required reviewers and a deployment branch policy that allows only the `main` branch, and turn off administrator bypass. Both jobs refuse an Environment without these settings.
+- Add four Environment secrets. None of them may be a repository secret:
+  - `DEPLOY_SSH_PRIVATE_KEY`: the private half of an ed25519 key pair used only for deployment. The host installs the public half with the gateway's forced command.
+  - `DEPLOY_SSH_KNOWN_HOSTS`: the host's known_hosts line, with the host key fingerprint checked on the host itself.
+  - `DEPLOY_SSH_HOST` and `DEPLOY_SSH_USER`.
+
+One maintainer may approve their own dispatch; this is human confirmation, not a two-person guarantee.
+
+1. The selection job has no Environment and no secrets. It checks the inputs and the `deploy` Environment's protection: required reviewers, the main-only branch policy and no administrator bypass. It reads the published release, downloading only `release.json` and checking it against its asset digest. The run summary shows the reviewer the version, profile, source SHA and both image digests, and the approval binds exactly those.
+2. The deployment job waits for the `deploy` Environment, and GitHub releases the secrets to it only after approval. Before connecting, it checks the run's source, the Environment's protection and this dispatch's recorded approval; without that record nothing is sent. It then reads the release again, and a different source or different image digests stop it.
+3. It reads the four secrets once and removes them from its environment, then writes the key and the known_hosts line into a private temporary directory; ssh itself receives only `PATH`. It connects without an agent, forwarding, a TTY or a configuration file, and only to a host whose key matches. It sends the single request line. Of ssh's own error output, only the gateway's `phase` lines reach the log, and the key files are removed afterwards.
+4. The gateway's result is written to the log and becomes the run summary:
+   - On success: the deployed version, profile and source, the replaced Runtime image, the backup and its Alembic head.
+   - On failure: the gateway's `code`, `phase` and `message`, plus whichever of those rollback details it already knew.
+
+   A result for any other version, profile or source, or a success reported by a session that did not end cleanly, fails the job and still records what the gateway reported. If the session drops after the gateway has started, the job asks you to check the cluster instead of reporting an unreachable host.
+
+Deployments are serialized and never cancel one in flight. A same-run rerun is rejected: retries use a **fresh dispatch and fresh approval**. If the runner loses the connection or times out, the gateway still finishes on the host, or stops safely on failure. Check the cluster, as the gateway's failure handling describes, before dispatching again. Approval covers deploying that release with that profile to the fixed host. It does not cover bootstrap changes, data restores, purge or any other cluster operation.
 
 ## Tool contracts
 

@@ -1,0 +1,84 @@
+name: Deploy published release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published stable version to deploy, such as v0.2.0
+        required: true
+        type: string
+      profile:
+        description: Deployment profile the fixed host's gateway allows
+        required: true
+        type: choice
+        options:
+          - k3s-evaluation
+          - k3s-public
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: incident-deployment
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  select:
+    if: github.repository == 'kkxiaoa/k8s-incident-agent' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      profile: ${{ steps.release.outputs.profile }}
+      sourceRevision: ${{ steps.release.outputs.sourceRevision }}
+      images: ${{ steps.release.outputs.images }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Bind the published release and profile before approval
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_VERSION: ${{ inputs.version }}
+          DEPLOY_PROFILE: ${{ inputs.profile }}
+        run: node scripts/deploy-dispatch.mjs select
+
+  deploy:
+    needs: select
+    if: github.repository == 'kkxiaoa/k8s-incident-agent' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    # Above the gateway's worst case; a runner that stops early leaves the gateway to finish on the host.
+    timeout-minutes: 150
+    environment: deploy
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Verify the approval and hand the release to the host gateway
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_VERSION: ${{ needs.select.outputs.version }}
+          DEPLOY_PROFILE: ${{ needs.select.outputs.profile }}
+          DEPLOY_SOURCE: ${{ needs.select.outputs.sourceRevision }}
+          DEPLOY_IMAGES: ${{ needs.select.outputs.images }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: node scripts/deploy-dispatch.mjs deploy
