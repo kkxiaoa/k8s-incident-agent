@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, rm } from "node:fs/promises";
+import http from "node:http";
 import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,12 +105,12 @@ export async function loadConfig(file) {
   }
   const absolute = value => typeof value === "string" && path.isAbsolute(value) && path.normalize(value) === value;
   requireGateway(object(config)
-    && isDeepStrictEqual(Object.keys(config).sort(), ["context", "kubeconfig", "profiles", "registryProxy", "schemaVersion", "workRoot"])
-    && config.schemaVersion === 1 && Array.isArray(config.profiles) && config.profiles.length > 0
+    && isDeepStrictEqual(Object.keys(config).sort(), ["context", "kubeconfig", "profiles", "proxy", "schemaVersion", "workRoot"])
+    && config.schemaVersion === 2 && Array.isArray(config.profiles) && config.profiles.length > 0
     && config.profiles.every(profile => GATEWAY_PROFILES.has(profile)) && new Set(config.profiles).size === config.profiles.length
     && absolute(config.kubeconfig) && absolute(config.workRoot)
     && typeof config.context === "string" && /^[A-Za-z0-9._@:-]{1,100}$/.test(config.context)
-    && (config.registryProxy === null || proxyUrl(config.registryProxy)),
+    && (config.proxy === null || proxyUrl(config.proxy)),
   "config_invalid", "config", "Gateway configuration does not match its contract");
   return config;
 }
@@ -118,7 +119,10 @@ function proxyUrl(value) {
   if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
-    return url.protocol === "http:" && url.pathname === "/" && !url.search && !url.hash && !url.username && !url.password;
+    // Only the canonical spelling with an explicit port: Node's global agent ignores a proxy that git and fetch
+    // would still accept, and without a port git assumes 1080 where Node assumes 80.
+    return url.protocol === "http:" && url.port !== "" && url.pathname === "/" && !url.search && !url.hash
+      && !url.username && !url.password && [url.origin, url.href].includes(value);
   } catch {
     return false;
   }
@@ -219,12 +223,14 @@ function parseJson(text, phase, what) {
   }
 }
 
-async function checkoutSource(execute, version, revision, directory) {
+async function checkoutSource(execute, version, revision, directory, proxy) {
   requireGateway(VERSION.test(version) && REVISION.test(revision), "release_invalid", "source", "Release source must be a tagged full commit");
   await mkdir(directory, { mode: 0o700 });
   const git = (args, timeout = READ_TIMEOUT) => runCommand(execute, "git", ["-C", directory, ...args],
     { timeout, phase: "source", label: `git ${args[0]}` });
   await git(["init", "--quiet"]);
+  // git runs as a child and does not see the gateway's own proxy setting.
+  if (proxy) await git(["config", "http.proxy", proxy]);
   // The published tag was already checked to name this commit; HEAD is verified again below.
   await git(["fetch", "--quiet", "--depth", "1", "--no-tags", SOURCE_REPOSITORY, `refs/tags/${version}`], WRITE_TIMEOUT);
   await git(["checkout", "--quiet", "--detach", "FETCH_HEAD"]);
@@ -448,9 +454,8 @@ const productionDependencies = {
   execute: executeExternalCommand,
   fetchManifest: fetchPublishedManifest,
   checkoutSource,
-  verifyImages: (manifest, source, config) => verifyRegistryRelease(manifest, source, ghcrRegistry(new https.Agent({
-    keepAlive: true, ...(config.registryProxy ? { proxyEnv: { HTTPS_PROXY: config.registryProxy } } : {}),
-  }))),
+  // Read at call time: the entry replaces the global agent when the host configures a proxy.
+  verifyImages: (manifest, source) => verifyRegistryRelease(manifest, source, ghcrRegistry(https.globalAgent)),
   render: renderSourceProfile,
   sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
   suffix: () => randomBytes(4).toString("hex"),
@@ -479,9 +484,9 @@ export async function deploy(request, config, overrides = {}) {
       throw new GatewayError("release_unverified", phase, error instanceof Error && error.message ? error.message : "Release was not verified");
     }
     enter("source");
-    const source = await checkout(execute, request.version, manifest.sourceRevision, path.join(run, "source"));
+    const source = await checkout(execute, request.version, manifest.sourceRevision, path.join(run, "source"), config.proxy);
     enter("images");
-    await verifyImages(manifest, source, config);
+    await verifyImages(manifest, source);
     enter("render");
     const resources = await render(source, manifest, request.profile, config.context, installerExecute);
     enter("scope");
@@ -568,6 +573,8 @@ async function main() {
   const config = await loadConfig(args[0]);
   Object.assign(process.env, { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: config.workRoot, TMPDIR: config.workRoot, LANG: "C.UTF-8",
     GIT_TERMINAL_PROMPT: "0" });
+  // GitHub and GHCR requests leave through the host's proxy; kubectl children reach the local API server directly.
+  if (config.proxy) http.setGlobalProxyFromEnv({ HTTPS_PROXY: config.proxy });
   const request = parseRequest(await readRequest(), environment, config.profiles);
   process.stdout.write(`${JSON.stringify(await deploy(request, config))}\n`);
 }

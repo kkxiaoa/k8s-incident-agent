@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -49,8 +50,8 @@ const clone = resources => new Map([...resources].map(([key, value]) => [key, st
 async function config(t, overrides = {}) {
   const workRoot = await mkdtemp(path.join(directory, "work-"));
   t.after(() => rm(workRoot, { recursive: true, force: true }));
-  return { schemaVersion: 1, profiles: ["k3s-public", "k3s-evaluation"], kubeconfig: "/var/lib/deploy/kubeconfig", context: "deploy",
-    workRoot, registryProxy: "http://proxy.example.test:3128", ...overrides };
+  return { schemaVersion: 2, profiles: ["k3s-public", "k3s-evaluation"], kubeconfig: "/var/lib/deploy/kubeconfig", context: "deploy",
+    workRoot, proxy: "http://proxy.example.test:3128", ...overrides };
 }
 
 test("the caller contract is one bounded line with a stable version and an allowed profile", () => {
@@ -80,14 +81,23 @@ test("host configuration is a closed contract that the caller cannot redirect", 
     { profiles: ["k3s-online"] },
     { workRoot: "relative/work" },
     { kubeconfig: "/var/lib/deploy/../root/.kube/config" },
-    { registryProxy: "http://user:secret@proxy.example.test:3128" },
-    { registryProxy: "socks5://proxy.example.test:1080" },
+    { proxy: "http://user:secret@proxy.example.test:3128" },
+    { proxy: "socks5://proxy.example.test:1080" },
+    { proxy: "HTTP://proxy.example.test:3128" },
+    { proxy: " http://proxy.example.test:3128" },
+    { proxy: "http://proxy.example.test:3128/path" },
+    { proxy: "http://proxy.example.test" },
     { context: "deploy --token=x" },
+    { schemaVersion: 1 },
     { extra: true },
   ]) {
     await writeFile(file, JSON.stringify({ ...base, ...change }));
     await assert.rejects(loadConfig(file), { code: "config_invalid" }, JSON.stringify(change));
   }
+  // A schema 1 configuration is refused rather than read under the wider meaning of the proxy.
+  const { proxy, ...previous } = base;
+  await writeFile(file, JSON.stringify({ ...previous, schemaVersion: 1, registryProxy: proxy }));
+  await assert.rejects(loadConfig(file), { code: "config_invalid" });
   const link = path.join(base.workRoot, "linked.json");
   await writeFile(file, JSON.stringify(base));
   await symlink(file, link);
@@ -267,9 +277,9 @@ function cluster(profile, scenario = {}) {
   return { execute, calls, gitCalls, mutations };
 }
 
-async function run(t, profile, scenario, dependencies = {}) {
+async function run(t, profile, scenario, dependencies = {}, host = {}) {
   const fake = cluster(profile, scenario);
-  const settings = await config(t);
+  const settings = await config(t, host);
   const phases = [];
   // A dependency set to undefined falls back to the gateway's production implementation.
   const overrides = Object.fromEntries(Object.entries({
@@ -409,13 +419,18 @@ test("the production release and source readers run inside the gateway's own wor
     assert.ok(asset?.name === "release.json" && options.headers.Accept === "application/octet-stream", endpoint);
     return new Response(asset.bytes);
   };
-  const { fake, outcome, settings } = await run(t, "k3s-public", { git: true }, {
-    fetchManifest: undefined, checkoutSource: undefined,
-  });
-  assert.equal((await outcome).status, "deployed");
-  assert.deepEqual(fake.gitCalls.map(args => args[0]), ["init", "fetch", "checkout", "rev-parse", "ls-tree"]);
-  assert.deepEqual(fake.gitCalls[1].slice(-2), ["https://github.com/kkxiaoa/k8s-incident-agent.git", "refs/tags/v0.2.0"]);
-  assert.deepEqual(await readdir(settings.workRoot), []);
+  for (const [proxy, sequence] of [["http://proxy.example.test:3128", ["init", "config", "fetch", "checkout", "rev-parse", "ls-tree"]],
+    [null, ["init", "fetch", "checkout", "rev-parse", "ls-tree"]]]) {
+    const { fake, outcome, settings } = await run(t, "k3s-public", { git: true }, {
+      fetchManifest: undefined, checkoutSource: undefined,
+    }, { proxy });
+    assert.equal((await outcome).status, "deployed");
+    assert.deepEqual(fake.gitCalls.map(args => args[0]), sequence);
+    if (proxy) assert.deepEqual(fake.gitCalls[1], ["config", "http.proxy", proxy]);
+    assert.deepEqual(fake.gitCalls.find(args => args[0] === "fetch").slice(-2),
+      ["https://github.com/kkxiaoa/k8s-incident-agent.git", "refs/tags/v0.2.0"]);
+    assert.deepEqual(await readdir(settings.workRoot), []);
+  }
 });
 
 for (const [name, scenario] of [
@@ -504,6 +519,30 @@ test("a dropped SSH session neither ends the run early nor leaves its lock behin
   child.stdin.end('{"version":"v0.2.0","profile":"k3s-public"}\n');
   assert.equal(await new Promise(resolve => child.on("exit", resolve)), 1);
   assert.deepEqual((await readdir(settings.workRoot)).sort(), ["gateway.json", "offline.mjs"]);
+});
+
+test("the entry sends its GitHub requests through the host's proxy", async t => {
+  const requests = [];
+  // Records each tunnel request and refuses it, so the run ends in the release phase without leaving the machine.
+  const proxy = net.createServer(client => {
+    client.on("error", () => {});
+    client.once("data", chunk => {
+      requests.push(chunk.toString("latin1").split("\r\n")[0].split(" ").slice(0, 2).join(" "));
+      client.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+    });
+  });
+  await new Promise(resolve => proxy.listen(0, "127.0.0.1", resolve));
+  t.after(() => proxy.close());
+  const settings = await config(t, { proxy: `http://127.0.0.1:${proxy.address().port}` });
+  const file = path.join(settings.workRoot, "gateway.json");
+  await writeFile(file, JSON.stringify(settings));
+  const child = spawn(process.execPath, [gateway, file], { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH } });
+  let stdout = "";
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stdin.end('{"version":"v0.2.0","profile":"k3s-public"}\n');
+  assert.equal(await new Promise(resolve => child.on("exit", resolve)), 1);
+  assert.equal(JSON.parse(stdout).code, "release_unverified");
+  assert.deepEqual([...new Set(requests)], ["CONNECT api.github.com:443"]);
 });
 
 // The bootstrap-installed identity, read the way the API server would evaluate it.
