@@ -1,9 +1,24 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ../k3s-online
+  - ../k3s-base
   - ../../platform/k3s-public
 patches:
+  # Public intake is Alertmanager only: Console and Runtime both drop the manual route.
+  - path: console-online.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: incident-console
+      namespace: k8s-incident-agent
+  - path: runtime-online.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: agent-runtime
+      namespace: k8s-incident-agent
   - patch: |-
       apiVersion: v1
       kind: ConfigMap

@@ -19,7 +19,6 @@ const OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
 const VERSION = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const REVISION = /^[a-f0-9]{40}$/;
 const SOURCE_REPOSITORY = "https://github.com/kkxiaoa/k8s-incident-agent.git";
-// k3s-online renders no operator origin, so install and upgrade refuse it as it stands.
 const GATEWAY_PROFILES = new Set(["k3s-evaluation", "k3s-public"]);
 const APPLICATION_NAMESPACE = "k8s-incident-agent";
 const PROJECT_NAMESPACES = new Set([APPLICATION_NAMESPACE, "k8s-incident-monitoring"]);
