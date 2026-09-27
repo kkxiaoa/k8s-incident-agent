@@ -352,7 +352,8 @@ Console 页脚可显示 ICP 备案号：在 `incident-console-config` 中设置 
 ## `deploy-gateway.mjs`
 
 受限部署入口：在固定 K3s 主机上由专用部署用户的 SSH 强制命令调用，配置文件路径是它唯一的
-命令行参数。网关程序、专用用户、强制命令、主机配置与部署身份都由集群管理员在主机初始化
+命令行参数。调用方是部署 workflow（`.github/workflows/deploy.yml` 经 `deploy-dispatch.mjs` 调用），审批与凭据见
+[受限部署](../documentation/releases.md#restricted-deployment)。网关程序、专用用户、强制命令、主机配置与部署身份都由集群管理员在主机初始化
 （bootstrap）时安装，调用方无法修改。调用方只能经 stdin 发送一行 JSON：
 
 ```json
