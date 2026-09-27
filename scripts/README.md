@@ -463,6 +463,31 @@ artifact，在 `backup.json` 中记录 Alembic head 与每个文件的 SHA-256�
    `checkpoints.sqlite3` 与 `runs/` 放回（文件 0600、目录 0700），确认没有 `-wal` / `-shm`；
 4. 让 Deployment 使用第 1 步选定的 release 后扩容，`migrate` 会把数据迁移到该版本的 Alembic head。
 
+普通 `uninstall` 不包含网关的 bootstrap 对象。下线网关同样是需要另行授权的操作，按以下顺序进行，
+`runtime-backup` PVC 与其中的备份保留：
+
+1. 关闭入口：从部署用户的 `authorized_keys` 中删除强制命令条目，并删除 `deploy` Environment 中的
+   部署 secrets；确认没有进行中的部署，网关工作目录中没有 `deploy.lock`（网关被强制终止后遗留的锁
+   按上文的方式核对后删除）；
+2. 先删除部署身份，最后删除准入策略：中途中断时留下的只是没有身份可约束的策略，而不是不受约束的
+   身份。ServiceAccount 删除后，为它签发的 token 随之失效。不要对 `deploy/application/gateway` 执行
+   `kubectl delete -k`：该目录包含 `runtime-backup` PVC，会连同备份一起删除。
+
+   ```bash
+   kubectl --context <context> delete clusterrolebinding,clusterrole k8s-incident-agent-deploy-gateway-read --ignore-not-found
+   for namespace in k8s-incident-agent k8s-incident-monitoring k8s-incident-scenarios; do
+     kubectl --context <context> --namespace "$namespace" delete rolebinding,role deploy-gateway --ignore-not-found
+   done
+   kubectl --context <context> --namespace k8s-incident-agent delete serviceaccount deploy-gateway deploy-jobs --ignore-not-found
+   kubectl --context <context> delete validatingadmissionpolicybinding k8s-incident-agent-deploy-gateway --ignore-not-found
+   kubectl --context <context> delete validatingadmissionpolicy k8s-incident-agent-deploy-gateway --ignore-not-found
+   ```
+
+3. 在主机上删除部署用户、网关配置与部署身份 kubeconfig、网关程序与工作目录；
+4. 确认不再需要其中的恢复点后，再单独删除 `runtime-backup` PVC。先用 `kubectl get pv` 核对它绑定的
+   PV 的回收策略：K3s 默认 local-path StorageClass 为 `Delete`，删除后数据不可恢复。网关 Job 结束
+   一小时后才被清理，此前仍引用该 PVC 的备份 Pod 会让它停在 `Terminating`。
+
 ## 测试与静态检查
 
 默认测试入口会运行本目录全部 `*.test.mjs`：

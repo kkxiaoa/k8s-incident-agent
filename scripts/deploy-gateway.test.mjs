@@ -602,6 +602,38 @@ function apiRequests({ command, input }) {
   throw new Error(`unmapped gateway call ${command.join(" ")}`);
 }
 
+test("the documented gateway teardown removes every bootstrap object except the backup claim", async () => {
+  const readme = await readFile(path.join(root, "scripts/README.md"), "utf8");
+  const section = readme.slice(readme.indexOf("下线网关"), readme.indexOf("## 测试与静态检查"));
+  const block = section.match(/```bash\n([\s\S]*?)\n\s*```/)?.[1];
+  assert.ok(block, "the teardown section needs its bash block");
+  // Runs the documented commands against a kubectl that only records its arguments; with no PATH, other commands are not found.
+  const result = spawnSync("bash", ["-c", `set -eu\nPATH=/nonexistent\nkubectl() { printf '%s\\n' "$*"; }\n${block.replaceAll("<context>", "fixture")}`],
+    { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const kinds = { validatingadmissionpolicybinding: "ValidatingAdmissionPolicyBinding", validatingadmissionpolicy: "ValidatingAdmissionPolicy",
+    clusterrolebinding: "ClusterRoleBinding", clusterrole: "ClusterRole", rolebinding: "RoleBinding", role: "Role", serviceaccount: "ServiceAccount" };
+  const lines = result.stdout.trim().split("\n");
+  // An interrupted teardown must leave the policy without an identity, never the identity without its policy.
+  assert.ok(lines.findIndex(line => line.includes("validatingadmissionpolicy")) > lines.findIndex(line => line.includes(" serviceaccount ")),
+    "admission objects go last");
+  const deleted = lines.flatMap(line => {
+    assert.ok(line.startsWith("--context fixture "), `every teardown command names its context: ${line}`);
+    const words = line.split(" ");
+    const at = words.indexOf("delete");
+    assert.ok(at !== -1, `teardown commands only delete: ${line}`);
+    const namespace = words.includes("--namespace") ? words[words.indexOf("--namespace") + 1] : "";
+    const names = words.slice(at + 2).filter(word => !word.startsWith("--"));
+    return words[at + 1].split(",").flatMap(type => {
+      assert.ok(kinds[type], `unexpected deletion of ${type}`);
+      return names.map(name => `${kinds[type]}/${namespace}/${name}`);
+    });
+  });
+  const expected = gatewayBundle().filter(document => document.kind !== "PersistentVolumeClaim")
+    .map(document => `${document.kind}/${document.metadata.namespace ?? ""}/${document.metadata.name}`);
+  assert.deepEqual(deleted.sort(), expected.sort());
+});
+
 test("the deploy identity is authorized for exactly what a gateway deployment does", async t => {
   const { allows } = authorizer(gatewayBundle());
   for (const [profile, scenario] of [["k3s-public", {}], ["k3s-evaluation", {}], ["k3s-public", { failJob: "runtime-backup" }]]) {
