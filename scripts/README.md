@@ -364,15 +364,16 @@ Console 页脚可显示 ICP 备案号：在 `incident-console-config` 中设置 
 配置允许的集合内（`k3s-online` 不设置 `OPERATOR_ORIGIN`，install 与 upgrade 同样拒绝它）。
 SSH 会话请求的命令（`SSH_ORIGINAL_COMMAND`）、多余字段或多行输入一律拒绝。网关丢弃 SSH 会话
 带来的环境变量，子进程只使用固定的最小环境。主机配置是不超过 4 KiB 的 JSON 文件，字段固定为
-`schemaVersion`（`1`）、`profiles`、`kubeconfig`（部署身份 kubeconfig 的绝对路径）、`context`、
-`workRoot`（网关工作目录）与 `registryProxy`（访问 GHCR 的 HTTP 代理，可为 `null`）。
+`schemaVersion`（`2`）、`profiles`、`kubeconfig`（部署身份 kubeconfig 的绝对路径）、`context`、
+`workRoot`（网关工作目录）与 `proxy`（HTTP 代理，只接受 `http://主机:端口` 的规范写法，可为 `null`）。
+配置代理时，网关读取 GitHub release 及其附件、取回 release 源码与核验 GHCR 都经它发出；kubectl 不经代理。
 
 执行顺序：
 
 1. 经 GitHub API 核对 release 已正式发布、tag 指向 `sourceRevision`、附件齐全，只下载
    `release.json` 并按附件 digest 校验；
 2. 按 release tag 浅取回源码，核对提交号，拒绝 symlink 与 submodule；
-3. 经 `registryProxy` 向 GHCR 核验两个镜像的 index、双平台、非 root 与源码 revision 标签，
+3. 向 GHCR 核验两个镜像的 index、双平台、非 root 与源码 revision 标签，
    规则与 `release.mjs` 核验本地 bundle 相同，不下载镜像层；
 4. 核对主机 kubectl 与 K3s 版本等于 release 锁定的基线，再用网关自身的代码渲染所选 profile，并
    执行 install / upgrade 在 apply 前做的同一组渲染检查。

@@ -117,8 +117,8 @@ test("the workflow offers exactly the profiles the runner request and the host g
   for (const profile of offered) assert.doesNotThrow(() => deploymentRequest("v0.2.0", profile));
   const folder = await workRoot(t);
   const file = path.join(folder, "gateway.json");
-  const config = profiles => ({ schemaVersion: 1, profiles, kubeconfig: "/var/lib/deploy/kubeconfig", context: "deploy",
-    workRoot: "/var/lib/deploy/work", registryProxy: null });
+  const config = profiles => ({ schemaVersion: 2, profiles, kubeconfig: "/var/lib/deploy/kubeconfig", context: "deploy",
+    workRoot: "/var/lib/deploy/work", proxy: null });
   await writeFile(file, JSON.stringify(config(offered)));
   assert.deepEqual((await loadConfig(file)).profiles, offered);
   await writeFile(file, JSON.stringify(config(["k3s-online"])));
