@@ -35,7 +35,7 @@ npm run doctor
 | `npm run deployment -- purge ... --preview\|--confirm <identity> --release <release.json>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
 | `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation> --release <release.json>` | `deployment.mjs` | 用固定一次性 Job 预览或确认早期 Runtime 业务库（Alembic `20260814_0001`/`20260901_0002`）的数据 cutover，保留 PVC | 是；`--confirm` 额外删除旧业务数据 |
 | `npm run evaluation -- run <evaluation-profile> [--context <context>] --release <release.json>` | `evaluation.mjs` | 逐项验证七个 catalog scenario 与五类真实告警/诊断切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
-| `npm run evaluation -- online k3s-online --context <context> --release <release.json>` | `evaluation.mjs` | 验证 online profile 的只读 API 与人工入口缺失边界 | 否 |
+| `npm run evaluation -- online k3s-public --context <context> --release <release.json>` | `evaluation.mjs` | 验证公开 profile 的只读 API 与人工入口缺失边界 | 否 |
 | `npm run scenario -- list` | `scenario.mjs` | 校验并列出版本化场景的公开信息 | 否 |
 | `npm run scenario -- apply <scenario-id>` | `scenario.mjs` | 安装指定 catalog fixture | 是 |
 | `npm run scenario -- verify <scenario-id>` | `scenario.mjs` | 等待并验证场景的确定性证据条件 | 否 |
@@ -135,7 +135,7 @@ npm run scenario -- cleanup image-pull-backoff --profile k3s-evaluation --contex
 - `verify` 使用 Deployment UID → ReplicaSet owner UID → Pod owner UID 证明对象关联，再检查 `ErrImagePull` / `ImagePullBackOff` 和关联 Warning Event；
 - `cleanup` 只删除该场景 manifest 声明的对象，不删除 Namespace 或 Kind 集群；
 - 默认命令先验证固定 Kind 集群基线；K3s命令只接受`k3s-evaluation`和显式context，并复用`deployment status`对固定kubectl、K3s/Kubernetes版本、bundled components、安装对象、镜像、Secret、RBAC与readiness的只读门禁；
-- `k3s-online`、未知profile、缺失或option形context以及额外kubectl参数都会在执行前拒绝。K3s路径不调用Kind CLI或固定Kind context。
+- `k3s-public`、未知profile、缺失或option形context以及额外kubectl参数都会在执行前拒绝。K3s路径不调用Kind CLI或固定Kind context。
 
 `verify` 使用 120 秒 absolute deadline，`kubectl` 查询和轮询等待都计入该预算；单次查询最多 30 秒，并在剩余预算不足时自动收窄。成功结果只包含安全的对象 identity 和 reason，不包含原始 Event note；超时失败只输出最后一个静态 unmet-condition reason。
 
@@ -173,7 +173,7 @@ Alertmanager 的固定临时 port-forward，完成后关闭。
 ```bash
 npm run evaluation -- run kind-evaluation --release <release.json>
 npm run evaluation -- run k3s-evaluation --context <context> --release <release.json>
-npm run evaluation -- online k3s-online --context <context> --release <release.json>
+npm run evaluation -- online k3s-public --context <context> --release <release.json>
 ```
 
 `run` 复用 `scenario.mjs` 已校验的私有评估投影，逐 entry 证明健康基线、真实
@@ -208,7 +208,6 @@ Evidence kind、诊断 code 和 panel ID；不包含 Secret、token/hash、原�
 ```text
 kind-evaluation
 k3s-evaluation
-k3s-online
 k3s-public
 ```
 
@@ -236,14 +235,14 @@ Kind 静态 hostPath 额外由同一锁定 Runtime image 的受限 init 只调�
 ownership；migration 和 Runtime 本身仍保持非 root。status 按固定 kubectl 的资源
 列表命令 `apiVersion: v1, kind: List` producer contract 校验，并忽略 RollingUpdate
 已带删除时间的旧 Console Pod。`INCIDENT_INTAKE_MODE` 直接位于
-Console 与 Runtime 的 Deployment Pod template；base 为 `manual`，`k3s-online`
-overlay 改为 `online` 并触发 rollout。ConfigMap 不重复保存该值，status 会
+Console 与 Runtime 的 Deployment Pod template；base 为 `manual`，`k3s-public`
+改为 `online` 并触发 rollout。ConfigMap 不重复保存该值，status 会
 核对实际容器 env 与 rollout generation，防止 profile 已升级但进程仍使用旧 mode。
 
 只有 `k3s-public` 渲染 Console Ingress 与放行 Traefik 访问 Console 的 NetworkPolicy
 `allow-traefik-to-console`：Ingress 只匹配 `incident.kubesmith.cloud`，并使用本项目的
-TLS Secret `incident-console-tls`（证书单独签发）。`k3s-evaluation` 与 `k3s-online` 不渲染
-这两个对象，只能经 port-forward 访问：没有 host 的规则会同时响应节点地址，并在同一 Traefik 上
+TLS Secret `incident-console-tls`（证书单独签发）。`k3s-evaluation` 不渲染这两个对象，
+只能经 port-forward 访问：没有 host 的规则会同时响应节点地址，并在同一 Traefik 上
 压过相邻站点的 IngressRoute。status 按渲染结果核对：公开 profile 要求 host、TLS 与后端一致
 且 Traefik 已分配地址；其他 profile 发现 `incident-console` Ingress 或多出的 NetworkPolicy 即失败。
 v0.1.1 及更早版本的私有 K3s 安装带有这两个对象，从 `k3s-public` 切换到私有 profile 也会留下它们；
@@ -256,7 +255,7 @@ kubectl --context <context> --namespace k8s-incident-agent delete ingress incide
 kubectl --context <context> --namespace k8s-incident-agent delete networkpolicy allow-traefik-to-console --ignore-not-found
 ```
 
-`k3s-public` 在 `k3s-online` 之上固定 `OPERATOR_ORIGIN=https://incident.kubesmith.cloud`、
+`k3s-public` 在 K3s 基础之上启用 online 接收，并固定 `OPERATOR_ORIGIN=https://incident.kubesmith.cloud`、
 `CONSOLE_ACCESS_MODE=public_demo` 与 `YAML_ASSISTANT_URL=https://yaml.kubesmith.cloud/`。
 公开数据批准不由部署写入：migration 与 Runtime 容器只从安装者预先创建的 ConfigMap
 `agent-runtime-public-approval` 读取 `PUBLIC_DEMO_DATA_APPROVED` 一个键；对象或键缺失时 Pod 无法启动，
@@ -361,7 +360,7 @@ Console 页脚可显示 ICP 备案号：在 `incident-console-config` 中设置 
 ```
 
 版本必须是已正式发布的稳定版本；profile 只能是 `k3s-evaluation` 或 `k3s-public`，并且在主机
-配置允许的集合内（`k3s-online` 不设置 `OPERATOR_ORIGIN`，install 与 upgrade 同样拒绝它）。
+配置允许的集合内。
 SSH 会话请求的命令（`SSH_ORIGINAL_COMMAND`）、多余字段或多行输入一律拒绝。网关丢弃 SSH 会话
 带来的环境变量，子进程只使用固定的最小环境。主机配置是不超过 4 KiB 的 JSON 文件，字段固定为
 `schemaVersion`（`2`）、`profiles`、`kubeconfig`（部署身份 kubeconfig 的绝对路径）、`context`、

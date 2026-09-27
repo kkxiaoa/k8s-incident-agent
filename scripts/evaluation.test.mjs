@@ -423,7 +423,7 @@ test("online evaluation proves the manual route and control boundary", async () 
   const result = await runEvaluationCommand(
     {
       action: "online",
-      profile: "k3s-online",
+      profile: "k3s-public",
       context: "k3s-k8s-incident-agent",
     },
     harness.dependencies,
@@ -446,7 +446,7 @@ test("online evaluation rejects an assembled manual runtime route", async () => 
   const result = await runEvaluationCommand(
     {
       action: "online",
-      profile: "k3s-online",
+      profile: "k3s-public",
       context: "k3s-k8s-incident-agent",
     },
     harness.dependencies,
@@ -470,7 +470,7 @@ for (const [options, code] of [
     const harness = createHarness(options);
     harness.state.online = true;
     const result = await runEvaluationCommand(
-      { action: "online", profile: "k3s-online", context: "k3s-k8s-incident-agent" },
+      { action: "online", profile: "k3s-public", context: "k3s-k8s-incident-agent" },
       harness.dependencies,
     );
     assert.equal(result.artifact.status, "failed");
@@ -483,7 +483,7 @@ for (const [status, reason] of [[409, "active_run_exists"], [503, "diagnosis_una
     const harness = createHarness({ onlineRerunStatus: status });
     harness.state.online = true;
     const result = await runEvaluationCommand(
-      { action: "online", profile: "k3s-online", context: "k3s-k8s-incident-agent" },
+      { action: "online", profile: "k3s-public", context: "k3s-k8s-incident-agent" },
       harness.dependencies,
     );
     assert.equal(result.artifact.status, "passed");
@@ -517,7 +517,7 @@ test("deployment checks receive expected nonzero command results", async () => {
   const result = await runEvaluationCommand(
     {
       action: "online",
-      profile: "k3s-online",
+      profile: "k3s-public",
       context: "k3s-k8s-incident-agent",
     },
     harness.dependencies,
@@ -624,6 +624,16 @@ test("invalid selections fail before deployment, tunnels, or scenario commands",
       assert.equal(harness.calls.scenarioApply, 0);
     });
   }
+  // Scenario runs never target the public deployment, and the online boundary only does.
+  for (const request of [{ action: "run", profile: "k3s-public", context: "k3s" }, { action: "online", profile: "k3s-evaluation", context: "k3s" }]) {
+    await t.test(`${request.action} ${request.profile}`, async () => {
+      const harness = createHarness();
+      harness.dependencies.verifyDeploymentStatus = async () => assert.fail("deployment preflight reached");
+      harness.dependencies.openTunnels = async () => assert.fail("tunnel opened");
+      await assert.rejects(runEvaluationCommand(request, harness.dependencies), { code: "invalid_arguments" });
+      assert.equal(harness.calls.scenarioApply, 0);
+    });
+  }
 });
 
 test("focused evaluation still requires every planned revision and a matching release", async () => {
@@ -648,10 +658,10 @@ test("CLI rejects missing selection values and online selections", () => {
   for (const args of [
     ["run", "kind-evaluation", "--scenario"],
     ["run", "kind-evaluation", "--scenario", "--context"],
-    ["online", "k3s-online", "--context", "k3s", "--scenario", "pvc-binding-pending"],
+    ["online", "k3s-public", "--context", "k3s", "--scenario", "pvc-binding-pending"],
     ["run", "kind-evaluation", "--dataset"],
     ["run", "kind-evaluation", "--split", "unknown"],
-    ["online", "k3s-online", "--context", "k3s", "--dataset", "regression.json"],
+    ["online", "k3s-public", "--context", "k3s", "--dataset", "regression.json"],
   ]) {
     const result = spawnSync(process.execPath, [
       path.join(REPOSITORY_ROOT, "scripts/evaluation.mjs"), ...args,
@@ -753,7 +763,7 @@ test("dataset contract errors fail before any external work", async (t) => {
     ["outcome", (m) => { m.cases[0].expected_terminal.outcome = "passed"; }],
     ["failure without code", (m) => { m.cases[0].expected_terminal = { outcome: "failed" }; }],
     ["outcome extra field", (m) => { m.cases[0].expected_terminal.answer = "private"; }],
-    ["profile", (m) => { m.cases[0].profiles = ["k3s-online"]; }],
+    ["profile", (m) => { m.cases[0].profiles = ["k3s-public"]; }],
     ["unbounded wait", (m) => { m.cases[0].alert_wait_seconds = 1801; }],
   ];
   for (const [name, mutate] of mutations) {
@@ -923,7 +933,7 @@ test("evaluation rejects the former digest-only lock commit exception", async ()
   harness.state.online = true;
 
   await assert.rejects(runEvaluationCommand(
-    { action: "online", profile: "k3s-online", context: "fixed-k3s" },
+    { action: "online", profile: "k3s-public", context: "fixed-k3s" },
     harness.dependencies,
   ), { code: "release_revision_mismatch" });
   assert.equal(harness.calls.tunnelClose, 0);

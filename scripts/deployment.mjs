@@ -99,13 +99,6 @@ const PROFILE_DEFINITIONS = Object.freeze({
     overlay: "overlays/k3s-evaluation",
     uninstall: "uninstall/k3s",
   }),
-  "k3s-online": Object.freeze({
-    platform: "k3s",
-    intakeMode: "online",
-    nodeMetrics: true,
-    overlay: "overlays/k3s-online",
-    uninstall: "uninstall/k3s",
-  }),
   "k3s-public": Object.freeze({
     platform: "k3s",
     intakeMode: "online",

@@ -109,7 +109,7 @@ function documents(rawYaml) {
 }
 
 test("fixed profiles keep public demo disabled with access controls only in Runtime", () => {
-  for (const profile of ["kind-evaluation", "k3s-evaluation", "k3s-online"]) {
+  for (const profile of ["kind-evaluation", "k3s-evaluation"]) {
     const rendered = documents(render(`overlays/${profile}`));
     const runtime = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "agent-runtime-config");
     const consoleConfig = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "incident-console-config");
@@ -131,10 +131,13 @@ test("public profile fixes its origin and navigation but leaves data approval to
   assert.equal(Object.hasOwn(runtimeConfig.data, "PUBLIC_DEMO_DATA_APPROVED"), false);
   assert.equal(rendered.some(item => item.metadata?.name === "agent-runtime-public-approval"), false);
   // Migration and Runtime both validate Settings: every container loading the CD-managed
-  // config also reads the approval key, and its containers otherwise match k3s-online.
+  // config also reads the approval key; apart from that and online intake, the containers match k3s-evaluation.
   const runtimePod = resources => resources.find(item => item.kind === "Deployment" && item.metadata.name === "agent-runtime").spec.template.spec;
   const publicPod = runtimePod(rendered);
-  const onlinePod = runtimePod(documents(render("overlays/k3s-online")));
+  const privatePod = runtimePod(documents(render("overlays/k3s-evaluation")));
+  const withOnlineIntake = container => container.env
+    ? { ...container, env: container.env.map(entry => entry.name === "INCIDENT_INTAKE_MODE" ? { ...entry, value: "online" } : entry) }
+    : container;
   const approval = { name: "PUBLIC_DEMO_DATA_APPROVED", valueFrom: { configMapKeyRef: { name: "agent-runtime-public-approval", key: "PUBLIC_DEMO_DATA_APPROVED" } } };
   const loadsRuntimeConfig = container => container.envFrom?.some(source => source.configMapRef?.name === "agent-runtime-config");
   // No entry references another, so env order carries no meaning here.
@@ -142,7 +145,7 @@ test("public profile fixes its origin and navigation but leaves data approval to
   for (const field of ["initContainers", "containers"]) {
     assert.deepEqual(
       byEnvName(publicPod[field]),
-      byEnvName(onlinePod[field].map(container => loadsRuntimeConfig(container) ? { ...container, env: [...(container.env ?? []), approval] } : container)),
+      byEnvName(privatePod[field].map(withOnlineIntake).map(container => loadsRuntimeConfig(container) ? { ...container, env: [...(container.env ?? []), approval] } : container)),
       field,
     );
   }
@@ -184,7 +187,7 @@ test("all deployment profiles render byte-stably from the shared base", () => {
   const profiles = [
     "overlays/kind-evaluation",
     "overlays/k3s-evaluation",
-    "overlays/k3s-online",
+    "overlays/k3s-public",
   ];
   for (const profile of profiles) {
     const first = render(profile);
@@ -198,7 +201,6 @@ test("all deployment profiles render byte-stably from the shared base", () => {
 test("profile overlays change platform storage, ingress, intake and operator origin", () => {
   const kind = indexDocuments(render("overlays/kind-evaluation"));
   const evaluation = indexDocuments(render("overlays/k3s-evaluation"));
-  const online = indexDocuments(render("overlays/k3s-online"));
   const publicDemo = indexDocuments(render("overlays/k3s-public"));
 
   const kindPvc = getResource(
@@ -227,7 +229,7 @@ test("profile overlays change platform storage, ingress, intake and operator ori
     false,
   );
 
-  for (const profile of [evaluation, online, publicDemo]) {
+  for (const profile of [evaluation, publicDemo]) {
     const pvc = getResource(
       profile,
       "PersistentVolumeClaim",
@@ -243,7 +245,7 @@ test("profile overlays change platform storage, ingress, intake and operator ori
   // A host-less rule also answers the node address and outranks neighbouring
   // IngressRoutes, so private profiles are reached only through port-forward and
   // do not admit Traefik to the Console either.
-  for (const profile of [evaluation, online]) {
+  for (const profile of [evaluation]) {
     assert.equal(
       [...profile.values()].some((resource) => resource.kind === "Ingress"),
       false,
@@ -273,7 +275,6 @@ test("profile overlays change platform storage, ingress, intake and operator ori
   for (const [profile, expectedMode] of [
     [kind, "manual"],
     [evaluation, "manual"],
-    [online, "online"],
     [publicDemo, "online"],
   ]) {
     for (const name of ["agent-runtime-config", "incident-console-config"]) {
@@ -319,7 +320,7 @@ test("profile overlays change platform storage, ingress, intake and operator ori
       "k8s-incident-agent",
     ).spec.template,
     getResource(
-      online,
+      publicDemo,
       "Deployment",
       "agent-runtime",
       "k8s-incident-agent",
@@ -333,7 +334,7 @@ test("profile overlays change platform storage, ingress, intake and operator ori
       "k8s-incident-agent",
     ).spec.template,
     getResource(
-      online,
+      publicDemo,
       "Deployment",
       "incident-console",
       "k8s-incident-agent",
@@ -606,7 +607,7 @@ test("Kind render prepares only the fixed hostPath root before non-root migratio
 });
 
 test("Console and Runtime exposure and RBAC stay within the fixed read-only boundary", () => {
-  const resources = indexDocuments(render("overlays/k3s-online"));
+  const resources = indexDocuments(render("overlays/k3s-public"));
   const console = getResource(
     resources,
     "Deployment",
@@ -629,7 +630,7 @@ test("Console and Runtime exposure and RBAC stay within the fixed read-only boun
   }
   // Only the public profile routes to the Console, and never to the Runtime.
   const ingress = getResource(
-    indexDocuments(render("overlays/k3s-public")),
+    resources,
     "Ingress",
     "incident-console",
     "k8s-incident-agent",
@@ -1449,7 +1450,7 @@ function createFakeKubectl(t, overrides = {}) {
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const executable = path.join(directory, "kubectl");
   const rendered = {
-    k3s: indexDocuments(render("overlays/k3s-online")),
+    k3s: indexDocuments(render("overlays/k3s-evaluation")),
     "k3s-public": indexDocuments(render("overlays/k3s-public")),
     kind: indexDocuments(render("overlays/kind-evaluation")),
   };
@@ -1677,9 +1678,8 @@ function response(key, args) {
       if (item?.kind === "Deployment" && item.metadata?.name === "agent-runtime" && process.env.FAKE_RENDER_IMAGE_DRIFT === "1") {
         item.spec.template.spec.initContainers[0].image = "k8s-incident-agent-runtime:old";
       }
-      if (item?.kind === "ConfigMap" && item.metadata?.name === "agent-runtime-config" &&
-          process.env.FAKE_PROFILE !== "kind-evaluation" && process.env.FAKE_OPERATOR_ORIGIN_MISSING !== "1") {
-        item.data.OPERATOR_ORIGIN = "https://console.example.test";
+      if (item?.kind === "ConfigMap" && item.metadata?.name === "agent-runtime-config" && process.env.FAKE_OPERATOR_ORIGIN_MISSING === "1") {
+        delete item.data.OPERATOR_ORIGIN;
       }
       if (item?.kind === "ConfigMap" && item.metadata?.name === "prometheus-scrape-node-metrics" &&
           process.env.FAKE_RENDER_SCRAPE_FILTER_DRIFT === "1") {
@@ -2177,7 +2177,7 @@ function response(key, args) {
           PATCH_VALIDATOR_BASE_URL: "http://patch-validator.k8s-incident-agent.svc.cluster.local:8081",
           PATCH_VALIDATOR_HMAC_KEY_FILE: "/var/run/secrets/k8s-incident-agent/patch-validator/hmac-key",
           OPERATOR_VERIFIER_FILE: "/var/run/secrets/k8s-incident-agent/operator/password-verifier",
-          OPERATOR_ORIGIN: process.env.FAKE_OPERATOR_ORIGIN_DRIFT === "1" ? "https://other.example.test" : process.env.FAKE_PROFILE === "kind-evaluation" ? "http://127.0.0.1:13000" : "https://console.example.test",
+          OPERATOR_ORIGIN: process.env.FAKE_OPERATOR_ORIGIN_DRIFT === "1" ? "https://other.example.test" : fixture("ConfigMap", "agent-runtime-config", "k8s-incident-agent").data.OPERATOR_ORIGIN,
           CONSOLE_ACCESS_MODE: process.env.FAKE_PROFILE === "k3s-public" && process.env.FAKE_ACCESS_MODE_DRIFT !== "1" ? "public_demo" : "private",
           ...(process.env.FAKE_PROFILE === "k3s-public" ? {} : { PUBLIC_DEMO_DATA_APPROVED: "false" }),
         }
@@ -2569,7 +2569,7 @@ test("cutover manifest is a fixed tokenless single-Pod reset Job", () => {
 test("cutover rejects every open or malformed CLI shape before kubectl", (t) => {
   const fake = createFakeKubectl(t, { FAKE_CUTOVER: "1" });
   const cases = [
-    ["cutover", "k3s-online", "--context", "demo-k3s", "--preview"],
+    ["cutover", "k3s-public", "--context", "demo-k3s", "--preview"],
     ["cutover", "k3s-evaluation", "--preview"],
     ["cutover", "k3s-evaluation", "--context", "--kubeconfig=x", "--preview"],
     ["cutover", "k3s-evaluation", "--context", "demo-k3s", "--preview", "extra"],
@@ -3023,7 +3023,7 @@ test("lifecycle preview is offline and uninstall inventory excludes retained dat
 test("kubectl-shaped context input is rejected before external execution", () => {
   const result = runDeployment([
     "status",
-    "k3s-online",
+    "k3s-evaluation",
     "--context",
     "--kubeconfig=/tmp/other-config",
   ]);
@@ -3031,12 +3031,27 @@ test("kubectl-shaped context input is rejected before external execution", () =>
   assert.match(result.stderr, /^FAIL invalid_argument /);
 });
 
-test("confirmed online install preflights, applies, waits, and reports the real status contract", (t) => {
+test("confirmed public install applies the host-bound Ingress and reports online intake", (t) => {
+  const fake = createFakeKubectl(t, { FAKE_PROFILE: "k3s-public", FAKE_PATCH_VALIDATOR_POLICY_TRANSIENT: "1" });
+  const result = runDeployment(["install", "k3s-public", "--context", "demo-k3s", "--confirm"], fake.environment);
+  assert.equal(result.status, 0, result.stderr);
+  const status = JSON.parse(result.stdout);
+  assert.equal(status.profile, "k3s-public");
+  assert.equal(status.intakeMode, "online");
+  assert.equal(status.ingress, "traefik-ready");
+  assert.equal(result.stdout.includes("api-key"), false);
+  const applied = fake.calls().filter(call => call.args.includes("apply") && !call.args.includes("--dry-run=server"))
+    .flatMap(call => documents(call.input));
+  assert.deepEqual(applied.filter(document => document.kind === "Ingress").map(document => document.spec.rules[0].host), ["incident.kubesmith.cloud"]);
+  assert.equal(applied.some(document => document.metadata?.name === "agent-runtime-public-approval"), false);
+});
+
+test("confirmed K3s install preflights, applies, waits, and reports the real status contract", (t) => {
   const fake = createFakeKubectl(t, {
     FAKE_PATCH_VALIDATOR_POLICY_TRANSIENT: "1",
   });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 0, result.stderr);
@@ -3046,11 +3061,11 @@ test("confirmed online install preflights, applies, waits, and reports the real 
     deployments: "ready",
     runtime: { status: "ok", diagnosis: { status: "ready", reason: null } },
     ingress: "not-installed",
-    intakeMode: "online",
+    intakeMode: "manual",
     networkPolicies: "matched",
     networkPolicyEnforcement: "requires-live-probe",
     pods: 3,
-    profile: "k3s-online",
+    profile: "k3s-evaluation",
     pvc: { name: "runtime-data", phase: "Bound", volumeName: "pvc-volume" },
     rbac: "matched",
     services: "cluster-ip-only",
@@ -3304,7 +3319,7 @@ test("confirmed online install preflights, applies, waits, and reports the real 
 
 test("rendered migration image drift stops before admission or workload writes", (t) => {
   const fake = createFakeKubectl(t, { FAKE_RENDER_IMAGE_DRIFT: "1" });
-  const result = runDeployment(["install", "k3s-online", "--context", "demo-k3s", "--confirm"], fake.environment);
+  const result = runDeployment(["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"], fake.environment);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /release_image_mismatch/);
   assert.equal(fake.calls().some(call => call.args.includes("apply")), false);
@@ -3315,7 +3330,7 @@ test("confirmed install does not apply workloads before the admission boundary i
     FAKE_PATCH_VALIDATOR_POLICY_WARNING: "1",
   });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
 
@@ -3413,7 +3428,7 @@ test("Kind status rejects a node-metrics grant the profile never installs", (t) 
 test("render gate rejects a node-metrics filter that lost its keepequal rules", (t) => {
   const fake = createFakeKubectl(t, { FAKE_RENDER_SCRAPE_FILTER_DRIFT: "1" });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3449,7 +3464,7 @@ test("render gate rejects a panel whose producer no profile scrapes", (t) => {
   writeFileSync(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
 
   for (const [profile, context, environment] of [
-    ["k3s-online", "demo-k3s", {}],
+    ["k3s-evaluation", "demo-k3s", {}],
     ["kind-evaluation", "kind-k8s-incident-agent", { FAKE_SERVER_VERSION: "v1.36.1" }],
   ]) {
     const fake = createFakeKubectl(t, { FAKE_PROFILE: profile, ...environment });
@@ -3468,7 +3483,7 @@ test("render gate rejects a panel whose producer no profile scrapes", (t) => {
 test("status accepts an installation with or without optional sibling navigation", (t) => {
   for (const environment of [{}, { FAKE_YAML_ASSISTANT_URL: "https://yaml.example.test/editor/" }]) {
     const fake = createFakeKubectl(t, environment);
-    const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);
+    const result = runDeployment(["status", "k3s-evaluation", "--context", "demo-k3s"], fake.environment);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).deployments, "ready");
   }
@@ -3476,7 +3491,7 @@ test("status accepts an installation with or without optional sibling navigation
 
 test("status reports model degradation separately from ready core workloads", (t) => {
   const fake = createFakeKubectl(t, { FAKE_DIAGNOSIS_UNAVAILABLE: "1" });
-  const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);
+  const result = runDeployment(["status", "k3s-evaluation", "--context", "demo-k3s"], fake.environment);
   assert.equal(result.status, 0, result.stderr);
   const status = JSON.parse(result.stdout);
   assert.equal(status.deployments, "ready");
@@ -3487,7 +3502,7 @@ test("status reports model degradation separately from ready core workloads", (t
 
 test("status rejects invalid core health without claiming a healthy installation", (t) => {
   const fake = createFakeKubectl(t, { FAKE_RUNTIME_HEALTH_INVALID: "1" });
-  const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);
+  const result = runDeployment(["status", "k3s-evaluation", "--context", "demo-k3s"], fake.environment);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^FAIL external_contract_invalid /);
 });
@@ -3495,7 +3510,7 @@ test("status rejects invalid core health without claiming a healthy installation
 test("status rejects an additive NetworkPolicy that broadens the fixed profile", (t) => {
   const fake = createFakeKubectl(t, { FAKE_NETWORK_POLICY_DRIFT: "1" });
   const result = runDeployment(
-    ["status", "k3s-online", "--context", "demo-k3s"],
+    ["status", "k3s-evaluation", "--context", "demo-k3s"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3529,7 +3544,7 @@ test("status rejects monitoring component, storage, config, network, and RBAC dr
   for (const environment of cases) {
     const fake = createFakeKubectl(t, environment);
     const result = runDeployment(
-      ["status", "k3s-online", "--context", "demo-k3s"],
+      ["status", "k3s-evaluation", "--context", "demo-k3s"],
       fake.environment,
     );
     assert.equal(result.status, 1, JSON.stringify(environment));
@@ -3578,18 +3593,16 @@ test("public status rejects drift in exposure host, TLS, access mode and sibling
 });
 
 test("private K3s status rejects a Console Ingress the profile does not render", (t) => {
-  for (const profile of ["k3s-evaluation", "k3s-online"]) {
-    const fake = createFakeKubectl(t, { FAKE_STRAY_INGRESS: "1", ...(profile === "k3s-evaluation" ? { FAKE_DEPLOYMENT_INTAKE_MODE: "manual" } : {}) });
-    const result = runDeployment(["status", profile, "--context", "demo-k3s"], fake.environment);
-    assert.equal(result.status, 1, profile);
-    assert.match(result.stderr, /Console Ingress exists although the profile does not expose the Console/);
-  }
+  const fake = createFakeKubectl(t, { FAKE_STRAY_INGRESS: "1" });
+  const result = runDeployment(["status", "k3s-evaluation", "--context", "demo-k3s"], fake.environment);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Console Ingress exists although the profile does not expose the Console/);
 });
 
 test("status ignores an old terminating Console Pod after rollout", (t) => {
   const fake = createFakeKubectl(t, { FAKE_TERMINATING_CONSOLE: "1" });
   const result = runDeployment(
-    ["status", "k3s-online", "--context", "demo-k3s"],
+    ["status", "k3s-evaluation", "--context", "demo-k3s"],
     fake.environment,
   );
   assert.equal(result.status, 0, result.stderr);
@@ -3598,10 +3611,10 @@ test("status ignores an old terminating Console Pod after rollout", (t) => {
 
 test("status rejects a deployed intake mode that differs from the profile", (t) => {
   const fake = createFakeKubectl(t, {
-    FAKE_DEPLOYMENT_INTAKE_MODE: "manual",
+    FAKE_DEPLOYMENT_INTAKE_MODE: "online",
   });
   const result = runDeployment(
-    ["status", "k3s-online", "--context", "demo-k3s"],
+    ["status", "k3s-evaluation", "--context", "demo-k3s"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3611,7 +3624,7 @@ test("status rejects a deployed intake mode that differs from the profile", (t) 
 test("confirmed install rejects an unavailable fixed K3s component before apply", (t) => {
   const fake = createFakeKubectl(t, { FAKE_COMPONENT_UNAVAILABLE: "traefik" });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3629,7 +3642,7 @@ test("confirmed install rejects a missing namespaced webhook credential before a
     FAKE_WEBHOOK_SECRET_MISSING: "1",
   });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3643,7 +3656,7 @@ test("confirmed install rejects a missing namespaced webhook credential before a
 test("operator prerequisites fail before apply without projecting credential material", (t) => {
   for (const overrides of [{ FAKE_OPERATOR_SECRET_MISSING: "1" }, { FAKE_OPERATOR_ORIGIN_MISSING: "1" }]) {
     const fake = createFakeKubectl(t, overrides);
-    const result = runDeployment(["install", "k3s-online", "--context", "demo-k3s", "--confirm"], fake.environment);
+    const result = runDeployment(["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"], fake.environment);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /^FAIL (?:secret_contract_invalid|installation_not_ready) /);
     assert.equal(fake.calls().some(call => call.args.includes("apply")), false);
@@ -3655,7 +3668,7 @@ test("operator prerequisites fail before apply without projecting credential mat
 
 test("operator status rejects a valid HTTPS origin that drifts from the profile", (t) => {
   const fake = createFakeKubectl(t, { FAKE_OPERATOR_ORIGIN_DRIFT: "1" });
-  const result = runDeployment(["status", "k3s-online", "--context", "demo-k3s"], fake.environment);
+  const result = runDeployment(["status", "k3s-evaluation", "--context", "demo-k3s"], fake.environment);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^FAIL installation_not_ready /);
 });
@@ -3665,7 +3678,7 @@ test("confirmed install rejects invalid Patch Validator HMAC key material", (t) 
     FAKE_PATCH_VALIDATOR_SECRET_INVALID: "1",
   });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3681,7 +3694,7 @@ test("confirmed install rejects a K3s component still serving only old Pods", (t
     FAKE_COMPONENT_STALE_ROLLOUT: "traefik",
   });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3697,7 +3710,7 @@ test("confirmed install rejects a K3s component still serving only old Pods", (t
 test("confirmed install rejects a missing locked node image before apply", (t) => {
   const fake = createFakeKubectl(t, { FAKE_IMAGE_MISSING: "1" });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3715,7 +3728,7 @@ test("confirmed install rejects the right digest under an unusable repository na
     FAKE_IMAGE_REPOSITORY_MISMATCH: "1",
   });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3729,7 +3742,7 @@ test("confirmed install rejects the right digest under an unusable repository na
 test("confirmed write fails before cluster access when kubectl is not the fixed version", (t) => {
   const fake = createFakeKubectl(t, { FAKE_CLIENT_VERSION: "v1.33.1" });
   const result = runDeployment(
-    ["install", "k3s-online", "--context", "demo-k3s", "--confirm"],
+    ["install", "k3s-evaluation", "--context", "demo-k3s", "--confirm"],
     fake.environment,
   );
   assert.equal(result.status, 1);
@@ -3824,7 +3837,7 @@ test("uninstall reports an absent node-metrics grant and Kind never touches clus
 test("purge binds confirmation to current K3s PVC and PV UIDs before raw deletion", (t) => {
   const fake = createFakeKubectl(t);
   const preview = runDeployment(
-    ["purge", "k3s-online", "--context", "demo-k3s", "--preview"],
+    ["purge", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
     fake.environment,
   );
   assert.equal(preview.status, 0, preview.stderr);
@@ -3834,7 +3847,7 @@ test("purge binds confirmation to current K3s PVC and PV UIDs before raw deletio
   const rejected = runDeployment(
     [
       "purge",
-      "k3s-online",
+      "k3s-evaluation",
       "--context",
       "demo-k3s",
       "--confirm",
@@ -3848,7 +3861,7 @@ test("purge binds confirmation to current K3s PVC and PV UIDs before raw deletio
   const confirmed = runDeployment(
     [
       "purge",
-      "k3s-online",
+      "k3s-evaluation",
       "--context",
       "demo-k3s",
       "--confirm",
@@ -3885,7 +3898,7 @@ test("purge binds confirmation to current K3s PVC and PV UIDs before raw deletio
 test("purge rejects a terminating or active workload before reading data targets", (t) => {
   const fake = createFakeKubectl(t, { FAKE_ACTIVE_WORKLOAD: "1" });
   const result = runDeployment(
-    ["purge", "k3s-online", "--context", "demo-k3s", "--preview"],
+    ["purge", "k3s-evaluation", "--context", "demo-k3s", "--preview"],
     fake.environment,
   );
   assert.equal(result.status, 1);

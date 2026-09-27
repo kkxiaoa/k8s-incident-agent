@@ -59,7 +59,7 @@ test("the caller contract is one bounded line with a stable version and an allow
     { version: "v0.2.0", profile: "k3s-public" });
   for (const [input, environment] of [
     ['{"version":"v0.2.0","profile":"k3s-public"}', { SSH_ORIGINAL_COMMAND: "sh -c id" }],
-    ['{"version":"v0.2.0","profile":"k3s-online"}', {}],
+    ['{"version":"v0.2.0","profile":"kind-evaluation"}', {}],
     ['{"version":"latest","profile":"k3s-public"}', {}],
     ['{"version":"v0.2.0-rc.1","profile":"k3s-public"}', {}],
     ['{"version":"v0.2.0","profile":"k3s-public","manifest":"/tmp/x.yaml"}', {}],
@@ -78,7 +78,6 @@ test("host configuration is a closed contract that the caller cannot redirect", 
   assert.deepEqual(await loadConfig(file), base);
   for (const change of [
     { profiles: ["kind-evaluation"] },
-    { profiles: ["k3s-online"] },
     { workRoot: "relative/work" },
     { kubeconfig: "/var/lib/deploy/../root/.kube/config" },
     { proxy: "http://user:secret@proxy.example.test:3128" },

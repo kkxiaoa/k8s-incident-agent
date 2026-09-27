@@ -2303,7 +2303,7 @@ test("K3s evaluation rejects missing or option-shaped contexts before commands",
 test("scenario execution rejects online and unknown deployment profiles", async (t) => {
   const { environment } = createCatalog(t);
 
-  for (const profile of ["k3s-online", "other-evaluation"]) {
+  for (const profile of ["k3s-public", "other-evaluation"]) {
     const { calls, execute } = createExecutor();
     await assert.rejects(
       runScenarioCommand("apply", SCENARIO_ID, {
@@ -2429,7 +2429,7 @@ test("scenario selection cannot become a path or arbitrary kubectl arguments", a
 
   for (const extraArguments of [
     ["--profile", "k3s-evaluation"],
-    ["--profile", "k3s-online", "--context", K3S_CONTEXT_NAME],
+    ["--profile", "k3s-public", "--context", K3S_CONTEXT_NAME],
     ["--profile", "k3s-evaluation", "--context", "--namespace"],
   ]) {
     await assert.rejects(

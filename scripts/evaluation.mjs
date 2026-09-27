@@ -51,20 +51,8 @@ const HISTORICAL_FAMILIES = new Map([
   ["probe-misconfiguration", ["readiness-probe-misconfigured", "liveness-probe-misconfigured"]],
   ["pvc-pending", ["pvc-binding-pending", "pvc-storage-class-missing"]],
 ]);
-const PROFILE_DEFINITIONS = Object.freeze({
-  "kind-evaluation": Object.freeze({
-    context: KIND_CONTEXT,
-    intakeMode: "manual",
-  }),
-  "k3s-evaluation": Object.freeze({
-    context: undefined,
-    intakeMode: "manual",
-  }),
-  "k3s-online": Object.freeze({
-    context: undefined,
-    intakeMode: "online",
-  }),
-});
+// Scenario runs target the manual-intake profiles; the online boundary targets the public one.
+const PROFILES = new Set(["kind-evaluation", "k3s-evaluation", "k3s-public"]);
 const ENDPOINTS = Object.freeze({
   runtime: Object.freeze({
     namespace: APPLICATION_NAMESPACE,
@@ -123,7 +111,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
     loadEvaluationScenarioCatalog(repositoryRoot, dependencies.environment);
   const scenarioRunner = dependencies.runScenarioCommand ?? runScenarioCommand;
   if (!new Set(["run", "online"]).has(request.action)) throw invalidArguments();
-  if ((request.action === "online") !== (profile === "k3s-online")) {
+  if ((request.action === "online") !== (profile === "k3s-public")) {
     throw invalidArguments();
   }
   if (request.action === "online" &&
@@ -2336,7 +2324,7 @@ function resolveContext(profile, context) {
 }
 
 function requireProfile(profile) {
-  if (!Object.hasOwn(PROFILE_DEFINITIONS, profile)) throw invalidArguments();
+  if (!PROFILES.has(profile)) throw invalidArguments();
   return profile;
 }
 
@@ -2476,7 +2464,7 @@ function responseTooLarge() {
 function invalidArguments() {
   return contractError(
     "invalid_arguments",
-    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> --release <release.json> [--context <context>] [--dataset <manifest.json>] [--split <development|regression>] [--scenario <id> ...], or evaluation.mjs online k3s-online --release <release.json> --context <context>",
+    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> --release <release.json> [--context <context>] [--dataset <manifest.json>] [--split <development|regression>] [--scenario <id> ...], or evaluation.mjs online k3s-public --release <release.json> --context <context>",
   );
 }
 

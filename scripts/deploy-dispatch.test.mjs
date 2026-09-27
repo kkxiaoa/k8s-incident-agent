@@ -105,7 +105,7 @@ function fakeSsh(reply) {
 
 test("the request is one bounded line with a stable version and a gateway profile", () => {
   assert.equal(deploymentRequest("v0.2.0", "k3s-public"), '{"version":"v0.2.0","profile":"k3s-public"}\n');
-  for (const [version, profile] of [["latest", "k3s-public"], ["v0.2.0-rc.1", "k3s-public"], ["v0.2.0", "k3s-online"], ["v0.2.0", "kind-evaluation"]]) {
+  for (const [version, profile] of [["latest", "k3s-public"], ["v0.2.0-rc.1", "k3s-public"], ["v0.2.0", "kind-evaluation"]]) {
     assert.throws(() => deploymentRequest(version, profile), /stable published version/, `${version} ${profile}`);
   }
 });
@@ -121,7 +121,7 @@ test("the workflow offers exactly the profiles the runner request and the host g
     workRoot: "/var/lib/deploy/work", proxy: null });
   await writeFile(file, JSON.stringify(config(offered)));
   assert.deepEqual((await loadConfig(file)).profiles, offered);
-  await writeFile(file, JSON.stringify(config(["k3s-online"])));
+  await writeFile(file, JSON.stringify(config(["kind-evaluation"])));
   await assert.rejects(loadConfig(file), { code: "config_invalid" });
 });
 
