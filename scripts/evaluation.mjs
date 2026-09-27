@@ -27,7 +27,10 @@ const KIND_CONTEXT = "kind-k8s-incident-agent";
 const APPLICATION_NAMESPACE = "k8s-incident-agent";
 const MONITORING_NAMESPACE = "k8s-incident-monitoring";
 const ARTIFACT_SCHEMA_VERSION = 2;
-const CATALOG_ARTIFACT_SCHEMA_VERSION = 3;
+const CATALOG_ARTIFACT_SCHEMA_VERSION = 4;
+const CAMPAIGN_ID_PATTERN = /^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$/;
+const REVIEW_PACKAGE_LIMIT_BYTES = 4 * 1024 * 1024;
+const MAX_RUN_EVENT_PAGES = 10;
 const MAX_HTTP_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_INCIDENT_PAGES = 10;
 const HTTP_TIMEOUT_MILLISECONDS = 15_000;
@@ -143,15 +146,14 @@ export async function runEvaluationCommand(request, dependencies = {}) {
   }
   const selectedScenarioIds = request.scenarioIds ?? eligible.map((scenario) => scenario.scenarioId);
   if (request.action === "run" && selectedScenarioIds.length === 0) throw invalidArguments();
-  if (request.action === "run" && scenarios.some((scenario) =>
-    selectedScenarioIds.includes(scenario.scenarioId) && scenario.expectedTerminal.outcome !== "diagnosed")) {
-    throw contractError("evaluation_outcome_not_supported", "The live runner does not yet score this expected terminal outcome");
-  }
   const focused = request.scenarioIds !== undefined || request.split !== undefined ||
     selectedScenarioIds.length < scenarios.length;
   if (!isNormalizedString(request.releasePath)) throw invalidArguments();
   const release = await loadRelease(request.releasePath, repositoryRoot);
   const startedAt = requireDate(now()).toISOString();
+  const campaign = request.action === "run"
+    ? await planCampaign(request, profile, dataset, startedAt, repositoryRoot, dependencies)
+    : undefined;
 
   await deploymentStatus(profile, context, {
     repositoryRoot,
@@ -185,6 +187,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
           completedAt: () => requireDate(now()).toISOString(),
           scenarios,
           dataset,
+          campaign,
           focused,
           selectedScenarioIds,
           scenarioRunner,
@@ -194,6 +197,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
           sleep,
           tunnels,
           now,
+          writeTrialPackage: dependencies.writeTrialPackage ?? writeTrialPackage,
         });
       }
     } catch (error) {
@@ -212,6 +216,7 @@ export async function runEvaluationCommand(request, dependencies = {}) {
           ? {
               scope: focused ? "focused" : "full", selectedScenarioIds,
               dataset: { id: dataset.id, version: dataset.version },
+              campaign,
               ...coverageReport(scenarios.map((scenario) => notRunScenarioResult(scenario, "evaluation_aborted"))),
             }
           : {}),
@@ -226,6 +231,87 @@ export async function runEvaluationCommand(request, dependencies = {}) {
     dependencies.writeArtifact ?? writeEvaluationArtifact
   )(repositoryRoot, profile, artifact);
   return { artifact, artifactPath };
+}
+
+async function planCampaign(request, profile, dataset, startedAt, repositoryRoot, dependencies) {
+  const id = `${startedAt.replaceAll(/[-:]/g, "").replace(/\.[0-9]{3}Z$/, "Z")}-${(dependencies.campaignSuffix ?? randomSuffix)()}`;
+  let retryOf = null;
+  if (request.retryOf !== undefined) {
+    if (!CAMPAIGN_ID_PATTERN.test(request.retryOf)) throw invalidArguments();
+    const previous = await readCampaignArtifact(repositoryRoot, profile, request.retryOf);
+    if (
+      previous?.kind !== "catalog-evaluation" ||
+      previous.schemaVersion !== CATALOG_ARTIFACT_SCHEMA_VERSION ||
+      previous.profile !== profile ||
+      previous.campaign?.id !== request.retryOf ||
+      previous.dataset?.id !== dataset.id ||
+      previous.dataset?.version !== dataset.version
+    ) {
+      throw contractError(
+        "evaluation_retry_target_invalid",
+        "The campaign to retry is missing or evaluated a different dataset or profile",
+      );
+    }
+    retryOf = request.retryOf;
+  }
+  return { id, startedAt, retryOf };
+}
+
+function randomSuffix() {
+  return randomBytes(4).toString("hex");
+}
+
+// The reviewer's material is the Runtime's own safety projection of the Incident and the
+// Run's event history, captured through the session that ran the Trial; nothing is added.
+async function captureReviewPackage(scenario, detail, result, options) {
+  const events = [];
+  let truncated = false;
+  let cursor = null;
+  for (let page = 0; page < MAX_RUN_EVENT_PAGES; page += 1) {
+    const query = cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`;
+    const history = await requestJson(
+      options.fetchImpl,
+      endpointOrigin("runtime"),
+      `/api/v1/incidents/${detail.incident.id}/runs/${detail.selectedRun.id}/events?limit=100${query}`,
+    );
+    if (
+      history?.schemaVersion !== 5 ||
+      !Array.isArray(history.items) ||
+      (history.nextCursor !== null && !isNormalizedString(history.nextCursor))
+    ) {
+      throw upstreamContractError();
+    }
+    events.push(...history.items);
+    cursor = history.nextCursor;
+    if (cursor === null) break;
+    if (page === MAX_RUN_EVENT_PAGES - 1) truncated = true;
+  }
+  const record = {
+    schemaVersion: 1,
+    campaignId: options.campaign.id,
+    scenarioId: scenario.scenarioId,
+    trial: result.trial.index,
+    incidentId: detail.incident.id,
+    runId: detail.selectedRun.id,
+    capturedAt: requireDate(options.now()).toISOString(),
+    incident: detail,
+    events,
+    truncated,
+  };
+  // The bound applies to the exact bytes the package writer receives.
+  let serialized = serializeReviewPackage(record);
+  if (Buffer.byteLength(serialized) > REVIEW_PACKAGE_LIMIT_BYTES) {
+    record.events = [];
+    record.truncated = true;
+    serialized = serializeReviewPackage(record);
+  }
+  // A bounded detail projection fits without its events; more than that is not the Runtime this evaluator verified.
+  if (Buffer.byteLength(serialized) > REVIEW_PACKAGE_LIMIT_BYTES) throw upstreamContractError();
+  return options.writeTrialPackage(options.repositoryRoot, options.profile, options.campaign.id, scenario.scenarioId, serialized);
+}
+
+function serializeReviewPackage(record) {
+  return `${JSON.stringify(record)}\n`;
 }
 
 async function operatorFetch(fetchImpl, profile, environment) {
@@ -364,6 +450,7 @@ async function evaluateCatalog(options) {
     scope: options.focused ? "focused" : "full",
     selectedScenarioIds: options.selectedScenarioIds,
     dataset: { id: options.dataset.id, version: options.dataset.version },
+    campaign: options.campaign,
     monitoring: {
       initialState: initialHealth.state,
       infrastructure,
@@ -374,6 +461,7 @@ async function evaluateCatalog(options) {
 
 async function evaluateScenario(scenario, options) {
   const result = emptyScenarioResult(scenario);
+  result.trial = { index: 1, startedAt: requireDate(options.now()).toISOString(), completedAt: null };
   let applied = false;
   let incidentId;
   try {
@@ -427,8 +515,10 @@ async function evaluateScenario(scenario, options) {
       options.sleep,
     );
     result.runId = terminal.selectedRun.id;
-    const diagnosisSummary = validateTerminalDiagnosis(scenario, terminal);
-    result.checks.run = diagnosisSummary.run;
+    // The Runtime's own terminal values, kept before any expectation is applied to them.
+    result.checks.run = observedRun(terminal);
+    result.reviewPackage = await captureReviewPackage(scenario, terminal, result, options);
+    const diagnosisSummary = assessTerminal(scenario, terminal);
     result.checks.evidenceKinds = diagnosisSummary.evidenceKinds;
     result.checks.uncitedExpectedEvidence =
       diagnosisSummary.uncitedExpectedEvidence;
@@ -445,6 +535,7 @@ async function evaluateScenario(scenario, options) {
       terminal.eventCursor,
       terminal.selectedRun.id,
       terminal.repair,
+      scenario.expectedTerminal,
       options.fetchImpl,
     );
     result.checks.sseReplay = replay;
@@ -504,8 +595,10 @@ async function evaluateScenario(scenario, options) {
       );
     }
     result.status = "pending_manual_review";
+    result.outcomeClass = "pending_manual_review";
   } catch (error) {
     result.failure = safeFailure(error);
+    result.outcomeClass = classifyFailure(result);
   } finally {
     if (applied) {
       try {
@@ -521,6 +614,7 @@ async function evaluateScenario(scenario, options) {
         result.cleanup = "failed";
       }
     }
+    result.trial.completedAt = requireDate(options.now()).toISOString();
   }
   return result;
 }
@@ -678,6 +772,7 @@ async function evaluateInfrastructureRecovery(probe, options) {
       recovered.eventCursor,
       recovered.selectedRun.id,
       recovered.repair,
+      probe.expectedTerminal,
       options.fetchImpl,
     );
     await requireConsoleIncident(recovered, options.fetchImpl);
@@ -800,6 +895,7 @@ function emptyScenarioResult(scenario) {
     alertId: scenario.alertId,
     status: "failed",
     cleanup: "passed",
+    reviewPackage: null,
     checks: {
       healthyBaseline: false,
       fixtureVerified: false,
@@ -823,7 +919,7 @@ function emptyScenarioResult(scenario) {
 }
 
 function notRunScenarioResult(scenario, reason) {
-  return { ...emptyScenarioResult(scenario), status: "not_run", cleanup: "not_run", reason };
+  return { ...emptyScenarioResult(scenario), status: "not_run", outcomeClass: "not_run", trial: null, cleanup: "not_run", reason };
 }
 
 function requireEvaluationCatalog(scenarios) {
@@ -1111,6 +1207,156 @@ async function waitForTerminalIncident(incidentId, fetchImpl, sleep) {
   );
 }
 
+// The persisted Run event that ends each expected terminal, with the states it must carry.
+const TERMINAL_EVENTS = {
+  diagnosed: "diagnosis.completed",
+  insufficient_evidence: "diagnosis.insufficient",
+  failed: "run.failed",
+};
+const FAILED_INCIDENT_STATUSES = new Set(["FAILED", "STALE_RESOURCE"]);
+
+function safeToken(value) {
+  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : "invalid";
+}
+
+function observedRun(detail) {
+  const run = detail.selectedRun ?? {};
+  return {
+    attempt: run.attempt,
+    status: run.status,
+    errorCode: run.error?.code ?? null,
+    retryable: run.error?.retryable ?? null,
+    outcome: detail.diagnosis?.outcome ?? null,
+  };
+}
+
+function terminalMatches(expected, observed) {
+  if (expected.outcome === "failed") {
+    return observed.status === "FAILED" && observed.errorCode === expected.errorCode;
+  }
+  return observed.status === "COMPLETED" && observed.errorCode === null && observed.outcome === expected.outcome;
+}
+
+function assessTerminal(scenario, detail) {
+  const expected = scenario.expectedTerminal;
+  const observed = observedRun(detail);
+  if (!terminalMatches(expected, observed)) {
+    const actual = `${safeToken(observed.status)}/${safeToken(observed.outcome ?? observed.errorCode ?? "none")}`;
+    const wanted = expected.outcome === "failed" ? `failed/${expected.errorCode}` : expected.outcome;
+    throw contractError(
+      "terminal_outcome_mismatch",
+      `The Run ended ${actual} while the case expects ${wanted}`,
+    );
+  }
+  if (expected.outcome === "diagnosed") return validateTerminalDiagnosis(scenario, detail);
+  if (expected.outcome === "insufficient_evidence") return validateInsufficientDiagnosis(scenario, detail);
+  return validateFailedRun(scenario, detail);
+}
+
+// Which failure the operator is looking at: the fixture, the intake, the Run, the expectation or a later gate.
+function classifyFailure(result) {
+  // Until Alertmanager fires, the input has not reached the product: fixture, monitoring or control problems.
+  if (!result.checks.alertmanagerFiring) return "infrastructure_invalid";
+  // A fired alert that yields no unique Incident, or a healthy control that alerts, is a product intake failure.
+  if (!result.checks.uniqueIncident) return "intake_failed";
+  const code = result.failure?.code;
+  if (code === "diagnosis_not_terminal") return "run_not_terminal";
+  if (code === "terminal_outcome_mismatch") return "outcome_mismatch";
+  return "contract_failed";
+}
+
+function indexEvidence(scenario, detail) {
+  const evidenceById = new Map();
+  for (const item of detail.evidence) {
+    if (
+      !UUID_PATTERN.test(item?.id ?? "") ||
+      !isNormalizedString(item?.evidenceKind) ||
+      !isNormalizedString(item?.toolName) ||
+      evidenceById.has(item.id)
+    ) {
+      throw upstreamContractError();
+    }
+    evidenceById.set(item.id, item);
+  }
+  const evidenceKinds = [
+    ...new Set([...evidenceById.values()].map((item) => item.evidenceKind)),
+  ].sort();
+  const tools = new Set(detail.evidence.map((item) => item.toolName));
+  if (
+    [...tools].some(
+      (tool) =>
+        !scenario.allowedTools.includes(tool) ||
+        scenario.forbiddenTools.includes(tool),
+    )
+  ) {
+    throw contractError(
+      "diagnosis_tools_invalid",
+      "Diagnosis used a tool the scenario does not permit",
+    );
+  }
+  return { evidenceById, evidenceKinds };
+}
+
+function validateInsufficientDiagnosis(scenario, detail) {
+  if (
+    detail.schemaVersion !== 5 ||
+    detail.selectedRun?.kind !== "diagnosis" ||
+    detail.selectedRun?.operation !== null ||
+    detail.selectedRun?.attempt !== 1 ||
+    detail.incident?.status !== "INSUFFICIENT_EVIDENCE" ||
+    detail.repair !== null ||
+    !Array.isArray(detail.evidence) ||
+    !isPlainObject(detail.diagnosis) ||
+    typeof detail.diagnosis.summary !== "string" ||
+    detail.diagnosis.summary.length === 0 ||
+    !Array.isArray(detail.diagnosis.rootCauses) ||
+    detail.diagnosis.rootCauses.length !== 0 ||
+    !Array.isArray(detail.diagnosis.missingInformation) ||
+    detail.diagnosis.missingInformation.length === 0 ||
+    detail.diagnosis.missingInformation.some((item) => !isNormalizedString(item))
+  ) {
+    throw contractError(
+      "diagnosis_invalid",
+      "The insufficient-evidence diagnosis did not satisfy the Runtime contract",
+    );
+  }
+  const { evidenceKinds } = indexEvidence(scenario, detail);
+  return {
+    evidenceKinds,
+    // Nothing is cited without a root cause; the reviewer judges whether stopping was right.
+    uncitedExpectedEvidence: scenario.requiredEvidence.filter((kind) => evidenceKinds.includes(kind)),
+    diagnosisCodes: [],
+    repair: undefined,
+  };
+}
+
+function validateFailedRun(scenario, detail) {
+  if (
+    detail.schemaVersion !== 5 ||
+    detail.selectedRun?.kind !== "diagnosis" ||
+    detail.selectedRun?.operation !== null ||
+    detail.selectedRun?.attempt !== 1 ||
+    !isPlainObject(detail.selectedRun?.error) ||
+    typeof detail.selectedRun.error.retryable !== "boolean" ||
+    !FAILED_INCIDENT_STATUSES.has(detail.incident?.status) ||
+    detail.repair !== null ||
+    !Array.isArray(detail.evidence) ||
+    (detail.diagnosis !== null && !isPlainObject(detail.diagnosis))
+  ) {
+    throw contractError(
+      "run_failure_invalid",
+      "The failed Run did not satisfy the Runtime contract",
+    );
+  }
+  const { evidenceKinds } = indexEvidence(scenario, detail);
+  return {
+    evidenceKinds,
+    uncitedExpectedEvidence: scenario.requiredEvidence.filter((kind) => evidenceKinds.includes(kind)),
+    diagnosisCodes: [],
+    repair: undefined,
+  };
+}
+
 function validateTerminalDiagnosis(scenario, detail) {
   if (
     detail.schemaVersion !== 5 ||
@@ -1133,22 +1379,7 @@ function validateTerminalDiagnosis(scenario, detail) {
       "The alert-driven diagnosis did not complete successfully",
     );
   }
-  const evidenceById = new Map();
-  for (const item of detail.evidence) {
-    if (
-      !UUID_PATTERN.test(item?.id ?? "") ||
-      !isNormalizedString(item?.evidenceKind) ||
-      !isNormalizedString(item?.toolName) ||
-      evidenceById.has(item.id)
-    ) {
-      throw upstreamContractError();
-    }
-    evidenceById.set(item.id, item);
-  }
-  const evidenceKinds = [
-    ...new Set([...evidenceById.values()].map((item) => item.evidenceKind)),
-  ].sort();
-  const tools = new Set(detail.evidence.map((item) => item.toolName));
+  const { evidenceById, evidenceKinds } = indexEvidence(scenario, detail);
   const uncollected = scenario.requiredEvidence.filter(
     (kind) => !evidenceKinds.includes(kind),
   );
@@ -1156,18 +1387,6 @@ function validateTerminalDiagnosis(scenario, detail) {
     throw contractError(
       "diagnosis_evidence_missing",
       `Diagnosis did not collect ${uncollected.join(", ")}`,
-    );
-  }
-  if (
-    [...tools].some(
-      (tool) =>
-        !scenario.allowedTools.includes(tool) ||
-        scenario.forbiddenTools.includes(tool),
-    )
-  ) {
-    throw contractError(
-      "diagnosis_tools_invalid",
-      "Diagnosis used a tool the scenario does not permit",
     );
   }
   const diagnosisCodes = [];
@@ -1216,7 +1435,6 @@ function validateTerminalDiagnosis(scenario, detail) {
   }
   const repair = validateTerminalRepair(scenario, detail, evidenceById);
   return {
-    run: { attempt: 1, status: "COMPLETED" },
     evidenceKinds,
     // Collected and expected by the scenario, yet left out of every root cause.
     // The reviewer reading the diagnosis decides whether that weakens it.
@@ -1500,7 +1718,7 @@ async function getPanel(incidentId, panelId, window, fetchImpl) {
   return document;
 }
 
-async function validateSseReplay(incidentId, cursor, runId, repair, fetchImpl) {
+async function validateSseReplay(incidentId, cursor, runId, repair, expectedTerminal, fetchImpl) {
   if (!/^[1-9][0-9]*$/.test(cursor ?? "")) throw upstreamContractError();
   if (!UUID_PATTERN.test(runId ?? "")) throw upstreamContractError();
   const controller = new AbortController();
@@ -1581,14 +1799,14 @@ async function validateSseReplay(incidentId, cursor, runId, repair, fetchImpl) {
     if (
       !eventTypes.has("incident.created") ||
       !eventTypes.has("run.started") ||
-      !eventTypes.has("diagnosis.completed")
+      !eventTypes.has(TERMINAL_EVENTS[expectedTerminal.outcome])
     ) {
       throw contractError(
         "sse_replay_invalid",
         "SSE replay omitted a required Incident lifecycle event",
       );
     }
-    requireRepairEventSequence(events, repair);
+    requireTerminalEventSequence(events, repair, expectedTerminal);
     return {
       events: events.length,
       eventTypes: [...eventTypes].sort(),
@@ -1600,7 +1818,7 @@ async function validateSseReplay(incidentId, cursor, runId, repair, fetchImpl) {
   }
 }
 
-function requireRepairEventSequence(events, repair) {
+function requireTerminalEventSequence(events, repair, expectedTerminal) {
   const repairNames = [
     "repair.patch_ready",
     "repair.dry_run_passed",
@@ -1609,7 +1827,20 @@ function requireRepairEventSequence(events, repair) {
   const matchingRepairEvents = repairNames.map((name) =>
     events.filter((event) => event.event === name));
   const repairEvents = matchingRepairEvents.map(([event]) => event);
-  const diagnosis = events.find((event) => event.event === "diagnosis.completed");
+  const diagnosis = events.find((event) => event.event === TERMINAL_EVENTS[expectedTerminal.outcome]);
+  if (expectedTerminal.outcome !== "diagnosed") {
+    const data = diagnosis?.data;
+    const persisted = expectedTerminal.outcome === "insufficient_evidence"
+      ? data?.outcome === "insufficient_evidence" && data.incidentStatus === "INSUFFICIENT_EVIDENCE" && data.runStatus === "COMPLETED"
+      : data?.errorCode === expectedTerminal.errorCode && data.runStatus === "FAILED" && FAILED_INCIDENT_STATUSES.has(data.incidentStatus);
+    if (!persisted || repair !== null || repairEvents.some((event) => event !== undefined)) {
+      throw contractError(
+        "sse_replay_invalid",
+        "SSE replay did not persist the terminal Run event the case expects",
+      );
+    }
+    return;
+  }
   if (repair === null) {
     if (
       repairEvents.some((event) => event !== undefined) ||
@@ -2266,21 +2497,19 @@ async function waitUntil(code, operation, timeoutMilliseconds, sleep) {
 
 
 async function writeEvaluationArtifact(repositoryRoot, profile, artifact) {
-  const runtimeDirectory = path.join(repositoryRoot, ".runtime");
-  const directory = path.join(runtimeDirectory, "evaluation");
-  await requireDirectoryNotSymlink(runtimeDirectory);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await requireDirectoryNotSymlink(directory);
-  await chmod(directory, 0o700);
-  const suffix = artifact.scope === "focused" ? "-focused" : "";
-  const datasetSuffix = artifact.dataset === undefined ? ""
-    : `-${artifact.dataset.id}-v${artifact.dataset.version}`;
-  const output = path.join(directory, `${profile}${datasetSuffix}${suffix}.json`);
+  const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
+  if (artifact.campaign !== undefined) {
+    const campaignDirectory = await requireRecordDirectory(repositoryRoot, profile);
+    const output = path.join(campaignDirectory, `${artifact.campaign.id}.json`);
+    await writeExclusive(output, serialized);
+    return output;
+  }
+  const directory = await requireRecordDirectory(repositoryRoot);
+  const output = path.join(directory, `${profile}.json`);
   const temporary = path.join(
     directory,
     `.${profile}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
   );
-  const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
   try {
     await writeFile(temporary, serialized, { encoding: "utf8", mode: 0o600 });
     await rename(temporary, output);
@@ -2290,6 +2519,65 @@ async function writeEvaluationArtifact(repositoryRoot, profile, artifact) {
     throw error;
   }
   return output;
+}
+
+async function writeExclusive(file, content) {
+  let handle;
+  try {
+    handle = await open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw contractError(
+        "evaluation_artifact_exists",
+        "An evaluation record with this identity already exists and is never overwritten",
+      );
+    }
+    throw error;
+  }
+  try {
+    await handle.writeFile(content, "utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeTrialPackage(repositoryRoot, profile, campaignId, scenarioId, serialized) {
+  const directory = await requireRecordDirectory(repositoryRoot, profile, campaignId, "trials");
+  await writeExclusive(path.join(directory, `${scenarioId}.json`), serialized);
+  return path.posix.join("trials", `${scenarioId}.json`);
+}
+
+// Every level under .runtime is created private and must be a real directory before anything is written below it.
+async function requireRecordDirectory(repositoryRoot, ...segments) {
+  let directory = path.join(repositoryRoot, ".runtime");
+  await requireDirectoryNotSymlink(directory);
+  await mkdir(directory, { mode: 0o700 }).catch((error) => { if (error?.code !== "EEXIST") throw error; });
+  for (const segment of ["evaluation", ...segments]) {
+    directory = path.join(directory, segment);
+    await mkdir(directory, { mode: 0o700 }).catch((error) => { if (error?.code !== "EEXIST") throw error; });
+    await requireDirectoryNotSymlink(directory);
+    await chmod(directory, 0o700);
+  }
+  return directory;
+}
+
+async function readCampaignArtifact(repositoryRoot, profile, id) {
+  const file = path.join(repositoryRoot, ".runtime", "evaluation", profile, `${id}.json`);
+  let handle;
+  try {
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > REVIEW_PACKAGE_LIMIT_BYTES) return undefined;
+    return JSON.parse(await handle.readFile("utf8"));
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close();
+  }
 }
 
 async function requireDirectoryNotSymlink(directory) {
@@ -2336,6 +2624,7 @@ function parseArguments(argv) {
   let datasetPath;
   let releasePath;
   let split;
+  let retryOf;
   const scenarioIds = [];
   for (let index = 0; index < rest.length; index += 2) {
     const value = rest[index + 1];
@@ -2345,6 +2634,7 @@ function parseArguments(argv) {
     else if (rest[index] === "--scenario" && action === "run") scenarioIds.push(value);
     else if (rest[index] === "--dataset" && action === "run" && datasetPath === undefined) datasetPath = value;
     else if (rest[index] === "--split" && action === "run" && split === undefined) split = value;
+    else if (rest[index] === "--retry-of" && action === "run" && retryOf === undefined) retryOf = value;
     else throw invalidArguments();
   }
   return {
@@ -2354,6 +2644,7 @@ function parseArguments(argv) {
     datasetPath,
     releasePath,
     split,
+    retryOf,
     ...(scenarioIds.length > 0 ? { scenarioIds } : {}),
   };
 }
@@ -2464,7 +2755,7 @@ function responseTooLarge() {
 function invalidArguments() {
   return contractError(
     "invalid_arguments",
-    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> --release <release.json> [--context <context>] [--dataset <manifest.json>] [--split <development|regression>] [--scenario <id> ...], or evaluation.mjs online k3s-public --release <release.json> --context <context>",
+    "Usage: evaluation.mjs run <kind-evaluation|k3s-evaluation> --release <release.json> [--context <context>] [--dataset <manifest.json>] [--split <development|regression>] [--scenario <id> ...] [--retry-of <campaign-id>], or evaluation.mjs online k3s-public --release <release.json> --context <context>",
   );
 }
 

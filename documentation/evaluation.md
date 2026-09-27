@@ -24,6 +24,8 @@ A focused run explicitly records unselected scenarios and non-executed infrastru
 
 **`pending_manual_review` is the harness's successful automatic-check outcome, not semantic PASS.** The CLI uses exit code `2` for that condition. Preserve the artifact status and inspect the corresponding evidence rather than relabeling it as either a generic process failure or a completed quality benchmark.
 
+Each dataset case declares the terminal it expects: a diagnosis, an explicit insufficient-evidence stop, or a typed failure with a named error code. A failure that the case expects and the Runtime handles correctly passes the automated checks; the Run's own status and error code stay on record either way, and a terminal that differs from the expectation is reported as a mismatch rather than rewritten. Every run is a campaign whose records are written once and never overwritten; a retry names the campaign it continues instead of replacing it. Manual verdicts are bound to the exact trial, Run and evidence they judged and are reported as pass, fail or insufficient to score; trials without a verdict, with disagreeing reviewers, or with a verdict that no longer matches its records are reported as such, and no verdict changes Runtime state.
+
 ## Review the diagnosis, not just a code or phrase
 
 Machine-checkable coverage includes required evidence kinds, supported targets, legal states and bounded output. A generated diagnosis code or exact sentence is not, by itself, a correctness oracle. Manual review should ask:

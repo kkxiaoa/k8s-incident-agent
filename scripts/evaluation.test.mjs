@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { test, after } from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runEvaluationCommand as evaluate } from "./evaluation.mjs";
+import { buildCampaignReport } from "./evaluation-report.mjs";
 import { createReleaseFixture, gitFixtureEnvironment } from "./test-support/release-fixture.mjs";
 import {
   loadEvaluationDataset,
@@ -183,8 +184,11 @@ test("catalog checks complete with exact Run references but require manual diagn
   assert.equal(harness.calls.alertmanagerRestarts, 1);
   assert.equal(harness.calls.tunnelClose, 1);
   assert.equal(harness.calls.artifacts.length, 1);
-  assert.equal(result.artifact.schemaVersion, 3);
+  assert.equal(result.artifact.schemaVersion, 4);
   assert.deepEqual(result.artifact.dataset, { id: "regression", version: 1 });
+  assert.match(result.artifact.campaign.id, /^20260905T000000Z-[a-f0-9]{8}$/);
+  assert.equal(result.artifact.campaign.startedAt, "2026-09-05T00:00:00.000Z");
+  assert.equal(result.artifact.campaign.retryOf, null);
   assert.equal(result.artifact.coverage.plannedCases, 7);
   assert.equal(result.artifact.coverage.notRunCases, 0);
   assert.equal(result.artifact.coverage.mechanisms.length, 5);
@@ -243,9 +247,12 @@ test("one failed scenario does not prevent the remaining catalog entries", async
     (scenario) => scenario.scenarioId === "image-pull-backoff",
   );
   assert.deepEqual(failed.failure, {
-    code: "diagnosis_invalid",
-    message: "The alert-driven diagnosis did not complete successfully",
+    code: "terminal_outcome_mismatch",
+    message: "The Run ended COMPLETED/insufficient_evidence while the case expects diagnosed",
   });
+  // The Runtime's own terminal stays on record even though the expectation failed.
+  assert.deepEqual(failed.checks.run, { attempt: 1, status: "COMPLETED", errorCode: null, retryable: null, outcome: "insufficient_evidence" });
+  assert.equal(failed.outcomeClass, "outcome_mismatch");
   assert.equal(harness.calls.scenarioApply, 8);
   assert.equal(harness.calls.scenarioVerify, 8);
 });
@@ -661,6 +668,8 @@ test("CLI rejects missing selection values and online selections", () => {
     ["online", "k3s-public", "--context", "k3s", "--scenario", "pvc-binding-pending"],
     ["run", "kind-evaluation", "--dataset"],
     ["run", "kind-evaluation", "--split", "unknown"],
+    ["run", "kind-evaluation", "--retry-of"],
+    ["online", "k3s-public", "--context", "k3s", "--retry-of", "20260901T000000Z-0123abcd"],
     ["online", "k3s-public", "--context", "k3s", "--dataset", "regression.json"],
   ]) {
     const result = spawnSync(process.execPath, [
@@ -792,22 +801,114 @@ test("public catalog inputs cannot be relabelled as a private holdout", async (t
   }
 });
 
-test("non-diagnosed expectations are retained but never scored by the legacy live runner", async (t) => {
-  for (const expected of [{ outcome: "insufficient_evidence" }, { outcome: "failed", error_code: "model_output_invalid" }]) {
+test("expected insufficient-evidence and typed-failure terminals pass their gates and keep the Runtime's raw Run", async (t) => {
+  for (const [expected, terminal, run] of [
+    [{ outcome: "insufficient_evidence" }, { outcome: "insufficient_evidence" },
+      { attempt: 1, status: "COMPLETED", errorCode: null, retryable: null, outcome: "insufficient_evidence" }],
+    [{ outcome: "failed", error_code: "model_output_invalid" }, { outcome: "failed", errorCode: "model_output_invalid", retryable: false },
+      { attempt: 1, status: "FAILED", errorCode: "model_output_invalid", retryable: false, outcome: null }],
+  ]) {
     const datasetPath = datasetFile(t, (manifest) => { manifest.cases[0].expected_terminal = expected; });
-    const harness = createHarness();
-    await assert.rejects(runEvaluationCommand(
-      { action: "run", profile: "kind-evaluation", datasetPath }, harness.dependencies,
-    ), { code: "evaluation_outcome_not_supported" });
-    assert.equal(harness.calls.scenarioApply, 0);
+    const harness = createHarness({ terminalByScenario: { "crash-loop-backoff": terminal } });
     const { artifact } = await runEvaluationCommand(
-      { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["pvc-binding-pending"] },
+      { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] },
       harness.dependencies,
     );
-    assert.equal(artifact.scenarios[0].status, "not_run");
-    assert.equal(artifact.scenarios[0].expectedTerminal.outcome, expected.outcome);
-    if (expected.error_code) assert.equal(artifact.scenarios[0].expectedTerminal.errorCode, expected.error_code);
+    const [result, unselected] = artifact.scenarios;
+    assert.equal(result.status, "pending_manual_review", JSON.stringify(result.failure));
+    assert.equal(result.outcomeClass, "pending_manual_review");
+    assert.deepEqual(result.expectedTerminal, expected.error_code ? { outcome: "failed", errorCode: expected.error_code } : expected);
+    assert.deepEqual(result.checks.run, run);
+    assert.deepEqual(result.checks.diagnosisCodes, []);
+    assert.equal(result.checks.repair, undefined);
+    assert.ok(result.checks.sseReplay.eventTypes.includes(expected.outcome === "failed" ? "run.failed" : "diagnosis.insufficient"));
+    assert.deepEqual(result.trial, { index: 1, startedAt: "2026-09-05T00:00:00.000Z", completedAt: "2026-09-05T00:00:00.000Z" });
+    assert.equal(unselected.status, "not_run");
+    assert.equal(unselected.outcomeClass, "not_run");
+    assert.equal(unselected.trial, null);
   }
+});
+
+test("a terminal that differs from the case's expectation is a mismatch that keeps the raw Run", async (t) => {
+  const datasetPath = datasetFile(t, (manifest) => {
+    manifest.cases[0].expected_terminal = { outcome: "failed", error_code: "model_output_invalid" };
+  });
+  const harness = createHarness({
+    terminalByScenario: { "crash-loop-backoff": { outcome: "failed", errorCode: "tool_timeout", retryable: true, incidentStatus: "STALE_RESOURCE" } },
+  });
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] },
+    harness.dependencies,
+  );
+  const [result] = artifact.scenarios;
+  assert.equal(result.status, "failed");
+  assert.equal(result.outcomeClass, "outcome_mismatch");
+  assert.deepEqual(result.failure, {
+    code: "terminal_outcome_mismatch",
+    message: "The Run ended FAILED/tool_timeout while the case expects failed/model_output_invalid",
+  });
+  assert.deepEqual(result.checks.run, { attempt: 1, status: "FAILED", errorCode: "tool_timeout", retryable: true, outcome: null });
+});
+
+test("the persisted terminal event and the diagnosis shape are gated for non-diagnosed expectations", async (t) => {
+  const failed = { outcome: "failed", errorCode: "model_output_invalid", retryable: false };
+  for (const [options, code, terminal] of [
+    [{ staleSseTerminal: true }, "sse_replay_invalid"],
+    [{ sseTerminalStateDrift: true }, "sse_replay_invalid"],
+    [{ sseTerminalStateDrift: true }, "sse_replay_invalid", failed],
+    [{ emptyMissingInformation: true }, "diagnosis_invalid"],
+    [{ insufficientWithRootCauses: true }, "diagnosis_invalid"],
+    [{ incidentStatusDrift: true }, "diagnosis_invalid"],
+    [{ repairDrift: true }, "diagnosis_invalid"],
+    [{ incidentStatusDrift: true }, "run_failure_invalid", failed],
+    [{ repairDrift: true }, "run_failure_invalid", failed],
+    [{ retryableDrift: true }, "run_failure_invalid", failed],
+  ]) {
+    const expected = terminal === undefined ? { outcome: "insufficient_evidence" } : { outcome: "failed", error_code: terminal.errorCode };
+    const datasetPath = datasetFile(t, (manifest) => { manifest.cases[0].expected_terminal = expected; });
+    const harness = createHarness({ terminalByScenario: { "crash-loop-backoff": terminal ?? { outcome: "insufficient_evidence" } }, ...options });
+    const { artifact } = await runEvaluationCommand(
+      { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] },
+      harness.dependencies,
+    );
+    assert.equal(artifact.scenarios[0].failure.code, code, JSON.stringify(options));
+    assert.equal(artifact.scenarios[0].outcomeClass, "contract_failed");
+  }
+});
+
+test("a fixture that breaks before an Incident exists is an infrastructure failure, not a model one", async () => {
+  const harness = createHarness();
+  const original = harness.dependencies.runScenarioCommand;
+  harness.dependencies.runScenarioCommand = async (action, scenarioId, args) => {
+    if (action === "verify" && scenarioId === "crash-loop-backoff") throw new Error("fixture did not converge");
+    return original(action, scenarioId, args);
+  };
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", scenarioIds: ["crash-loop-backoff"] },
+    harness.dependencies,
+  );
+  const [result] = artifact.scenarios;
+  assert.equal(result.status, "failed");
+  assert.equal(result.outcomeClass, "infrastructure_invalid");
+  assert.equal(result.reviewPackage, null);
+  assert.equal(result.checks.alertmanagerFiring, false);
+  assert.equal(result.checks.uniqueIncident, false);
+  assert.equal(result.failure.message.includes("converge"), false);
+});
+
+test("a fired alert that fails before a unique Incident exists is an intake failure of the product", async () => {
+  const harness = createHarness({ controlAlertScenarioId: "crash-loop-backoff" });
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", scenarioIds: ["crash-loop-backoff"] },
+    harness.dependencies,
+  );
+  const [result] = artifact.scenarios;
+  assert.equal(result.status, "failed");
+  assert.equal(result.failure.code, "healthy_control_alerted");
+  assert.equal(result.checks.alertmanagerFiring, true);
+  assert.equal(result.checks.uniqueIncident, false);
+  assert.equal(result.outcomeClass, "intake_failed");
+  assert.equal(result.reviewPackage, null);
 });
 
 test("dataset reader rejects oversized or linked files without exposing their content", async (t) => {
@@ -868,25 +969,148 @@ test("alert maturity uses the selected case budget instead of the old seven-minu
   assert.ok(Date.now() - Date.parse("2026-09-05T00:00:00Z") >= 480_000);
 });
 
-test("dataset artifacts use a separate path and leave historical v2 results untouched", async (t) => {
+// Runs one focused campaign with the real record writers and reader under a temporary repository root.
+function realCampaign(t, root, { suffix, options = {}, ...request }) {
+  const harness = createHarness(options);
+  harness.dependencies.repositoryRoot = root;
+  harness.dependencies.campaignSuffix = () => suffix;
+  const execute = harness.dependencies.execute;
+  harness.dependencies.execute = (command, args, settings) => execute(command, args, { ...settings, cwd: REPOSITORY_ROOT });
+  delete harness.dependencies.writeArtifact;
+  delete harness.dependencies.writeTrialPackage;
+  const result = runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", scenarioIds: ["crash-loop-backoff"], ...request },
+    harness.dependencies,
+  );
+  return { harness, result };
+}
+
+test("each campaign lands in its own files, never overwrites another and leaves earlier results untouched", async (t) => {
   const datasetPath = datasetFile(t, () => {});
   const root = path.dirname(datasetPath);
   const outputDirectory = path.join(root, ".runtime/evaluation");
   mkdirSync(outputDirectory, { recursive: true });
-  const historicalPath = path.join(outputDirectory, "kind-evaluation-focused.json");
-  writeFileSync(historicalPath, '{"schemaVersion":2,"historical":true}\n');
+  const historicalPath = path.join(outputDirectory, "kind-evaluation-regression-v1-focused.json");
+  writeFileSync(historicalPath, '{"schemaVersion":3,"historical":true}\n');
+  const first = await realCampaign(t, root, { datasetPath, suffix: "0000aaaa" }).result;
+  assert.equal(first.artifact.status, "pending_manual_review");
+  const campaignDirectory = path.join(outputDirectory, "kind-evaluation");
+  assert.equal(first.artifactPath, path.join(campaignDirectory, "20260905T000000Z-0000aaaa.json"));
+  assert.equal(statSync(first.artifactPath).mode & 0o777, 0o600);
+  assert.equal(statSync(campaignDirectory).mode & 0o777, 0o700);
+  assert.deepEqual(JSON.parse(readFileSync(first.artifactPath, "utf8")), JSON.parse(JSON.stringify(first.artifact)));
+  const packagePath = path.join(campaignDirectory, first.artifact.campaign.id, first.artifact.scenarios[0].reviewPackage);
+  assert.equal(statSync(packagePath).mode & 0o777, 0o600);
+  assert.equal(JSON.parse(readFileSync(packagePath, "utf8")).runId, first.artifact.scenarios[0].runId);
+
+  const second = await realCampaign(t, root, { datasetPath, suffix: "0000bbbb" }).result;
+  assert.notEqual(second.artifactPath, first.artifactPath);
+  assert.deepEqual(JSON.parse(readFileSync(first.artifactPath, "utf8")), JSON.parse(JSON.stringify(first.artifact)));
+  // The same identity again is refused before the Trial's own record could be replaced.
+  await assert.rejects(realCampaign(t, root, { datasetPath, suffix: "0000aaaa" }).result, { code: "evaluation_artifact_exists" });
+  assert.deepEqual(JSON.parse(readFileSync(packagePath, "utf8")).runId, first.artifact.scenarios[0].runId);
+  assert.equal(readFileSync(historicalPath, "utf8"), '{"schemaVersion":3,"historical":true}\n');
+});
+
+test("a retry names the campaign it continues and only a real sibling record of the same dataset qualifies", async (t) => {
+  const datasetPath = datasetFile(t, () => {});
+  const root = path.dirname(datasetPath);
+  const first = await realCampaign(t, root, { datasetPath, suffix: "0000aaaa" }).result;
+  const campaignDirectory = path.dirname(first.artifactPath);
+  const retry = await realCampaign(t, root, { datasetPath, suffix: "0000cccc", retryOf: first.artifact.campaign.id }).result;
+  assert.equal(retry.artifact.campaign.retryOf, first.artifact.campaign.id);
+  assert.notEqual(retry.artifact.campaign.id, first.artifact.campaign.id);
+
+  // A link to a record that would qualify if it were followed: the reader must refuse the link itself.
+  const linked = path.join(root, "outside-eeee.json");
+  writeFileSync(linked, JSON.stringify({
+    ...first.artifact, campaign: { ...first.artifact.campaign, id: "20260905T000000Z-0000eeee" },
+  }));
+  symlinkSync(linked, path.join(campaignDirectory, "20260905T000000Z-0000eeee.json"));
+  writeFileSync(path.join(campaignDirectory, "20260905T000000Z-0000dddd.json"), "not json\n");
+  const manifest = JSON.parse(readFileSync(datasetPath, "utf8"));
+  const otherVersion = path.join(root, "dataset-v2.json");
+  writeFileSync(otherVersion, JSON.stringify({ ...manifest, dataset_version: 2 }));
+  for (const [request, code] of [
+    [{ retryOf: "not-a-campaign" }, "invalid_arguments"],
+    [{ retryOf: "20260905T000000Z-0000ffff" }, "evaluation_retry_target_invalid"],
+    [{ retryOf: "20260905T000000Z-0000eeee" }, "evaluation_retry_target_invalid"],
+    [{ retryOf: "20260905T000000Z-0000dddd" }, "evaluation_retry_target_invalid"],
+    [{ retryOf: first.artifact.campaign.id, datasetPath: otherVersion }, "evaluation_retry_target_invalid"],
+  ]) {
+    const { harness, result } = realCampaign(t, root, { datasetPath, suffix: "0000ffff", ...request });
+    await assert.rejects(result, { code }, JSON.stringify(request));
+    assert.equal(harness.calls.scenarioApply, 0, JSON.stringify(request));
+  }
+});
+
+test("records are refused when a directory on their path is a symbolic link", async (t) => {
+  const datasetPath = datasetFile(t, () => {});
+  const root = path.dirname(datasetPath);
+  const elsewhere = path.join(root, "elsewhere");
+  mkdirSync(path.join(root, ".runtime/evaluation"), { recursive: true });
+  mkdirSync(elsewhere);
+  symlinkSync(elsewhere, path.join(root, ".runtime/evaluation/kind-evaluation"));
+  await assert.rejects(realCampaign(t, root, { datasetPath, suffix: "0000aaaa" }).result, { code: "artifact_directory_invalid" });
+  assert.deepEqual(readdirSync(elsewhere), []);
+});
+
+test("a review package near its size bound is written with the bytes that were measured and stays readable", async (t) => {
+  const datasetPath = datasetFile(t, () => {});
+  const root = path.dirname(datasetPath);
+  const { harness, result } = realCampaign(t, root, {
+    datasetPath, suffix: "0000aaaa", options: { manyRunEvents: { pages: 10, perPage: 100, fields: 200 } },
+  });
+  const { artifact, artifactPath } = await result;
+  const [scenario] = artifact.scenarios;
+  assert.equal(scenario.status, "pending_manual_review", JSON.stringify(scenario.failure));
+  const packagePath = path.join(path.dirname(artifactPath), artifact.campaign.id, scenario.reviewPackage);
+  const size = statSync(packagePath).size;
+  assert.ok(size > 3.5 * 1024 * 1024 && size <= 4 * 1024 * 1024, `package is ${size} bytes`);
+  const record = JSON.parse(readFileSync(packagePath, "utf8"));
+  assert.equal(record.truncated, false);
+  assert.equal(record.events.length, 1000);
+  assert.equal(harness.calls.packages.length, 0);
+  const report = await buildCampaignReport(artifactPath);
+  assert.deepEqual(report.scenarios[0].reviewPackage, { truncated: false });
+});
+
+test("each Trial's review package holds the projected Incident and its Run events without credentials", async () => {
   const harness = createHarness();
-  harness.dependencies.repositoryRoot = root;
-  const execute = harness.dependencies.execute;
-  harness.dependencies.execute = (command, args, options) => execute(command, args, { ...options, cwd: REPOSITORY_ROOT });
-  delete harness.dependencies.writeArtifact;
-  const { artifact, artifactPath } = await runEvaluationCommand(
-    { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] }, harness.dependencies,
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", scenarioIds: ["image-pull-backoff"] }, harness.dependencies,
   );
-  assert.equal(artifact.status, "pending_manual_review");
-  assert.equal(path.basename(artifactPath), "kind-evaluation-regression-v1-focused.json");
-  assert.deepEqual(JSON.parse(readFileSync(artifactPath, "utf8")), JSON.parse(JSON.stringify(artifact)));
-  assert.equal(readFileSync(historicalPath, "utf8"), '{"schemaVersion":2,"historical":true}\n');
+  const result = artifact.scenarios.find((scenario) => scenario.scenarioId === "image-pull-backoff");
+  assert.equal(result.reviewPackage, "trials/image-pull-backoff.json");
+  assert.equal(harness.calls.packages.length, 1);
+  const [record] = harness.calls.packages;
+  assert.equal(record.schemaVersion, 1);
+  assert.equal(record.campaignId, artifact.campaign.id);
+  assert.equal(record.trial, 1);
+  assert.equal(record.runId, result.runId);
+  assert.equal(record.incident.diagnosis.outcome, "diagnosed");
+  assert.ok(record.incident.evidence.length > 0);
+  assert.deepEqual(record.events.map((event) => event.event).slice(0, 3), ["incident.created", "run.started", "diagnosis.completed"]);
+  assert.equal(record.truncated, false);
+  const serialized = JSON.stringify(record);
+  assert.equal(serialized.includes(harness.state.cookie), false);
+  assert.equal(serialized.includes(harness.state.csrf), false);
+  assert.equal(serialized.includes(AUTH_PASSWORD), false);
+  assert.equal(artifact.scenarios.find((scenario) => scenario.status === "not_run").reviewPackage, null);
+});
+
+test("a review package that would exceed its size bound drops the event history and says so", async () => {
+  const harness = createHarness({ bulkyRunEvents: true });
+  const { artifact } = await runEvaluationCommand(
+    { action: "run", profile: "kind-evaluation", scenarioIds: ["crash-loop-backoff"] }, harness.dependencies,
+  );
+  assert.equal(artifact.scenarios[0].status, "pending_manual_review");
+  const [record] = harness.calls.packages;
+  assert.equal(record.truncated, true);
+  assert.deepEqual(record.events, []);
+  assert.equal(record.incident.diagnosis.outcome, "diagnosed");
+  // What reaches the writer after truncation is itself within the bound.
+  assert.ok(harness.calls.packageBytes[0] <= 4 * 1024 * 1024);
 });
 
 test("catalog evaluation consumes retained Incident history through pagination", async () => {
@@ -1248,6 +1472,8 @@ function createHarness(options = {}) {
   );
   const calls = {
     artifacts: [],
+    packages: [],
+    packageBytes: [],
     scenarioApply: 0,
     scenarioVerify: 0,
     tunnelClose: 0,
@@ -1350,6 +1576,11 @@ function createHarness(options = {}) {
       calls.artifacts.push(structuredClone(artifact));
       return `/artifacts/${profile}.json`;
     },
+    writeTrialPackage: async (_root, _profile, _campaignId, scenarioId, serialized) => {
+      calls.packages.push(JSON.parse(serialized));
+      calls.packageBytes.push(Buffer.byteLength(serialized));
+      return `trials/${scenarioId}.json`;
+    },
   };
   return { calls, dependencies, state };
 }
@@ -1411,6 +1642,18 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       active !== undefined &&
       query.includes(`alertname=\"${active.alertId}\"`) &&
       query.includes(`=\"${active.target.name}\"`);
+    const control = active === undefined || options.controlAlertScenarioId !== active.scenarioId
+      ? undefined
+      : active.healthyControlNames.find((name) => query.includes(`="${name}"`));
+    if (control !== undefined) {
+      return jsonResponse(prometheusVector(1, {
+        alertname: active.alertId,
+        alertstate: "firing",
+        cluster: active.target.cluster,
+        namespace: active.target.namespace,
+        [targetLabel(active.target.kind)]: control,
+      }));
+    }
     return jsonResponse(
       matchesActive
         ? prometheusVector(1, {
@@ -1547,6 +1790,29 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     state.rerunId = "10000000-0000-4000-8000-000000000099";
     return jsonResponse({ schemaVersion: 5, runId: state.rerunId }, options.onlineRerunStatus ?? 202);
   }
+  const runEvents = suffix.match(/^\/runs\/([^/]+)\/events$/);
+  if (runEvents !== null) {
+    if (runEvents[1] !== scenario.runId) return new Response(null, { status: 404 });
+    const items = lifecycleFrames(scenario, options).map(([event, data], index) => ({ id: String(index + 1), event, data: JSON.parse(data) }));
+    if (options.manyRunEvents !== undefined) {
+      // Many small fields per event: the shape whose bytes a formatter inflates most.
+      const page = Number(url.searchParams.get("cursor") ?? "0");
+      const { pages, perPage, fields } = options.manyRunEvents;
+      const pageItems = Array.from({ length: perPage }, (_, index) => ({
+        id: String(page * perPage + index + 1),
+        event: "tool.started",
+        data: Object.fromEntries(Array.from({ length: fields }, (_, field) => [`f${String(field).padStart(3, "0")}`, "0123456789"])),
+      }));
+      return jsonResponse({ schemaVersion: 5, items: pageItems, nextCursor: page + 1 < pages ? String(page + 1) : null });
+    }
+    if (options.bulkyRunEvents === true) {
+      // One oversized event per page, so the bound is crossed only by the sum of the pages.
+      const page = Number(url.searchParams.get("cursor") ?? "0");
+      const item = { ...items[Math.min(page, items.length - 1)], padding: "x".repeat(1_500_000) };
+      return jsonResponse({ schemaVersion: 5, items: [item], nextCursor: page < 2 ? String(page + 1) : null });
+    }
+    return jsonResponse({ schemaVersion: 5, items, nextCursor: null });
+  }
   if (suffix === "/runs") {
     return jsonResponse({
       schemaVersion: 5,
@@ -1620,62 +1886,7 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
     });
   }
   if (suffix === "/events" && headers.get("Last-Event-ID") === "0") {
-    const diagnosisCode = diagnosisCodeFor(scenario, options);
-    const repair = repairProjection(scenario, diagnosisCode, options);
-    const incidentId = options.invalidSseContract === true
-      ? "90000000-0000-4000-8000-000000000001"
-      : scenario.incidentId;
-    const eventData = (fields) => JSON.stringify({
-      schemaVersion: 5,
-      incidentId,
-      runId: scenario.runId,
-      runKind: "diagnosis",
-      occurredAt: "2026-09-05T00:00:00.000Z",
-      ...fields,
-    });
-    const frames = [
-      ["incident.created", eventData({
-        attempt: 1,
-        incidentStatus: "RECEIVED",
-        runStatus: "QUEUED",
-      })],
-      ["run.started", eventData({
-        attempt: 1,
-        incidentStatus: "TRIAGING",
-        runStatus: "RUNNING",
-      })],
-      ["diagnosis.completed", eventData({
-        diagnosisId: "50000000-0000-4000-8000-000000000001",
-        outcome: "diagnosed",
-        incidentStatus: "DIAGNOSED",
-        runStatus: repair === null ? "COMPLETED" : "RUNNING",
-      })],
-      ...(repair === null
-        ? []
-        : [
-            ["repair.patch_ready", eventData({
-              proposalId: repair.id,
-              proposalDigest: repair.digest,
-              incidentStatus: "PATCH_READY",
-              runStatus: "RUNNING",
-            })],
-            ["repair.dry_run_passed", eventData({
-              proposalId: repair.id,
-              proposalDigest: repair.digest,
-              incidentStatus: "DRY_RUN_PASSED",
-              runStatus: "RUNNING",
-            })],
-            ["repair.waiting_approval", eventData({
-              proposalId: repair.id,
-              proposalDigest: repair.digest,
-              incidentStatus: "WAITING_APPROVAL",
-              runStatus: "COMPLETED",
-            })],
-          ]),
-    ];
-    if (repair !== null && options.duplicateRepairEvent === true) {
-      frames.splice(4, 0, frames[3]);
-    }
+    const frames = lifecycleFrames(scenario, options);
     return new Response(
       new ReadableStream({
         start(controller) {
@@ -1709,7 +1920,8 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
         : EVIDENCE_TOOL[kind],
   }));
   const diagnosisCode = diagnosisCodeFor(scenario, options);
-  const repair = repairProjection(scenario, diagnosisCode, options, evidence);
+  const terminal = terminalFor(scenario, options);
+  const repair = terminal.outcome === "diagnosed" ? repairProjection(scenario, diagnosisCode, options, evidence) : null;
   return jsonResponse({
     schemaVersion: 5,
     incident: {
@@ -1728,7 +1940,7 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       target: isControlIncident
         ? { ...scenario.target, name: scenario.healthyControlNames[0] }
         : scenario.target,
-      status: repair === null ? "DIAGNOSED" : "WAITING_APPROVAL",
+      status: incidentStatusFor(terminal, repair, options),
       displayName: scenario.displayName,
     },
     selectedRun: {
@@ -1736,17 +1948,27 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
       operation: null,
       id: state.online && state.rerunId && !options.onlineWrongRun ? state.rerunId : scenario.runId,
       attempt: state.online && state.rerunId ? 2 : 1,
-      status: state.online && options.onlineRerunStatus === 409 ? "RUNNING" : "COMPLETED",
+      status: state.online && options.onlineRerunStatus === 409 ? "RUNNING" : terminal.outcome === "failed" ? "FAILED" : "COMPLETED",
       requestSource: state.online && state.rerunId ? "operator" : "system",
-      error: null,
+      error: terminal.outcome === "failed"
+        ? { code: terminal.errorCode, retryable: options.retryableDrift === true ? "yes" : terminal.retryable ?? false }
+        : null,
     },
     eventPage: {
       items: scenario.resolved ? [{ event: "alert.resolved" }] : [],
       nextCursor: null,
     },
     evidence,
-    diagnosis: {
-      outcome: options.failingScenarioId === scenario.scenarioId ? "insufficient_evidence" : "diagnosed",
+    diagnosis: terminal.outcome === "failed" ? null : terminal.outcome === "insufficient_evidence" ? {
+      outcome: "insufficient_evidence",
+      summary: "The collected evidence does not support a root cause.",
+      rootCauses: options.insufficientWithRootCauses === true
+        ? [{ code: "observed_cause", statement: "A cause the outcome does not allow.", confidence: "low", evidenceIds: [] }]
+        : [],
+      missingInformation: options.emptyMissingInformation === true ? [] : ["current container status of the target"],
+      recommendations: [],
+    } : {
+      outcome: "diagnosed",
       summary: "A diagnostic explanation requiring independent semantic review.",
       rootCauses: [
         {
@@ -1770,12 +1992,109 @@ function fakeFetch(rawUrl, init, scenarioById, state, options) {
         },
       ],
     },
-    repair,
+    repair: options.repairDrift === true && terminal.outcome !== "diagnosed" ? { drift: true } : repair,
     alertSignal: {
       status: scenario.resolved ? "RESOLVED" : "FIRING",
     },
     eventCursor: repair === null ? "3" : "6",
   });
+}
+
+function lifecycleFrames(scenario, options) {
+  const diagnosisCode = diagnosisCodeFor(scenario, options);
+  const terminal = terminalFor(scenario, options);
+  const repair = terminal.outcome === "diagnosed" ? repairProjection(scenario, diagnosisCode, options) : null;
+  const incidentId = options.invalidSseContract === true
+    ? "90000000-0000-4000-8000-000000000001"
+    : scenario.incidentId;
+  const eventData = (fields) => JSON.stringify({
+    schemaVersion: 5,
+    incidentId,
+    runId: scenario.runId,
+    runKind: "diagnosis",
+    occurredAt: "2026-09-05T00:00:00.000Z",
+    ...fields,
+  });
+  const frames = [
+    ["incident.created", eventData({
+      attempt: 1,
+      incidentStatus: "RECEIVED",
+      runStatus: "QUEUED",
+    })],
+    ["run.started", eventData({
+      attempt: 1,
+      incidentStatus: "TRIAGING",
+      runStatus: "RUNNING",
+    })],
+    terminalFrame(terminal, repair, eventData, options),
+    ...(repair === null
+      ? []
+      : [
+          ["repair.patch_ready", eventData({
+            proposalId: repair.id,
+            proposalDigest: repair.digest,
+            incidentStatus: "PATCH_READY",
+            runStatus: "RUNNING",
+          })],
+          ["repair.dry_run_passed", eventData({
+            proposalId: repair.id,
+            proposalDigest: repair.digest,
+            incidentStatus: "DRY_RUN_PASSED",
+            runStatus: "RUNNING",
+          })],
+          ["repair.waiting_approval", eventData({
+            proposalId: repair.id,
+            proposalDigest: repair.digest,
+            incidentStatus: "WAITING_APPROVAL",
+            runStatus: "COMPLETED",
+          })],
+        ]),
+  ];
+  if (repair !== null && options.duplicateRepairEvent === true) {
+    frames.splice(4, 0, frames[3]);
+  }
+  return frames;
+}
+
+function terminalFor(scenario, options) {
+  const configured = options.terminalByScenario?.[scenario.scenarioId];
+  if (configured !== undefined) return configured;
+  return { outcome: options.failingScenarioId === scenario.scenarioId ? "insufficient_evidence" : "diagnosed" };
+}
+
+function incidentStatusFor(terminal, repair, options) {
+  if (options.incidentStatusDrift === true && terminal.outcome !== "diagnosed") return "DIAGNOSED";
+  if (terminal.outcome === "insufficient_evidence") return "INSUFFICIENT_EVIDENCE";
+  if (terminal.outcome === "failed") return terminal.incidentStatus ?? "FAILED";
+  return repair === null ? "DIAGNOSED" : "WAITING_APPROVAL";
+}
+
+function terminalFrame(terminal, repair, eventData, options) {
+  const outcome = options.staleSseTerminal === true ? "diagnosed" : terminal.outcome;
+  // The right event name with the wrong persisted states: the replay gate must read the payload too.
+  const drift = options.sseTerminalStateDrift === true;
+  if (outcome === "insufficient_evidence") {
+    return ["diagnosis.insufficient", eventData({
+      diagnosisId: "50000000-0000-4000-8000-000000000001",
+      outcome,
+      incidentStatus: "INSUFFICIENT_EVIDENCE",
+      runStatus: drift ? "RUNNING" : "COMPLETED",
+    })];
+  }
+  if (outcome === "failed") {
+    return ["run.failed", eventData({
+      errorCode: drift ? "another_error" : terminal.errorCode,
+      retryable: terminal.retryable ?? false,
+      incidentStatus: terminal.incidentStatus ?? "FAILED",
+      runStatus: "FAILED",
+    })];
+  }
+  return ["diagnosis.completed", eventData({
+    diagnosisId: "50000000-0000-4000-8000-000000000001",
+    outcome: "diagnosed",
+    incidentStatus: "DIAGNOSED",
+    runStatus: repair === null ? "COMPLETED" : "RUNNING",
+  })];
 }
 
 function diagnosisCodeFor(scenario, options) {
