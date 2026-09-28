@@ -43,6 +43,7 @@ test("public docs reject internal plan, task and decision-record identifiers", (
     "Stage 2 Task 2 renders the monitoring stack for Stage 1.5 profiles.",
     "| OOM | DC-4A rule | Live pending DC-8 |",
     "Milestone B covers OS-8; Tasks 1–12 follow ADR-0011.",
+    "EM-3 lands the environment layer that S4-2 records describe.",
   ].join("\n");
   assert.deepEqual(findInternalIdentifiers("scripts/README.md", source), [
     'scripts/README.md:1: internal identifier "Stage 2"',
@@ -54,6 +55,8 @@ test("public docs reject internal plan, task and decision-record identifiers", (
     'scripts/README.md:3: internal identifier "OS-8"',
     'scripts/README.md:3: internal identifier "Tasks 1"',
     'scripts/README.md:3: internal identifier "ADR-0011"',
+    'scripts/README.md:4: internal identifier "EM-3"',
+    'scripts/README.md:4: internal identifier "S4-2"',
   ]);
 });
 
@@ -63,6 +66,7 @@ test("product states, result semantics, domain wording and release history pass"
     "Execution statuses are `PENDING` and `UNKNOWN`; the merged PR keeps `autorelease: pending`.",
     "`runtime reset-stage-one-data` also runs on macOS-15; live pending alerts use a live pass-through.",
     "live 通过 port-forward 访问；A multi-stage build retries the task 3 times; see the ADRs.",
+    "SYSTEM-1 and ITEM-2 are product names; the S4 bucket and EM dash tokens stay.",
   ].join("\n");
   assert.deepEqual(findInternalIdentifiers("documentation/guide.md", source), []);
   assert.deepEqual(findInternalIdentifiers("CHANGELOG.md", "* **deploy:** finish Task 3"), []);

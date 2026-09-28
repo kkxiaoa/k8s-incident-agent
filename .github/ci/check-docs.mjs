@@ -10,7 +10,7 @@ const markdown = new MarkdownIt({ html: true });
 const privatePath = /^(?:docs|\.runtime|\.codex|\.codex-log|\.ssh)(?:\/|$)/;
 // Plan, task and decision-record identifiers point into the ignored internal records;
 // the published tree describes capabilities, contracts and procedures only.
-const internalIdentifier = /\b(?:Stage ?\d+(?:\.\d+)*|Tasks? ?\d+|Milestone [A-Z\d]\b|(?:DC|OS)-\d+[A-Z]?\b|ADR-\d{4}\b)/g;
+const internalIdentifier = /\b(?:Stage ?\d+(?:\.\d+)*|Tasks? ?\d+|Milestone [A-Z\d]\b|(?:DC|OS|EM|S4)-\d+[A-Z]?\b|ADR-\d{4}\b)/g;
 
 export function inspectMarkdown(source) {
   const tokens = markdown.parse(source, {});

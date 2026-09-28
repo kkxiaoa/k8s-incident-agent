@@ -149,9 +149,10 @@ npm run openapi:check
 
 `generate` 先通过本地 `agent-runtime-openapi` 从生产 FastAPI app 离线导出
 `contracts/agent-runtime.openapi.json`，再用锁定的本地 `openapi-typescript`
-生成 `src/lib/agent-runtime/generated.ts`。两个产物都先写入同目录临时文件，生成成功且内容变化时才原子替换。
+生成一份类型并安装到 `src/lib/agent-runtime/generated.ts` 与
+`evaluation/src/contracts/runtime-api.generated.ts`（两份字节相同）。每个产物都先写入同目录临时文件，生成成功且内容变化时才原子替换。
 
-`check` 重新生成临时产物并按字节比较，不修改 tracked 文件。脚本只接受
+`check` 重新生成临时产物并按字节比较三个 tracked 文件，任一不同即失败，不修改 tracked 文件。脚本只接受
 `generate` 或 `check`，schema input 和 TypeScript output 均固定在仓库内，不接受
 路径或 URL 参数；执行前需要先在 `services/agent-runtime` 完成 `uv sync --locked`。
 
