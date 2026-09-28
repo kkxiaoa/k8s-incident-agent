@@ -17,6 +17,7 @@
 | `src/shared/` | 错误类型与错误码表、`safeFailure`、字符串 / UUID / 时间守卫、`canonicalJson`、等待预算与 `waitUntil` |
 | `src/contracts/` | 外部边界：Runtime API 读取器与运行时校验（`runtime-api.generated.ts` 是生成的类型）、Prometheus / Alertmanager 与 Console 的读取形状、数据集清单与评估投影、artifact / 评分包 / 评分文件 / 报告的记录 schema |
 | `src/environment/` | HTTP 传输（有界读取、超时、SSE 流读取）、固定 port-forward 隧道与端点、操作员会话（登录、Cookie / CSRF、只对读重试）、外部命令适配（kubectl、scenario runner、deployment status、release 读取） |
+| `src/lifecycle/` | 不做 I/O 的门禁（终态与三种预期的校验、证据与工具权限、ImagePull 修复 proposal 的证据绑定校验、panel 风险、SSE 事件契约与终态序列、单 Run 去重、解除判定）、outcomeClass 分类、覆盖报告与完整计划分母 |
 | `test/` | 与 `src` 同构的 `node:test` 测试；`test/support` 是共享 fixture 与按 Runtime / 监控 / Console / 集群命令拆分的假环境；`test/fixtures/golden` 是记录样本 |
 
 ## 分层契约
