@@ -92,6 +92,13 @@ export function upstreamContractError(): EvaluationError {
   );
 }
 
+export function responseTooLarge(): EvaluationError {
+  return contractError(
+    "response_too_large",
+    "An evaluation endpoint exceeded its response budget",
+  );
+}
+
 export function invalidArguments(): EvaluationError {
   return contractError(
     "invalid_arguments",

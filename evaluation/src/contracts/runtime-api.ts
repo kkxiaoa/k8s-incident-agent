@@ -1,5 +1,6 @@
-import { contractError, upstreamContractError } from "../shared/errors.ts";
+import { contractError, responseTooLarge, upstreamContractError } from "../shared/errors.ts";
 import { isNormalizedString, isPlainObject, isUuid } from "../shared/guards.ts";
+import { parseJson, type ReadJson } from "../shared/json.ts";
 import type { components } from "./runtime-api.generated.ts";
 
 type Schemas = components["schemas"];
@@ -12,20 +13,12 @@ export type RunEvent = Schemas["RunEventStreamItem"];
 export type PanelReference = Schemas["MonitoringPanelReference"];
 export type MetricPanel = Schemas["IncidentMetricPanel"];
 export type MonitoringHealth = Schemas["MonitoringHealthSnapshot"];
-export type OperatorSession = Schemas["OperatorSessionResponse"];
 export type RerunAccepted = Schemas["CreateRunResponse"];
 
 const RUNTIME_SCHEMA_VERSION = 5;
 export const TRANSIENT_GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 const MAX_INCIDENT_PAGES = 10;
 const MAX_RUN_EVENT_PAGES = 10;
-
-export interface ReadOptions {
-  transientStatuses?: ReadonlySet<number>;
-}
-
-// A JSON read bound to one endpoint origin; the transport owns HTTP failures and body limits.
-export type ReadJson = (pathname: string, options?: ReadOptions) => Promise<unknown>;
 
 // Runtime checks stay exactly as strict as before the generated types existed; the types only
 // name what a validated document is trusted to contain.
@@ -195,17 +188,6 @@ export function isHealthyMonitoring(value: unknown): value is MonitoringHealth {
   );
 }
 
-export function isOperatorSession(value: unknown, nowSeconds: number): value is OperatorSession {
-  return (
-    isPlainObject(value) &&
-    value.operatorRef === "sandbox-operator" &&
-    Number.isSafeInteger(value.expiresAt) &&
-    (value.expiresAt as number) > nowSeconds &&
-    typeof value.csrfToken === "string" &&
-    /^[a-f0-9]{64}$/.test(value.csrfToken)
-  );
-}
-
 export function isRerunAccepted(value: unknown): value is RerunAccepted {
   return isPlainObject(value) && value.schemaVersion === RUNTIME_SCHEMA_VERSION && isUuid(value.runId);
 }
@@ -268,16 +250,4 @@ export function decodeSseFrame(
     throw contractError("sse_replay_invalid", "SSE replay did not preserve the persisted event contract");
   }
   return { id, event, data } as unknown as RunEvent;
-}
-
-export function parseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw upstreamContractError();
-  }
-}
-
-export function responseTooLarge() {
-  return contractError("response_too_large", "An evaluation endpoint exceeded its response budget");
 }

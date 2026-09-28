@@ -6,7 +6,6 @@ import {
   errorCode,
   isDiagnosisUnavailable,
   isHealthyMonitoring,
-  isOperatorSession,
   isRerunAccepted,
   isRunHistoryPage,
   readIncident,
@@ -20,10 +19,9 @@ import {
   readRunHistory,
   splitSseFrames,
   TRANSIENT_GATEWAY_STATUSES,
-  type ReadJson,
-  type ReadOptions,
 } from "../../src/contracts/runtime-api.ts";
 import { EvaluationError } from "../../src/shared/errors.ts";
+import type { ReadJson, ReadOptions } from "../../src/shared/json.ts";
 
 const INCIDENT = "10000000-0000-4000-8000-000000000001";
 const RUN = "20000000-0000-4000-8000-000000000001";
@@ -207,15 +205,7 @@ test("monitoring health is read tolerantly and judged by the healthy predicate",
   assert.equal(isHealthyMonitoring("healthy"), false);
 });
 
-test("operator sessions, accepted reruns, error codes and diagnosis availability are recognised structurally", () => {
-  const session = { operatorRef: "sandbox-operator", expiresAt: 1_800_000_000, csrfToken: "a".repeat(64) };
-  assert.equal(isOperatorSession(session, 1_700_000_000), true);
-  assert.equal(isOperatorSession(session, 1_800_000_000), false);
-  assert.equal(isOperatorSession({ ...session, operatorRef: "root" }, 0), false);
-  assert.equal(isOperatorSession({ ...session, csrfToken: "A".repeat(64) }, 0), false);
-  assert.equal(isOperatorSession({ ...session, expiresAt: "soon" }, 0), false);
-  assert.equal(isOperatorSession(undefined, 0), false);
-
+test("accepted reruns, error codes and diagnosis availability are recognised structurally", () => {
   assert.equal(isRerunAccepted({ schemaVersion: 5, runId: RUN }), true);
   assert.equal(isRerunAccepted({ schemaVersion: 5, runId: "run" }), false);
   assert.equal(isRerunAccepted({ schemaVersion: 4, runId: RUN }), false);

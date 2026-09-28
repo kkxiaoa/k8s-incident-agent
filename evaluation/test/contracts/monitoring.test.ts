@@ -12,8 +12,9 @@ import {
   readPrometheusAlert,
   type AlertTarget,
 } from "../../src/contracts/monitoring.ts";
-import { TRANSIENT_GATEWAY_STATUSES, type ReadJson, type ReadOptions } from "../../src/contracts/runtime-api.ts";
+import { TRANSIENT_GATEWAY_STATUSES } from "../../src/contracts/runtime-api.ts";
 import { EvaluationError } from "../../src/shared/errors.ts";
+import type { ReadJson, ReadOptions } from "../../src/shared/json.ts";
 
 const scenario: AlertTarget = {
   alertId: "K8sIncidentCrashLoopBackOff",

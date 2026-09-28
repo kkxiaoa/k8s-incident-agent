@@ -1,6 +1,7 @@
 import { upstreamContractError } from "../shared/errors.ts";
 import { isPlainObject } from "../shared/guards.ts";
-import { TRANSIENT_GATEWAY_STATUSES, type ReadJson } from "./runtime-api.ts";
+import type { ReadJson } from "../shared/json.ts";
+import { TRANSIENT_GATEWAY_STATUSES } from "./runtime-api.ts";
 
 // The alert a scenario is expected to raise and the resource it targets.
 export interface AlertTarget {

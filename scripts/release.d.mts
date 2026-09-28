@@ -13,3 +13,13 @@ export interface ReleaseManifest {
   sourceRevision: string;
   images: Record<ReleaseComponent, ReleaseImage>;
 }
+
+export class ReleaseError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string);
+}
+
+export function loadRelease(
+  releasePath: string | undefined,
+  repositoryRoot: string,
+): Promise<ReleaseManifest>;

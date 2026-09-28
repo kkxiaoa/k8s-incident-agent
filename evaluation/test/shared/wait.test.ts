@@ -6,7 +6,18 @@ import {
   EvaluationError,
   TransientEvaluationError,
 } from "../../src/shared/errors.ts";
-import { POLL_INTERVAL_MILLISECONDS, waitUntil } from "../../src/shared/wait.ts";
+import {
+  ALERT_REPEAT_WAIT_MILLISECONDS,
+  COMMAND_TIMEOUT_MILLISECONDS,
+  DIAGNOSIS_TIMEOUT_MILLISECONDS,
+  HEALTH_TIMEOUT_MILLISECONDS,
+  HTTP_TIMEOUT_MILLISECONDS,
+  POLL_INTERVAL_MILLISECONDS,
+  PORT_FORWARD_TIMEOUT_MILLISECONDS,
+  POST_RESOLUTION_TIMEOUT_MILLISECONDS,
+  RESOLUTION_TIMEOUT_MILLISECONDS,
+  waitUntil,
+} from "../../src/shared/wait.ts";
 
 function fakeClock(t: TestContext) {
   t.mock.timers.enable({ apis: ["Date"], now: 0 });
@@ -17,6 +28,33 @@ function fakeClock(t: TestContext) {
   };
   return { sleep, slept };
 }
+
+test("the wait budgets are the evaluator's fixed ones", () => {
+  assert.deepEqual(
+    {
+      http: HTTP_TIMEOUT_MILLISECONDS,
+      poll: POLL_INTERVAL_MILLISECONDS,
+      health: HEALTH_TIMEOUT_MILLISECONDS,
+      diagnosis: DIAGNOSIS_TIMEOUT_MILLISECONDS,
+      resolution: RESOLUTION_TIMEOUT_MILLISECONDS,
+      postResolution: POST_RESOLUTION_TIMEOUT_MILLISECONDS,
+      alertRepeat: ALERT_REPEAT_WAIT_MILLISECONDS,
+      portForward: PORT_FORWARD_TIMEOUT_MILLISECONDS,
+      command: COMMAND_TIMEOUT_MILLISECONDS,
+    },
+    {
+      http: 15_000,
+      poll: 2_000,
+      health: 120_000,
+      diagnosis: 300_000,
+      resolution: 180_000,
+      postResolution: 90_000,
+      alertRepeat: 330_000,
+      portForward: 60_000,
+      command: 300_000,
+    },
+  );
+});
 
 test("the first truthy value ends the wait", async (t) => {
   const { sleep, slept } = fakeClock(t);
