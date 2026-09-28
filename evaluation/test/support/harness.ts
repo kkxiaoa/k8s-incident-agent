@@ -51,7 +51,7 @@ export interface HarnessOptions {
   otherAlertSameTargetScenarioId?: string;
   paginatedIncidents?: boolean;
   onlineManualRoutes?: boolean;
-  onlineRerunStatus?: 202 | 409 | 422 | 503;
+  onlineRerunStatus?: 200 | 202 | 409 | 422 | 503;
   onlineEmpty?: boolean;
   onlineWrongRun?: boolean;
   manyRunEvents?: { pages: number; perPage: number; fields: number };

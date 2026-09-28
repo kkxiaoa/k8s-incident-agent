@@ -20,7 +20,7 @@
 | `src/lifecycle/` | 单个 Trial 的执行编排（cleanup → apply → verify → 告警 → 对照 → Incident → 终态 → 评分包抓取 → 门禁 → 去重 → cleanup → 解除）、基础设施恢复探针、评分包抓取，以及不做 I/O 的门禁（终态与三种预期的校验、证据与工具权限、ImagePull 修复 proposal 的证据绑定校验、panel 风险、SSE 事件契约与终态序列、单 Run 去重、解除判定）、outcomeClass 分类、覆盖报告与完整计划分母 |
 | `src/campaign/` | campaign 身份与 `--retry-of` 校验、`.runtime/evaluation` 下的记录写入与读取（campaign 产物与评分包只创建不覆盖，online 产物临时文件 + 原子改名） |
 | `src/review/` | 评分文件校验、评分包绑定与 `retryOf` 链，campaign 报告生成 |
-| `src/commands/` | `run`（数据集选择、campaign 规划、deployment status 门禁、隧道与登录、逐 Case 评估、探针、产物组装）、`report`（参数校验后生成报告） |
+| `src/commands/` | `run`（数据集选择、campaign 规划、deployment status 门禁、隧道与登录、逐 Case 评估、探针、产物组装）、`online`（公开边界：只读路由集合、Console 首页、匿名重跑拒绝、已认证重跑的三种合法结果）、`report`（参数校验后生成报告） |
 | `test/` | 与 `src` 同构的 `node:test` 测试；`test/support` 是共享 fixture 与按 Runtime / 监控 / Console / 集群命令拆分的假环境；`test/fixtures/golden` 是记录样本 |
 
 ## 分层契约
