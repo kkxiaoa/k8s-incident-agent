@@ -15,8 +15,8 @@
 | --- | --- |
 | `datasets/` | 版本化数据集清单：Case、split、机制、来源组、预期终态、告警等待预算 |
 | `src/shared/` | 错误类型与错误码表、`safeFailure`、字符串 / UUID / 时间守卫、`canonicalJson`、等待预算与 `waitUntil` |
-| `src/contracts/` | 外部边界的类型；`runtime-api.generated.ts` 是生成的 Runtime API 类型 |
-| `test/` | 与 `src` 同构的 `node:test` 测试 |
+| `src/contracts/` | 外部边界：Runtime API 读取器与运行时校验（`runtime-api.generated.ts` 是生成的类型）、Prometheus / Alertmanager 与 Console 的读取形状、数据集清单与评估投影、artifact / 评分包 / 评分文件 / 报告的记录 schema |
+| `test/` | 与 `src` 同构的 `node:test` 测试；`test/support` 是共享 fixture；`test/fixtures/golden` 是记录样本 |
 
 ## 分层契约
 

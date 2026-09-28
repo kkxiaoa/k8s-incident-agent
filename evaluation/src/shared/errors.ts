@@ -58,7 +58,7 @@ export const EVALUATION_ERROR_CODES = [
 
 export type EvaluationErrorCode = (typeof EVALUATION_ERROR_CODES)[number];
 
-// Only the environment layer's normalization of script errors may mint one of these.
+// Only the normalization of script errors (producerError) may mint one of these.
 export type ProducerErrorCode = string & { readonly producer: "scripts" };
 
 export class EvaluationError extends Error {
@@ -78,6 +78,11 @@ export function contractError(
   message: string,
 ): EvaluationError {
   return new EvaluationError(code, message);
+}
+
+// A release, deployment or scenario script error keeps its own code and message.
+export function producerError(code: string, message: string): EvaluationError {
+  return new EvaluationError(code as ProducerErrorCode, message);
 }
 
 export function upstreamContractError(): EvaluationError {

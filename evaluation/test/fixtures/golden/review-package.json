@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "campaignId": "20260905T000000Z-0000aaaa",
+  "scenarioId": "crash-loop-backoff",
+  "trial": 1,
+  "incidentId": "10000000-0000-4000-8000-000000000001",
+  "runId": "20000000-0000-4000-8000-000000000001",
+  "capturedAt": "2026-09-05T00:00:00.000Z",
+  "incident": {
+    "schemaVersion": 5,
+    "incident": {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "source": {
+        "type": "alertmanager",
+        "ref": "K8sIncidentCrashLoopBackOff",
+        "revision": "catalog-v1"
+      },
+      "target": {
+        "cluster": "k8s-incident-agent",
+        "namespace": "k8s-incident-scenarios",
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "name": "crash-loop-backoff"
+      },
+      "status": "DIAGNOSED",
+      "displayName": "crash-loop-backoff"
+    },
+    "selectedRun": {
+      "kind": "diagnosis",
+      "operation": null,
+      "id": "20000000-0000-4000-8000-000000000001",
+      "attempt": 1,
+      "status": "COMPLETED",
+      "requestSource": "system",
+      "error": null
+    },
+    "eventPage": {
+      "items": [],
+      "nextCursor": null
+    },
+    "evidence": [
+      {
+        "id": "30000000-0000-4000-8000-000000000001",
+        "evidenceKind": "workload",
+        "toolName": "get_workload"
+      },
+      {
+        "id": "30000000-0000-4000-8000-000000000002",
+        "evidenceKind": "pods",
+        "toolName": "get_pods"
+      },
+      {
+        "id": "30000000-0000-4000-8000-000000000003",
+        "evidenceKind": "events",
+        "toolName": "get_events"
+      },
+      {
+        "id": "30000000-0000-4000-8000-000000000004",
+        "evidenceKind": "container_logs",
+        "toolName": "get_container_logs"
+      }
+    ],
+    "diagnosis": {
+      "outcome": "diagnosed",
+      "summary": "A diagnostic explanation requiring independent semantic review.",
+      "rootCauses": [
+        {
+          "code": "observed_cause",
+          "statement": "A diagnostic explanation requiring independent semantic review.",
+          "confidence": "high",
+          "evidenceIds": [
+            "30000000-0000-4000-8000-000000000001",
+            "30000000-0000-4000-8000-000000000002",
+            "30000000-0000-4000-8000-000000000003",
+            "30000000-0000-4000-8000-000000000004"
+          ]
+        }
+      ]
+    },
+    "repair": null,
+    "alertSignal": {
+      "status": "FIRING"
+    },
+    "eventCursor": "3"
+  },
+  "events": [
+    {
+      "id": "1",
+      "event": "incident.created",
+      "data": {
+        "schemaVersion": 5,
+        "incidentId": "10000000-0000-4000-8000-000000000001",
+        "runId": "20000000-0000-4000-8000-000000000001",
+        "runKind": "diagnosis",
+        "occurredAt": "2026-09-05T00:00:00.000Z",
+        "attempt": 1,
+        "incidentStatus": "RECEIVED",
+        "runStatus": "QUEUED"
+      }
+    },
+    {
+      "id": "2",
+      "event": "run.started",
+      "data": {
+        "schemaVersion": 5,
+        "incidentId": "10000000-0000-4000-8000-000000000001",
+        "runId": "20000000-0000-4000-8000-000000000001",
+        "runKind": "diagnosis",
+        "occurredAt": "2026-09-05T00:00:00.000Z",
+        "attempt": 1,
+        "incidentStatus": "TRIAGING",
+        "runStatus": "RUNNING"
+      }
+    },
+    {
+      "id": "3",
+      "event": "diagnosis.completed",
+      "data": {
+        "schemaVersion": 5,
+        "incidentId": "10000000-0000-4000-8000-000000000001",
+        "runId": "20000000-0000-4000-8000-000000000001",
+        "runKind": "diagnosis",
+        "occurredAt": "2026-09-05T00:00:00.000Z",
+        "diagnosisId": "50000000-0000-4000-8000-000000000001",
+        "outcome": "diagnosed",
+        "incidentStatus": "DIAGNOSED",
+        "runStatus": "COMPLETED"
+      }
+    }
+  ],
+  "truncated": false
+}

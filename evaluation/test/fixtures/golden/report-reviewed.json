@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "kind": "campaign-report",
+  "campaign": {
+    "id": "20260905T000000Z-0000aaaa",
+    "startedAt": "2026-09-05T00:00:00.000Z",
+    "retryOf": null
+  },
+  "chain": {
+    "campaigns": [
+      "20260905T000000Z-0000aaaa"
+    ],
+    "complete": true
+  },
+  "profile": "kind-evaluation",
+  "dataset": {
+    "id": "regression",
+    "version": 1
+  },
+  "release": {
+    "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "scope": "focused",
+  "automated": "pending_manual_review",
+  "status": "reviewed",
+  "outcomeClasses": {
+    "pending_manual_review": 1
+  },
+  "review": {
+    "files": 2,
+    "unbound": 0,
+    "statuses": {
+      "pass": 1
+    }
+  },
+  "mechanisms": [
+    {
+      "mechanism": "invalid-startup-command",
+      "cases": 1,
+      "status": "pending_manual_review",
+      "review": {
+        "pass": 1
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "scenarioId": "crash-loop-backoff",
+      "mechanism": "invalid-startup-command",
+      "expectedTerminal": {
+        "outcome": "diagnosed"
+      },
+      "automated": "pending_manual_review",
+      "outcomeClass": "pending_manual_review",
+      "failure": null,
+      "run": {
+        "attempt": 1,
+        "status": "COMPLETED",
+        "errorCode": null,
+        "retryable": null,
+        "outcome": "diagnosed"
+      },
+      "reviewPackage": {
+        "truncated": false
+      },
+      "review": {
+        "status": "pass",
+        "rulesVersion": "rubric-draft-1",
+        "reviewers": [
+          {
+            "reviewer": "maintainer",
+            "verdict": "pass",
+            "rulesVersion": "rubric-draft-1",
+            "reviewedAt": "2026-09-06T10:00:00Z",
+            "file": "crash-loop-backoff-0.json"
+          },
+          {
+            "reviewer": "second",
+            "verdict": "pass",
+            "rulesVersion": "rubric-draft-1",
+            "reviewedAt": "2026-09-06T10:00:00Z",
+            "file": "crash-loop-backoff-1.json"
+          }
+        ]
+      }
+    }
+  ]
+}

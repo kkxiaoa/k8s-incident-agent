@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 import { buildCampaignReport } from "./evaluation-report.mjs";
 
 const REPORT = path.join(path.dirname(fileURLToPath(import.meta.url)), "evaluation-report.mjs");
+// Test-only capture of this implementation's reports as parity fixtures for the evaluation module.
+const GOLDEN_DIRECTORY = process.env.EVALUATION_GOLDEN_DIR;
+function recordGolden(name, value) {
+  if (GOLDEN_DIRECTORY === undefined) return;
+  writeFileSync(path.join(GOLDEN_DIRECTORY, `${name}.json`), `${JSON.stringify(value, null, 2)}\n`);
+}
 const CAMPAIGN = "20260905T000000Z-0000aaaa";
 const RUN = "20000000-0000-4000-8000-000000000001";
 const EVIDENCE = ["30000000-0000-4000-8000-000000000001", "30000000-0000-4000-8000-000000000002"];
@@ -77,11 +83,13 @@ function campaign(t, { id = CAMPAIGN, scenarios = [scenario()], reviews = [], pa
 
 test("an unreviewed Trial stays pending and a bound verdict settles it", async (t) => {
   const pending = await buildCampaignReport(campaign(t).file);
+  recordGolden("report-pending", pending);
   assert.equal(pending.status, "pending_manual_review");
   assert.deepEqual(pending.scenarios[0].review, { status: "pending_manual_review", reviewers: [] });
   assert.deepEqual(pending.review, { files: 0, unbound: 0, statuses: { pending_manual_review: 1 } });
 
   const reviewed = await buildCampaignReport(campaign(t, { reviews: [review(), review({ reviewer: "second", evidenceIds: EVIDENCE })] }).file);
+  recordGolden("report-reviewed", reviewed);
   assert.equal(reviewed.status, "reviewed");
   assert.equal(reviewed.scenarios[0].review.status, "pass");
   assert.equal(reviewed.scenarios[0].review.rulesVersion, "rubric-draft-1");

@@ -38,6 +38,13 @@ const EVIDENCE_TOOL = Object.freeze({
   metrics: "query_prometheus",
 });
 
+// Test-only capture of this implementation's outputs as parity fixtures for the evaluation module.
+const GOLDEN_DIRECTORY = process.env.EVALUATION_GOLDEN_DIR;
+function recordGolden(name, value) {
+  if (GOLDEN_DIRECTORY === undefined) return;
+  writeFileSync(path.join(GOLDEN_DIRECTORY, `${name}.json`), `${JSON.stringify(value, null, 2)}\n`);
+}
+
 async function runEvaluationCommand(request, dependencies) {
   const selection = dependencies[RELEASE_SELECTION];
   const previousPath = process.env.PATH;
@@ -100,6 +107,7 @@ test("authentication failures stop before scenarios and never enter artifacts", 
     if (missingCredential) harness.dependencies.environment.OPERATOR_PASSWORD_FILE = undefined;
     else harness.dependencies.fetch = async () => new Response("sensitive upstream detail", { status: 401 });
     const result = await runEvaluationCommand({ action: "run", profile: "kind-evaluation" }, harness.dependencies);
+    if (!missingCredential) recordGolden("catalog-aborted", result.artifact);
     assert.equal(result.artifact.status, "failed");
     assert.equal(result.artifact.failure.code, "operator_authentication_failed");
     assert.equal(harness.calls.scenarioApply, 0);
@@ -161,6 +169,8 @@ test("catalog checks complete with exact Run references but require manual diagn
     { action: "run", profile: "kind-evaluation" },
     harness.dependencies,
   );
+  recordGolden("catalog-full", result.artifact);
+  recordGolden("review-package", harness.calls.packages[0]);
 
   assert.equal(
     result.artifact.status,
@@ -436,6 +446,7 @@ test("online evaluation proves the manual route and control boundary", async () 
     harness.dependencies,
   );
 
+  recordGolden("online", result.artifact);
   assert.equal(result.artifact.status, "passed");
   assert.deepEqual(result.artifact.checks, {
     readRoutesAvailable: true,
@@ -597,6 +608,7 @@ test("focused evaluation runs only selected fixtures and never claims omitted co
     { action: "run", profile: "kind-evaluation", scenarioIds: selected },
     harness.dependencies,
   );
+  recordGolden("catalog-focused", result.artifact);
   assert.deepEqual(touched, new Set(selected));
   assert.equal(harness.calls.scenarioApply, 3);
   assert.equal(harness.calls.alertmanagerRestarts, 0);
@@ -814,6 +826,7 @@ test("expected insufficient-evidence and typed-failure terminals pass their gate
       { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] },
       harness.dependencies,
     );
+    recordGolden(`catalog-terminal-${expected.outcome}`, artifact);
     const [result, unselected] = artifact.scenarios;
     assert.equal(result.status, "pending_manual_review", JSON.stringify(result.failure));
     assert.equal(result.outcomeClass, "pending_manual_review");
@@ -840,6 +853,7 @@ test("a terminal that differs from the case's expectation is a mismatch that kee
     { action: "run", profile: "kind-evaluation", datasetPath, scenarioIds: ["crash-loop-backoff"] },
     harness.dependencies,
   );
+  recordGolden("catalog-terminal-mismatch", artifact);
   const [result] = artifact.scenarios;
   assert.equal(result.status, "failed");
   assert.equal(result.outcomeClass, "outcome_mismatch");
@@ -1582,6 +1596,7 @@ function createHarness(options = {}) {
       return `trials/${scenarioId}.json`;
     },
   };
+  if (GOLDEN_DIRECTORY !== undefined) dependencies.campaignSuffix = () => "0000aaaa";
   return { calls, dependencies, state };
 }
 

@@ -92,7 +92,7 @@ class VerificationPending extends Error {
   }
 }
 
-function loadScenarioCatalog(repositoryRoot, environment = process.env) {
+export function loadScenarioCatalog(repositoryRoot, environment = process.env) {
   try {
     const normalizedRoot = normalizeRepositoryRoot(repositoryRoot);
     const catalogDirectory = resolveCatalogDirectory(normalizedRoot, environment);
