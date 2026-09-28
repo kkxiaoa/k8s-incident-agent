@@ -27,6 +27,7 @@ interface FakeIncident {
   finished: boolean;
   metricState: "ok" | "monitoring_unavailable";
   metricAnchor?: string;
+  metricSamples?: { timestamp: string; value: number }[];
   mode: OutcomeMode;
   history?: IncidentDetailResponse[];
   /** Walkthrough-only: renders every panel state on one Incident. */
@@ -825,6 +826,49 @@ function seedAlertIncident(ref: string, targetName: string) {
     applyEvent(record, event);
   }
   incidents.set(record.detail.incident.id, record);
+  return record;
+}
+
+function seedServiceRiskCase(): string {
+  const record = seedAlertIncident("K8sIncidentServiceEndpointsUnavailable", "service-selector-mismatch");
+  const detail = record.detail;
+  const target = detail.incident.target;
+  // Fixed snapshot: the alert fired 28 minutes ago, outside the default window.
+  record.metricAnchor = "2026-08-29T02:28:15Z";
+  record.metricSamples = Array.from({ length: 61 }, (_, index) => ({
+    timestamp: new Date(Date.parse(record.metricAnchor!) - (60 - index) * 15_000).toISOString(), value: 0,
+  }));
+  record.events = record.events.filter((event) => !("toolCallId" in event.data && event.data.toolCallId === "tool-call-2"));
+  for (const event of record.events) {
+    if (event.event === "tool.started" || event.event === "evidence.recorded") event.data.toolName = "get_service_network";
+    if (event.event === "evidence.recorded") event.data.evidenceKind = "service_network";
+  }
+  detail.eventPage.items = [...record.events].reverse();
+  const evidence = detail.evidence[0]!;
+  evidence.toolName = "get_service_network";
+  evidence.evidenceKind = "service_network";
+  evidence.targetRef = { ...target, uid: "service-risk-fixture" };
+  evidence.payload = {
+    service: { resourceVersion: "101", serviceType: "ClusterIP", clusterIp: "10.43.0.100",
+      selector: { matchLabels: { app: "service-selector-wrong" } }, monitoringEnabled: true, publishNotReadyAddresses: false },
+    summary: { state: "selector_mismatch", candidateCount: 1, selectorMatchCount: 0, endpointSliceCount: 1, readyEndpointCount: 0 },
+    candidatePods: [{ podRef: { apiVersion: "v1", kind: "Pod", namespace: target.namespace,
+      name: "service-selector-mismatch-backend", uid: "service-risk-backend-fixture" }, resourceVersion: "102",
+      selectorLabels: { app: "service-selector-backend" }, matchesSelector: false, ready: true }],
+    endpointSlices: [{ endpointSliceRef: { apiVersion: "discovery.k8s.io/v1", kind: "EndpointSlice", namespace: target.namespace,
+      name: "service-selector-mismatch-empty", uid: "service-risk-slice-fixture" }, resourceVersion: "103",
+      addressType: "IPv4", endpointCount: 0, readyCount: 0, notReadyCount: 0, unknownReadyCount: 0, servingCount: 0, terminatingCount: 0 }],
+  };
+  detail.evidence = [evidence];
+  detail.diagnosis = { ...detail.diagnosis!,
+    summary: "The Service selector does not match its Ready candidate Pod; the EndpointSlice has no ready endpoints.",
+    rootCauses: [{ code: "service_selector_mismatch", statement: "Service selects app=service-selector-wrong, but the Ready candidate has app=service-selector-backend.", confidence: "high", evidenceIds: [evidence.id] }],
+    missingInformation: [], recommendations: [{ action: "Review the Service selector against the intended backend labels.",
+      purpose: "Restore selection of the intended Ready backend.", preconditions: "Confirm which workload should receive traffic.",
+      risk: "An incorrect selector can send traffic to the wrong workload.", verification: "Confirm ready endpoints appear and check application connectivity separately.", evidenceIds: [evidence.id] }],
+  };
+  detail.actions.rerun = null;
+  return detail.incident.id;
 }
 
 export function seedDiscoveryShowcase(): number {
@@ -1568,7 +1612,7 @@ function metricPanel(
     }
   }
   addSample(queriedAt, failingValue);
-  const samples = [...samplesByTimestamp]
+  const samples = record.metricSamples?.filter((sample) => Date.parse(sample.timestamp) >= windowStartsAt && Date.parse(sample.timestamp) <= queriedAt) ?? [...samplesByTimestamp]
     .sort(([left], [right]) => left - right)
     .map(([timestamp, value]) => ({
       timestamp: new Date(timestamp).toISOString(),
@@ -1926,6 +1970,11 @@ async function handleRequest(
 
   if (request.method === "POST" && url.pathname === "/__test__/discovery") {
     json(response, 200, { ok: true, incidents: seedDiscoveryShowcase() });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/__test__/service-risk") {
+    json(response, 200, { incidentId: seedServiceRiskCase() });
     return;
   }
 

@@ -376,9 +376,9 @@ describe("IncidentMonitoringOverview", () => {
       screen.getByRole("img", { name: /^镜像拉取失败 Pod 时间序列/ }),
     ).toBeVisible();
     expect(screen.getByText("镜像拉取失败 Pod 数量")).toBeVisible();
-    expect(screen.getByText("阈值区间（≥ 1）")).toBeVisible();
+    expect(screen.getByText("风险区间（≥ 1）")).toBeVisible();
     expect(screen.getByText("可用副本数")).toBeVisible();
-    expect(screen.getByText("期望副本数（3）")).toBeVisible();
+    expect(screen.getByText("低于期望副本（< 3）")).toBeVisible();
     expect(screen.getByText("持续 30 秒")).toBeVisible();
     expect(screen.getByText("持续 5 分钟")).toBeVisible();
     expect(screen.getAllByText("条件已解除")).toHaveLength(1);
@@ -560,7 +560,7 @@ describe("IncidentMonitoringOverview", () => {
       within(card as HTMLElement).getByText("Service 就绪 Endpoint 数量"),
     ).toBeVisible();
     expect(
-      within(card as HTMLElement).getByText("下限阈值（< 1）"),
+      within(card as HTMLElement).getByText("风险区间（< 1）"),
     ).toBeVisible();
     expect(within(card as HTMLElement).getByText("告警中")).toBeVisible();
     expect(
