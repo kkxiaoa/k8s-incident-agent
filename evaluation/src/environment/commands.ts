@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 
-import type { DeploymentExecute, verifyDeploymentStatus } from "../../../scripts/deployment.mjs";
+import { verifyDeploymentStatus, type DeploymentExecute } from "../../../scripts/deployment.mjs";
 import { loadRelease, ReleaseError, type ReleaseManifest } from "../../../scripts/release.mjs";
 import {
   runScenarioCommand,
@@ -40,6 +40,10 @@ export type Execute = (
 
 export type ScenarioRunner = typeof runScenarioCommand;
 export type DeploymentStatusCheck = typeof verifyDeploymentStatus;
+
+// The scripts' own entry points are the defaults; commands never reach past this boundary.
+export const defaultScenarioRunner: ScenarioRunner = runScenarioCommand;
+export const defaultDeploymentStatusCheck: DeploymentStatusCheck = verifyDeploymentStatus;
 
 export interface CommandFailure extends Error {
   exitCode?: number;

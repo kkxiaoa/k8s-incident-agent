@@ -280,8 +280,8 @@ async function waitForPostResolutionPanels(
 // One planned Trial: the fixture's whole life from cleanup to cleanup, with every gate the
 // Runtime must pass and the review package captured before the terminal is judged.
 export async function runTrial(scenario: EvaluationCase, environment: TrialEnvironment): Promise<ScenarioResult> {
-  const result = emptyScenarioResult(scenario);
   const trial: Trial = { index: 1, startedAt: requireDate(environment.now()).toISOString(), completedAt: null };
+  const result = { ...emptyScenarioResult(scenario), trial };
   const readers = runtimeReaders(environment.fetchImpl);
   const runtime = readers.runtime;
   const dependencies = scenarioDependencies(environment);
@@ -371,5 +371,5 @@ export async function runTrial(scenario: EvaluationCase, environment: TrialEnvir
     }
     trial.completedAt = requireDate(environment.now()).toISOString();
   }
-  return { ...result, trial, outcomeClass };
+  return { ...result, outcomeClass };
 }
