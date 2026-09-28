@@ -34,8 +34,9 @@ npm run doctor
 | `npm run deployment -- install\|upgrade\|uninstall ... --confirm --release <release.json>` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
 | `npm run deployment -- purge ... --preview\|--confirm <identity> --release <release.json>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
 | `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation> --release <release.json>` | `deployment.mjs` | 用固定一次性 Job 预览或确认早期 Runtime 业务库（Alembic `20260814_0001`/`20260901_0002`）的数据 cutover，保留 PVC | 是；`--confirm` 额外删除旧业务数据 |
-| `npm run evaluation -- run <evaluation-profile> [--context <context>] --release <release.json>` | `evaluation.mjs` | 逐项验证七个 catalog scenario 与五类真实告警/诊断切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
+| `npm run evaluation -- run <evaluation-profile> [--context <context>] --release <release.json>` | `evaluation.mjs` | 逐项验证所选数据集 Case 的真实告警、诊断终态与生命周期切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
 | `npm run evaluation -- online k3s-public --context <context> --release <release.json>` | `evaluation.mjs` | 验证公开 profile 的只读 API 与人工入口缺失边界 | 否 |
+| `npm run evaluation-report -- <campaign-artifact.json>` | `evaluation-report.mjs` | 只读汇总一次 campaign 的自动结果、评分包与人工评分绑定 | 否 |
 | `npm run scenario -- list` | `scenario.mjs` | 校验并列出版本化场景的公开信息 | 否 |
 | `npm run scenario -- apply <scenario-id>` | `scenario.mjs` | 安装指定 catalog fixture | 是 |
 | `npm run scenario -- verify <scenario-id>` | `scenario.mjs` | 等待并验证场景的确定性证据条件 | 否 |
@@ -176,15 +177,26 @@ npm run evaluation -- run k3s-evaluation --context <context> --release <release.
 npm run evaluation -- online k3s-public --context <context> --release <release.json>
 ```
 
-`run` 复用 `scenario.mjs` 已校验的私有评估投影，逐 entry 证明健康基线、真实
-Prometheus/Alertmanager firing、健康对照不触发、唯一 Incident/Run、required
-Evidence 及其根因引用、必要 panel、具备完整 lifecycle payload 的 SSE replay、Console
+`run` 复用 `scenario.mjs` 已校验的私有评估投影，逐 Case 证明健康基线、真实
+Prometheus/Alertmanager firing、健康对照不触发、唯一 Incident/Run、Run 终态与 Case 的
+预期一致、Evidence 及其引用、必要 panel、具备完整 lifecycle payload 的 SSE replay、Console
 稳定详情、目标 Incident 自身的重复投递去重和 resolved 信号。场景彼此独立执行；单项
-失败会保留固定错误分类并继续后续 entry。重复投递按目标 Incident 的 `updatedAt` 推进
+失败会保留固定错误分类并继续后续 Case。重复投递按目标 Incident 的 `updatedAt` 推进
 判断，不使用可能被 Watchdog 等其他告警污染的全局 webhook 计数。
 最后还会受控缩放并恢复 kube-state-metrics/Prometheus，以验证 stale 与 monitoring
 unavailable 状态，然后轮换两个 Namespace 的同值 Webhook Secret、重建 Runtime 与
 Alertmanager，并要求 Watchdog 接收时间严格推进后再次证明链路健康。
+
+每个 Case 在数据集中声明预期终态：`diagnosed` 要求 Run COMPLETED 且给出引用 Evidence 的根因；
+`insufficient_evidence` 要求 Run COMPLETED、没有根因并列出缺少的信息；`failed` 要求 Run 以指定的
+`error_code` FAILED。三者都要求 SSE replay 持久化对应的终态事件（`diagnosis.completed`、
+`diagnosis.insufficient` 或 `run.failed`）。预期的失败被正确处理时自动检查通过；终态与预期不符时
+以 `terminal_outcome_mismatch` 失败。结果中的 `checks.run` 始终记录 Runtime 自己的 attempt、状态、
+错误码与诊断 outcome，不按预期改写。`failed` 预期只覆盖在 repair proposal 之前失败的 Run（诊断阶段的
+类型化失败）。每个结果还带 `outcomeClass`：`infrastructure_invalid`（Alertmanager firing 之前的 fixture、
+监控或对照失败，输入尚未交付给 Runtime）、`intake_failed`（告警已 firing 但 Runtime 未产生唯一 Incident，
+或健康对照误报）、`run_not_terminal`（Run 在预算内未结束）、`outcome_mismatch`、`contract_failed`（终态
+之后的门禁失败）、`pending_manual_review` 或 `not_run`。
 
 命令在任何 live 副作用前通过共享 `release.mjs` loader 校验显式选择的
 `--release <release.json>`。当前 Git worktree 必须干净，HEAD 与 manifest 的
@@ -193,13 +205,31 @@ Alertmanager，并要求 Watchdog 接收时间严格推进后再次证明链路�
 应用镜像身份只来自该 manifest。相同已验证 manifest 传给 deployment status
 及 scenario 的 K3s preflight，不重复选择另一份镜像身份。
 
-online 产物固定原子写入 `.runtime/evaluation/<profile>.json`；dataset run 使用
-`<profile>-<dataset-id>-v<dataset-version>[-focused].json`，与普通 run 及其他数据集版本的结果互不覆盖。
-目录/文件权限分别为 `0700`/`0600`。artifact 包含所选 release manifest、数据集身份、布尔检查、状态、计数、
-Evidence kind、诊断 code 和 panel ID；不包含 Secret、token/hash、原始 Evidence、模型
-陈述、Event note、日志、上游响应或任意凭据。该命令具有上述精确 live 副作用，仍须在
-用户授权后运行；它不会 install/uninstall、purge、删除 Namespace/PVC/PV/Secret，或
-修改 cert-manager 与兄弟项目资源。
+每次 `run` 是一个 campaign，身份为开始时间加随机后缀（如 `20260905T000000Z-1a2b3c4d`），可用
+`--retry-of <campaign-id>` 声明它复测的是同 profile、同数据集的哪一次 campaign。产物写入
+`.runtime/evaluation/<profile>/<campaign-id>.json`，只创建、不覆盖：同一身份再次写入会以
+`evaluation_artifact_exists` 失败，早先的记录与其他数据集版本的记录都不会被改动。artifact 包含所选
+release manifest、数据集与 campaign 身份、每个 Case 的 Trial 时间、布尔检查、状态、`outcomeClass`、
+计数、Evidence kind、诊断 code 和 panel ID；不包含 Secret、token/hash、原始 Evidence、模型陈述、
+Event note、日志、上游响应或任意凭据。online 产物固定原子写入 `.runtime/evaluation/<profile>.json`。
+
+每个到达终态的 Trial 另外在 `.runtime/evaluation/<profile>/<campaign-id>/trials/<scenario-id>.json`
+保存评分包：经同一已认证会话读取的 Incident 详情投影（含 Runtime 安全投影后的诊断陈述、Evidence
+payload 与 repair proposal）和该 Run 的事件历史，以紧凑 JSON 原样落盘、不再加工；单个评分包按落盘
+字节计上限 4 MiB，超限时丢弃事件历史并标 `truncated`。评分包不含 Cookie、CSRF token、密码、请求头或原始日志，只供指定维护者
+本地人工审阅，目录/文件权限为 `0700`/`0600`，`.runtime/` 不入库。
+
+人工评分写在 `.runtime/evaluation/<profile>/<campaign-id>/reviews/*.json`，schema v1 字段为
+`schemaVersion`、`campaignId`、`scenarioId`、`trial`、`runId`、`rulesVersion`、`reviewer`、`reviewedAt`、
+`verdict`（`pass` / `fail` / `insufficient_to_score`）、`reasons` 与 `evidenceIds`。评分不改变任何 Runtime
+状态或 artifact。`evaluation-report` 只读 artifact、评分包与评分文件，逐 Case 给出自动状态、`outcomeClass`
+与评分结论：没有评分为 `pending_manual_review`；多份评分结论不一致为 `disagreement`；评分绑定的
+campaign / trial / runId 与记录不符、引用的 Evidence 不在评分包中、评分包缺失或同一 campaign 出现不同
+`rulesVersion` 时为 `incomplete`；自动门禁失败或未运行的 Case 不接受人工晋级。报告还沿 `retryOf`
+列出复测链；它是只读视图，退出码只反映报告能否生成，结论在 JSON 的 `status` 与各 Case 的 `review` 中。
+
+该命令具有上述精确 live 副作用，仍须在用户授权后运行；它不会 install/uninstall、purge、删除
+Namespace/PVC/PV/Secret，或修改 cert-manager 与兄弟项目资源。
 
 ## `deployment.mjs`
 
