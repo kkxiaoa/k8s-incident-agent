@@ -43,7 +43,8 @@ npm run openapi:check
 npm run build
 ```
 
-`npm test` also runs script contracts: some require the pinned `kubectl` and
+`npm test` also runs the script contracts and the evaluation module's type check
+and tests: some script contracts require the pinned `kubectl` and
 Docker/promtool image. Report skipped checks explicitly; a missing dependency is
 not evidence that the check passed. OpenAPI checks require the locked Runtime
 development environment. See the [script reference](scripts/README.md) for command

@@ -96,16 +96,3 @@ export function runScenarioCommand(
   scenarioId: string | undefined,
   dependencies?: ScenarioCommandDependencies,
 ): Promise<unknown>;
-
-// Baseline evaluation projection and dataset loader, declared only for the differential tests
-// that prove the module's re-implementation; both leave the script with the cutover.
-export function loadEvaluationScenarioCatalog(
-  repositoryRoot?: string,
-  environment?: Record<string, string | undefined>,
-): unknown[];
-
-export function loadEvaluationDataset(
-  repositoryRoot: string,
-  scenarios: readonly unknown[],
-  datasetPath?: string,
-): unknown;

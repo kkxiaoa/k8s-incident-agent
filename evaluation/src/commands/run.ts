@@ -44,7 +44,7 @@ const KIND_CONTEXT = "kind-k8s-incident-agent";
 // Scenario runs target the manual-intake profiles; the online boundary targets the public one.
 const PROFILES: ReadonlySet<string> = new Set([...EXECUTION_PROFILES, "k3s-public"]);
 
-export type EvaluationProfile = ExecutionProfile | "k3s-public";
+type EvaluationProfile = ExecutionProfile | "k3s-public";
 
 export interface RunRequest {
   profile?: string;
@@ -76,7 +76,7 @@ export interface RunDependencies extends SessionDependencies {
   campaignSuffix?: () => string;
 }
 
-export interface EvaluationSession {
+interface EvaluationSession {
   repositoryRoot: string;
   now: () => Date;
   sleep: Sleep;

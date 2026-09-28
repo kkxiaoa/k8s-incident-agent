@@ -53,6 +53,8 @@ test("a full catalog campaign reproduces the recorded artifact through the fake 
   assert.equal(harness.calls.alertmanagerRestarts, 1);
   assert.equal(harness.calls.tunnelClose, 1);
   assert.equal(harness.calls.sleepDurations.includes(330_000), false);
+  // The Runtime restart inside the infrastructure probe revokes the session once; it is renewed, not re-prompted.
+  assert.equal(harness.state.logins, 2);
   const serialized = JSON.stringify(artifact);
   for (const forbidden of ["payload", "statement", "summary", "authorization", "token", AUTH_PASSWORD, harness.state.cookie, harness.state.csrf]) {
     assert.equal(serialized.includes(String(forbidden)), false, String(forbidden));
@@ -106,6 +108,32 @@ test("a missing credential aborts before scenarios while still reporting the com
   assert.equal(artifact.coverage.notRunCases, 7);
   assert.equal(artifact.scenarios.every((entry) => entry.status === "not_run" && entry.reason === "evaluation_aborted"), true);
   assert.equal(JSON.stringify(artifact).includes(String(harness.dependencies.environment.OPERATOR_PASSWORD_FILE)), false);
+});
+
+test("a rejected session renewal keeps the authentication failure and stops without polling", async () => {
+  const harness = createHarness();
+  const originalFetch = harness.dependencies.fetch;
+  let loginAttempts = 0;
+  harness.dependencies.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/api/v1/operator/login") {
+      loginAttempts += 1;
+      if (loginAttempts > 1) return new Response("private authentication failure", { status: 401 });
+    } else if (url.port === "18080" && url.pathname.startsWith("/api/v1/")) {
+      harness.state.cookie = undefined;
+    }
+    return originalFetch(input, init);
+  };
+  harness.dependencies.sleep = async () => {
+    throw new Error("Authentication failure must not poll");
+  };
+  const { artifact } = await run(harness, { profile: "kind-evaluation" });
+  assert.equal(artifact.status, "failed");
+  assert.equal(artifact.failure?.code, "operator_authentication_failed");
+  assert.equal(loginAttempts, 2);
+  assert.equal(harness.calls.scenarioApply, 0);
+  assert.equal(harness.calls.tunnelClose, 1);
+  assert.equal(JSON.stringify(artifact).includes("private authentication failure"), false);
 });
 
 test("one failed scenario does not stop the remaining cases, and the probe still runs after them", async () => {

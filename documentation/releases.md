@@ -98,7 +98,7 @@ Install dependencies for the matching checkout (`npm ci` and the Runtime depende
 node scripts/deployment.mjs render kind-evaluation --release /absolute/bundle/release.json
 node scripts/deployment.mjs install k3s-evaluation --preview --release /absolute/bundle/release.json
 node scripts/deployment.mjs status k3s-evaluation --context <fixed-context> --release /absolute/bundle/release.json
-node scripts/evaluation.mjs run kind-evaluation --release /absolute/bundle/release.json --scenario image-pull-backoff
+node evaluation/src/cli.ts run kind-evaluation --release /absolute/bundle/release.json --scenario image-pull-backoff
 ```
 
 The final command performs live scenario operations and requires separate authorization. For standalone K3s `scenario.mjs` apply/verify/cleanup, supply `--profile k3s-evaluation --context <fixed-context> --release /absolute/bundle/release.json`; the Kind fixture-only path needs none of these and checks the fixed Kind cluster baseline. Evaluation passes the same verified identity into deployment status and all scenario preflights. Its artifact records that manifest; dataset, split, expected-terminal and diagnosis scoring semantics do not depend on the release.

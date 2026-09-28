@@ -16,7 +16,7 @@ Commands and prerequisites are maintained in [CONTRIBUTING.md](../CONTRIBUTING.m
 
 ## Existing scenario evaluation path
 
-The [scenario catalog](../scenarios/README.md) describes reproducible injected faults and expected observable evidence. [scripts/evaluation.mjs](../scripts/evaluation.mjs) drives that existing catalog through the real Runtime chain. It is a scenario harness with deterministic assertions, not a general model-based judge.
+The [scenario catalog](../scenarios/README.md) describes reproducible injected faults and expected observable evidence. The [evaluation module](../evaluation/README.md) (`npm run evaluation`) drives that existing catalog through the real Runtime chain. It is a scenario harness with deterministic assertions, not a general model-based judge.
 
 For the selected scenarios, the harness checks applicable discovery/intake behavior, diagnosis completion, persisted Evidence and references, proposal gates, monitoring panels, REST/SSE visibility, repeat-delivery behavior and cleanup/resolved observations. It records release/source identity so results cannot silently be transferred to a different image. A resolved alert is specifically not accepted as proof that the Incident recovered.
 

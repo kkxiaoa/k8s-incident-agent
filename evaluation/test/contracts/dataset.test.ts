@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import test, { type TestContext } from "node:test";
 
 import {
   loadEvaluationDataset,
@@ -8,12 +10,26 @@ import {
   type EvaluationScenario,
 } from "../../src/contracts/dataset.ts";
 import { EvaluationError } from "../../src/shared/errors.ts";
-import { caseCatalog, datasetFile, REPOSITORY_ROOT } from "../support/fixtures.ts";
+import { caseCatalog, datasetFile, REPOSITORY_ROOT, type MutableManifest } from "../support/fixtures.ts";
 
 const catalog = loadEvaluationScenarioCatalog(REPOSITORY_ROOT);
 
 function coded(code: string) {
   return (error: unknown) => error instanceof EvaluationError && error.code === code;
+}
+
+// Contract violations fold into one fixed message, so a rejected manifest never echoes its content.
+function rejectsDataset(file: string): void {
+  assert.throws(() => loadEvaluationDataset(REPOSITORY_ROOT, catalog, file), (error: unknown) => {
+    assert.ok(error instanceof EvaluationError);
+    assert.equal(error.code, "evaluation_dataset_invalid");
+    assert.equal(error.message, "Evaluation dataset does not satisfy the versioned scenario contract");
+    return true;
+  });
+}
+
+function unchangedDataset(t: TestContext): string {
+  return datasetFile(t, () => {});
 }
 
 test("the projection keeps the evaluation fields and leaves the private oracle behind", () => {
@@ -71,6 +87,82 @@ test("dataset rejections are typed evaluation errors without manifest content", 
   });
   const holdout = datasetFile(t, (manifest) => { manifest.cases[0].split = "holdout"; });
   assert.throws(() => loadEvaluationDataset(REPOSITORY_ROOT, catalog, holdout), coded("evaluation_holdout_unavailable"));
+});
+
+test("every manifest rule rejects its own violation", async (t) => {
+  const mutations: Array<[string, (manifest: MutableManifest) => void]> = [
+    ["schema revision", (m) => { m.schema_version = 2; }],
+    ["dataset version type", (m) => { m.dataset_version = "1"; }],
+    ["dataset version below one", (m) => { m.dataset_version = 0; }],
+    ["dataset id type", (m) => { m.dataset_id = null; }],
+    ["unsafe dataset id", (m) => { m.dataset_id = "../private"; }],
+    ["empty cases", (m) => { m.cases = []; }],
+    ["extra manifest field", (m) => { (m as unknown as Record<string, unknown>).notes = "x"; }],
+    ["extra case field", (m) => { m.cases[0].target = { namespace: "default" }; }],
+    ["missing case field", (m) => { delete (m.cases[0] as Record<string, unknown>).mechanism; }],
+    ["duplicate case", (m) => { m.cases.push(m.cases[0]); }],
+    ["unknown scenario", (m) => { m.cases[0].scenario_id = "case-999"; }],
+    ["unsafe scenario id", (m) => { m.cases[0].scenario_id = "Crash-Loop"; }],
+    ["unsafe mechanism", (m) => { m.cases[0].mechanism = "Image-Pull"; }],
+    ["unsafe source group", (m) => { m.cases[0].source_group = "../legacy"; }],
+    ["scenario revision", (m) => { m.cases[0].scenario_version = 999; }],
+    ["unknown split", (m) => { m.cases[0].split = "validation"; }],
+    ["source group reused across splits", (m) => { m.cases[2].split = "development"; }],
+    ["unknown outcome", (m) => { m.cases[0].expected_terminal.outcome = "passed"; }],
+    ["failure without an error code", (m) => { m.cases[0].expected_terminal = { outcome: "failed" }; }],
+    ["failure with an unsafe error code", (m) => { m.cases[0].expected_terminal = { outcome: "failed", error_code: "Model-Output" }; }],
+    ["diagnosed with an error code", (m) => { m.cases[0].expected_terminal = { outcome: "diagnosed", error_code: "x" }; }],
+    ["outcome with an extra field", (m) => { m.cases[0].expected_terminal.answer = "private"; }],
+    ["outcome that is not an object", (m) => { (m.cases[0] as Record<string, unknown>).expected_terminal = "diagnosed"; }],
+    ["profile outside the execution profiles", (m) => { m.cases[0].profiles = ["k3s-public"]; }],
+    ["empty profiles", (m) => { m.cases[0].profiles = []; }],
+    ["duplicate profiles", (m) => { m.cases[0].profiles = ["kind-evaluation", "kind-evaluation"]; }],
+    ["alert wait above the bound", (m) => { m.cases[0].alert_wait_seconds = 1801; }],
+    ["zero alert wait", (m) => { m.cases[0].alert_wait_seconds = 0; }],
+    ["fractional alert wait", (m) => { m.cases[0].alert_wait_seconds = 1.5; }],
+  ];
+  for (const [name, mutate] of mutations) {
+    await t.test(name, (subtest) => rejectsDataset(datasetFile(subtest, mutate)));
+  }
+});
+
+// Apart from the missing and malformed cases, each file holds the valid committed manifest, so only the rule under test can reject it.
+test("the dataset file must be a bounded regular JSON file reached without symbolic links", async (t) => {
+  await t.test("an explicit copy loads exactly like the default path", (subtest) => {
+    assert.deepEqual(loadEvaluationDataset(REPOSITORY_ROOT, catalog, unchangedDataset(subtest)), loadEvaluationDataset(REPOSITORY_ROOT, catalog));
+  });
+  await t.test("symbolic link", (subtest) => {
+    const file = unchangedDataset(subtest);
+    const linked = path.join(path.dirname(file), "linked.json");
+    symlinkSync(file, linked);
+    rejectsDataset(linked);
+  });
+  await t.test("symbolic link as a directory component", (subtest) => {
+    const file = unchangedDataset(subtest);
+    const linkedDirectory = path.join(path.dirname(file), "..", `${path.basename(path.dirname(file))}-link`);
+    symlinkSync(path.dirname(file), linkedDirectory);
+    subtest.after(() => rmSync(linkedDirectory));
+    rejectsDataset(path.join(linkedDirectory, path.basename(file)));
+  });
+  await t.test("oversized file", (subtest) => {
+    const file = unchangedDataset(subtest);
+    writeFileSync(file, `${readFileSync(file, "utf8")}${" ".repeat(1024 * 1024)}`);
+    rejectsDataset(file);
+  });
+  await t.test("non-JSON extension", (subtest) => {
+    const file = unchangedDataset(subtest);
+    const renamed = path.join(path.dirname(file), "dataset.txt");
+    writeFileSync(renamed, readFileSync(file, "utf8"));
+    rejectsDataset(renamed);
+  });
+  await t.test("missing file", (subtest) => {
+    rejectsDataset(path.join(path.dirname(unchangedDataset(subtest)), "absent.json"));
+  });
+  await t.test("malformed JSON", (subtest) => {
+    const file = unchangedDataset(subtest);
+    writeFileSync(file, "{not json");
+    rejectsDataset(file);
+  });
 });
 
 test("the committed dataset yields typed cases with millisecond budgets", () => {
