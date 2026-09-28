@@ -1,0 +1,416 @@
+{
+  "schemaVersion": 4,
+  "kind": "catalog-evaluation",
+  "profile": "kind-evaluation",
+  "release": {
+    "schemaVersion": 1,
+    "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "images": {
+      "console": {
+        "repository": "ghcr.io/kkxiaoa/k8s-incident-agent-console",
+        "indexDigest": "sha256:b593cfc3c29260f21a540a3ae79ec281d5e2daadbb4d71ed2822174f41bedec7",
+        "platforms": {
+          "linux/amd64": "sha256:b5008b4d37b94b65126fd0541685e7b9878223077b9b7338a6dcdeeeacd2f762",
+          "linux/arm64": "sha256:534da44804928100808f2d4e617e83b90c3c8385505678f7299313bac0b5a90c"
+        }
+      },
+      "runtime": {
+        "repository": "ghcr.io/kkxiaoa/k8s-incident-agent-runtime",
+        "indexDigest": "sha256:1944ecd6f48e70f4c2c4e6ef326e3b157c86675b0718507a9cbf5615851e4d11",
+        "platforms": {
+          "linux/amd64": "sha256:6f7f43970328966f8b79da66d68d54bbf752a4470395e125276623a6fcc4a32c",
+          "linux/arm64": "sha256:361b8817cfb11185a036162090144e40b00a87f0e5d80429fa8ceb67877789c3"
+        }
+      }
+    }
+  },
+  "startedAt": "2026-09-05T00:00:00.000Z",
+  "completedAt": "2026-09-05T00:00:00.000Z",
+  "status": "pending_manual_review",
+  "scope": "focused",
+  "selectedScenarioIds": [
+    "crash-loop-backoff"
+  ],
+  "dataset": {
+    "id": "regression",
+    "version": 1
+  },
+  "campaign": {
+    "id": "20260905T000000Z-0000aaaa",
+    "startedAt": "2026-09-05T00:00:00.000Z",
+    "retryOf": null
+  },
+  "monitoring": {
+    "initialState": "healthy",
+    "infrastructure": {
+      "status": "not_run",
+      "reason": "focused_evaluation"
+    }
+  },
+  "families": [
+    {
+      "familyId": "crash-loop-backoff",
+      "scenarios": 1,
+      "status": "pending_manual_review"
+    },
+    {
+      "familyId": "image-pull-backoff",
+      "scenarios": 1,
+      "status": "not_run"
+    },
+    {
+      "familyId": "probe-misconfiguration",
+      "scenarios": 2,
+      "status": "not_run"
+    },
+    {
+      "familyId": "pvc-pending",
+      "scenarios": 2,
+      "status": "not_run"
+    },
+    {
+      "familyId": "service-selector-mismatch",
+      "scenarios": 1,
+      "status": "not_run"
+    }
+  ],
+  "coverage": {
+    "plannedCases": 7,
+    "notRunCases": 6,
+    "mechanisms": [
+      {
+        "mechanism": "invalid-startup-command",
+        "cases": 1,
+        "status": "pending_manual_review"
+      },
+      {
+        "mechanism": "probe-misconfiguration",
+        "cases": 2,
+        "status": "not_run"
+      },
+      {
+        "mechanism": "pvc-provisioning-or-binding-blocked",
+        "cases": 2,
+        "status": "not_run"
+      },
+      {
+        "mechanism": "service-selector-mismatch",
+        "cases": 1,
+        "status": "not_run"
+      },
+      {
+        "mechanism": "unpullable-image-reference",
+        "cases": 1,
+        "status": "not_run"
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "scenarioId": "crash-loop-backoff",
+      "scenarioVersion": 3,
+      "split": "regression",
+      "mechanism": "invalid-startup-command",
+      "sourceGroup": "legacy-crash-loop",
+      "expectedTerminal": {
+        "outcome": "failed",
+        "errorCode": "model_output_invalid"
+      },
+      "limitations": [
+        "legacy_name_cues"
+      ],
+      "alertId": "K8sIncidentCrashLoopBackOff",
+      "status": "pending_manual_review",
+      "cleanup": "passed",
+      "reviewPackage": "trials/crash-loop-backoff.json",
+      "checks": {
+        "healthyBaseline": true,
+        "fixtureVerified": true,
+        "prometheusFiring": true,
+        "alertmanagerFiring": true,
+        "healthyControls": true,
+        "uniqueIncident": true,
+        "run": {
+          "attempt": 1,
+          "status": "FAILED",
+          "errorCode": "model_output_invalid",
+          "retryable": false,
+          "outcome": null
+        },
+        "evidenceKinds": [
+          "container_logs",
+          "events",
+          "pods",
+          "workload"
+        ],
+        "uncitedExpectedEvidence": [
+          "workload",
+          "pods",
+          "events",
+          "container_logs"
+        ],
+        "diagnosisCodes": [],
+        "panels": [
+          {
+            "panelId": "crash-loop-backoff-metric",
+            "signalRole": "trigger",
+            "state": "ok",
+            "window": "15m"
+          },
+          {
+            "panelId": "crash-loop-backoff-context",
+            "signalRole": "context",
+            "state": "no_data",
+            "window": "15m"
+          }
+        ],
+        "sseReplay": {
+          "events": 3,
+          "eventTypes": [
+            "incident.created",
+            "run.failed",
+            "run.started"
+          ],
+          "finalCursorMatched": true
+        },
+        "consoleDetail": true,
+        "repeatDeliveryDeduplicated": true,
+        "alertResolved": true,
+        "postResolutionPanelStates": [
+          {
+            "panelId": "crash-loop-backoff-metric",
+            "state": "stale"
+          },
+          {
+            "panelId": "crash-loop-backoff-context",
+            "state": "no_data"
+          }
+        ]
+      },
+      "trial": {
+        "index": 1,
+        "startedAt": "2026-09-05T00:00:00.000Z",
+        "completedAt": "2026-09-05T00:00:00.000Z"
+      },
+      "incidentId": "10000000-0000-4000-8000-000000000001",
+      "runId": "20000000-0000-4000-8000-000000000001",
+      "outcomeClass": "pending_manual_review"
+    },
+    {
+      "scenarioId": "image-pull-backoff",
+      "scenarioVersion": 5,
+      "split": "regression",
+      "mechanism": "unpullable-image-reference",
+      "sourceGroup": "legacy-image-pull",
+      "expectedTerminal": {
+        "outcome": "diagnosed"
+      },
+      "limitations": [
+        "legacy_name_cues"
+      ],
+      "alertId": "K8sIncidentImagePullBackOff",
+      "status": "not_run",
+      "cleanup": "not_run",
+      "reviewPackage": null,
+      "checks": {
+        "healthyBaseline": false,
+        "fixtureVerified": false,
+        "prometheusFiring": false,
+        "alertmanagerFiring": false,
+        "healthyControls": false,
+        "uniqueIncident": false,
+        "evidenceKinds": [],
+        "uncitedExpectedEvidence": [],
+        "diagnosisCodes": [],
+        "panels": [],
+        "consoleDetail": false,
+        "repeatDeliveryDeduplicated": false,
+        "alertResolved": false,
+        "postResolutionPanelStates": []
+      },
+      "outcomeClass": "not_run",
+      "trial": null,
+      "reason": "not_selected"
+    },
+    {
+      "scenarioId": "liveness-probe-misconfigured",
+      "scenarioVersion": 3,
+      "split": "regression",
+      "mechanism": "probe-misconfiguration",
+      "sourceGroup": "legacy-probe",
+      "expectedTerminal": {
+        "outcome": "diagnosed"
+      },
+      "limitations": [
+        "legacy_name_cues"
+      ],
+      "alertId": "K8sIncidentLivenessProbeRestart",
+      "status": "not_run",
+      "cleanup": "not_run",
+      "reviewPackage": null,
+      "checks": {
+        "healthyBaseline": false,
+        "fixtureVerified": false,
+        "prometheusFiring": false,
+        "alertmanagerFiring": false,
+        "healthyControls": false,
+        "uniqueIncident": false,
+        "evidenceKinds": [],
+        "uncitedExpectedEvidence": [],
+        "diagnosisCodes": [],
+        "panels": [],
+        "consoleDetail": false,
+        "repeatDeliveryDeduplicated": false,
+        "alertResolved": false,
+        "postResolutionPanelStates": []
+      },
+      "outcomeClass": "not_run",
+      "trial": null,
+      "reason": "not_selected"
+    },
+    {
+      "scenarioId": "pvc-binding-pending",
+      "scenarioVersion": 2,
+      "split": "regression",
+      "mechanism": "pvc-provisioning-or-binding-blocked",
+      "sourceGroup": "legacy-pvc",
+      "expectedTerminal": {
+        "outcome": "diagnosed"
+      },
+      "limitations": [
+        "legacy_name_cues"
+      ],
+      "alertId": "K8sIncidentPersistentVolumeClaimPending",
+      "status": "not_run",
+      "cleanup": "not_run",
+      "reviewPackage": null,
+      "checks": {
+        "healthyBaseline": false,
+        "fixtureVerified": false,
+        "prometheusFiring": false,
+        "alertmanagerFiring": false,
+        "healthyControls": false,
+        "uniqueIncident": false,
+        "evidenceKinds": [],
+        "uncitedExpectedEvidence": [],
+        "diagnosisCodes": [],
+        "panels": [],
+        "consoleDetail": false,
+        "repeatDeliveryDeduplicated": false,
+        "alertResolved": false,
+        "postResolutionPanelStates": []
+      },
+      "outcomeClass": "not_run",
+      "trial": null,
+      "reason": "not_selected"
+    },
+    {
+      "scenarioId": "pvc-storage-class-missing",
+      "scenarioVersion": 2,
+      "split": "regression",
+      "mechanism": "pvc-provisioning-or-binding-blocked",
+      "sourceGroup": "legacy-pvc",
+      "expectedTerminal": {
+        "outcome": "diagnosed"
+      },
+      "limitations": [
+        "legacy_name_cues"
+      ],
+      "alertId": "K8sIncidentPersistentVolumeClaimPending",
+      "status": "not_run",
+      "cleanup": "not_run",
+      "reviewPackage": null,
+      "checks": {
+        "healthyBaseline": false,
+        "fixtureVerified": false,
+        "prometheusFiring": false,
+        "alertmanagerFiring": false,
+        "healthyControls": false,
+        "uniqueIncident": false,
+        "evidenceKinds": [],
+        "uncitedExpectedEvidence": [],
+        "diagnosisCodes": [],
+        "panels": [],
+        "consoleDetail": false,
+        "repeatDeliveryDeduplicated": false,
+        "alertResolved": false,
+        "postResolutionPanelStates": []
+      },
+      "outcomeClass": "not_run",
+      "trial": null,
+      "reason": "not_selected"
+    },
+    {
+      "scenarioId": "readiness-probe-misconfigured",
+      "scenarioVersion": 3,
+      "split": "regression",
+      "mechanism": "probe-misconfiguration",
+      "sourceGroup": "legacy-probe",
+      "expectedTerminal": {
+        "outcome": "diagnosed"
+      },
+      "limitations": [
+        "legacy_name_cues"
+      ],
+      "alertId": "K8sIncidentReadinessProbeFailure",
+      "status": "not_run",
+      "cleanup": "not_run",
+      "reviewPackage": null,
+      "checks": {
+        "healthyBaseline": false,
+        "fixtureVerified": false,
+        "prometheusFiring": false,
+        "alertmanagerFiring": false,
+        "healthyControls": false,
+        "uniqueIncident": false,
+        "evidenceKinds": [],
+        "uncitedExpectedEvidence": [],
+        "diagnosisCodes": [],
+        "panels": [],
+        "consoleDetail": false,
+        "repeatDeliveryDeduplicated": false,
+        "alertResolved": false,
+        "postResolutionPanelStates": []
+      },
+      "outcomeClass": "not_run",
+      "trial": null,
+      "reason": "not_selected"
+    },
+    {
+      "scenarioId": "service-selector-mismatch",
+      "scenarioVersion": 2,
+      "split": "regression",
+      "mechanism": "service-selector-mismatch",
+      "sourceGroup": "legacy-service-selector",
+      "expectedTerminal": {
+        "outcome": "diagnosed"
+      },
+      "limitations": [
+        "legacy_name_cues"
+      ],
+      "alertId": "K8sIncidentServiceEndpointsUnavailable",
+      "status": "not_run",
+      "cleanup": "not_run",
+      "reviewPackage": null,
+      "checks": {
+        "healthyBaseline": false,
+        "fixtureVerified": false,
+        "prometheusFiring": false,
+        "alertmanagerFiring": false,
+        "healthyControls": false,
+        "uniqueIncident": false,
+        "evidenceKinds": [],
+        "uncitedExpectedEvidence": [],
+        "diagnosisCodes": [],
+        "panels": [],
+        "consoleDetail": false,
+        "repeatDeliveryDeduplicated": false,
+        "alertResolved": false,
+        "postResolutionPanelStates": []
+      },
+      "outcomeClass": "not_run",
+      "trial": null,
+      "reason": "not_selected"
+    }
+  ]
+}

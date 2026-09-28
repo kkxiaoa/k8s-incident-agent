@@ -21,7 +21,11 @@ export function createReleaseFixture(bundle, revision, options = {}) {
       return { descriptor: { mediaType, digest, size: bytes.length }, filename };
     }
     const layerContent = Buffer.from(`synthetic ${component} layer`);
-    const layer = blob(gzipSync(layerContent), "application/vnd.oci.image.layer.v1.tar+gzip");
+    // gzip records the host operating system in header byte 9 (19 on macOS, 3 on Linux).
+    // Pinning it keeps every digest derived from this layer identical on all platforms.
+    const layerBytes = gzipSync(layerContent);
+    layerBytes[9] = 3;
+    const layer = blob(layerBytes, "application/vnd.oci.image.layer.v1.tar+gzip");
     const diffId = `sha256:${createHash("sha256").update(layerContent).digest("hex")}`;
     files[`${component}Layer`] = layer.filename;
     const children = [];

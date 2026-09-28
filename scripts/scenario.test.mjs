@@ -20,7 +20,7 @@ import { promisify } from "node:util";
 
 import { dump, load, loadAll } from "js-yaml";
 
-import { loadEvaluationScenarioCatalog, runScenarioCommand } from "./scenario.mjs";
+import { loadScenarioCatalog, runScenarioCommand } from "./scenario.mjs";
 import { createReleaseFixture, releaseImages } from "./test-support/release-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -1925,10 +1925,10 @@ test("a neutral revision-one scenario can be added without publishing its oracle
     writeFileSync(filename, readFileSync(filename, "utf8").replaceAll("crash-loop-backoff", "case-001"));
   }
   const environment = { SCENARIO_CATALOG_DIR: catalog };
-  const evaluated = loadEvaluationScenarioCatalog(REPOSITORY_ROOT, environment);
+  const catalogEntries = loadScenarioCatalog(REPOSITORY_ROOT, environment);
   const listed = await runScenarioCommand("list", undefined, { repositoryRoot: REPOSITORY_ROOT, environment });
-  assert.equal(evaluated.length, 1);
-  assert.equal(evaluated[0].scenarioVersion, 1);
+  assert.equal(catalogEntries.length, 1);
+  assert.equal(catalogEntries[0].definition.scenario_version, 1);
   assert.equal(listed[0].scenario_id, "case-001");
   assert.equal(JSON.stringify(listed).includes("private-oracle-canary"), false);
   assert.equal(JSON.stringify(listed).includes("split"), false);

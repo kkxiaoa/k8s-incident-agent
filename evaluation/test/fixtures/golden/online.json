@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "kind": "online-boundary-evaluation",
+  "profile": "k3s-public",
+  "release": {
+    "schemaVersion": 1,
+    "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "images": {
+      "console": {
+        "repository": "ghcr.io/kkxiaoa/k8s-incident-agent-console",
+        "indexDigest": "sha256:b593cfc3c29260f21a540a3ae79ec281d5e2daadbb4d71ed2822174f41bedec7",
+        "platforms": {
+          "linux/amd64": "sha256:b5008b4d37b94b65126fd0541685e7b9878223077b9b7338a6dcdeeeacd2f762",
+          "linux/arm64": "sha256:534da44804928100808f2d4e617e83b90c3c8385505678f7299313bac0b5a90c"
+        }
+      },
+      "runtime": {
+        "repository": "ghcr.io/kkxiaoa/k8s-incident-agent-runtime",
+        "indexDigest": "sha256:1944ecd6f48e70f4c2c4e6ef326e3b157c86675b0718507a9cbf5615851e4d11",
+        "platforms": {
+          "linux/amd64": "sha256:6f7f43970328966f8b79da66d68d54bbf752a4470395e125276623a6fcc4a32c",
+          "linux/arm64": "sha256:361b8817cfb11185a036162090144e40b00a87f0e5d80429fa8ceb67877789c3"
+        }
+      }
+    }
+  },
+  "startedAt": "2026-09-05T00:00:00.000Z",
+  "completedAt": "2026-09-05T00:00:00.000Z",
+  "status": "passed",
+  "checks": {
+    "readRoutesAvailable": true,
+    "manualCreationAbsent": true,
+    "manualConsoleCreationAbsent": true,
+    "anonymousRerunDenied": true,
+    "authenticatedRerun": "accepted"
+  }
+}

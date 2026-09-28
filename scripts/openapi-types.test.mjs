@@ -97,7 +97,10 @@ copyFileSync(${JSON.stringify(sourceSchema)}, output);
     root,
     script,
     artifact: path.join(root, "contracts/agent-runtime.openapi.json"),
-    generated: path.join(root, "src/lib/agent-runtime/generated.ts"),
+    generated: [
+      path.join(root, "src/lib/agent-runtime/generated.ts"),
+      path.join(root, "evaluation/src/contracts/runtime-api.generated.ts"),
+    ],
     canonicalSchema,
   };
 }
@@ -122,22 +125,24 @@ test("importing the generator does not run the command", async (t) => {
   await import(pathToFileURL(fixture.script).href);
 
   assert.equal(existsSync(path.dirname(fixture.artifact)), false);
-  assert.equal(existsSync(path.dirname(fixture.generated)), false);
+  for (const generated of fixture.generated) {
+    assert.equal(existsSync(path.dirname(generated)), false);
+  }
 });
 
-test("generate and check use only the fixed local artifact and output", async (t) => {
+test("generate and check use only the fixed local artifact and outputs", async (t) => {
   const fixture = createFixture(t);
+  const [consoleTypes, evaluationTypes] = fixture.generated;
 
   await rejectsCommand(run(fixture, "check"));
   assert.equal(existsSync(fixture.artifact), false);
-  assert.equal(existsSync(fixture.generated), false);
+  assert.equal(existsSync(consoleTypes), false);
+  assert.equal(existsSync(evaluationTypes), false);
 
   await run(fixture, "generate");
   assert.equal(readFileSync(fixture.artifact, "utf8"), fixture.canonicalSchema);
-  assert.match(
-    readFileSync(fixture.generated, "utf8"),
-    /export interface paths/,
-  );
+  assert.match(readFileSync(consoleTypes, "utf8"), /export interface paths/);
+  assert.ok(readFileSync(consoleTypes).equals(readFileSync(evaluationTypes)));
   await run(fixture, "check");
 
   const artifactDrift = `${fixture.canonicalSchema} `;
@@ -145,21 +150,27 @@ test("generate and check use only the fixed local artifact and output", async (t
   await rejectsCommand(run(fixture, "check"));
   assert.equal(readFileSync(fixture.artifact, "utf8"), artifactDrift);
 
-  await run(fixture, "generate");
-  const generatedDrift = `${readFileSync(fixture.generated, "utf8")}\n`;
-  writeFileSync(fixture.generated, generatedDrift);
-  await rejectsCommand(run(fixture, "check"));
-  assert.equal(readFileSync(fixture.generated, "utf8"), generatedDrift);
+  for (const generated of fixture.generated) {
+    await run(fixture, "generate");
+    const other = fixture.generated.find((candidate) => candidate !== generated);
+    const generatedDrift = `${readFileSync(generated, "utf8")}\n`;
+    const otherBytes = readFileSync(other);
+    writeFileSync(generated, generatedDrift);
+    await rejectsCommand(run(fixture, "check"));
+    assert.equal(readFileSync(generated, "utf8"), generatedDrift);
+    assert.ok(readFileSync(other).equals(otherBytes));
+
+    await run(fixture, "generate");
+    assert.ok(readFileSync(generated).equals(otherBytes));
+    await rm(generated);
+    await rejectsCommand(run(fixture, "check"));
+    assert.equal(existsSync(generated), false);
+  }
 
   await run(fixture, "generate");
   await rm(fixture.artifact);
   await rejectsCommand(run(fixture, "check"));
   assert.equal(existsSync(fixture.artifact), false);
-
-  await run(fixture, "generate");
-  await rm(fixture.generated);
-  await rejectsCommand(run(fixture, "check"));
-  assert.equal(existsSync(fixture.generated), false);
 });
 
 test("the CLI rejects path and URL inputs", async (t) => {
@@ -174,5 +185,7 @@ test("the CLI rejects path and URL inputs", async (t) => {
 
   assert.equal(readFileSync(outside, "utf8"), "sentinel");
   assert.equal(existsSync(fixture.artifact), false);
-  assert.equal(existsSync(fixture.generated), false);
+  for (const generated of fixture.generated) {
+    assert.equal(existsSync(generated), false);
+  }
 });

@@ -1,6 +1,6 @@
 # 项目脚本
 
-本目录存放 K8s Incident Agent 的本地开发、安装与验收脚本。Kind 命令只服务固定本地沙箱；Scenario 命令服务固定 Kind 沙箱与经显式 context 指定的 `k3s-evaluation`；`deployment.mjs` 服务固定的 Kind/K3s 安装 profile，但只接受仓库内 manifest、固定 Namespace 和显式 kubeconfig context，不接受任意 manifest 路径或 `kubectl` 参数。
+本目录存放 K8s Incident Agent 的本地开发、安装与发布脚本，正文分为“集群与场景”和“发布与部署”两组。命令总览另列评估命令（`npm run evaluation` / `npm run evaluation-report`）：它们由 [`evaluation/`](../evaluation/README.md) 模块实现，复用本目录的 release loader、deployment status 与 scenario runner。Kind 命令只服务固定本地沙箱；Scenario 命令服务固定 Kind 沙箱与经显式 context 指定的 `k3s-evaluation`；`deployment.mjs` 服务固定的 Kind/K3s 安装 profile，但只接受仓库内 manifest、固定 Namespace 和显式 kubeconfig context，不接受任意 manifest 路径或 `kubectl` 参数。
 
 除非特别说明，命令都应在仓库根目录执行。
 
@@ -21,6 +21,8 @@ npm run doctor
 
 ## 命令总览
 
+### 集群与场景命令
+
 | npm 命令 | 底层脚本 | 用途 | 是否改变外部状态 |
 | --- | --- | --- | --- |
 | `npm run doctor` | `doctor.mjs` | 检查工具版本、Docker daemon 和 kubectl 版本偏差 | 否 |
@@ -28,15 +30,6 @@ npm run doctor
 | `npm run cluster -- status` | `kind-cluster.mjs` | 验证现有集群是否符合固定基线 | 否 |
 | `npm run cluster -- bootstrap-access` | `kind-cluster.mjs` | 安装固定诊断 RBAC 并生成受限 kubeconfig | 是 |
 | `npm run cluster -- down` | `kind-cluster.mjs` | 删除固定 Kind 集群 | 是，破坏性操作 |
-| `npm run deployment -- render <profile> --release <release.json>` | `deployment.mjs` | 离线渲染固定安装 profile | 否 |
-| `npm run deployment -- status <profile> --context <context> --release <release.json>` | `deployment.mjs` | 只读核对版本、组件、Secret、workload、PVC、NetworkPolicy 对象与 RBAC | 否 |
-| `npm run deployment -- install\|upgrade\|uninstall ... [--preview] --release <release.json>` | `deployment.mjs` | 默认预览精确资源集合 | 否 |
-| `npm run deployment -- install\|upgrade\|uninstall ... --confirm --release <release.json>` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
-| `npm run deployment -- purge ... --preview\|--confirm <identity> --release <release.json>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
-| `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation> --release <release.json>` | `deployment.mjs` | 用固定一次性 Job 预览或确认早期 Runtime 业务库（Alembic `20260814_0001`/`20260901_0002`）的数据 cutover，保留 PVC | 是；`--confirm` 额外删除旧业务数据 |
-| `npm run evaluation -- run <evaluation-profile> [--context <context>] --release <release.json>` | `evaluation.mjs` | 逐项验证所选数据集 Case 的真实告警、诊断终态与生命周期切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
-| `npm run evaluation -- online k3s-public --context <context> --release <release.json>` | `evaluation.mjs` | 验证公开 profile 的只读 API 与人工入口缺失边界 | 否 |
-| `npm run evaluation-report -- <campaign-artifact.json>` | `evaluation-report.mjs` | 只读汇总一次 campaign 的自动结果、评分包与人工评分绑定 | 否 |
 | `npm run scenario -- list` | `scenario.mjs` | 校验并列出版本化场景的公开信息 | 否 |
 | `npm run scenario -- apply <scenario-id>` | `scenario.mjs` | 安装指定 catalog fixture | 是 |
 | `npm run scenario -- verify <scenario-id>` | `scenario.mjs` | 等待并验证场景的确定性证据条件 | 否 |
@@ -44,7 +37,32 @@ npm run doctor
 | `npm run openapi:generate` | `openapi-types.mjs` | 更新固定 OpenAPI artifact 与生成的 TypeScript types | 否，仅修改仓库内产物 |
 | `npm run openapi:check` | `openapi-types.mjs` | 检查 OpenAPI artifact 与 TypeScript types 是否漂移 | 否 |
 
-## `doctor.mjs`
+### 发布与部署命令
+
+`release.mjs`、`release-smoke.mjs` 与 `publish.mjs` 的构建、核验、打包与发布命令见 [Candidates and approved releases](../documentation/releases.md)。
+
+| npm 命令 | 底层脚本 | 用途 | 是否改变外部状态 |
+| --- | --- | --- | --- |
+| `npm run deployment -- render <profile> --release <release.json>` | `deployment.mjs` | 离线渲染固定安装 profile | 否 |
+| `npm run deployment -- status <profile> --context <context> --release <release.json>` | `deployment.mjs` | 只读核对版本、组件、Secret、workload、PVC、NetworkPolicy 对象与 RBAC | 否 |
+| `npm run deployment -- install\|upgrade\|uninstall ... [--preview] --release <release.json>` | `deployment.mjs` | 默认预览精确资源集合 | 否 |
+| `npm run deployment -- install\|upgrade\|uninstall ... --confirm --release <release.json>` | `deployment.mjs` | 对已核对的固定目标执行显式生命周期写操作 | 是 |
+| `npm run deployment -- purge ... --preview\|--confirm <identity> --release <release.json>` | `deployment.mjs` | 预览或确认 K3s Runtime PVC/PV 数据清理 | `--confirm` 是破坏性操作 |
+| `npm run deployment -- cutover <evaluation-profile> --context <context> --preview\|--confirm <confirmation> --release <release.json>` | `deployment.mjs` | 用固定一次性 Job 预览或确认早期 Runtime 业务库（Alembic `20260814_0001`/`20260901_0002`）的数据 cutover，保留 PVC | 是；`--confirm` 额外删除旧业务数据 |
+
+### 评估命令
+
+| npm 命令 | 实现 | 用途 | 是否改变外部状态 |
+| --- | --- | --- | --- |
+| `npm run evaluation -- run <evaluation-profile> [--context <context>] --release <release.json>` | `evaluation/src/cli.ts` | 逐项验证所选数据集 Case 的真实告警、诊断终态与生命周期切片 | 是；会应用并清理 Scenario、重建固定 Pod、轮换 Webhook Secret，并执行受控监控中断探针 |
+| `npm run evaluation -- online k3s-public --context <context> --release <release.json>` | `evaluation/src/cli.ts` | 验证公开 profile 的只读 API 与人工入口缺失边界 | 否 |
+| `npm run evaluation -- report <campaign-artifact.json>`（别名 `npm run evaluation-report -- <campaign-artifact.json>`） | `evaluation/src/cli.ts` | 只读汇总一次 campaign 的自动结果、评分包与人工评分绑定 | 否 |
+
+参数规则、退出码、campaign 语义、产物与评分包的布局见 [评估模块](../evaluation/README.md)。
+
+## 集群与场景
+
+### `doctor.mjs`
 
 `doctor` 读取仓库中的版本契约并检查：
 
@@ -55,7 +73,7 @@ npm run doctor
 
 每项检查输出一行 `PASS` 或 `FAIL`。任一检查失败时进程退出码为非零；该命令不会创建集群、下载 Python 或修改项目文件。
 
-## `kind-cluster.mjs`
+### `kind-cluster.mjs`
 
 集群身份固定为：
 
@@ -65,7 +83,7 @@ context:   kind-k8s-incident-agent
 namespace: k8s-incident-scenarios
 ```
 
-### 创建或验证集群
+#### 创建或验证集群
 
 ```bash
 npm run cluster -- up
@@ -74,7 +92,7 @@ npm run cluster -- status
 
 `up` 只在目标集群不存在时创建单 control-plane Kind 集群。若存在同名集群但 node image、Kubernetes minor、拓扑或 API endpoint 不符合锁定基线，命令会失败，不会自动删除或重建。
 
-### 生成诊断凭据
+#### 生成诊断凭据
 
 ```bash
 npm run cluster -- bootstrap-access
@@ -90,7 +108,7 @@ npm run cluster -- bootstrap-access
 
 可通过 `RUNTIME_DATA_DIR` 指定 `.runtime/` 或其中的专用子目录；该值不能指向仓库根目录、仓库外部路径或符号链接。
 
-### 删除集群
+#### 删除集群
 
 ```bash
 npm run cluster -- down
@@ -98,9 +116,9 @@ npm run cluster -- down
 
 `down` 只删除固定名称的 Kind 集群，但仍属于破坏性操作。其他命令不会隐式调用它。
 
-## `scenario.mjs`
+### `scenario.mjs`
 
-### 查看场景
+#### 查看场景
 
 ```bash
 npm run scenario -- list
@@ -114,7 +132,7 @@ npm run scenario -- list
 SCENARIO_CATALOG_DIR=/absolute/path/to/scenarios npm run scenario -- list
 ```
 
-### 安装、验证与清理
+#### 安装、验证与清理
 
 Kind evaluation 使用固定入口：
 
@@ -140,7 +158,7 @@ npm run scenario -- cleanup image-pull-backoff --profile k3s-evaluation --contex
 
 `verify` 使用 120 秒 absolute deadline，`kubectl` 查询和轮询等待都计入该预算；单次查询最多 30 秒，并在剩余预算不足时自动收窄。成功结果只包含安全的对象 identity 和 reason，不包含原始 Event note；超时失败只输出最后一个静态 unmet-condition reason。
 
-## `openapi-types.mjs`
+### `openapi-types.mjs`
 
 ```bash
 npm run openapi:generate
@@ -149,13 +167,16 @@ npm run openapi:check
 
 `generate` 先通过本地 `agent-runtime-openapi` 从生产 FastAPI app 离线导出
 `contracts/agent-runtime.openapi.json`，再用锁定的本地 `openapi-typescript`
-生成 `src/lib/agent-runtime/generated.ts`。两个产物都先写入同目录临时文件，生成成功且内容变化时才原子替换。
+生成一份类型并安装到 `src/lib/agent-runtime/generated.ts` 与
+`evaluation/src/contracts/runtime-api.generated.ts`（两份字节相同）。每个产物都先写入同目录临时文件，生成成功且内容变化时才原子替换。
 
-`check` 重新生成临时产物并按字节比较，不修改 tracked 文件。脚本只接受
+`check` 重新生成临时产物并按字节比较三个 tracked 文件，任一不同即失败，不修改 tracked 文件。脚本只接受
 `generate` 或 `check`，schema input 和 TypeScript output 均固定在仓库内，不接受
 路径或 URL 参数；执行前需要先在 `services/agent-runtime` 完成 `uv sync --locked`。
 
-## `release.mjs` / `release-smoke.mjs` / `publish.mjs`
+## 发布与部署
+
+### `release.mjs` / `release-smoke.mjs` / `publish.mjs`
 
 构建、内容核验、双平台隔离启动、打包及人工发布说明见 [Candidates and approved releases](../documentation/releases.md)。
 `release.json` 是生成产物，不写回源码；唯一共享 loader 供部署与评估使用。
@@ -164,74 +185,7 @@ npm run openapi:check
 CI 候选只在本仓库 main push 的四组质量检查成功后构建，不授予发布/部署权限。
 真实构建、容器运行与集群 live 分别需要授权；离线 mock Docker 测试不算真实 smoke。
 
-## `evaluation.mjs`
-
-评估入口不接受任意 URL、Namespace、manifest、PromQL、artifact 路径或
-kubectl 参数。Kind 只使用固定 context；K3s 必须显式提供经过 deployment status
-门禁的 context。命令会在本机回环建立 Runtime、Console、Prometheus 与
-Alertmanager 的固定临时 port-forward，完成后关闭。
-
-```bash
-npm run evaluation -- run kind-evaluation --release <release.json>
-npm run evaluation -- run k3s-evaluation --context <context> --release <release.json>
-npm run evaluation -- online k3s-public --context <context> --release <release.json>
-```
-
-`run` 复用 `scenario.mjs` 已校验的私有评估投影，逐 Case 证明健康基线、真实
-Prometheus/Alertmanager firing、健康对照不触发、唯一 Incident/Run、Run 终态与 Case 的
-预期一致、Evidence 及其引用、必要 panel、具备完整 lifecycle payload 的 SSE replay、Console
-稳定详情、目标 Incident 自身的重复投递去重和 resolved 信号。场景彼此独立执行；单项
-失败会保留固定错误分类并继续后续 Case。重复投递按目标 Incident 的 `updatedAt` 推进
-判断，不使用可能被 Watchdog 等其他告警污染的全局 webhook 计数。
-最后还会受控缩放并恢复 kube-state-metrics/Prometheus，以验证 stale 与 monitoring
-unavailable 状态，然后轮换两个 Namespace 的同值 Webhook Secret、重建 Runtime 与
-Alertmanager，并要求 Watchdog 接收时间严格推进后再次证明链路健康。
-
-每个 Case 在数据集中声明预期终态：`diagnosed` 要求 Run COMPLETED 且给出引用 Evidence 的根因；
-`insufficient_evidence` 要求 Run COMPLETED、没有根因并列出缺少的信息；`failed` 要求 Run 以指定的
-`error_code` FAILED。三者都要求 SSE replay 持久化对应的终态事件（`diagnosis.completed`、
-`diagnosis.insufficient` 或 `run.failed`）。预期的失败被正确处理时自动检查通过；终态与预期不符时
-以 `terminal_outcome_mismatch` 失败。结果中的 `checks.run` 始终记录 Runtime 自己的 attempt、状态、
-错误码与诊断 outcome，不按预期改写。`failed` 预期只覆盖在 repair proposal 之前失败的 Run（诊断阶段的
-类型化失败）。每个结果还带 `outcomeClass`：`infrastructure_invalid`（Alertmanager firing 之前的 fixture、
-监控或对照失败，输入尚未交付给 Runtime）、`intake_failed`（告警已 firing 但 Runtime 未产生唯一 Incident，
-或健康对照误报）、`run_not_terminal`（Run 在预算内未结束）、`outcome_mismatch`、`contract_failed`（终态
-之后的门禁失败）、`pending_manual_review` 或 `not_run`。
-
-命令在任何 live 副作用前通过共享 `release.mjs` loader 校验显式选择的
-`--release <release.json>`。当前 Git worktree 必须干净，HEAD 与 manifest 的
-`sourceRevision` 完全一致；两组件 OCI 的 index、manifest、config 和全部 layer
-均检查 size/digest，且恰有 linux/amd64、linux/arm64 两个平台、同 source、非 root。
-应用镜像身份只来自该 manifest。相同已验证 manifest 传给 deployment status
-及 scenario 的 K3s preflight，不重复选择另一份镜像身份。
-
-每次 `run` 是一个 campaign，身份为开始时间加随机后缀（如 `20260905T000000Z-1a2b3c4d`），可用
-`--retry-of <campaign-id>` 声明它复测的是同 profile、同数据集的哪一次 campaign。产物写入
-`.runtime/evaluation/<profile>/<campaign-id>.json`，只创建、不覆盖：同一身份再次写入会以
-`evaluation_artifact_exists` 失败，早先的记录与其他数据集版本的记录都不会被改动。artifact 包含所选
-release manifest、数据集与 campaign 身份、每个 Case 的 Trial 时间、布尔检查、状态、`outcomeClass`、
-计数、Evidence kind、诊断 code 和 panel ID；不包含 Secret、token/hash、原始 Evidence、模型陈述、
-Event note、日志、上游响应或任意凭据。online 产物固定原子写入 `.runtime/evaluation/<profile>.json`。
-
-每个到达终态的 Trial 另外在 `.runtime/evaluation/<profile>/<campaign-id>/trials/<scenario-id>.json`
-保存评分包：经同一已认证会话读取的 Incident 详情投影（含 Runtime 安全投影后的诊断陈述、Evidence
-payload 与 repair proposal）和该 Run 的事件历史，以紧凑 JSON 原样落盘、不再加工；单个评分包按落盘
-字节计上限 4 MiB，超限时丢弃事件历史并标 `truncated`。评分包不含 Cookie、CSRF token、密码、请求头或原始日志，只供指定维护者
-本地人工审阅，目录/文件权限为 `0700`/`0600`，`.runtime/` 不入库。
-
-人工评分写在 `.runtime/evaluation/<profile>/<campaign-id>/reviews/*.json`，schema v1 字段为
-`schemaVersion`、`campaignId`、`scenarioId`、`trial`、`runId`、`rulesVersion`、`reviewer`、`reviewedAt`、
-`verdict`（`pass` / `fail` / `insufficient_to_score`）、`reasons` 与 `evidenceIds`。评分不改变任何 Runtime
-状态或 artifact。`evaluation-report` 只读 artifact、评分包与评分文件，逐 Case 给出自动状态、`outcomeClass`
-与评分结论：没有评分为 `pending_manual_review`；多份评分结论不一致为 `disagreement`；评分绑定的
-campaign / trial / runId 与记录不符、引用的 Evidence 不在评分包中、评分包缺失或同一 campaign 出现不同
-`rulesVersion` 时为 `incomplete`；自动门禁失败或未运行的 Case 不接受人工晋级。报告还沿 `retryOf`
-列出复测链；它是只读视图，退出码只反映报告能否生成，结论在 JSON 的 `status` 与各 Case 的 `review` 中。
-
-该命令具有上述精确 live 副作用，仍须在用户授权后运行；它不会 install/uninstall、purge、删除
-Namespace/PVC/PV/Secret，或修改 cert-manager 与兄弟项目资源。
-
-## `deployment.mjs`
+### `deployment.mjs`
 
 固定 profile 为：
 
@@ -378,7 +332,7 @@ Console 页脚可显示 ICP 备案号：在 `incident-console-config` 中设置 
 只接受“省份简称 + ICP备 + 编号 + 号（可带 -N）”形式的纯文本，例如 `京ICP备12345678号-1`；
 链接固定为 `https://beian.miit.gov.cn/`，未设置时不显示，其他值使 Console 配置失败。
 
-## `deploy-gateway.mjs`
+### `deploy-gateway.mjs`
 
 受限部署入口：在固定 K3s 主机上由专用部署用户的 SSH 强制命令调用，配置文件路径是它唯一的
 命令行参数。调用方是部署 workflow（`.github/workflows/deploy.yml` 经 `deploy-dispatch.mjs` 调用），审批与凭据见
@@ -519,14 +473,14 @@ artifact，在 `backup.json` 中记录 Alembic head 与每个文件的 SHA-256�
 
 ## 测试与静态检查
 
-默认测试入口会运行本目录全部 `*.test.mjs`：
+默认测试入口会运行本目录全部 `*.test.mjs`，以及评估模块的类型检查与测试：
 
 ```bash
 npm test
 npm run lint
 ```
 
-排查单个脚本时可以直接运行对应测试文件：
+排查单个脚本时可以直接运行对应测试文件；评估模块单独运行 `npx tsc -p evaluation/tsconfig.json --noEmit` 与 `node --test "evaluation/test/**/*.test.ts"`：
 
 ```bash
 node --test scripts/doctor.test.mjs
@@ -555,4 +509,4 @@ node --test scripts/scenario.test.mjs
 - 成功时退出码为 `0`；
 - 参数错误、版本漂移、基线不匹配、权限不足、请求超时或验证条件未满足时退出码为非零；
 - `doctor` 使用逐项 `PASS` / `FAIL` 输出；
-- `scenario` 失败输出格式为 `FAIL <code> <message>`，不会附带原始 Kubernetes 响应。
+- `scenario` 失败输出格式为 `FAIL <code> <message>`，不会附带原始 Kubernetes 响应；`evaluation` 的退出码与输出行见 [评估模块](../evaluation/README.md)。

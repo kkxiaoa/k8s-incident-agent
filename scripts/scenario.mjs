@@ -92,7 +92,7 @@ class VerificationPending extends Error {
   }
 }
 
-function loadScenarioCatalog(repositoryRoot, environment = process.env) {
+export function loadScenarioCatalog(repositoryRoot, environment = process.env) {
   try {
     const normalizedRoot = normalizeRepositoryRoot(repositoryRoot);
     const catalogDirectory = resolveCatalogDirectory(normalizedRoot, environment);
@@ -111,146 +111,8 @@ function loadScenarioCatalog(repositoryRoot, environment = process.env) {
   }
 }
 
-export function loadEvaluationScenarioCatalog(
-  repositoryRoot = repositoryRootFromModule(),
-  environment = process.env,
-) {
-  return loadScenarioCatalog(repositoryRoot, environment).map(({ definition }) => ({
-    scenarioId: definition.scenario_id,
-    scenarioVersion: definition.scenario_version,
-    alertId: definition.monitoring_alert_id,
-    target: {
-      cluster: definition.target.cluster,
-      namespace: definition.target.namespace,
-      apiVersion: definition.target.api_version,
-      kind: definition.target.kind,
-      name: definition.target.name,
-    },
-    identityEvidence: definition.identity_evidence,
-    requiredEvidence: [...definition.required_evidence],
-    allowedTools: [...definition.allowed_tools],
-    forbiddenTools: [...definition.forbidden_tools],
-    verifierKind: definition.deterministic_verifier.kind,
-    healthyControlNames: evaluationControlNames(definition),
-    expectedPatchConstraints:
-      definition.expected_patch_constraints === undefined
-        ? undefined
-        : {
-            action: definition.expected_patch_constraints.action,
-            containerIndex: definition.expected_patch_constraints.container_index,
-            containerName: definition.expected_patch_constraints.container_name,
-            currentImage: definition.expected_patch_constraints.current_image,
-            replacementImage:
-              definition.expected_patch_constraints.replacement_image,
-          },
-  }));
-}
-
 export function supportedScenarioVersion(scenarioId) {
   return SCENARIO_VERSION_OVERRIDES.get(scenarioId) ?? DEFAULT_SCENARIO_VERSION;
-}
-
-export function loadEvaluationDataset(repositoryRoot, scenarios, datasetPath) {
-  try {
-    const filename = path.resolve(
-      repositoryRoot,
-      datasetPath ?? "evaluation/datasets/regression-v1.json",
-    );
-    if (path.extname(filename) !== ".json") throw new Error();
-    assertRegularFileWithoutSymlinkComponents(path.parse(filename).root, filename);
-    const manifest = parseJsonFile(filename);
-    assertPlainObject(manifest);
-    assertExactKeys(manifest, ["schema_version", "dataset_id", "dataset_version", "cases"]);
-    assertNormalizedString(manifest.dataset_id);
-    if (
-      manifest.schema_version !== 1 ||
-      !/^[a-z][a-z0-9-]{0,63}$/.test(manifest.dataset_id) ||
-      !Number.isSafeInteger(manifest.dataset_version) || manifest.dataset_version < 1 ||
-      !Array.isArray(manifest.cases) || manifest.cases.length === 0
-    ) throw new Error();
-    const catalog = new Map(scenarios.map((scenario) => [scenario.scenarioId, scenario]));
-    const seen = new Set();
-    const sourceSplits = new Map();
-    const cases = manifest.cases.map((entry) => {
-      assertPlainObject(entry);
-      assertExactKeys(entry, [
-        "scenario_id", "scenario_version", "split", "mechanism", "source_group",
-        "expected_terminal", "profiles", "alert_wait_seconds",
-      ]);
-      for (const value of [entry.scenario_id, entry.mechanism, entry.source_group]) {
-        assertNormalizedString(value);
-        if (!/^[a-z0-9][a-z0-9-]{0,127}$/.test(value)) throw new Error();
-      }
-      if (
-        seen.has(entry.scenario_id) ||
-        !["development", "regression", "holdout"].includes(entry.split) ||
-        (sourceSplits.has(entry.source_group) && sourceSplits.get(entry.source_group) !== entry.split)
-      ) throw new Error();
-      seen.add(entry.scenario_id);
-      sourceSplits.set(entry.source_group, entry.split);
-      // This catalog is shipped to the Runtime and exposed by its Scenario API.
-      // A different label cannot make those inputs a private holdout.
-      if (entry.split === "holdout") {
-        throw new ScenarioCommandError(
-          "evaluation_holdout_unavailable",
-          "Holdout requires a private intake boundary, not the public scenario catalog",
-        );
-      }
-      const scenario = catalog.get(entry.scenario_id);
-      if (scenario === undefined || scenario.scenarioVersion !== entry.scenario_version) {
-        throw new Error();
-      }
-      assertNonEmptyUniqueStringArray(entry.profiles);
-      if (
-        entry.profiles.some((profile) => !VALID_EXECUTION_PROFILES.has(profile)) ||
-        !Number.isSafeInteger(entry.alert_wait_seconds) ||
-        entry.alert_wait_seconds < 1 || entry.alert_wait_seconds > 1800
-      ) throw new Error();
-      const expected = entry.expected_terminal;
-      assertPlainObject(expected);
-      assertExactKeys(expected, expected.outcome === "failed" ? ["outcome", "error_code"] : ["outcome"]);
-      if (
-        !["diagnosed", "insufficient_evidence", "failed"].includes(expected.outcome) ||
-        (expected.outcome === "failed" &&
-          (typeof expected.error_code !== "string" || !/^[a-z][a-z0-9_]{0,127}$/.test(expected.error_code)))
-      ) throw new Error();
-      return {
-        ...scenario,
-        split: entry.split,
-        mechanism: entry.mechanism,
-        sourceGroup: entry.source_group,
-        expectedTerminal: expected.outcome === "failed"
-          ? { outcome: expected.outcome, errorCode: expected.error_code }
-          : { outcome: expected.outcome },
-        profiles: [...entry.profiles],
-        alertWaitMilliseconds: entry.alert_wait_seconds * 1000,
-        limitations: SCENARIO_VERSION_OVERRIDES.has(scenario.scenarioId)
-          ? ["legacy_name_cues"] : [],
-      };
-    });
-    return { id: manifest.dataset_id, version: manifest.dataset_version, cases };
-  } catch (error) {
-    if (error instanceof ScenarioCommandError) throw error;
-    throw new ScenarioCommandError(
-      "evaluation_dataset_invalid",
-      "Evaluation dataset does not satisfy the versioned scenario contract",
-    );
-  }
-}
-
-function evaluationControlNames(definition) {
-  const verifierKind = definition.deterministic_verifier.kind;
-  if (verifierKind === "image_pull_backoff") return [];
-  if (verifierKind === "readiness_probe_failure") {
-    return [
-      `${definition.target.name}-healthy-control`,
-      `${definition.target.name}-slow-start-control`,
-    ];
-  }
-  if (verifierKind === "pvc_pending") {
-    return [`${definition.target.name}-wffc-control`];
-  }
-  return [`${definition.target.name}-healthy-control`];
 }
 
 export async function runScenarioCommand(

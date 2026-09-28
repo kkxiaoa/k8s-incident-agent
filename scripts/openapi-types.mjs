@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
 } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
@@ -20,10 +22,11 @@ const OPENAPI_ARTIFACT = path.join(
   REPOSITORY_ROOT,
   "contracts/agent-runtime.openapi.json",
 );
-const GENERATED_TYPES = path.join(
-  REPOSITORY_ROOT,
+// The Console and the evaluation module consume the same wire contract from separate trees.
+const GENERATED_TYPES = [
   "src/lib/agent-runtime/generated.ts",
-);
+  "evaluation/src/contracts/runtime-api.generated.ts",
+].map((relative) => path.join(REPOSITORY_ROOT, relative));
 const PYTHON_EXPORTER = path.join(
   REPOSITORY_ROOT,
   "services/agent-runtime/.venv/bin/agent-runtime-openapi",
@@ -51,19 +54,26 @@ function sameBytes(left, right) {
   return existsSync(right) && readFileSync(left).equals(readFileSync(right));
 }
 
-async function replaceIfChanged(source, target) {
-  if (sameBytes(source, target)) {
-    await rm(source, { force: true });
-    return;
+// Every target is replaced by renaming a staged copy in its own directory, so a target is
+// either the previous bytes or the complete new bytes.
+function installIfChanged(source, target) {
+  if (sameBytes(source, target)) return;
+  const staged = temporaryPath(target);
+  if (staged !== source) copyFileSync(source, staged);
+  try {
+    renameSync(staged, target);
+  } catch (error) {
+    rmSync(staged, { force: true });
+    throw error;
   }
-  renameSync(source, target);
 }
 
 async function run(action) {
-  mkdirSync(path.dirname(OPENAPI_ARTIFACT), { recursive: true });
-  mkdirSync(path.dirname(GENERATED_TYPES), { recursive: true });
+  for (const target of [OPENAPI_ARTIFACT, ...GENERATED_TYPES]) {
+    mkdirSync(path.dirname(target), { recursive: true });
+  }
   const temporaryArtifact = temporaryPath(OPENAPI_ARTIFACT);
-  const temporaryTypes = temporaryPath(GENERATED_TYPES);
+  const temporaryTypes = temporaryPath(`${OPENAPI_ARTIFACT}.ts`);
 
   try {
     await runCommand(PYTHON_EXPORTER, [
@@ -80,15 +90,15 @@ async function run(action) {
     if (action === "check") {
       if (
         !sameBytes(temporaryArtifact, OPENAPI_ARTIFACT) ||
-        !sameBytes(temporaryTypes, GENERATED_TYPES)
+        GENERATED_TYPES.some((target) => !sameBytes(temporaryTypes, target))
       ) {
         throw new Error("OpenAPI artifact or generated types are out of date");
       }
       return;
     }
 
-    await replaceIfChanged(temporaryArtifact, OPENAPI_ARTIFACT);
-    await replaceIfChanged(temporaryTypes, GENERATED_TYPES);
+    installIfChanged(temporaryArtifact, OPENAPI_ARTIFACT);
+    for (const target of GENERATED_TYPES) installIfChanged(temporaryTypes, target);
   } finally {
     await rm(temporaryArtifact, { force: true });
     await rm(temporaryTypes, { force: true });
