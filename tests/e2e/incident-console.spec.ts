@@ -58,6 +58,24 @@ test.beforeEach(async ({ page }) => {
   await login(page);
 });
 
+test("keeps Service risk visible when the firing event is outside the chart window", async ({ page }) => {
+  const { incidentId } = await (await control("/__test__/service-risk", {})).json();
+  const panel = await (await control(`/api/v1/incidents/${incidentId}/monitoring/panels/service-ready-endpoints?window=15m`)).json() as IncidentMetricPanel;
+  expect(panel.markers).toEqual([]);
+  expect(panel.result.threshold).toBe(1);
+  expect(panel.result.riskDirection).toBe("lower_is_worse");
+  expect(panel.result.series[0].samples).toHaveLength(61);
+  expect(panel.result.series[0].samples.every((sample) => sample.value === 0)).toBe(true);
+  await page.goto(`/incidents/${incidentId}`);
+  const card = page.locator(".metric-panel");
+  await expect(card.getByRole("heading", { name: "Service 就绪 Endpoint" })).toBeVisible();
+  await expect(card.getByText("告警中", { exact: true })).toBeVisible();
+  await expect(card.getByText("风险区间（< 1）", { exact: true })).toBeVisible();
+  await expect(card.locator(".is-threshold-zone")).toHaveCSS("border-top-color", "rgb(184, 60, 70)");
+  await expect(card.getByRole("img", { name: /0 个独立事件标记/ })).toBeVisible();
+  await expect(card.getByText("告警触发", { exact: true })).toHaveCount(0);
+});
+
 test("model outage preserves history while refusing new diagnosis", async ({ page }) => {
   await control("/__test__/showcase", {});
   await control("/__test__/mode", { mode: "diagnosis-unavailable" });

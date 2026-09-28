@@ -615,7 +615,6 @@
   background: var(--teal);
 }
 
-.metric-chart__legend i.is-risk-series,
 .metric-chart__marker-legend i.is-alert {
   background: var(--red);
 }
@@ -647,15 +646,9 @@
 
 .metric-chart__legend i.is-threshold-zone {
   height: 8px;
+  border-top: 2px dashed var(--red);
+  border-radius: 0;
   background: var(--red-soft);
-}
-
-.metric-chart__legend i.is-reference {
-  background: repeating-linear-gradient(
-    90deg,
-    var(--teal) 0 5px,
-    transparent 5px 8px
-  );
 }
 
 .metric-chart__marker-legend i.is-run {

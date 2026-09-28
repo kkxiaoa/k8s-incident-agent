@@ -6,7 +6,6 @@ import type {
   ChartOptions,
   Point,
   Plugin,
-  ScriptableContext,
 } from "chart.js";
 import { useState } from "react";
 import { Chart } from "react-chartjs-2";
@@ -120,20 +119,6 @@ function fadedColor(color: string): string {
   return /^#[0-9a-f]{6}$/i.test(color) ? `${color}2e` : color;
 }
 
-function riskSeriesFill(
-  context: ScriptableContext<"line">,
-): string | CanvasGradient {
-  const { chart } = context;
-  const area = chart.chartArea;
-  if (area === undefined) {
-    return "rgba(229, 72, 77, 0.1)";
-  }
-  const gradient = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
-  gradient.addColorStop(0, "rgba(229, 72, 77, 0.2)");
-  gradient.addColorStop(1, "rgba(229, 72, 77, 0.025)");
-  return gradient;
-}
-
 export function MetricMarkerEvents({
   markers,
   markersTruncated,
@@ -215,10 +200,7 @@ function mergeSharedLimits(
   return merged;
 }
 
-function presentSeries(
-  result: MetricPanelResultView,
-  riskDirection: MetricRiskDirectionView,
-): SeriesPresentation[] {
+function presentSeries(result: MetricPanelResultView): SeriesPresentation[] {
   const singleTarget = result.seriesBinding === "target";
   const lanes = isStatePanel(result);
   const presented = result.series.map((item, index) => ({
@@ -229,11 +211,7 @@ function presentSeries(
           ? `${result.title} 数量`
           : result.title
       : metricSeriesLabel(item.labels),
-    color: singleTarget
-      ? riskDirection === "higher_is_worse"
-        ? "#e5484d"
-        : "#0f8f86"
-      : SERIES_COLORS[index % SERIES_COLORS.length]!,
+    color: singleTarget ? "#0f8f86" : SERIES_COLORS[index % SERIES_COLORS.length]!,
     isLimit: item.labels.series === "limit",
     points: item.samples
       .filter((sample) => !lanes || sample.value === 1)
@@ -269,15 +247,14 @@ export function TimeSeriesChart({
   const start = Date.parse(result.rangeStart);
   const end = Date.parse(result.rangeEnd);
   const staticThreshold = result.threshold;
-  const series = presentSeries(result, riskDirection);
+  const series = presentSeries(result);
   const lanes = isStatePanel(result);
+  const riskBoundary = riskDirection === "neutral" || lanes
+    ? null
+    : staticThreshold ?? referenceValue;
   const values = [
     ...series.flatMap((item) => item.points.map((point) => point.y)),
-    ...(staticThreshold !== null
-      ? [staticThreshold]
-      : referenceValue === null
-        ? []
-        : [referenceValue]),
+    ...(riskBoundary === null ? [] : [riskBoundary]),
   ];
   const countUnit = isCountUnit(result.unit);
   const minimum = Math.min(0, ...values);
@@ -291,7 +268,6 @@ export function TimeSeriesChart({
       ? Math.ceil(maximum + padding)
       : maximum + padding || 1;
   const higherIsWorse = riskDirection === "higher_is_worse";
-  const singleRiskSeries = higherIsWorse && result.seriesBinding === "target";
   const unitLabel = metricUnitLabel(result.unit);
   const labeledMarkers = [
     markers.find((marker) => marker.kind === "alert_firing"),
@@ -408,7 +384,7 @@ export function TimeSeriesChart({
     (item, index) => ({
       label: item.label,
       data: item.points,
-      backgroundColor: singleRiskSeries ? riskSeriesFill : "transparent",
+      backgroundColor: "transparent",
       borderCapStyle: "round",
       borderColor:
         focusedSeries === null || focusedSeries === index
@@ -418,7 +394,7 @@ export function TimeSeriesChart({
       borderJoinStyle: "round",
       borderWidth:
         (item.isLimit ? 1.5 : 2.5) + (focusedSeries === index ? 1 : 0),
-      fill: singleRiskSeries ? "origin" : false,
+      fill: false,
       pointBackgroundColor: "#ffffff",
       pointBorderColor: item.color,
       pointHoverRadius: 4,
@@ -432,17 +408,20 @@ export function TimeSeriesChart({
   const data: ChartData<"line", Point[]> = {
     datasets: [
       ...seriesDatasets,
-      ...(staticThreshold !== null
+      ...(riskBoundary !== null
         ? [
             {
-              label: `阈值 ${higherIsWorse ? "≥" : "<"} ${staticThreshold}`,
+              label: staticThreshold !== null
+                ? `阈值 ${higherIsWorse ? "≥" : "<"} ${riskBoundary}`
+                : `期望副本数 ${riskBoundary}`,
               data: [
-                { x: start, y: staticThreshold },
-                { x: end, y: staticThreshold },
+                { x: start, y: riskBoundary },
+                { x: end, y: riskBoundary },
               ],
-              borderColor: higherIsWorse
-                ? "rgba(229, 72, 77, 0.55)"
-                : "rgba(15, 143, 134, 0.66)",
+              borderColor: "rgba(229, 72, 77, 0.7)",
+              // Fill from the current boundary, not from the measured curve or a firing time.
+              backgroundColor: "rgba(229, 72, 77, 0.08)",
+              fill: higherIsWorse ? "end" : "start",
               borderDash: [6, 5],
               borderWidth: 1.5,
               pointRadius: 0,
@@ -450,23 +429,7 @@ export function TimeSeriesChart({
               order: 2,
             },
           ]
-        : referenceValue === null
-          ? []
-          : [
-              {
-                label: `期望副本数 ${referenceValue}`,
-                data: [
-                  { x: start, y: referenceValue },
-                  { x: end, y: referenceValue },
-                ],
-                borderColor: "rgba(15, 143, 134, 0.66)",
-                borderDash: [6, 5],
-                borderWidth: 1.5,
-                pointRadius: 0,
-                tension: 0,
-                order: 2,
-              },
-            ]),
+        : []),
       ...markers.map((marker) => ({
         label: markerTooltip(marker),
         data: [
@@ -584,42 +547,30 @@ export function TimeSeriesChart({
                 ? "is-dimmed"
                 : undefined
             }
-            tabIndex={singleRiskSeries ? undefined : 0}
+            tabIndex={0}
             onMouseEnter={() => setFocusedSeries(index)}
             onMouseLeave={() => setFocusedSeries(null)}
             onFocus={() => setFocusedSeries(index)}
             onBlur={() => setFocusedSeries(null)}
           >
             <i
-              className={
-                singleRiskSeries
-                  ? "is-risk-series"
-                  : item.isLimit
-                    ? "is-limit"
-                    : "is-series"
-              }
+              className={item.isLimit ? "is-limit" : "is-series"}
               style={
-                singleRiskSeries
-                  ? undefined
-                  : item.isLimit
-                    ? { borderTopColor: item.color }
-                    : { background: item.color }
+                item.isLimit
+                  ? { borderTopColor: item.color }
+                  : { background: item.color }
               }
             />
             {item.label}
           </span>
         ))}
-        {staticThreshold !== null ? (
+        {riskBoundary !== null ? (
           <span>
-            <i
-              className={higherIsWorse ? "is-threshold-zone" : "is-reference"}
-            />
-            {higherIsWorse ? "阈值区间" : "下限阈值"}（
-            {higherIsWorse ? "≥" : "<"} {staticThreshold}）
+            <i className="is-threshold-zone" />
+            {staticThreshold !== null ? "风险区间" : "低于期望副本"}（
+            {higherIsWorse ? "≥" : "<"} {riskBoundary}）
           </span>
-        ) : referenceValue === null ? null : (
-          <span><i className="is-reference" />期望副本数（{referenceValue}）</span>
-        )}
+        ) : null}
       </div>
       )}
 
