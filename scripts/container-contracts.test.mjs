@@ -57,7 +57,7 @@ test("console image carries the complete standalone runtime as a non-root proces
   assert.ok(dockerfile.includes("vitest.setup.ts"));
   assert.match(dockerfile, /\/workspace\/\.next\/standalone \.\//);
   assert.match(dockerfile, /\/workspace\/\.next\/static \.\/\.next\/static/);
-  assert.match(dockerfile, /\/workspace\/public \.\/public/);
+  assert.doesNotMatch(dockerfile, /^COPY .*\bpublic\b/m);
   assert.match(dockerfile, /^USER 10001:10001$/m);
   assert.match(dockerfile, /^STOPSIGNAL SIGTERM$/m);
   const command = readExecCommand(dockerfile);
