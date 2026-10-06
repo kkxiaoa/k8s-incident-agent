@@ -8,7 +8,7 @@ import { makeIncidentDetail, makeRecoveryDetail, makeWaitingApprovalIncidentDeta
 
 type ScenarioResponse = components["schemas"]["ScenarioResponse"];
 type IncidentDetailResponse =
-  components["schemas"]["IncidentDetailResponse"];
+  ReturnType<typeof makeIncidentDetail>;
 type IncidentListItem = components["schemas"]["IncidentListItem"];
 type RunEventStreamItem =
   components["schemas"]["RunEventStreamItem"];
@@ -47,7 +47,7 @@ function publishLifecycle(record: FakeIncident, event: RunEventStreamItem) {
 }
 
 function lifecycleBase(detail: IncidentDetailResponse) {
-  return { schemaVersion: 5 as const, runKind: "repair" as const, incidentId: detail.incident.id,
+  return { schemaVersion: 6 as const, runKind: "repair" as const, incidentId: detail.incident.id,
     runId: detail.selectedRun.id, occurredAt: new Date().toISOString() };
 }
 
@@ -339,7 +339,7 @@ function buildEvents(
       id: eventId(),
       event: "incident.created",
       data: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId,
         runId,
         attempt: 1,
@@ -353,7 +353,7 @@ function buildEvents(
       id: eventId(),
       event: "run.started",
       data: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId,
         runId,
         attempt: 1,
@@ -367,7 +367,7 @@ function buildEvents(
       id: eventId(),
       event: "tool.started",
       data: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId,
         runId,
         toolCallId: "tool-call-1",
@@ -392,7 +392,7 @@ function buildEvents(
         id: eventId(),
         event: "tool.failed",
         data: {
-          schemaVersion: 5,
+          schemaVersion: 6,
           incidentId,
           runId,
           toolCallId: "tool-call-1",
@@ -407,7 +407,7 @@ function buildEvents(
         id: eventId(),
         event: "run.failed",
         data: {
-          schemaVersion: 5,
+          schemaVersion: 6,
           incidentId,
           runId,
           errorCode: "workflow_failed",
@@ -427,7 +427,7 @@ function buildEvents(
       id: eventId(),
       event: "evidence.recorded",
       data: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId,
         runId,
         evidenceId: workloadEvidenceId,
@@ -445,7 +445,7 @@ function buildEvents(
       id: eventId(),
       event: "tool.started",
       data: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId,
         runId,
         toolCallId: "tool-call-2",
@@ -458,7 +458,7 @@ function buildEvents(
       id: eventId(),
       event: "evidence.recorded",
       data: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId,
         runId,
         evidenceId: podsEvidenceId,
@@ -479,7 +479,7 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.completed",
       data: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId,
         runId,
         diagnosisId,
@@ -495,7 +495,7 @@ function buildEvents(
       id: eventId(),
       event: "diagnosis.insufficient",
       data: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId,
         runId,
         diagnosisId,
@@ -535,7 +535,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
     finished: false,
     events,
     detail: {
-      schemaVersion: 5,
+      schemaVersion: 6,
       actions: makeIncidentDetail().actions,
       incident: {
         id: incidentId,
@@ -547,6 +547,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
         displayName: SCENARIO.displayName,
         triggerSummary: SCENARIO.trigger.summary,
         status: "RECEIVED",
+        lifecycleStatus: "OPEN",
         target: SCENARIO.target,
         createdAt: CREATED_AT,
       },
@@ -996,6 +997,7 @@ function listItem(record: FakeIncident): IncidentListItem {
     displayName: incident.displayName,
     target: incident.target,
     status: incident.status,
+    lifecycleStatus: incident.lifecycleStatus,
     updatedAt:
       record.detail.selectedRun.completedAt ??
       record.detail.selectedRun.startedAt ??
@@ -1088,7 +1090,8 @@ function monitoringOverview() {
     });
   }
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
+    unassignedSignals: [],
     window: "24h",
     generatedAt: generatedAt.toISOString(),
     counts: {
@@ -1097,7 +1100,7 @@ function monitoringOverview() {
       triagingIncidents: records.filter(
         (record) => record.detail.incident.status === "TRIAGING",
       ).length,
-      waitingApprovalIncidents: records.filter(
+      unassignedSignals: 0, waitingApprovalIncidents: records.filter(
         (record) => record.detail.incident.status === "WAITING_APPROVAL",
       ).length,
     },
@@ -1746,7 +1749,7 @@ function repairFixture(outcome = "passed"): FakeIncident {
     { revision: 2, containers: [{ name: repair.containerName, image: repair.currentImage }] },
     { revision: 1, containers: [{ name: repair.containerName, image: repair.replacementImage }] },
   ] };
-  const base = { schemaVersion: 5 as const, runKind: "diagnosis" as const, incidentId: detail.incident.id, runId: detail.selectedRun.id };
+  const base = { schemaVersion: 6 as const, runKind: "diagnosis" as const, incidentId: detail.incident.id, runId: detail.selectedRun.id };
   const events: RunEventStreamItem[] = [{
     id: eventId(), event: "diagnosis.completed", data: { ...base, diagnosisId: detail.diagnosis!.id, outcome: "diagnosed", incidentStatus: "DIAGNOSED", runStatus: "RUNNING", occurredAt: repair.schemaCheckedAt },
   }, {
@@ -2190,7 +2193,7 @@ async function handleRequest(
 
   if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
     json(response, 200, {
-      schemaVersion: 5,
+      schemaVersion: 6,
       items: [...incidents.values()].reverse().map(listItem),
       nextCursor: null,
     });
@@ -2223,7 +2226,7 @@ async function handleRequest(
     bindFakeRequester(record, requester);
     incidents.set(record.detail.incident.id, record);
     json(response, 202, {
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: record.detail.incident.id,
     });
     return;
@@ -2317,7 +2320,7 @@ async function handleRequest(
       return;
     }
     json(response, 200, {
-      schemaVersion: 5,
+      schemaVersion: 6,
       items: [record.detail, ...(record.history ?? [])].filter(({ selectedRun: run }) => url.searchParams.get("mine") !== "true" || ownsFakeRun(run, requester)).map(({ selectedRun: run }) => ({
         initiatedByYou: ownsFakeRun(run, requester),
         id: run.id,
@@ -2362,7 +2365,7 @@ async function handleRequest(
       : decideFakeRepair(record, body as components["schemas"]["ApprovalRequest"]);
     if (!succeeded) { runtimeError(response, 409, "approval_conflict", "The saved state changed.", false); return; }
     if (preparing) bindFakeRequester(record, requester);
-    json(response, preparing ? 202 : 200, preparing ? { schemaVersion: 5, runId: record.detail.selectedRun.id } : record.detail.approval);
+    json(response, preparing ? 202 : 200, preparing ? { schemaVersion: 6, runId: record.detail.selectedRun.id } : record.detail.approval);
     return;
   }
 
@@ -2377,7 +2380,7 @@ async function handleRequest(
       return;
     }
     json(response, 200, {
-      schemaVersion: 5,
+      schemaVersion: 6,
       items: [...detail.eventPage.items],
       nextCursor: null,
     });

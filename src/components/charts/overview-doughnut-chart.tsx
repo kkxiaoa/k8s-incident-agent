@@ -100,12 +100,12 @@ export function OverviewDoughnutChart({
         <div
           className="overview-doughnut__empty-ring"
           role="img"
-          aria-label="当前没有告警中的 Incident"
+          aria-label="没有末次通知为 FIRING 的信号"
         >
           <strong>0</strong>
-          <span>告警中</span>
+          <span>FIRING 通知</span>
         </div>
-        <p>当前没有告警中的 Incident。</p>
+        <p>没有末次通知为 FIRING 的信号。</p>
       </div>
     );
   }
@@ -121,7 +121,7 @@ export function OverviewDoughnutChart({
           data={data}
           options={options}
           role="img"
-          aria-label={`告警中的 Incident 共 ${total} 个，分布于 ${families.length} 个故障族`}
+          aria-label={`末次通知 FIRING 信号共 ${total} 个，分布于 ${families.length} 个故障族`}
         />
         <div
           className="overview-doughnut__center"
@@ -129,7 +129,7 @@ export function OverviewDoughnutChart({
           data-visible={hovered === null}
         >
           <strong>{total}</strong>
-          <span>告警中</span>
+          <span>FIRING 通知</span>
         </div>
         <p
           className="overview-doughnut__focus"
@@ -146,7 +146,7 @@ export function OverviewDoughnutChart({
           </strong>
         </p>
       </div>
-      <ul className="overview-doughnut__legend" aria-label="告警中 Incident 故障族分布">
+      <ul className="overview-doughnut__legend" aria-label="末次通知 FIRING 信号故障族分布">
         {listed.map((family, index) => (
           <li key={family.sourceRef}>
             <span

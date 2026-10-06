@@ -139,6 +139,8 @@ async def test_nonempty_upgrade_retains_owners_proposal_evidence_and_legacy_term
     before = _rows(paths)
     command.upgrade(_alembic_config(paths), "head")
     after = _rows(paths)
+    for row in after["incidents"]:
+        assert row.pop("lifecycle_status") is None
     for row in after["agent_runs"]:
         assert row.pop("kind") == "diagnosis"
         assert row.pop("operation") is None
@@ -157,6 +159,7 @@ async def test_nonempty_upgrade_retains_owners_proposal_evidence_and_legacy_term
         # reader sees as "this Run produced none", not as an empty list.
         assert row.pop("recommendations_json") is None
     for row in after["run_events"]:
+        assert row.pop("incident_id") is None
         assert row["schema_version"] == 5
         payload = json.loads(row["payload_json"])
         assert payload.pop("runKind") == "diagnosis"
@@ -329,6 +332,8 @@ async def test_repair_active_run_blocks_unbound_rerun_and_retention_but_is_recov
         assert wire["diagnosis"] is None
     finally:
         await database.dispose()
+    with sqlite3.connect(paths.business_database) as connection:
+        connection.execute("UPDATE incidents SET lifecycle_status = NULL")
     before = _dump(paths)
     with pytest.raises(RuntimeError, match="would discard request facts"):
         command.downgrade(_alembic_config(paths), "20260907_0005")
@@ -405,6 +410,7 @@ async def test_repair_waiting_reads_its_own_proposal_events_and_evidence_without
         assert {row.id for row in detail.evidence}.isdisjoint(
             row.id for row in legacy.evidence
         )
+        assert detail.selected_run is not None
         assert detail.selected_run.kind is RunKind.REPAIR
         assert detail.selected_run.source_run_id == diagnostic_id
         assert detail.selected_run.waiting_expires_at == FRESH_NOW + timedelta(

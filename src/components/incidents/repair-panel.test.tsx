@@ -21,7 +21,7 @@ describe("read-only repair validation", () => {
     expect(screen.getByText("原执行 before image")).toBeVisible();
     expect(screen.queryByText("上一 revision")).toBeNull();
     expect(screen.getByText(outcome === "recovered" ? "工作负载与告警恢复已验证" : "监控链路不可用，无法证明恢复")).toBeVisible();
-    expect(screen.getByRole("link", { name: "查看原修复运行" })).toHaveAttribute("href", `/incidents/${value.incident.id}?runId=${value.selectedRun.sourceRunId}`);
+    expect(screen.getByRole("link", { name: "查看原修复运行" })).toHaveAttribute("href", `/incidents/${value.incident.id}?runId=${value.selectedRun!.sourceRunId}`);
     expect(document.querySelector(".repair-verdict__icon")).toBeNull();
   });
   it.each([
@@ -43,9 +43,9 @@ describe("read-only repair validation", () => {
     ["UNKNOWN", "写入结果未知，目标保持占用"],
   ] as const)("displays %s from the ledger without a false not-executed label", (status, label) => {
     const value = parseIncidentDetailResponse(makeRepairRunWaitingDetail())!;
-    value.selectedRun.status = status === "UNKNOWN" ? "FAILED" : "RUNNING";
+    value.selectedRun!.status = status === "UNKNOWN" ? "FAILED" : "RUNNING";
     value.approval = {
-      id: value.repair!.id, runId: value.selectedRun.id, proposalId: value.repair!.id,
+      id: value.repair!.id, runId: value.selectedRun!.id, proposalId: value.repair!.id,
       proposalDigest: value.repair!.digest, validationDigest: `sha256:${"a".repeat(64)}`,
       decision: "approve", actor: "sandbox-operator", decidedAt: "2026-09-13T01:00:00Z", expiresAt: "2026-09-13T01:15:00Z",
       execution: { id: value.repair!.id, status, startBefore: "2026-09-13T01:00:30Z", claimedAt: "2026-09-13T01:00:01Z", reportedAt: status === "APPLIED" ? "2026-09-13T01:00:02Z" : null, result: status === "APPLIED" ? { outcome: "APPLIED", error: null, receipt: { uid: value.repair!.targetUid, resourceVersion: "patched-rv", generation: 4, beforeGeneration: 3 } } : null, lateResult: null },
@@ -94,8 +94,8 @@ describe("read-only repair validation", () => {
   ] as const)("shows %s without inventing passed gates", (code, label, outcomes) => {
     const value = detail();
     value.repair = null;
-    value.selectedRun.status = "FAILED";
-    value.selectedRun.error = { code, retryable: false };
+    value.selectedRun!.status = "FAILED";
+    value.selectedRun!.error = { code, retryable: false };
     render(<RepairPanel detail={value} pending={false} refreshError={null} />);
     expect(screen.getByText(label)).toBeInTheDocument();
     // No proposal means no suggestion to read; the section reports the repair.

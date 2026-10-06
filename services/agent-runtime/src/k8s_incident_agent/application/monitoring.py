@@ -202,8 +202,10 @@ class MonitoringApplicationService:
                 firing_alerts=overview.firing_alerts,
                 triaging_incidents=overview.triaging_incidents,
                 waiting_approval_incidents=overview.waiting_approval_incidents,
+                unassigned_signals=overview.unassigned_count,
             ),
             families=tuple(families),
+            unassigned_signals=overview.unassigned_signals,
             samples=tuple(
                 MonitoringOverviewSample(
                     timestamp=sample.timestamp,

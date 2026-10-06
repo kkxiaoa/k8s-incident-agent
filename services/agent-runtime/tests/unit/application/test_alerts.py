@@ -1,54 +1,20 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
-from uuid import UUID
 
 import pytest
+from sqlalchemy import func, select
+from tests.unit.persistence.test_alert_intake import (
+    _database,  # pyright: ignore[reportPrivateUsage]
+)
 
 from k8s_incident_agent.application.alerts import AlertmanagerApplicationService
-from k8s_incident_agent.application.scheduling import RunScheduler
-from k8s_incident_agent.domain.models import (
-    ModelSnapshot,
-    PersistedAlertBatch,
-    RunBudget,
-)
 from k8s_incident_agent.monitoring.auth import AlertmanagerWebhookAuthenticator
 from k8s_incident_agent.monitoring.catalog import load_alert_catalog
+from k8s_incident_agent.monitoring.errors import AlertTargetInvalidError
+from k8s_incident_agent.persistence.models import RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT
-
-RUN_ID = UUID("00000000-0000-4000-8000-000000000001")
-
-
-class _Repository:
-    def __init__(self) -> None:
-        self.occurrences: tuple[object, ...] | None = None
-        self.watchdog_received_at: datetime | None = None
-
-    async def apply_alert_occurrences(
-        self,
-        occurrences: tuple[object, ...],
-        _model: ModelSnapshot,
-        _budget: RunBudget,
-        *,
-        watchdog_received_at: datetime | None = None,
-    ) -> PersistedAlertBatch:
-        self.occurrences = occurrences
-        self.watchdog_received_at = watchdog_received_at
-        return PersistedAlertBatch(
-            created_run_ids=((RUN_ID,) if occurrences else ()),
-            events=(),
-            blocked_new_firing=False,
-        )
-
-
-class _FailingScheduler:
-    def __init__(self) -> None:
-        self.run_ids: list[UUID] = []
-
-    async def schedule(self, run_id: UUID) -> None:
-        self.run_ids.append(run_id)
-        raise RuntimeError("injected scheduling failure")
 
 
 def alert_payload() -> bytes:
@@ -85,75 +51,40 @@ def watchdog_payload() -> bytes:
     )
 
 
-@pytest.mark.asyncio
-async def test_committed_run_survives_immediate_scheduler_failure(
+@pytest.mark.parametrize("invalid_target", [False, True])
+async def test_whole_batch_is_validated_before_any_signal_is_committed(
     tmp_path: Path,
+    invalid_target: bool,
 ) -> None:
-    repository = _Repository()
-    scheduler = _FailingScheduler()
-    credential = tmp_path / "credential"
-    credential.write_bytes(b"a" * 32)
-    service = AlertmanagerApplicationService(
-        catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog"),
-        authenticator=AlertmanagerWebhookAuthenticator.from_file(credential),
-        repository=cast(IncidentRepository, repository),
-        supervisor=cast(RunScheduler, scheduler),
-        model=lambda: ModelSnapshot(
-            provider="deepseek",
-            model_id="deepseek-v4-flash",
-            thinking_mode=False,
-            prompt_version="stage1-v1",
-        ),
-        budget=RunBudget(
-            max_model_calls=8,
-            max_tool_calls=6,
-            timeout_seconds=180,
-        ),
-        cluster_id="k8s-incident-agent",
-        diagnostic_namespace="k8s-incident-scenarios",
-        now=lambda: datetime(2026, 9, 2, 8, 1, tzinfo=UTC),
-    )
-
-    await service.ingest(alert_payload())
-
-    assert repository.occurrences is not None
-    assert len(repository.occurrences) == 1
-    assert repository.watchdog_received_at is None
-    assert scheduler.run_ids == [RUN_ID]
-
-
-@pytest.mark.asyncio
-async def test_watchdog_refreshes_health_without_creating_or_scheduling_incident(
-    tmp_path: Path,
-) -> None:
-    repository = _Repository()
-    scheduler = _FailingScheduler()
     credential = tmp_path / "credential"
     credential.write_bytes(b"a" * 32)
     received_at = datetime(2026, 9, 2, 8, 1, tzinfo=UTC)
-    service = AlertmanagerApplicationService(
-        catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog"),
-        authenticator=AlertmanagerWebhookAuthenticator.from_file(credential),
-        repository=cast(IncidentRepository, repository),
-        supervisor=cast(RunScheduler, scheduler),
-        model=lambda: ModelSnapshot(
-            provider="deepseek",
-            model_id="deepseek-v4-flash",
-            thinking_mode=False,
-            prompt_version="stage1-v1",
-        ),
-        budget=RunBudget(
-            max_model_calls=8,
-            max_tool_calls=6,
-            timeout_seconds=180,
-        ),
-        cluster_id="k8s-incident-agent",
-        diagnostic_namespace="k8s-incident-scenarios",
-        now=lambda: received_at,
-    )
-
-    await service.ingest(watchdog_payload())
-
-    assert repository.occurrences == ()
-    assert repository.watchdog_received_at == received_at
-    assert scheduler.run_ids == []
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        service = AlertmanagerApplicationService(
+            catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog"),
+            authenticator=AlertmanagerWebhookAuthenticator.from_file(credential),
+            repository=repository,
+            cluster_id="k8s-incident-agent",
+            diagnostic_namespace="k8s-incident-scenarios",
+            now=lambda: received_at,
+        )
+        document = json.loads(alert_payload())
+        other = json.loads(watchdog_payload())["alerts"][0]
+        if invalid_target:
+            other["labels"]["cluster"] = "outside-scope"
+        document["alerts"].append(other)
+        payload = json.dumps(document).encode()
+        if invalid_target:
+            with pytest.raises(AlertTargetInvalidError):
+                await service.ingest(payload)
+        else:
+            await service.ingest(payload)
+        overview = await repository.get_monitoring_overview(received_at)
+        assert overview.unassigned_count == (0 if invalid_target else 1)
+        assert overview.total_incidents == 0
+        assert await repository.get_watchdog_last_received_at() == (
+            None if invalid_target else received_at
+        )
+        async with database.session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(RunRow)) == 0

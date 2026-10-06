@@ -147,7 +147,7 @@ export function validateTerminalRepair(
     !repairKinds.has("workload") ||
     !repairKinds.has("rollout_history") ||
     repairRootCause === undefined ||
-    proposal.digest !== expectedRepairDigest(detail.selectedRun.id, proposal)
+    detail.selectedRun === null || proposal.digest !== expectedRepairDigest(detail.selectedRun.id, proposal)
   ) {
     throw contractError(
       "repair_validation_invalid",

@@ -120,10 +120,12 @@ function eventCopy(event: RunEventStreamItem): {
       };
     case "alert.resolved":
       return {
-        title: "告警条件已解除",
-        detail: "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。",
+        title: "收到 RESOLVED 通知",
+        detail: "Alertmanager 通知不代表源端当前状态、Incident 关闭或恢复验证完成。",
         tone: "success",
       };
+    case "alert.notification":
+      return { title: `收到 ${event.data.alertStatus} 通知`, detail: "通知已持久化；不代表源端当前状态。", tone: "neutral" };
   }
 }
 

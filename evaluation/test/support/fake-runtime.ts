@@ -128,7 +128,7 @@ function lifecycleFrames(scenario: HarnessScenario, options: HarnessContext["opt
   const repair = terminal.outcome === "diagnosed" ? repairProjection(scenario, options) : null;
   const incidentId = options.invalidSseContract === true ? "90000000-0000-4000-8000-000000000001" : scenario.incidentId;
   const eventData = (fields: Record<string, unknown>) => JSON.stringify({
-    schemaVersion: 5,
+    schemaVersion: 6,
     incidentId,
     runId: scenario.runId,
     runKind: "diagnosis",
@@ -188,12 +188,12 @@ function incidentList(url: URL, context: HarnessContext): Response {
     const items = [...scenarioItems, ...retainedItems];
     const cursor = url.searchParams.get("cursor");
     return jsonResponse({
-      schemaVersion: 5,
+      schemaVersion: 6,
       items: cursor === null ? items.slice(0, 100) : items.slice(100),
       nextCursor: cursor === null ? "next-page" : null,
     });
   }
-  return jsonResponse({ schemaVersion: 5, items: scenarioItems, nextCursor: null });
+  return jsonResponse({ schemaVersion: 6, items: scenarioItems, nextCursor: null });
 }
 
 function runEvents(url: URL, scenario: HarnessScenario, context: HarnessContext): Response {
@@ -208,15 +208,15 @@ function runEvents(url: URL, scenario: HarnessScenario, context: HarnessContext)
       event: "tool.started",
       data: Object.fromEntries(Array.from({ length: fields }, (_, field) => [`f${String(field).padStart(3, "0")}`, "0123456789"])),
     }));
-    return jsonResponse({ schemaVersion: 5, items: pageItems, nextCursor: page + 1 < pages ? String(page + 1) : null });
+    return jsonResponse({ schemaVersion: 6, items: pageItems, nextCursor: page + 1 < pages ? String(page + 1) : null });
   }
   if (options.bulkyRunEvents === true) {
     // One oversized event per page, so the bound is crossed only by the sum of the pages.
     const page = Number(url.searchParams.get("cursor") ?? "0");
     const item = { ...items[Math.min(page, items.length - 1)], padding: "x".repeat(1_500_000) };
-    return jsonResponse({ schemaVersion: 5, items: [item], nextCursor: page < 2 ? String(page + 1) : null });
+    return jsonResponse({ schemaVersion: 6, items: [item], nextCursor: page < 2 ? String(page + 1) : null });
   }
-  return jsonResponse({ schemaVersion: 5, items, nextCursor: null });
+  return jsonResponse({ schemaVersion: 6, items, nextCursor: null });
 }
 
 function panelCatalog(scenario: HarnessScenario): Response {
@@ -318,7 +318,7 @@ function incidentDetail(scenario: HarnessScenario, isOtherIncident: boolean, isC
         ? evidence.filter((item) => item.evidenceKind === scenario.identityEvidence).map((item) => item.id)
         : evidence.map((item) => item.id);
   return jsonResponse({
-    schemaVersion: 5,
+    schemaVersion: 6,
     incident: {
       id: isControlIncident ? scenario.controlIncidentId : isOtherIncident ? scenario.otherIncidentId : scenario.incidentId,
       source: {
@@ -362,7 +362,7 @@ function incidentDetail(scenario: HarnessScenario, isOtherIncident: boolean, isC
       }],
     },
     repair: options.repairDrift === true && terminal.outcome !== "diagnosed" ? { drift: true } : repair,
-    alertSignal: { status: scenario.resolved ? "RESOLVED" : "FIRING" },
+    alertSignal: { status: scenario.resolved ? "RESOLVED" : "FIRING", startsAt: "2026-09-05T00:00:00.000000000Z", endsAt: scenario.resolved ? "2026-09-05T01:00:00.000000000Z" : null },
     eventCursor: repair === null ? "3" : "6",
   });
 }
@@ -402,7 +402,7 @@ export function runtimeResponse(url: URL, init: RequestInit | undefined, headers
     if (options.onlineRerunStatus === 503) return jsonResponse({ error: { code: "diagnosis_unavailable" } }, 503);
     if (options.onlineRerunStatus === 422) return jsonResponse({ error: { code: "invalid_request" } }, 422);
     state.rerunId = RERUN_ID;
-    return jsonResponse({ schemaVersion: 5, runId: state.rerunId }, options.onlineRerunStatus ?? 202);
+    return jsonResponse({ schemaVersion: 6, runId: state.rerunId }, options.onlineRerunStatus ?? 202);
   }
   const events = suffix.match(/^\/runs\/([^/]+)\/events$/);
   if (events !== null) {
@@ -411,7 +411,7 @@ export function runtimeResponse(url: URL, init: RequestInit | undefined, headers
   }
   if (suffix === "/runs") {
     return jsonResponse({
-      schemaVersion: 5,
+      schemaVersion: 6,
       items: [{ id: scenario.runId, kind: "diagnosis", operation: null, attempt: 1, status: "COMPLETED" }],
       nextCursor: null,
     });

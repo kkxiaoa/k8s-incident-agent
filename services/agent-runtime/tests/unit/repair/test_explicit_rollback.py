@@ -19,7 +19,6 @@ from tests.execution.test_worker import (
     deployment,
 )
 from tests.recovery_fixtures import MonitoringFixture, RecoveryFixture
-from tests.unit.persistence.test_repair_persistence import BUDGET
 from tests.unit.repair.test_repair_preparation import CURRENT, PREVIOUS
 from tests.unit.repair.test_repair_preparation import (
     credential as diagnostic_credential,
@@ -61,7 +60,7 @@ async def observe(
         harness.clock[0] += timedelta(seconds=seconds)
         kube.now = harness.now()
         await harness.repository.apply_alert_occurrences(
-            (), None, BUDGET, watchdog_received_at=harness.now()
+            (), watchdog_received_at=harness.now()
         )
 
     await tick(0)

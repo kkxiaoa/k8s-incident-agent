@@ -1,5 +1,5 @@
 import type { EvaluationScenario } from "../../contracts/dataset.ts";
-import { isRunHistoryPage, type IncidentDetail } from "../../contracts/runtime-api.ts";
+import { isRunHistoryPage, type IncidentDetail, type IncidentWithRun } from "../../contracts/runtime-api.ts";
 import { contractError } from "../../shared/errors.ts";
 import { isPlainObject } from "../../shared/guards.ts";
 import { sameTarget } from "./repair.ts";
@@ -24,8 +24,8 @@ export function selectNewTargetIncident(candidates: readonly IncidentDetail[]): 
   return candidates[0];
 }
 
-export function isTerminalRun(detail: IncidentDetail): boolean {
-  return TERMINAL_RUN_STATUSES.has(String(detail.selectedRun.status));
+export function isTerminalRun(detail: IncidentDetail): detail is IncidentWithRun {
+  return detail.selectedRun !== null && TERMINAL_RUN_STATUSES.has(String(detail.selectedRun.status));
 }
 
 // The repeated Alertmanager delivery must not have created another Incident or Run.
@@ -53,10 +53,7 @@ export function requireSingleTargetRun(
 }
 
 export function isResolvedIncident(detail: IncidentDetail): boolean {
-  const page: unknown = detail.eventPage;
-  const items: unknown = isPlainObject(page) ? page.items : undefined;
-  const resolvedEvent = Array.isArray(items) && items.some((item) => isPlainObject(item) && item.event === "alert.resolved");
-  return detail.alertSignal?.status === "RESOLVED" && resolvedEvent;
+  return detail.alertSignal?.status === "RESOLVED" && typeof detail.alertSignal.endsAt === "string";
 }
 
 export function requireIncidentNotResolved(detail: IncidentDetail): void {

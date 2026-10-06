@@ -20,7 +20,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1ReplicaSetList,
 )
 from sqlalchemy import func, select, update
-from tests.factories import normalized_trigger
+from tests.factories import normalized_trigger, seed_legacy_alert_incident
 from tests.unit.kubernetes.test_adapter_events import (
     _event,  # pyright: ignore[reportPrivateUsage]
     _pod,  # pyright: ignore[reportPrivateUsage]
@@ -202,9 +202,10 @@ async def seed_source(
         )
         incident_id, run_id = created.incident_id, created.run_id
     else:
-        batch = await repository.apply_alert_occurrences((occurrence,), MODEL, BUDGET)
-        run_id = batch.created_run_ids[0]
-        incident_id = (await repository.get_workflow_run_snapshot(run_id)).incident_id
+        created = await seed_legacy_alert_incident(
+            repository, occurrence, MODEL, BUDGET
+        )
+        incident_id, run_id = created.incident_id, created.run_id
     await repository.start_run(run_id, NOW)
     source_fixture = KubernetesFixture(NOW)
     source_fixture.deployment.metadata.resource_version = "old-rv"
@@ -357,7 +358,9 @@ async def test_fresh_evidence_and_controlled_history_prepare_a_new_waiting_run(
         detail = await repository.get_incident_detail(
             incident_id, run_id=run.id, event_limit=100
         )
-        assert detail is not None and detail.repair is not None
+        assert (
+            detail is not None and detail.run is not None and detail.repair is not None
+        )
         assert (
             detail.run.status is RunStatus.WAITING_APPROVAL and detail.diagnosis is None
         )
@@ -423,6 +426,7 @@ async def test_repair_evidence_replay_requires_the_persisted_started_event_to_pr
         )
         assert (
             detail is not None
+            and detail.run is not None
             and detail.run.status is RunStatus.RUNNING
             and detail.repair is None
         )
@@ -509,7 +513,8 @@ async def test_preparation_failures_preserve_evidence_and_never_wait(
         detail = await repository.get_incident_detail(
             incident_id, run_id=run.id, event_limit=100
         )
-        assert detail is not None and detail.run.status is RunStatus.FAILED
+        assert detail is not None and detail.run is not None
+        assert detail.run.status is RunStatus.FAILED
         assert (
             detail.run.error_code == expected and detail.run.waiting_expires_at is None
         )
@@ -543,5 +548,6 @@ async def test_controlled_selection_rejects_current_or_mismatched_fresh_history(
         detail = await repository.get_incident_detail(
             incident_id, run_id=run.id, event_limit=100
         )
-        assert detail is not None and detail.run.error_code == "repair_no_candidate"
+        assert detail is not None and detail.run is not None
+        assert detail.run.error_code == "repair_no_candidate"
         assert detail.run.status is RunStatus.FAILED and detail.repair is None

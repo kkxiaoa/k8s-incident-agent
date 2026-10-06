@@ -21,6 +21,7 @@ export const RUN_EVENT_NAMES = [
   "diagnosis.insufficient",
   "run.failed",
   "alert.resolved",
+  "alert.notification",
 ] as const satisfies readonly RunEventStreamItem["event"][];
 
 type JsonObject = Record<string, unknown>;
@@ -120,12 +121,12 @@ function literalField<const T extends string>(
 }
 
 function commonFields(value: JsonObject) {
-  if (value.schemaVersion !== 5) {
+  if (value.schemaVersion !== 6) {
     return invalidEvent();
   }
 
   return {
-    schemaVersion: 5 as const,
+    schemaVersion: 6 as const,
     runKind:
       value.runKind === "diagnosis" || value.runKind === "repair"
         ? (value.runKind as "diagnosis" | "repair")
@@ -140,6 +141,20 @@ function parseEventData(
   name: RunEventStreamItem["event"],
   value: JsonObject,
 ): RunEventStreamItem["data"] {
+  if (name === "alert.notification") {
+    if (value.schemaVersion !== 6 || value.runId !== null || value.runKind !== null ||
+        typeof value.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(value.fingerprint) ||
+        (value.alertStatus !== "FIRING" && value.alertStatus !== "RESOLVED") ||
+        (value.endsAt !== null && !isCanonicalAlertTimestamp(value.endsAt)) ||
+        (value.alertStatus === "RESOLVED" && value.endsAt === null)) return invalidEvent();
+    const startsAt = canonicalAlertTimestampField(value, "startsAt");
+    if (value.endsAt !== null && value.endsAt < startsAt) return invalidEvent();
+    return {
+      schemaVersion: 6, incidentId: uuidField(value, "incidentId"), runId: null, runKind: null,
+      occurredAt: timestampField(value, "occurredAt"), fingerprint: value.fingerprint,
+      startsAt, alertStatus: value.alertStatus, endsAt: value.endsAt,
+    };
+  }
   const common = commonFields(value);
 
   switch (name) {

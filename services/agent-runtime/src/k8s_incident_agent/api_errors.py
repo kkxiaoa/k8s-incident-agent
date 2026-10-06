@@ -43,6 +43,7 @@ from k8s_incident_agent.persistence.repositories import (
     ApprovalConflictError,
     ExecutionDisabledError,
     RepairSourceInvalidError,
+    RunNotApplicableError,
 )
 
 
@@ -128,6 +129,19 @@ _ALERT_TARGET_INVALID = _ErrorContract(
 
 
 def install_exception_handlers(app: FastAPI) -> None:
+    async def run_not_applicable_handler(
+        _request: Request, _error: RunNotApplicableError
+    ) -> JSONResponse:
+        return _response(
+            _ErrorContract(
+                409, "run_not_applicable", "Incident has no Run to diagnose again."
+            )
+        )
+
+    app.add_exception_handler(
+        RunNotApplicableError, cast(ExceptionHandler, run_not_applicable_handler)
+    )
+
     async def public_demo_limited(
         _request: Request, _error: PublicDemoLimitedError
     ) -> JSONResponse:

@@ -319,6 +319,46 @@ export interface components {
     schemas: {
         /** @enum {string} */
         ActionUnavailableReason: "not_applicable" | "active_run" | "execution_held" | "target_occupied" | "execution_disabled" | "outside_scope" | "proposal_expired" | "no_history_candidates" | "diagnosis_unavailable" | "authentication_required" | "not_owner";
+        /** AlertNotificationEventPayload */
+        AlertNotificationEventPayload: {
+            alertStatus: components["schemas"]["AlertSignalStatus"];
+            /** Endsat */
+            endsAt: string | null;
+            /** Fingerprint */
+            fingerprint: string;
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Runid */
+            runId: null;
+            /** Runkind */
+            runKind: null;
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 6;
+            /** Startsat */
+            startsAt: string;
+        };
+        /** AlertNotificationStreamEvent */
+        AlertNotificationStreamEvent: {
+            data: components["schemas"]["AlertNotificationEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "alert.notification";
+            /** Id */
+            id: string;
+        };
         /** AlertResolvedEventPayload */
         AlertResolvedEventPayload: {
             /**
@@ -348,7 +388,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** AlertResolvedStreamEvent */
         AlertResolvedStreamEvent: {
@@ -484,7 +524,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** ApprovalDecidedStreamEvent */
         ApprovalDecidedStreamEvent: {
@@ -582,10 +622,10 @@ export interface components {
             incidentId: string;
             /**
              * Schemaversion
-             * @default 5
+             * @default 6
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** CreateRepairRunRequest */
         CreateRepairRunRequest: {
@@ -614,10 +654,10 @@ export interface components {
             runId: string;
             /**
              * Schemaversion
-             * @default 5
+             * @default 6
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** DiagnosisCompletedEventPayload */
         DiagnosisCompletedEventPayload: {
@@ -665,7 +705,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** DiagnosisCompletedStreamEvent */
         DiagnosisCompletedStreamEvent: {
@@ -724,7 +764,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** DiagnosisInsufficientStreamEvent */
         DiagnosisInsufficientStreamEvent: {
@@ -831,7 +871,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -970,7 +1010,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** ExecutionUpdatedStreamEvent */
         ExecutionUpdatedStreamEvent: {
@@ -1036,7 +1076,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** IncidentCreatedStreamEvent */
         IncidentCreatedStreamEvent: {
@@ -1064,13 +1104,18 @@ export interface components {
             repair: components["schemas"]["RepairProposalResponse"] | null;
             /**
              * Schemaversion
-             * @default 5
+             * @default 6
              * @constant
              */
-            schemaVersion: 5;
-            selectedRun: components["schemas"]["SelectedRunResponse"];
+            schemaVersion: 6;
+            selectedRun: components["schemas"]["SelectedRunResponse"] | null;
             verification?: components["schemas"]["VerificationRecord"] | null;
         };
+        /**
+         * IncidentLifecycleStatus
+         * @enum {string}
+         */
+        IncidentLifecycleStatus: "OPEN" | "CLOSED";
         /** IncidentListItem */
         IncidentListItem: {
             /** Displayname */
@@ -1080,6 +1125,7 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            lifecycleStatus: components["schemas"]["IncidentLifecycleStatus"] | null;
             status: components["schemas"]["IncidentStatus"];
             target: components["schemas"]["IncidentTargetResponse"];
             /**
@@ -1096,10 +1142,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 5
+             * @default 6
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** IncidentMetricPanel */
         IncidentMetricPanel: {
@@ -1140,6 +1186,7 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            lifecycleStatus: components["schemas"]["IncidentLifecycleStatus"] | null;
             source: components["schemas"]["IncidentSourceResponse"];
             status: components["schemas"]["IncidentStatus"];
             target: components["schemas"]["IncidentTargetResponse"];
@@ -1167,6 +1214,19 @@ export interface components {
         IncidentTargetResponse: {
             /** Apiversion */
             apiVersion: string;
+            /** Cluster */
+            cluster: string;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Namespace */
+            namespace: string | null;
+        };
+        /** KubernetesTarget */
+        KubernetesTarget: {
+            /** Api Version */
+            api_version: string;
             /** Cluster */
             cluster: string;
             /** Kind */
@@ -1345,6 +1405,8 @@ export interface components {
             totalIncidents: number;
             /** Triagingincidents */
             triagingIncidents: number;
+            /** Unassignedsignals */
+            unassignedSignals: number;
             /** Waitingapprovalincidents */
             waitingApprovalIncidents: number;
         };
@@ -1385,10 +1447,12 @@ export interface components {
             samples: components["schemas"]["MonitoringOverviewSample"][];
             /**
              * Schemaversion
-             * @default 3
+             * @default 4
              * @constant
              */
-            schemaVersion: 3;
+            schemaVersion: 4;
+            /** Unassignedsignals */
+            unassignedSignals: components["schemas"]["UnassignedAlertSignal"][];
             /**
              * Window
              * @default 24h
@@ -1502,7 +1566,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** RepairDryRunPassedStreamEvent */
         RepairDryRunPassedStreamEvent: {
@@ -1587,7 +1651,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** RepairPatchReadyStreamEvent */
         RepairPatchReadyStreamEvent: {
@@ -1724,7 +1788,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** RepairWaitEndedStreamEvent */
         RepairWaitEndedStreamEvent: {
@@ -1776,7 +1840,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** RepairWaitingApprovalStreamEvent */
         RepairWaitingApprovalStreamEvent: {
@@ -1818,13 +1882,13 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 5
+             * @default 6
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["VerificationUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["VerificationUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"] | components["schemas"]["AlertNotificationStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */
@@ -1861,7 +1925,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** RunFailedStreamEvent */
         RunFailedStreamEvent: {
@@ -1882,10 +1946,10 @@ export interface components {
             nextCursor: string | null;
             /**
              * Schemaversion
-             * @default 5
+             * @default 6
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /**
          * RunKind
@@ -1921,7 +1985,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** RunQueuedStreamEvent */
         RunQueuedStreamEvent: {
@@ -1968,7 +2032,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** RunStartedStreamEvent */
         RunStartedStreamEvent: {
@@ -2137,7 +2201,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -2177,7 +2241,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
             /** Toolcallid */
             toolCallId: string;
             /** Toolname */
@@ -2193,6 +2257,31 @@ export interface components {
             event: "tool.started";
             /** Id */
             id: string;
+        };
+        /** UnassignedAlertSignal */
+        UnassignedAlertSignal: {
+            /** Displayname */
+            displayName: string;
+            /** Endsat */
+            endsAt: string | null;
+            /** Fingerprint */
+            fingerprint: string;
+            /** Lastreceivedat */
+            lastReceivedAt: string | null;
+            /**
+             * Reason
+             * @default awaiting_association
+             * @constant
+             */
+            reason: "awaiting_association";
+            /** Startsat */
+            startsAt: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "FIRING" | "RESOLVED";
+            target: components["schemas"]["KubernetesTarget"];
         };
         /** @enum {string} */
         VerificationOutcome: "observing" | "recovered" | "workload_failed" | "monitoring_unavailable" | "insufficient_evidence" | "target_drift" | "timeout";
@@ -2271,7 +2360,7 @@ export interface components {
              * Schemaversion
              * @constant
              */
-            schemaVersion: 5;
+            schemaVersion: 6;
         };
         /** VerificationUpdatedStreamEvent */
         VerificationUpdatedStreamEvent: {

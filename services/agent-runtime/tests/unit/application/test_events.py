@@ -39,6 +39,18 @@ def _base_payload() -> dict[str, JsonValue]:
     }
 
 
+def _wire_payload(event: RunEvent) -> dict[str, JsonValue]:
+    payload = {**event.payload, "schemaVersion": 6}
+    if event.event_type == "tool.started":
+        identity = payload.get("callIdentity")
+        payload["callIdentity"] = (
+            {**identity, "anchor": identity.get("anchor")}
+            if isinstance(identity, dict)
+            else None
+        )
+    return payload
+
+
 @pytest.mark.parametrize(
     ("kind", "status", "key", "valid"),
     [
@@ -326,7 +338,7 @@ async def test_zero_cursor_starts_at_first_event_without_ownership_lookup() -> N
         == (
             f"id: {EVENT_CASES[-1].id}\n"
             f"event: {EVENT_CASES[-1].event_type}\n"
-            f"data: {canonical_json(EVENT_CASES[-1].payload)}\n\n"
+            f"data: {canonical_json(_wire_payload(EVENT_CASES[-1]))}\n\n"
         ).encode()
     )
     assert repository.ownership_calls == []
@@ -431,7 +443,7 @@ async def test_serializer_accepts_the_distinct_prometheus_failure_contract() -> 
     assert (
         await anext(stream)
         == (
-            f"id: 11\nevent: tool.failed\ndata: {canonical_json(event.payload)}\n\n"
+            f"id: 11\nevent: tool.failed\ndata: {canonical_json(_wire_payload(event))}\n\n"
         ).encode()
     )
 
@@ -460,7 +472,7 @@ async def test_serializer_accepts_prometheus_started_call_identity() -> None:
     assert (
         await anext(stream)
         == (
-            f"id: 11\nevent: tool.started\ndata: {canonical_json(event.payload)}\n\n"
+            f"id: 11\nevent: tool.started\ndata: {canonical_json(_wire_payload(event))}\n\n"
         ).encode()
     )
 
@@ -518,7 +530,7 @@ async def test_serializer_rejects_non_utc_event_timestamps(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event", EVENT_CASES, ids=lambda event: event.event_type)
-async def test_serializer_emits_exact_persisted_payload_for_all_event_types(
+async def test_serializer_projects_stored_payload_to_current_wire_for_all_event_types(
     event: RunEvent,
 ) -> None:
     stream = stream_incident_events(
@@ -534,7 +546,7 @@ async def test_serializer_emits_exact_persisted_payload_for_all_event_types(
         == (
             f"id: {event.id}\n"
             f"event: {event.event_type}\n"
-            f"data: {canonical_json(event.payload)}\n\n"
+            f"data: {canonical_json(_wire_payload(event))}\n\n"
         ).encode()
     )
     await stream.aclose()
@@ -650,7 +662,7 @@ async def test_lost_notification_recovers_from_database_after_heartbeat() -> Non
         == (
             f"id: {terminal.id}\n"
             f"event: {terminal.event_type}\n"
-            f"data: {canonical_json(terminal.payload)}\n\n"
+            f"data: {canonical_json(_wire_payload(terminal))}\n\n"
         ).encode()
     )
     assert await anext(stream) == b": heartbeat\n\n"

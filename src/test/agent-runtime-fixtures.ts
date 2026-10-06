@@ -1,7 +1,9 @@
 import type { components } from "@/lib/agent-runtime/generated";
 
 type IncidentDetailResponse =
-  components["schemas"]["IncidentDetailResponse"];
+  components["schemas"]["IncidentDetailResponse"] & {
+    selectedRun: NonNullable<components["schemas"]["IncidentDetailResponse"]["selectedRun"]>;
+  };
 
 export const INCIDENT_ID = "11111111-1111-4111-8111-111111111111";
 export const RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -128,7 +130,7 @@ export function makeWaitingApprovalIncidentDetail(): IncidentDetailResponse {
 
 export function makeIncidentDetail(): IncidentDetailResponse {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     actions: {
       withdraw: "not_applicable",
       prepare: "not_applicable", refresh: "not_applicable", edit: "not_applicable",
@@ -145,6 +147,7 @@ export function makeIncidentDetail(): IncidentDetailResponse {
       displayName: "Image pull failure",
       triggerSummary: "Pod cannot pull its container image.",
       status: "RECEIVED",
+      lifecycleStatus: "OPEN",
       target: {
         apiVersion: "v1",
         kind: "Pod",
@@ -173,6 +176,11 @@ export function makeIncidentDetail(): IncidentDetailResponse {
     repair: null,
     alertSignal: null,
   };
+}
+
+export function makeIncidentWithoutRuns(): components["schemas"]["IncidentDetailResponse"] {
+  const detail = makeIncidentDetail();
+  return { ...detail, selectedRun: null, eventCursor: "0", actions: { ...detail.actions, rerun: "not_applicable" } };
 }
 
 export function makeRepairRunWaitingDetail(): IncidentDetailResponse {

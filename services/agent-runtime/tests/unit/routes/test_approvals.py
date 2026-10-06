@@ -42,6 +42,7 @@ from k8s_incident_agent.auth.sessions import OperatorSessions
 from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import (
+    IncidentLifecycleStatus,
     NormalizedAlertOccurrence,
     RepairWorkflowRunSnapshot,
 )
@@ -52,6 +53,7 @@ from k8s_incident_agent.persistence.database import BusinessDatabase
 from k8s_incident_agent.persistence.models import (
     ApprovalRow,
     ExecutionRow,
+    IncidentRow,
     OperatorSessionRow,
     RepairProposalRow,
 )
@@ -483,6 +485,10 @@ async def test_unclaimed_expiry_releases_target_and_expired_wait_cannot_authoriz
         ).json()
         assert detail["approval"]["execution"]["status"] == "EXPIRED"
         assert detail["selectedRun"]["endReason"] == "execution_expired"
+        async with harness.database.session_factory.begin() as session:
+            incident = await session.get(IncidentRow, str(harness.incident_id))
+            assert incident
+            incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
         targets = await harness.repository.list_prune_targets(
             FRESH_NOW + timedelta(days=8), tmp_path / "artifacts"
         )

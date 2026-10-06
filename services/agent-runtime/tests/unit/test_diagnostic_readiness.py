@@ -4,7 +4,6 @@ from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
-from uuid import UUID
 
 import httpx
 import pytest
@@ -23,7 +22,6 @@ from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.diagnosis.prompt import DIAGNOSTIC_PROMPT_VERSION
 from k8s_incident_agent.domain.models import (
-    DiagnosisWorkflowRunSnapshot,
     ModelSnapshot,
     RunBudget,
     TerminalRecord,
@@ -36,7 +34,7 @@ from k8s_incident_agent.persistence.database import (
     create_business_database,
     require_alembic_head,
 )
-from k8s_incident_agent.persistence.models import RunRow
+from k8s_incident_agent.persistence.models import AlertSignalRow, RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.lock import RuntimeLock
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
@@ -223,8 +221,7 @@ async def test_degraded_startup_keeps_persisted_history_sse_and_watchdog_availab
             firing = await client.post(
                 webhook_url, headers=headers, content=alert_payload()
             )
-            assert firing.status_code == 503
-            assert firing.json()["error"]["code"] == "diagnosis_unavailable"
+            assert firing.status_code == 204
             watchdog = await client.post(
                 webhook_url, headers=headers, content=watchdog_payload()
             )
@@ -257,17 +254,10 @@ async def test_degraded_startup_keeps_persisted_history_sse_and_watchdog_availab
                             await session.scalar(
                                 select(func.count()).select_from(RunRow)
                             )
-                            == 2
+                            == 1
                         )
-                        new_run = await session.scalar(
-                            select(RunRow).where(RunRow.id != str(created.run_id))
-                        )
-                        assert new_run is not None
-                        persisted = await repository.get_workflow_run_snapshot(
-                            UUID(new_run.id)
-                        )
-                        assert isinstance(persisted, DiagnosisWorkflowRunSnapshot)
-                        assert persisted.model == snapshot
+                        signals = list(await session.scalars(select(AlertSignalRow)))
+                        assert len(signals) == 1 and signals[0].incident_id is None
             finally:
                 await database.dispose()
         assert app.state.ready is False

@@ -30,9 +30,13 @@ from tests.unit.repair.test_repair_preparation import (
 )
 
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicyResolver
-from k8s_incident_agent.domain.models import RepairWorkflowRunSnapshot, RunStatus
+from k8s_incident_agent.domain.models import (
+    IncidentLifecycleStatus,
+    RepairWorkflowRunSnapshot,
+    RunStatus,
+)
 from k8s_incident_agent.kubernetes.errors import KubernetesErrorCode
-from k8s_incident_agent.persistence.models import RunRow
+from k8s_incident_agent.persistence.models import IncidentRow, RunRow
 from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
     IncidentRepository,
@@ -129,7 +133,8 @@ async def test_restart_uses_persisted_preparation_deadline(tmp_path: Path) -> No
         detail = await repository.get_incident_detail(
             incident_id, run_id=run.id, event_limit=100
         )
-        assert detail is not None and detail.run.error_code == "repair_timeout"
+        assert detail is not None and detail.run is not None
+        assert detail.run.error_code == "repair_timeout"
         assert (
             detail.run.started_at == FRESH_NOW
             and detail.repair is None
@@ -170,6 +175,7 @@ async def test_superseded_thread_cannot_change_successor_and_source_fk_allows_ag
             assert (
                 after == before
                 and after is not None
+                and after.run is not None
                 and after.run.status is RunStatus.QUEUED
             )
         with pytest.raises(IntegrityError):
@@ -179,6 +185,10 @@ async def test_superseded_thread_cannot_change_successor_and_source_fk_allows_ag
             successor.run_id, "recovery_consistency_error", False, FRESH_NOW
         )
         cutoff = FRESH_NOW + timedelta(days=365)
+        async with database.session_factory.begin() as session:
+            incident = await session.get(IncidentRow, str(incident_id))
+            assert incident
+            incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
         targets = await repository.list_prune_targets(cutoff, tmp_path / "artifacts")
         assert len(targets) == 1 and set(targets[0].run_ids) == {
             source_id,
@@ -350,7 +360,8 @@ async def test_wait_checkpoint_missing_or_mismatched_proposal_fails_closed(
             detail = await repository.get_incident_detail(
                 incident_id, run_id=run.id, event_limit=100
             )
-            assert detail is not None and detail.run.status is RunStatus.FAILED
+            assert detail is not None and detail.run is not None
+            assert detail.run.status is RunStatus.FAILED
             assert (
                 detail.run.error_code == "recovery_consistency_error"
                 and detail.repair is not None

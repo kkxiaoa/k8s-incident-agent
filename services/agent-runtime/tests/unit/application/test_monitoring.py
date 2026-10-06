@@ -270,6 +270,8 @@ async def test_overview_maps_current_catalog_families_and_preserves_hourly_count
             firing_alerts=2,
             triaging_incidents=1,
             waiting_approval_incidents=4,
+            unassigned_count=0,
+            unassigned_signals=(),
             families=(
                 MonitoringOverviewFamilyRecord(
                     source_ref="K8sIncidentImagePullBackOff",

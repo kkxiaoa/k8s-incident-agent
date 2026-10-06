@@ -29,6 +29,7 @@ type ExpectedTerminal = EvaluationCase["expectedTerminal"];
 // The Runtime's own terminal values, kept before any expectation is applied to them.
 export function observedRun(detail: IncidentDetail): ObservedRun {
   const run = detail.selectedRun;
+  if (run === null) throw upstreamContractError();
   return {
     attempt: run.attempt,
     status: run.status,
@@ -84,8 +85,7 @@ function indexEvidence(scenario: EvaluationCase, detail: IncidentDetail): Eviden
   return { evidenceById, evidenceKinds };
 }
 
-// The contract read guarantees the document header and a selectedRun object; the Run's own
-// fields are still the Runtime's to get wrong.
+// A readable Incident need not have a diagnosis Run.
 function isDiagnosisRun(detail: IncidentDetail): boolean {
   const run: unknown = detail.selectedRun;
   return isPlainObject(run) && run.kind === "diagnosis" && run.operation === null && run.attempt === 1;

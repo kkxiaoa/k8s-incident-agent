@@ -3,13 +3,15 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from sqlalchemy import delete
 from tests.factories import (
     diagnostic_model_stub,
     monitoring_health_service_stub,
+    normalized_trigger,
     operator_sessions_stub,
 )
 from tests.unit.persistence.test_repair_persistence import (
@@ -49,7 +51,13 @@ from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.auth.sessions import OperatorSessions
 from k8s_incident_agent.auth.verifier import PasswordVerifier
 from k8s_incident_agent.config import Settings
-from k8s_incident_agent.domain.models import IncidentStatus, RunKind, RunStatus
+from k8s_incident_agent.domain.models import (
+    IncidentStatus,
+    ModelSnapshot,
+    RunKind,
+    RunStatus,
+)
+from k8s_incident_agent.persistence.models import RunEventRow, RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.repair.actions import IncidentActions
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
@@ -251,6 +259,7 @@ class _IncidentService:
                     display_name="Image pull failure",
                     target=TARGET,
                     status=IncidentStatus.RECEIVED,
+                    lifecycle_status=None,
                     updated_at=NOW,
                 ),
             ),
@@ -289,6 +298,7 @@ class _IncidentService:
                 trigger_summary="The target Deployment is unavailable.",
                 target=TARGET,
                 status=IncidentStatus.RECEIVED,
+                lifecycle_status=None,
                 created_at=NOW,
             ),
             selected_run=SelectedRunResponse(
@@ -357,7 +367,7 @@ class _IncidentService:
 @asynccontextmanager
 async def _client(
     tmp_path: Path,
-    service: _IncidentService,
+    service: _IncidentService | IncidentApplicationService,
 ) -> AsyncGenerator[httpx.AsyncClient]:
     settings = Settings(
         runtime_paths=RuntimePaths.prepare(tmp_path / "runtime"),
@@ -389,6 +399,83 @@ async def _client(
             yield client
 
 
+@pytest.mark.parametrize("model_available", [True, False])
+async def test_incident_without_runs_has_empty_read_contract_and_rejects_rerun(
+    tmp_path: Path,
+    model_available: bool,
+) -> None:
+    model_reads = 0
+
+    def model() -> ModelSnapshot | None:
+        nonlocal model_reads
+        model_reads += 1
+        return MODEL if model_available else None
+
+    class NoScheduling:
+        async def schedule(self, run_id: UUID) -> None:
+            pytest.fail(f"No Run may be scheduled: {run_id}")
+
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await repository.create_incident_and_run(
+            normalized_trigger(), MODEL, BUDGET
+        )
+        async with database.session_factory() as session, session.begin():
+            await session.execute(
+                delete(RunEventRow).where(RunEventRow.run_id == str(created.run_id))
+            )
+            await session.execute(
+                delete(RunRow).where(RunRow.id == str(created.run_id))
+            )
+        service = IncidentApplicationService(
+            catalog=(),
+            repository=repository,
+            supervisor=NoScheduling(),
+            credential=diagnostic_credential(),
+            model=model,
+            budget=BUDGET,
+            now=lambda: FRESH_NOW,
+        )
+        async with _client(tmp_path, service) as client:
+            path = f"/api/v1/incidents/{created.incident_id}"
+            response = await client.get(path)
+            assert response.status_code == 200
+            body = response.json()
+            assert body["schemaVersion"] == 6
+            assert body["incident"]["lifecycleStatus"] == "OPEN"
+            assert body["selectedRun"] is None and body["eventCursor"] == "0"
+            assert body["eventPage"] == {"items": [], "nextCursor": None}
+            assert (
+                body["evidence"] == []
+                and body["diagnosis"] is None
+                and body["repair"] is None
+            )
+            assert all(
+                body["actions"][key] == "not_applicable"
+                for key in (
+                    "prepare",
+                    "refresh",
+                    "edit",
+                    "approve",
+                    "reject",
+                    "rollback",
+                    "rerun",
+                )
+            )
+            history = await client.get(f"{path}/runs")
+            assert (
+                history.json()["items"] == [] and history.json()["nextCursor"] is None
+            )
+            assert (
+                await client.get(path, params={"runId": str(uuid4())})
+            ).status_code == 404
+            rejected = await client.post(f"{path}/runs", json={})
+            assert rejected.status_code == 409
+            assert rejected.json()["error"]["code"] == "run_not_applicable"
+            assert model_reads == 0
+        assert await repository.list_recoverable_run_ids() == ()
+
+
 @pytest.mark.asyncio
 async def test_create_returns_202_and_exact_versioned_projection(
     tmp_path: Path,
@@ -402,7 +489,7 @@ async def test_create_returns_202_and_exact_versioned_projection(
 
     assert response.status_code == 202
     assert response.json() == {
-        "schemaVersion": 5,
+        "schemaVersion": 6,
         "incidentId": str(INCIDENT_ID),
     }
 
@@ -431,7 +518,7 @@ async def test_detail_preserves_nullable_run_and_diagnosis_fields(
 
     assert response.status_code == 200
     document = response.json()
-    assert document["schemaVersion"] == 5
+    assert document["schemaVersion"] == 6
     assert document["selectedRun"]["startedAt"] is None
     assert document["selectedRun"]["completedAt"] is None
     assert document["selectedRun"]["error"] is None
@@ -469,8 +556,8 @@ async def test_run_routes_use_v4_minimal_contracts(tmp_path: Path) -> None:
         )
 
     assert created.status_code == 202
-    assert created.json() == {"schemaVersion": 5, "runId": str(RUN_ID)}
+    assert created.json() == {"schemaVersion": 6, "runId": str(RUN_ID)}
     assert history.status_code == 200
     assert history.json()["items"][0]["attempt"] == 1
     assert events.status_code == 200
-    assert events.json() == {"schemaVersion": 5, "items": [], "nextCursor": None}
+    assert events.json() == {"schemaVersion": 6, "items": [], "nextCursor": None}

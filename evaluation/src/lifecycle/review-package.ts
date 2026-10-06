@@ -35,6 +35,7 @@ export async function captureReviewPackage(
   detail: IncidentDetail,
   capture: ReviewPackageCapture,
 ): Promise<string> {
+  if (detail.selectedRun === null) throw upstreamContractError();
   const { events, truncated } = await readRunEvents(capture.runtime, detail.incident.id, detail.selectedRun.id);
   const record: ReviewPackage = {
     schemaVersion: REVIEW_PACKAGE_SCHEMA_VERSION,

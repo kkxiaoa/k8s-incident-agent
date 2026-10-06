@@ -3,12 +3,16 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
+from sqlalchemy.exc import OperationalError
+from tests.factories import seed_legacy_alert_incident
 
+from k8s_incident_agent.application.event_projection import validated_stream_item
 from k8s_incident_agent.domain.contracts import (
     IncidentSource,
     KubernetesTarget,
@@ -20,7 +24,6 @@ from k8s_incident_agent.domain.models import (
     ModelSnapshot,
     NormalizedAlertOccurrence,
     RunBudget,
-    TerminalRecord,
 )
 from k8s_incident_agent.persistence.database import (
     BusinessDatabase,
@@ -35,6 +38,7 @@ from k8s_incident_agent.persistence.models import (
 )
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
+    PersistenceOperationError,
     RecoveryConsistencyError,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
@@ -79,84 +83,6 @@ def _budget() -> RunBudget:
     return RunBudget(max_model_calls=8, max_tool_calls=6, timeout_seconds=180)
 
 
-@pytest.mark.parametrize("reverse", [False, True])
-async def test_model_outage_commits_existing_signals_and_watchdog_but_retries_new_firing(
-    tmp_path: Path,
-    reverse: bool,
-) -> None:
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-        existing = await repository.apply_alert_occurrences(
-            (_occurrence(),), _model(), _budget()
-        )
-        resolved = _occurrence(status=AlertSignalStatus.RESOLVED, ends_at=_timestamp(1))
-        new_firing = _occurrence(fingerprint="fedcba9876543210")
-        mixed = (new_firing, resolved) if reverse else (resolved, new_firing)
-        received_at = START_TIME + timedelta(minutes=2)
-        for _ in range(2):
-            blocked = await repository.apply_alert_occurrences(
-                mixed,
-                None,
-                _budget(),
-                watchdog_received_at=received_at,
-            )
-            assert blocked.blocked_new_firing is True
-            assert blocked.created_run_ids == ()
-        assert await repository.get_watchdog_last_received_at() == received_at
-        async with database.session_factory() as session:
-            assert (
-                await session.scalar(select(func.count()).select_from(IncidentRow)) == 1
-            )
-            assert await session.scalar(select(func.count()).select_from(RunRow)) == 1
-            assert (
-                await session.scalar(select(func.count()).select_from(AlertSignalRow))
-                == 1
-            )
-            assert (
-                await session.scalar(
-                    select(func.count())
-                    .select_from(RunEventRow)
-                    .where(RunEventRow.event_type == "alert.resolved")
-                )
-                == 1
-            )
-        first_retry = await repository.apply_alert_occurrences(
-            mixed, _model(), _budget()
-        )
-        second_retry = await repository.apply_alert_occurrences(
-            mixed, _model(), _budget()
-        )
-        assert len(first_retry.created_run_ids) == 1
-        assert first_retry.blocked_new_firing is False
-        assert second_retry.created_run_ids == ()
-        assert set(first_retry.created_run_ids).isdisjoint(existing.created_run_ids)
-
-
-async def test_model_outage_does_not_block_repeat_firing_unknown_resolved_or_watchdog(
-    tmp_path: Path,
-) -> None:
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-        await repository.apply_alert_occurrences((_occurrence(),), _model(), _budget())
-        result = await repository.apply_alert_occurrences(
-            (
-                _occurrence(),
-                _occurrence(
-                    fingerprint="fedcba9876543210",
-                    status=AlertSignalStatus.RESOLVED,
-                    ends_at=_timestamp(1),
-                ),
-            ),
-            None,
-            _budget(),
-            watchdog_received_at=START_TIME,
-        )
-        assert result.blocked_new_firing is False
-        assert result.created_run_ids == ()
-        assert result.events == ()
-        assert await repository.get_watchdog_last_received_at() == START_TIME
-
-
 def _occurrence(
     *,
     fingerprint: str = "0123456789abcdef",
@@ -173,9 +99,7 @@ def _occurrence(
                 revision="2026-09-02.1",
             ),
             display_name="Image pull failure",
-            trigger_summary=(
-                "A Deployment cannot pull its configured container image."
-            ),
+            trigger_summary="A Deployment cannot pull its configured container image.",
             target=KubernetesTarget(
                 cluster="k8s-incident-agent",
                 namespace="k8s-incident-scenarios",
@@ -198,8 +122,158 @@ async def _count(database: BusinessDatabase, row: type[object]) -> int:
     return value
 
 
-@pytest.mark.asyncio
-async def test_firing_atomically_creates_one_incident_run_signal_and_event(
+@pytest.mark.parametrize("status", list(AlertSignalStatus))
+async def test_new_notifications_persist_without_incidents_or_runs_and_survive_restart(
+    tmp_path: Path,
+    status: AlertSignalStatus,
+) -> None:
+    occurrence = _occurrence(
+        status=status,
+        ends_at=_timestamp(1) if status is AlertSignalStatus.RESOLVED else None,
+    )
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(
+            database.session_factory, now=lambda: START_TIME
+        )
+        await repository.apply_alert_occurrences((occurrence,))
+        await repository.apply_alert_occurrences(
+            (occurrence,),
+            received_at=START_TIME + timedelta(minutes=2),
+        )
+        assert await _count(database, AlertSignalRow) == 1
+        for row in (IncidentRow, RunRow, RunEventRow):
+            assert await _count(database, row) == 0
+    async with _database(tmp_path) as database:
+        reopened = IncidentRepository(database.session_factory)
+        overview = await reopened.get_monitoring_overview(
+            START_TIME + timedelta(minutes=3)
+        )
+        assert overview.unassigned_count == 1
+        signal = overview.unassigned_signals[0]
+        assert signal.target == occurrence.trigger.target
+        assert signal.status == status.value
+        assert signal.starts_at == STARTS_AT
+        assert signal.ends_at == occurrence.ends_at
+        assert signal.last_received_at == START_TIME + timedelta(minutes=2)
+        async with database.session_factory() as session:
+            stored = await session.get(
+                AlertSignalRow, (occurrence.fingerprint, STARTS_AT)
+            )
+            assert stored is not None and stored.incident_id is None
+            assert stored.trigger_ref == occurrence.trigger.source.ref
+            assert stored.first_received_at is not None
+            assert stored.first_received_at.replace(tzinfo=UTC) == START_TIME
+            assert (
+                stored.resolved_received_at.replace(tzinfo=UTC)
+                if stored.resolved_received_at is not None
+                else None
+            ) == (START_TIME if status is AlertSignalStatus.RESOLVED else None)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_firing_and_resolved_preserve_last_notification_and_resolved_evidence(
+    tmp_path: Path,
+    reverse: bool,
+) -> None:
+    firing = _occurrence()
+    resolved = _occurrence(status=AlertSignalStatus.RESOLVED, ends_at=_timestamp(5))
+    sequence = (resolved, firing) if reverse else (firing, resolved)
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        for index, occurrence in enumerate(sequence):
+            await repository.apply_alert_occurrences(
+                (occurrence,),
+                received_at=START_TIME + timedelta(minutes=index),
+            )
+        overview = await repository.get_monitoring_overview(
+            START_TIME + timedelta(minutes=10)
+        )
+        signal = overview.unassigned_signals[0]
+        assert signal.status == sequence[-1].status.value
+        assert signal.ends_at == resolved.ends_at
+        async with database.session_factory() as session:
+            stored = await session.get(AlertSignalRow, (firing.fingerprint, STARTS_AT))
+            assert stored is not None and stored.resolved_received_at is not None
+            assert stored.resolved_received_at.replace(
+                tzinfo=UTC
+            ) == START_TIME + timedelta(minutes=0 if reverse else 1)
+        assert await _count(database, IncidentRow) == 0
+        assert await _count(database, RunRow) == 0
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("status", list(AlertSignalStatus))
+async def test_receipt_bounds_survive_out_of_order_commits(
+    tmp_path: Path,
+    legacy: bool,
+    status: AlertSignalStatus,
+) -> None:
+    occurrence = _occurrence(
+        status=status,
+        ends_at=_timestamp(1) if status is AlertSignalStatus.RESOLVED else None,
+    )
+    earlier = START_TIME + timedelta(minutes=1)
+    later = START_TIME + timedelta(minutes=2)
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = (
+            await seed_legacy_alert_incident(
+                repository, occurrence, _model(), _budget()
+            )
+            if legacy
+            else None
+        )
+        before = (
+            await repository.get_incident_detail(
+                created.incident_id, run_id=None, event_limit=100
+            )
+            if created is not None
+            else None
+        )
+        # Arrival timestamps are captured before SQLite serializes their writes.
+        for received_at in (later, earlier):
+            await repository.apply_alert_occurrences(
+                (occurrence,), received_at=received_at
+            )
+        async with database.session_factory() as session:
+            signal = await session.get(
+                AlertSignalRow, (occurrence.fingerprint, STARTS_AT)
+            )
+            assert signal is not None
+            assert (
+                signal.first_received_at.replace(tzinfo=UTC)
+                if signal.first_received_at is not None
+                else None,
+                signal.last_received_at.replace(tzinfo=UTC)
+                if signal.last_received_at is not None
+                else None,
+            ) == (None if legacy else earlier, later)
+            assert signal.status is status and signal.ends_at == occurrence.ends_at
+            assert (
+                signal.resolved_received_at.replace(tzinfo=UTC)
+                if signal.resolved_received_at is not None
+                else None
+            ) == (
+                later if not legacy and status is AlertSignalStatus.RESOLVED else None
+            )
+        assert await _count(database, AlertSignalRow) == 1
+        for row in (IncidentRow, RunRow, RunEventRow):
+            assert await _count(database, row) == int(legacy)
+        if created is not None:
+            assert (
+                await repository.get_incident_detail(
+                    created.incident_id,
+                    run_id=None,
+                    event_limit=100,
+                )
+                == before
+            )
+        else:
+            overview = await repository.get_monitoring_overview(later)
+            assert overview.unassigned_signals[0].last_received_at == later
+
+
+async def test_associated_notifications_use_incident_owner_without_mutating_run_or_business_time(
     tmp_path: Path,
 ) -> None:
     notifications: list[object] = []
@@ -209,409 +283,212 @@ async def test_firing_atomically_creates_one_incident_run_signal_and_event(
 
     async with _database(tmp_path) as database:
         repository = IncidentRepository(
-            database.session_factory,
-            on_event_committed=notify,
+            database.session_factory, on_event_committed=notify
         )
-        result = await repository.apply_alert_occurrences(
-            (_occurrence(),),
-            _model(),
-            _budget(),
+        created = await seed_legacy_alert_incident(
+            repository, _occurrence(), _model(), _budget()
         )
-
-        assert len(result.created_run_ids) == 1
-        assert [event.event_type for event in result.events] == ["incident.created"]
-        assert notifications == [result.events[0].incident_id]
-        assert await _count(database, IncidentRow) == 1
-        assert await _count(database, RunRow) == 1
-        assert await _count(database, AlertSignalRow) == 1
-        assert await _count(database, RunEventRow) == 1
-
-        detail = await repository.get_incident_detail(
-            result.events[0].incident_id,
-            run_id=None,
-            event_limit=100,
+        before = await repository.get_incident_detail(
+            created.incident_id, run_id=None, event_limit=100
         )
-        assert detail is not None
-        assert detail.incident.source == IncidentSource(
-            type="alertmanager",
-            ref="K8sIncidentImagePullBackOff",
-            revision="2026-09-02.1",
+        assert before is not None and before.run is not None
+        notifications.clear()
+        sequence = (
+            _occurrence(status=AlertSignalStatus.RESOLVED, ends_at=_timestamp(5)),
+            _occurrence(),
+            _occurrence(status=AlertSignalStatus.RESOLVED, ends_at=_timestamp(6)),
         )
-        assert detail.alert_signal is not None
-        assert detail.alert_signal.status is AlertSignalStatus.FIRING
-        assert detail.alert_signal.starts_at == STARTS_AT
-        assert detail.alert_signal.ends_at is None
-
-
-@pytest.mark.asyncio
-async def test_monitoring_context_projects_source_target_signal_and_bounded_runs(
-    tmp_path: Path,
-) -> None:
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-        firing = await repository.apply_alert_occurrences(
-            (_occurrence(),),
-            _model(),
-            _budget(),
-        )
-        run_id = firing.created_run_ids[0]
-        incident_id = firing.events[0].incident_id
-        await repository.start_run(run_id, START_TIME + timedelta(minutes=1))
-        await repository.persist_terminal(
-            TerminalRecord(
-                run_id=run_id,
-                completed_at=START_TIME + timedelta(minutes=2),
-                outcome=None,
-                summary=None,
-                root_causes=(),
-                missing_information=(),
-                redacted=False,
-                error_code="request_timeout",
-                error_retryable=True,
-                model_calls=1,
-                tool_calls=0,
-                input_tokens=None,
-                output_tokens=None,
+        for index, occurrence in enumerate(sequence):
+            received_at = START_TIME + timedelta(minutes=10 + index)
+            await repository.apply_alert_occurrences(
+                (occurrence,), received_at=received_at
             )
+            await repository.apply_alert_occurrences(
+                (occurrence,),
+                received_at=received_at + timedelta(seconds=1),
+            )
+        after = await repository.get_incident_detail(
+            created.incident_id, run_id=None, event_limit=100
         )
-        await repository.apply_alert_occurrences(
-            (
-                _occurrence(
-                    status=AlertSignalStatus.RESOLVED,
-                    ends_at=_timestamp(3),
-                ),
-            ),
-            _model(),
-            _budget(),
+        assert after is not None and after.run is not None
+        assert after.incident == before.incident
+        assert after.run == before.run
+        assert after.events == before.events
+        assert after.alert_signal is not None
+        assert after.alert_signal.ends_at == _timestamp(6)
+        events = await repository.list_incident_events(
+            created.incident_id, after_id=0, limit=100
         )
-
-        context = await repository.get_incident_monitoring_context(
-            incident_id,
-            run_limit=1,
-        )
-
-        assert context is not None
-        assert context.source.ref == "K8sIncidentImagePullBackOff"
-        assert context.target.name == "image-pull-backoff"
-        assert context.alert_signal is not None
-        assert context.alert_signal.status is AlertSignalStatus.RESOLVED
-        assert context.alert_signal.ends_at == _timestamp(3)
-        assert len(context.runs) == 1
-        assert context.runs[0].attempt == 1
-        assert context.runs[0].started_at == START_TIME + timedelta(minutes=1)
-        assert context.runs[0].completed_at == START_TIME + timedelta(minutes=2)
-        assert context.runs_truncated is False
-
-
-@pytest.mark.asyncio
-async def test_nanosecond_distinct_occurrences_keep_distinct_database_identity(
-    tmp_path: Path,
-) -> None:
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-        result = await repository.apply_alert_occurrences(
-            (
-                _occurrence(
-                    starts_at=CanonicalAlertTimestamp("2026-09-02T08:00:00.000000001Z")
-                ),
-                _occurrence(
-                    starts_at=CanonicalAlertTimestamp("2026-09-02T08:00:00.000000002Z")
-                ),
-            ),
-            _model(),
-            _budget(),
-        )
-
-        assert len(result.created_run_ids) == 2
-        assert await _count(database, IncidentRow) == 2
-        assert await _count(database, AlertSignalRow) == 2
-
-
-@pytest.mark.asyncio
-async def test_repeat_refreshes_incident_and_unknown_resolved_remains_noop(
-    tmp_path: Path,
-) -> None:
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-        first = await repository.apply_alert_occurrences(
-            (_occurrence(),),
-            _model(),
-            _budget(),
-        )
-        async with database.session_factory() as session:
-            incident = await session.scalar(select(IncidentRow))
-            assert incident is not None
-            incident.updated_at = START_TIME
-            await session.commit()
-        repeated = await repository.apply_alert_occurrences(
-            (_occurrence(),),
-            _model(),
-            _budget(),
-        )
-        unknown_resolved = await repository.apply_alert_occurrences(
-            (
-                _occurrence(
-                    fingerprint="fedcba9876543210",
-                    status=AlertSignalStatus.RESOLVED,
-                    ends_at=_timestamp(5),
-                ),
-            ),
-            _model(),
-            _budget(),
-        )
-
-        assert len(first.created_run_ids) == 1
-        assert repeated.created_run_ids == repeated.events == ()
-        assert unknown_resolved.created_run_ids == unknown_resolved.events == ()
-        assert await _count(database, IncidentRow) == 1
-        assert await _count(database, RunRow) == 1
-        assert await _count(database, AlertSignalRow) == 1
-        assert await _count(database, RunEventRow) == 1
-        async with database.session_factory() as session:
-            incident = await session.scalar(select(IncidentRow))
-            assert incident is not None
-            assert incident.updated_at.replace(tzinfo=UTC) > START_TIME
-
-
-@pytest.mark.asyncio
-async def test_resolved_is_monotonic_and_does_not_reopen_or_close_incident(
-    tmp_path: Path,
-) -> None:
-    ends_at = _timestamp(5)
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-        created = await repository.apply_alert_occurrences(
-            (_occurrence(),),
-            _model(),
-            _budget(),
-        )
-        resolved = await repository.apply_alert_occurrences(
-            (
-                _occurrence(
-                    status=AlertSignalStatus.RESOLVED,
-                    ends_at=ends_at,
-                ),
-            ),
-            _model(),
-            _budget(),
-        )
-        duplicate = await repository.apply_alert_occurrences(
-            (
-                _occurrence(
-                    status=AlertSignalStatus.RESOLVED,
-                    ends_at=_timestamp(6),
-                ),
-                _occurrence(),
-            ),
-            _model(),
-            _budget(),
-        )
-
-        assert resolved.created_run_ids == ()
-        assert len(resolved.events) == 1
-        assert resolved.events[0].event_type == "alert.resolved"
-        assert resolved.events[0].payload["alertStatus"] == "RESOLVED"
-        assert resolved.events[0].payload["endsAt"] == "2026-09-02T08:05:00.000000000Z"
-        assert duplicate.created_run_ids == duplicate.events == ()
-
-        restarted_repository = IncidentRepository(database.session_factory)
-        detail = await restarted_repository.get_incident_detail(
-            created.events[0].incident_id,
-            run_id=None,
-            event_limit=100,
-        )
-        assert detail is not None
-        assert detail.incident.status.value == "RECEIVED"
-        assert detail.run.status.value == "QUEUED"
-        assert detail.alert_signal is not None
-        assert detail.alert_signal.status is AlertSignalStatus.RESOLVED
-        assert detail.alert_signal.ends_at == ends_at
-        assert [event.event_type for event in detail.events] == [
-            "alert.resolved",
+        assert [item.event_type for item in events] == [
             "incident.created",
+            "alert.notification",
+            "alert.notification",
+            "alert.notification",
         ]
+        assert notifications == [created.incident_id] * 3
+        assert all(item.run_id is None for item in events[1:])
+        assert events[0].payload["schemaVersion"] == 5
+        assert all(
+            validated_stream_item(item).root.data.schema_version == 6 for item in events
+        )
+        assert after.event_cursor == events[-1].id
+        assert (
+            await repository.get_incident_event(created.incident_id, events[-1].id)
+            == events[-1]
+        )
+        async with database.session_factory() as session:
+            signal = await session.get(
+                AlertSignalRow, (_occurrence().fingerprint, STARTS_AT)
+            )
+            assert signal is not None and signal.first_received_at is None
+            assert signal.resolved_received_at is not None
+            assert signal.resolved_received_at.replace(
+                tzinfo=UTC
+            ) == START_TIME + timedelta(minutes=12)
 
 
-@pytest.mark.asyncio
-async def test_resolved_can_arrive_after_terminal_run_without_mutating_diagnosis(
+async def test_nanosecond_occurrences_keep_distinct_database_identity(
     tmp_path: Path,
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
-        created = await repository.apply_alert_occurrences(
-            (_occurrence(),),
-            _model(),
-            _budget(),
-        )
-        run_id = created.created_run_ids[0]
-        await repository.start_run(run_id, START_TIME + timedelta(seconds=1))
-        await repository.persist_terminal(
-            TerminalRecord(
-                run_id=run_id,
-                completed_at=START_TIME + timedelta(minutes=1),
-                outcome=None,
-                summary=None,
-                root_causes=(),
-                missing_information=(),
-                redacted=False,
-                error_code="resource_not_found",
-                error_retryable=False,
-                model_calls=1,
-                tool_calls=1,
-                input_tokens=None,
-                output_tokens=None,
-            )
-        )
         await repository.apply_alert_occurrences(
-            (
+            tuple(
                 _occurrence(
-                    status=AlertSignalStatus.RESOLVED,
-                    ends_at=_timestamp(2),
-                ),
-            ),
-            _model(),
-            _budget(),
-        )
-
-        detail = await repository.get_incident_detail(
-            created.events[0].incident_id,
-            run_id=None,
-            event_limit=100,
-        )
-        assert detail is not None
-        assert detail.incident.status.value == "FAILED"
-        assert detail.run.status.value == "FAILED"
-        assert detail.run.error_code == "resource_not_found"
-        assert detail.alert_signal is not None
-        assert detail.alert_signal.status is AlertSignalStatus.RESOLVED
-
-
-@pytest.mark.asyncio
-async def test_concurrent_firing_creates_exactly_one_occurrence(tmp_path: Path) -> None:
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-        results = await asyncio.gather(
-            repository.apply_alert_occurrences(
-                (_occurrence(),),
-                _model(),
-                _budget(),
-            ),
-            repository.apply_alert_occurrences(
-                (_occurrence(),),
-                _model(),
-                _budget(),
-            ),
-        )
-
-        assert sum(len(result.created_run_ids) for result in results) == 1
-        assert await _count(database, IncidentRow) == 1
-        assert await _count(database, RunRow) == 1
-        assert await _count(database, AlertSignalRow) == 1
-        assert await _count(database, RunEventRow) == 1
-
-
-@pytest.mark.asyncio
-async def test_batch_consistency_failure_rolls_back_earlier_occurrences(
-    tmp_path: Path,
-) -> None:
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-        existing = _occurrence()
-        await repository.apply_alert_occurrences(
-            (existing,),
-            _model(),
-            _budget(),
-        )
-        new_occurrence = _occurrence(
-            fingerprint="1111111111111111",
-            starts_at=_timestamp(1),
-            name="another-deployment",
-        )
-        mismatched_replay = _occurrence(name="unexpected-target")
-
-        with pytest.raises(RecoveryConsistencyError):
-            await repository.apply_alert_occurrences(
-                (new_occurrence, mismatched_replay),
-                _model(),
-                _budget(),
+                    starts_at=CanonicalAlertTimestamp(
+                        f"2026-09-02T08:00:00.00000000{index}Z"
+                    )
+                )
+                for index in (1, 2)
             )
+        )
+        assert await _count(database, AlertSignalRow) == 2
+        assert await _count(database, IncidentRow) == 0
+        assert await _count(database, RunRow) == 0
 
-        assert await _count(database, IncidentRow) == 1
-        assert await _count(database, RunRow) == 1
-        assert await _count(database, AlertSignalRow) == 1
-        assert await _count(database, RunEventRow) == 1
 
-
-@pytest.mark.asyncio
-async def test_watchdog_state_keeps_only_the_latest_valid_arrival(
-    tmp_path: Path,
-) -> None:
-    first = START_TIME + timedelta(minutes=1)
-    older = START_TIME
-    latest = START_TIME + timedelta(minutes=2)
+async def test_concurrent_deliveries_create_one_occurrence(tmp_path: Path) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
-
-        for received_at in (first, older, latest):
-            result = await repository.apply_alert_occurrences(
-                (),
-                _model(),
-                _budget(),
-                watchdog_received_at=received_at,
-            )
-            assert result.created_run_ids == result.events == ()
-
-        assert await repository.get_watchdog_last_received_at() == latest
-        assert await _count(database, MonitoringSourceStateRow) == 1
-
-
-@pytest.mark.asyncio
-async def test_concurrent_watchdog_arrivals_converge_on_the_latest_time(
-    tmp_path: Path,
-) -> None:
-    earlier = START_TIME + timedelta(minutes=1)
-    later = START_TIME + timedelta(minutes=2)
-    async with _database(tmp_path) as database:
-        repository = IncidentRepository(database.session_factory)
-
         await asyncio.gather(
-            repository.apply_alert_occurrences(
-                (),
-                _model(),
-                _budget(),
-                watchdog_received_at=earlier,
-            ),
-            repository.apply_alert_occurrences(
-                (),
-                _model(),
-                _budget(),
-                watchdog_received_at=later,
-            ),
+            repository.apply_alert_occurrences((_occurrence(),)),
+            repository.apply_alert_occurrences((_occurrence(),)),
         )
+        assert await _count(database, AlertSignalRow) == 1
+        assert await _count(database, IncidentRow) == 0
+        assert await _count(database, RunRow) == 0
 
-        assert await repository.get_watchdog_last_received_at() == later
-        assert await _count(database, MonitoringSourceStateRow) == 1
+
+async def test_inconsistent_batch_rolls_back_new_signal_and_watchdog(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(
+            database.session_factory, now=lambda: START_TIME
+        )
+        await repository.apply_alert_occurrences((_occurrence(),))
+        with pytest.raises(RecoveryConsistencyError):
+            await repository.apply_alert_occurrences(
+                (
+                    _occurrence(
+                        fingerprint="1111111111111111", name="another-deployment"
+                    ),
+                    _occurrence(name="unexpected-target"),
+                ),
+                received_at=START_TIME + timedelta(minutes=1),
+                watchdog_received_at=START_TIME,
+            )
+        assert await _count(database, AlertSignalRow) == 1
+        assert await _count(database, IncidentRow) == 0
+        assert await repository.get_watchdog_last_received_at() is None
+        overview = await repository.get_monitoring_overview(START_TIME)
+        assert overview.unassigned_signals[0].last_received_at == START_TIME
 
 
-@pytest.mark.asyncio
-async def test_watchdog_state_rolls_back_with_an_invalid_alert_batch(
+async def test_event_write_failure_rolls_back_signal_and_retry_commits_once(
     tmp_path: Path,
 ) -> None:
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
-        await repository.apply_alert_occurrences(
-            (_occurrence(),),
-            _model(),
-            _budget(),
+        created = await seed_legacy_alert_incident(
+            repository, _occurrence(), _model(), _budget()
         )
 
-        with pytest.raises(RecoveryConsistencyError):
-            await repository.apply_alert_occurrences(
-                (_occurrence(name="unexpected-target"),),
-                _model(),
-                _budget(),
-                watchdog_received_at=START_TIME + timedelta(minutes=1),
-            )
+        def fail_event(
+            _connection: Any,
+            _cursor: Any,
+            statement: str,
+            parameters: Any,
+            _context: Any,
+            _many: bool,
+        ) -> None:
+            if statement.startswith("INSERT INTO run_events"):
+                raise OperationalError(
+                    statement, parameters, RuntimeError("injected ledger failure")
+                )
 
-        assert await repository.get_watchdog_last_received_at() is None
-        assert await _count(database, MonitoringSourceStateRow) == 0
+        event.listen(database.engine.sync_engine, "before_cursor_execute", fail_event)
+        resolved = _occurrence(status=AlertSignalStatus.RESOLVED, ends_at=_timestamp(5))
+        try:
+            with pytest.raises(PersistenceOperationError):
+                await repository.apply_alert_occurrences((resolved,))
+        finally:
+            event.remove(
+                database.engine.sync_engine, "before_cursor_execute", fail_event
+            )
+        detail = await repository.get_incident_detail(
+            created.incident_id, run_id=None, event_limit=100
+        )
+        assert detail is not None and detail.alert_signal is not None
+        assert detail.alert_signal.status is AlertSignalStatus.FIRING
+        assert await _count(database, RunEventRow) == 1
+        await repository.apply_alert_occurrences((resolved,))
+        await repository.apply_alert_occurrences((resolved,))
+        assert await _count(database, RunEventRow) == 2
+
+
+async def test_primary_signal_keeps_legacy_source_when_more_occurrences_are_attached(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await seed_legacy_alert_incident(
+            repository, _occurrence(), _model(), _budget()
+        )
+        additional = _occurrence(
+            fingerprint="1111111111111111", starts_at=_timestamp(-5)
+        )
+        await repository.apply_alert_occurrences((additional,))
+        async with database.session_factory() as session, session.begin():
+            signal = await session.get(
+                AlertSignalRow, (additional.fingerprint, additional.starts_at)
+            )
+            assert signal is not None
+            signal.incident_id = str(created.incident_id)
+        context = await repository.get_incident_monitoring_context(
+            created.incident_id, run_limit=1
+        )
+        assert context is not None and context.alert_signal is not None
+        assert context.alert_signal.starts_at == STARTS_AT
+        assert context.occurred_at == START_TIME
+
+
+async def test_watchdog_stays_independent_and_keeps_latest_arrival(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        await asyncio.gather(
+            *(
+                repository.apply_alert_occurrences(
+                    (), watchdog_received_at=START_TIME + timedelta(minutes=index)
+                )
+                for index in (1, 0, 2)
+            )
+        )
+        assert (
+            await repository.get_watchdog_last_received_at()
+            == START_TIME + timedelta(minutes=2)
+        )
+        assert await _count(database, MonitoringSourceStateRow) == 1
+        assert await _count(database, AlertSignalRow) == 0

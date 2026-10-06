@@ -171,6 +171,7 @@ export async function runInfrastructureProbe(probe: ScenarioResult, environment:
     await environment.tunnels.restart();
     await waitForFreshWatchdog(watchdogBeforeRotation, runtime, sleep);
     const recovered = await readIncident(runtime, incidentId);
+    if (recovered.selectedRun === null) throw upstreamContractError();
     await validateSseReplay(
       incidentId,
       recovered.eventCursor,

@@ -1,12 +1,19 @@
+import sqlite3
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import event
+from tests.unit.persistence.test_alert_intake import (
+    _occurrence,  # pyright: ignore[reportPrivateUsage]
+    _timestamp,  # pyright: ignore[reportPrivateUsage]
+)
 
 from k8s_incident_agent.domain.models import (
     AlertSignalStatus,
@@ -89,6 +96,15 @@ def _signal(
         incident_id=incident.id,
         fingerprint=incident.id.replace("-", "")[:16],
         starts_at=_canonical(starts_at),
+        trigger_ref=incident.trigger_ref,
+        trigger_revision=incident.trigger_revision,
+        display_name=incident.display_name,
+        trigger_summary=incident.trigger_summary,
+        cluster=incident.cluster,
+        namespace=incident.namespace,
+        api_version=incident.api_version,
+        kind=incident.kind,
+        resource_name=incident.resource_name,
         status=status,
         ends_at=None if ends_at is None else _canonical(ends_at),
     )
@@ -203,6 +219,80 @@ async def test_overview_counts_only_incidents_currently_waiting_approval(
         assert (
             await repository.get_monitoring_overview(NOW)
         ).waiting_approval_incidents == 0
+
+
+async def test_unassigned_overview_is_bounded_and_counts_signal_sources_without_incidents(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        for index in range(22):
+            await repository.apply_alert_occurrences(
+                (_occurrence(fingerprint=f"{index:016x}"),),
+                received_at=NOW + timedelta(seconds=index),
+            )
+        overview = await repository.get_monitoring_overview(NOW + timedelta(minutes=1))
+        assert overview.total_incidents == 0
+        assert overview.firing_alerts == overview.unassigned_count == 22
+        assert [(family.source_ref, family.count) for family in overview.families] == [
+            ("K8sIncidentImagePullBackOff", 22),
+        ]
+        assert len(overview.unassigned_signals) == 20
+        assert [signal.fingerprint for signal in overview.unassigned_signals] == [
+            f"{index:016x}" for index in range(21, 1, -1)
+        ]
+        assert {signal.reason for signal in overview.unassigned_signals} == {
+            "awaiting_association"
+        }
+
+
+async def test_overview_counts_and_pending_list_share_one_snapshot_during_intake(
+    tmp_path: Path,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        await repository.apply_alert_occurrences((_occurrence(),), received_at=NOW)
+        changed = False
+
+        def concurrent_receipt(
+            _connection: Any,
+            _cursor: Any,
+            statement: str,
+            _parameters: Any,
+            _context: Any,
+            _many: bool,
+        ) -> None:
+            nonlocal changed
+            if changed or not statement.startswith("SELECT"):
+                return
+            changed = True
+            with sqlite3.connect(
+                RuntimePaths.prepare(tmp_path / "runtime").business_database
+            ) as writer:
+                writer.execute(
+                    "UPDATE alert_signals SET status = 'RESOLVED', ends_at = ?",
+                    (str(_timestamp(5)),),
+                )
+
+        event.listen(
+            database.engine.sync_engine, "after_cursor_execute", concurrent_receipt
+        )
+        try:
+            before = await repository.get_monitoring_overview(NOW)
+        finally:
+            event.remove(
+                database.engine.sync_engine, "after_cursor_execute", concurrent_receipt
+            )
+        assert changed
+        assert (
+            before.firing_alerts == 1
+            and before.unassigned_signals[0].status == "FIRING"
+        )
+        after = await repository.get_monitoring_overview(NOW)
+        assert (
+            after.firing_alerts == 0
+            and after.unassigned_signals[0].status == "RESOLVED"
+        )
 
 
 def _run(incident: IncidentRow, *, attempt: int, created_at: datetime) -> RunRow:

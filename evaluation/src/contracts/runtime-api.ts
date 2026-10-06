@@ -6,6 +6,7 @@ import type { components } from "./runtime-api.generated.ts";
 type Schemas = components["schemas"];
 
 export type IncidentDetail = Schemas["IncidentDetailResponse"];
+export type IncidentWithRun = IncidentDetail & { selectedRun: NonNullable<IncidentDetail["selectedRun"]> };
 export type IncidentSummary = Schemas["IncidentListItem"];
 export type RunHistoryPage = Schemas["RunHistoryResponse"];
 export type RunSummary = Schemas["RunSummaryResponse"];
@@ -15,24 +16,32 @@ export type MetricPanel = Schemas["IncidentMetricPanel"];
 export type MonitoringHealth = Schemas["MonitoringHealthSnapshot"];
 export type RerunAccepted = Schemas["CreateRunResponse"];
 
-const RUNTIME_SCHEMA_VERSION = 5;
+const RUNTIME_SCHEMA_VERSION = 6;
 export const TRANSIENT_GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
 const MAX_INCIDENT_PAGES = 10;
 const MAX_RUN_EVENT_PAGES = 10;
 
-// Runtime checks stay exactly as strict as before the generated types existed; the types only
-// name what a validated document is trusted to contain.
 function requireIncidentDetail(document: unknown, incidentId: string): IncidentDetail {
   if (
     !isPlainObject(document) ||
     document.schemaVersion !== RUNTIME_SCHEMA_VERSION ||
     !isPlainObject(document.incident) ||
     document.incident.id !== incidentId ||
-    !isPlainObject(document.selectedRun) ||
-    !isUuid(document.selectedRun.id)
+    (document.selectedRun !== null && (!isPlainObject(document.selectedRun) || !isUuid(document.selectedRun.id)))
   ) {
     throw upstreamContractError();
   }
+  const actions = document.actions;
+  if (document.selectedRun === null && (
+    !Array.isArray(document.evidence) || document.evidence.length !== 0 || document.diagnosis !== null ||
+    document.repair !== null || (document.approval !== undefined && document.approval !== null) ||
+    (document.verification !== undefined && document.verification !== null) ||
+    typeof document.eventCursor !== "string" || !/^(0|[1-9][0-9]*)$/.test(document.eventCursor) ||
+    !isPlainObject(document.eventPage) || !Array.isArray(document.eventPage.items) ||
+    document.eventPage.items.length !== 0 || document.eventPage.nextCursor !== null ||
+    !isPlainObject(actions) || ["rerun", "prepare", "refresh", "edit", "approve", "reject", "rollback", "withdraw"]
+      .some((action) => actions[action] !== "not_applicable")
+  )) throw upstreamContractError();
   return document as unknown as IncidentDetail;
 }
 
@@ -47,13 +56,13 @@ export async function readIncidentForRun(
   read: ReadJson,
   incidentId: string,
   runId: string,
-): Promise<IncidentDetail> {
+): Promise<IncidentWithRun> {
   const detail = requireIncidentDetail(
     await read(`/api/v1/incidents/${incidentId}?runId=${runId}`),
     incidentId,
   );
-  if (detail.selectedRun.id !== runId) throw upstreamContractError();
-  return detail;
+  if (detail.selectedRun === null || detail.selectedRun.id !== runId) throw upstreamContractError();
+  return detail as IncidentWithRun;
 }
 
 export async function readIncidentSummaries(read: ReadJson): Promise<Map<string, IncidentSummary>> {
@@ -242,9 +251,15 @@ export function decodeSseFrame(
     !isNormalizedString(event) ||
     !isPlainObject(data) ||
     data.schemaVersion !== RUNTIME_SCHEMA_VERSION ||
-    data.runKind !== "diagnosis" ||
     data.incidentId !== expected.incidentId ||
-    data.runId !== expected.runId ||
+    (event === "alert.notification"
+      ? data.runId !== null || data.runKind !== null ||
+        (data.alertStatus !== "FIRING" && data.alertStatus !== "RESOLVED") ||
+        typeof data.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(data.fingerprint) ||
+        typeof data.startsAt !== "string" || !Number.isFinite(Date.parse(data.startsAt)) ||
+        (data.endsAt !== null && (typeof data.endsAt !== "string" || !Number.isFinite(Date.parse(data.endsAt)))) ||
+        (data.alertStatus === "RESOLVED" && data.endsAt === null)
+      : data.runKind !== "diagnosis" || data.runId !== expected.runId) ||
     (previousId !== undefined && BigInt(id) <= BigInt(previousId))
   ) {
     throw contractError("sse_replay_invalid", "SSE replay did not preserve the persisted event contract");

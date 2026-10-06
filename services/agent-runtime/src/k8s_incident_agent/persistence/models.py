@@ -23,6 +23,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from k8s_incident_agent.domain.models import (
     AlertSignalStatus,
     DiagnosisOutcome,
+    IncidentLifecycleStatus,
     IncidentStatus,
     RepairOperation,
     RunKind,
@@ -108,6 +109,16 @@ class IncidentRow(Base):
         ),
         nullable=False,
     )
+    lifecycle_status: Mapped[IncidentLifecycleStatus | None] = mapped_column(
+        SqlEnum(
+            IncidentLifecycleStatus,
+            name="lifecycle_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=_enum_values,
+        )
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -124,27 +135,30 @@ class AlertSignalRow(Base):
             name="status",
         ),
         CheckConstraint(
-            "(status = 'FIRING' AND ends_at IS NULL) OR "
-            "(status = 'RESOLVED' AND ends_at IS NOT NULL)",
+            "status != 'RESOLVED' OR ends_at IS NOT NULL",
             name="status_ends_at",
         ),
         CheckConstraint(
             "ends_at IS NULL OR ends_at >= starts_at",
             name="ends_at",
         ),
-        UniqueConstraint(
-            "fingerprint",
-            "starts_at",
-            name="uq_alert_signals_fingerprint_starts_at",
-        ),
+        Index("ix_alert_signals_incident_id", "incident_id"),
     )
 
-    incident_id: Mapped[str] = mapped_column(
+    incident_id: Mapped[str | None] = mapped_column(
         ForeignKey("incidents.id"),
-        primary_key=True,
     )
-    fingerprint: Mapped[str] = mapped_column(String(16), nullable=False)
-    starts_at: Mapped[str] = mapped_column(String(30), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(16), primary_key=True)
+    starts_at: Mapped[str] = mapped_column(String(30), primary_key=True)
+    trigger_ref: Mapped[str] = mapped_column(String, nullable=False)
+    trigger_revision: Mapped[str] = mapped_column(String, nullable=False)
+    display_name: Mapped[str] = mapped_column(String, nullable=False)
+    trigger_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    cluster: Mapped[str] = mapped_column(String, nullable=False)
+    namespace: Mapped[str | None] = mapped_column(String)
+    api_version: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    resource_name: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[AlertSignalStatus] = mapped_column(
         SqlEnum(
             AlertSignalStatus,
@@ -157,6 +171,11 @@ class AlertSignalRow(Base):
         nullable=False,
     )
     ends_at: Mapped[str | None] = mapped_column(String(30))
+    first_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
 
 class MonitoringSourceStateRow(Base):
@@ -274,12 +293,19 @@ class RunEventRow(Base):
     __tablename__ = "run_events"
     __table_args__ = (
         UniqueConstraint("run_id", "event_key", name="uq_run_events_run_id_event_key"),
+        CheckConstraint(
+            "(run_id IS NOT NULL AND incident_id IS NULL) OR "
+            "(run_id IS NULL AND incident_id IS NOT NULL)",
+            name="owner",
+        ),
         Index("ix_run_events_run_id_id", "run_id", "id"),
+        Index("ix_run_events_incident_id_id", "incident_id", "id"),
         {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), nullable=False)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("agent_runs.id"))
+    incident_id: Mapped[str | None] = mapped_column(ForeignKey("incidents.id"))
     event_key: Mapped[str] = mapped_column(String, nullable=False)
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)

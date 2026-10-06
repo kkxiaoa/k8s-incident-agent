@@ -7,6 +7,7 @@ import { OverviewDoughnutChart } from "@/components/charts/overview-doughnut-cha
 import { OverviewTrendChart } from "@/components/charts/overview-trend-chart";
 import { LocalTimestamp } from "@/components/local-timestamp";
 import { UiIcon } from "@/components/ui/ui-icon";
+import { targetLabel } from "@/lib/agent-runtime/view-models";
 import type {
   MonitoringHealthView,
   MonitoringOverviewView,
@@ -22,10 +23,12 @@ const COUNT_CARDS = [
     tone: "neutral",
     info: "Runtime 已持久化的 Incident 累计数，含已结束的记录；不是当前未恢复的数量。",
   },
-  { key: "firingAlerts", label: "告警中", tone: "danger", info: null },
+  { key: "firingAlerts", label: "末次通知 FIRING", tone: "danger", info: null },
   { key: "triagingIncidents", label: "诊断中", tone: "active", info: null },
   { key: "waitingApprovalIncidents", label: "待审批", tone: "waiting", info: null },
 ] as const;
+
+const PENDING_REASON_LABELS = { awaiting_association: "待归属" } as const;
 
 export function HomeMonitoringDashboard({
   initialHealth,
@@ -81,7 +84,7 @@ export function HomeMonitoringDashboard({
         <p className="home-monitoring__error" role="status">
           {runtimeHealth === null
             ? "暂时无法读取模型诊断状态；已保存的 Incident 可独立查看。"
-            : `模型诊断暂不可用（${diagnosisReason(runtimeHealth.diagnosis.reason)}）。暂不创建新的诊断；历史记录与告警恢复信号仍可读取。`}
+            : `模型诊断暂不可用（${diagnosisReason(runtimeHealth.diagnosis.reason)}）。暂不创建新的诊断；合法告警仍会持久化，历史记录可读取。`}
         </p>
       )}
 
@@ -123,8 +126,8 @@ export function HomeMonitoringDashboard({
         <article className="chart-card chart-card--families">
           <header className="chart-card__header">
             <div>
-              <h2>告警中 Incident 分布</h2>
-              <p>按受支持的故障族</p>
+              <h2>末次通知 FIRING 信号分布</h2>
+              <p>含未归属信号；通知状态不代表源端当前状态</p>
             </div>
           </header>
           {overview === null ? (
@@ -155,6 +158,18 @@ export function HomeMonitoringDashboard({
           )}
         </article>
       </div>
+      {overview === null ? null : <section className="console-section" aria-labelledby="unassigned-signals-heading">
+        <h2 id="unassigned-signals-heading">待归属告警信号（{overview.counts.unassignedSignals}）</h2>
+        <p>信号已持久化，尚未归属 Incident。最多展示最近 20 条；通知状态不代表源端当前状态。</p>
+        {overview.unassignedSignals.length === 0 ? <p>暂无待归属信号。</p> : <ul>
+          {overview.unassignedSignals.map((signal) => <li key={`${signal.fingerprint}:${signal.startsAt}`}>
+            <strong>{signal.displayName}</strong> · {targetLabel(signal.target)} · 末次通知 {signal.status}
+            <span> · {PENDING_REASON_LABELS[signal.reason]} · 开始于 <LocalTimestamp timestamp={signal.startsAt} /></span>
+            {signal.lastReceivedAt === null ? null : <span> · 最近接收 <LocalTimestamp timestamp={signal.lastReceivedAt} /></span>}
+            {signal.endsAt === null ? null : <span> · 历史通知中的结束时间 <LocalTimestamp timestamp={signal.endsAt} /></span>}
+          </li>)}
+        </ul>}
+      </section>}
     </section>
   );
 }

@@ -1,6 +1,7 @@
 from pydantic import ValidationError
 
 from k8s_incident_agent.api_contracts import (
+    AlertNotificationEventPayload,
     ApprovalDecidedEventPayload,
     DiagnosisCompletedEventPayload,
     EvidenceRecordedEventPayload,
@@ -23,13 +24,17 @@ from k8s_incident_agent.workflow.failures import require_terminal_error_contract
 
 
 def validated_stream_item(event: RunEvent) -> RunEventStreamItem:
+    stored_version = 5 if event.run_id is not None else 6
+    if event.payload.get("schemaVersion") != stored_version:
+        raise RecoveryConsistencyError
+    wire_payload = {**event.payload, "schemaVersion": 6}
     try:
         stream_item = RunEventStreamItem.model_validate_json(
             canonical_json(
                 {
                     "id": str(event.id),
                     "event": event.event_type,
-                    "data": event.payload,
+                    "data": wire_payload,
                 }
             )
         )
@@ -51,14 +56,16 @@ def validated_stream_item(event: RunEvent) -> RunEventStreamItem:
         payload.incident_id != event.incident_id
         or payload.run_id != event.run_id
         or payload.occurred_at != event.occurred_at
-        or _event_payload(payload) != event.payload
+        or _event_payload(payload) != wire_payload
         or event.event_key != _expected_event_key(event.event_type, payload)
     ):
         raise RecoveryConsistencyError
     return stream_item
 
 
-def _event_payload(payload: RunEventPayload) -> dict[str, object]:
+def _event_payload(
+    payload: RunEventPayload | AlertNotificationEventPayload,
+) -> dict[str, object]:
     serialized = payload.model_dump(mode="json")
     if isinstance(payload, ToolStartedEventPayload):
         if payload.call_identity is None:
@@ -69,11 +76,15 @@ def _event_payload(payload: RunEventPayload) -> dict[str, object]:
 
 
 def validated_event_json(event: RunEvent) -> str:
-    validated_stream_item(event)
-    return canonical_json(event.payload)
+    return canonical_json(
+        validated_stream_item(event).root.data.model_dump(mode="json")
+    )
 
 
-def _expected_event_key(event_type: str, payload: RunEventPayload) -> str:
+def _expected_event_key(
+    event_type: str,
+    payload: RunEventPayload | AlertNotificationEventPayload,
+) -> str:
     if isinstance(payload, VerificationUpdatedEventPayload):
         return (
             "run:terminal"

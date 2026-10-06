@@ -12,10 +12,15 @@ from k8s_incident_agent.domain.contracts import (
 )
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
+    CreatedIncident,
     DiagnosisWorkflowRunSnapshot,
+    ModelSnapshot,
+    NormalizedAlertOccurrence,
+    RunBudget,
 )
 from k8s_incident_agent.model.availability import DiagnosticModelAvailability
 from k8s_incident_agent.monitoring.service import PrometheusQueryService
+from k8s_incident_agent.persistence.models import AlertSignalRow, IncidentRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
@@ -61,6 +66,34 @@ def public_scenario(name: str = "image-pull-backoff") -> PublicScenario:
             name=name,
         ),
     )
+
+
+async def seed_legacy_alert_incident(
+    repository: IncidentRepository,
+    occurrence: NormalizedAlertOccurrence,
+    model: ModelSnapshot,
+    budget: RunBudget,
+) -> CreatedIncident:
+    created = await repository.create_incident_and_run(
+        occurrence.trigger, model, budget
+    )
+    await repository.apply_alert_occurrences((occurrence,))
+    async with (
+        repository._session_factory() as session,  # pyright: ignore[reportPrivateUsage]
+        session.begin(),
+    ):
+        signal = await session.get(
+            AlertSignalRow, (occurrence.fingerprint, occurrence.starts_at)
+        )
+        assert signal is not None
+        signal.incident_id = str(created.incident_id)
+        signal.first_received_at = None
+        signal.last_received_at = None
+        signal.resolved_received_at = None
+        incident = await session.get(IncidentRow, str(created.incident_id))
+        assert incident is not None
+        incident.lifecycle_status = None
+    return created
 
 
 async def agent_run_snapshot(

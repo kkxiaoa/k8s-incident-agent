@@ -209,8 +209,8 @@ async def test_rerun_requires_terminal_predecessor_and_keeps_attempts_isolated(
             run_id=first.run_id,
             event_limit=100,
         )
-        assert latest is not None
-        assert historical is not None
+        assert latest is not None and latest.run is not None
+        assert historical is not None and historical.run is not None
         assert latest.run.id == second.run_id
         assert latest.run.attempt == 2
         assert latest.run.status is RunStatus.QUEUED

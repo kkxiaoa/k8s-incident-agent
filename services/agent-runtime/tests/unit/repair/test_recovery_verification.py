@@ -10,7 +10,6 @@ from tests.unit.persistence.test_alert_intake import (
     _occurrence,  # pyright: ignore[reportPrivateUsage]
     _timestamp,  # pyright: ignore[reportPrivateUsage]
 )
-from tests.unit.persistence.test_repair_persistence import BUDGET
 from tests.unit.repair.test_repair_preparation import (
     credential as diagnostic_credential,
 )
@@ -19,12 +18,14 @@ from tests.unit.routes.test_operator import credential as credential
 
 from k8s_incident_agent.domain.models import (
     AlertSignalStatus,
+    IncidentLifecycleStatus,
     IncidentStatus,
     RepairWorkflowRunSnapshot,
     RunStatus,
 )
 from k8s_incident_agent.kubernetes.contracts import RecoveryLogs
 from k8s_incident_agent.kubernetes.errors import KubernetesErrorCode
+from k8s_incident_agent.persistence.models import IncidentRow
 from k8s_incident_agent.repair.verification import verify_recovery
 
 
@@ -87,7 +88,7 @@ async def test_exact_applied_recovery_through_sdk_http_sqlite_and_public_api(
             harness.clock[0] += timedelta(seconds=seconds)
             kube.now = harness.now()
             await harness.repository.apply_alert_occurrences(
-                (), None, BUDGET, watchdog_received_at=harness.now()
+                (), watchdog_received_at=harness.now()
             )
 
         await tick(0)
@@ -117,6 +118,7 @@ async def test_exact_applied_recovery_through_sdk_http_sqlite_and_public_api(
         assert verification.deadline_at == verification.started_at + timedelta(
             minutes=10
         )
+        assert detail.run is not None
         if fault is None:
             assert detail.incident.status is IncidentStatus.RESOLVED
             assert detail.run.status is RunStatus.COMPLETED
@@ -144,6 +146,10 @@ async def test_exact_applied_recovery_through_sdk_http_sqlite_and_public_api(
             for item in response.json()["eventPage"]["items"]
         )
         if fault is None:
+            async with harness.database.session_factory.begin() as session:
+                incident = await session.get(IncidentRow, str(harness.incident_id))
+                assert incident
+                incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
             cutoff = harness.now() + timedelta(days=8)
             artifacts = tmp_path / "runtime" / "runs"
             targets = await harness.repository.list_prune_targets(cutoff, artifacts)
@@ -199,7 +205,7 @@ async def test_missing_samples_restarts_and_refiring_reset_the_window(
                 kube.pod.status.container_statuses[0].restart_count = 1
             metrics.active = interruption == "refiring" and elapsed == 60
             await harness.repository.apply_alert_occurrences(
-                (), None, BUDGET, watchdog_received_at=harness.now()
+                (), watchdog_received_at=harness.now()
             )
 
         await tick(0)
@@ -351,7 +357,9 @@ async def test_alert_source_requires_its_own_resolved_occurrence(
                 else ()
             )
             await harness.repository.apply_alert_occurrences(
-                occurrences, None, BUDGET, watchdog_received_at=harness.now()
+                occurrences,
+                received_at=harness.now(),
+                watchdog_received_at=harness.now(),
             )
 
         await tick(0)
@@ -406,7 +414,7 @@ async def test_auxiliary_logs_cannot_change_recovery_proven_before_deadline(
             harness.clock[0] += timedelta(seconds=seconds)
             kube.now = harness.now()
             await harness.repository.apply_alert_occurrences(
-                (), None, BUDGET, watchdog_received_at=harness.now()
+                (), watchdog_received_at=harness.now()
             )
 
         await tick(539)
@@ -445,6 +453,7 @@ async def test_auxiliary_logs_cannot_change_recovery_proven_before_deadline(
         assert after.repair.verification.completed_at == started + timedelta(
             seconds=599
         )
+        assert after.run is not None
         assert after.repair.verification.deadline_at == started + timedelta(seconds=600)
         assert (
             after.run.status is RunStatus.COMPLETED and not after.run_creation_blocked

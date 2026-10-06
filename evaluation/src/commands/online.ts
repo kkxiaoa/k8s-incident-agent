@@ -47,7 +47,7 @@ async function evaluateOnlineBoundary(options: OnlineOptions): Promise<OnlineArt
     throw contractError("online_existing_incident_required", "Rerun boundary requires an existing Incident");
   }
   const before = await readIncident(read, incidentId);
-  if (!Number.isSafeInteger(before.selectedRun.attempt) || before.selectedRun.attempt < 1) throw upstreamContractError();
+  if (before.selectedRun === null || !Number.isSafeInteger(before.selectedRun.attempt) || before.selectedRun.attempt < 1) throw upstreamContractError();
   const path = `/api/v1/incidents/${incidentId}/runs`;
   const mutation = { method: "POST", headers: { "content-type": "application/json" }, body: "{}" };
   const anonymous = await httpRequest(options.anonymousFetch, runtime, path, mutation);

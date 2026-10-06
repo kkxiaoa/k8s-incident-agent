@@ -20,7 +20,7 @@ Source: [BFF client](../src/lib/agent-runtime/server-client.ts), [Runtime app](.
 
 ```mermaid
 sequenceDiagram
-    participant Intake as Runtime intake
+    participant Intake as Authenticated diagnosis action
     participant Graph as Deterministic workflow
     participant Agent as Diagnostic Agent
     participant Tools as Typed read-only tools
@@ -43,7 +43,11 @@ sequenceDiagram
     Note over Intake,Store: SSE / detail reads expose persisted results, not model memory
 ```
 
-Inputs are either a catalog-mapped Alertmanager occurrence or an authenticated manual action enabled by the selected profile. Repeated alert deliveries are deduplicated. A resolved alert updates signal history; it does **not** establish recovery or automatically resolve the Incident.
+The Alertmanager webhook durably records catalog-mapped occurrences independently of model availability. The occurrence key is `(fingerprint, startsAt)` with nanosecond precision. New firing notifications and previously unseen resolved notifications are stored without creating an Incident or Run. The monitoring overview exposes a bounded list and total of unassigned signals. Authenticated manual creation in development/evaluation profiles and diagnosis of existing Run-bearing Incidents use the diagnosis path above.
+
+Repeated deliveries refresh the receipt time without duplicating an occurrence. Signal status describes the last notification, not verified current source state; historical resolved facts survive a later firing notification. For an already-associated signal, a changed notification appends an Incident-owned `alert.notification` event without changing Run state or business progress time. A resolved notification does **not** establish recovery, close the Incident or authorize a Kubernetes write.
+
+Incident detail supports `selectedRun: null`, empty Run-owned data and inapplicable actions. Incident SSE includes both Incident-owned and Run-owned events on one cursor; Run history and Run-event pages contain only their selected Run. Persisted older Run events are projected to the current wire schema without rewriting their audit payloads.
 
 The diagnostic scope is broader than the executable action set: Pod/Deployment investigation can produce explanations, missing-information findings and manual recommendations without an executable proposal. Evidence of a terminated container with reason `OOMKilled` supports that termination fact. Without a memory trend, it does not establish where memory pressure came from; without the reason, a restart alone is not proof of OOM. CPU throttling alone is not proof that it caused slow startup.
 

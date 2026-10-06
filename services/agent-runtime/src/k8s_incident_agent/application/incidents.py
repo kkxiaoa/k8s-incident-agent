@@ -71,6 +71,7 @@ from k8s_incident_agent.persistence.repositories import (
     IncidentRepairDetail,
     IncidentRepository,
     IncidentRunDetail,
+    RunNotApplicableError,
     RunNotFoundRepositoryError,
 )
 from k8s_incident_agent.scenarios.contracts import PublicScenario, ScenarioTarget
@@ -159,6 +160,15 @@ class IncidentApplicationService:
         operator_ref: str | None = None,
         requester: OperatorSession | None = None,
     ) -> CreateRunResponse:
+        history = await self._repository.list_run_records(
+            incident_id,
+            limit=1,
+            before_attempt=None,
+        )
+        if history is None:
+            raise IncidentNotFoundError
+        if not history.items:
+            raise RunNotApplicableError
         model = self._require_diagnostic_readiness()
         try:
             created = await self._repository.create_run(
@@ -277,6 +287,8 @@ class IncidentApplicationService:
             raise IncidentNotFoundError
         if detail.actions is None:
             raise RuntimeNotReadyError
+        if detail.run is None:
+            return _incident_detail_response(detail)
         try:
             self._require_diagnostic_readiness()
         except (RuntimeNotReadyError, DiagnosisUnavailableError):
@@ -448,6 +460,7 @@ def _incident_list_item(item: IncidentListRecord) -> IncidentListItem:
         display_name=item.display_name,
         target=_target_response(item.target),
         status=item.status,
+        lifecycle_status=item.lifecycle_status,
         updated_at=item.updated_at,
     )
 
@@ -595,7 +608,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             ),
         )
     next_cursor = None
-    if detail.has_older_events and detail.events:
+    if detail.has_older_events and detail.events and detail.run is not None:
         next_cursor = _encode_cursor(
             {
                 "incidentId": str(incident.id),
@@ -611,9 +624,10 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             trigger_summary=detail.trigger_summary,
             target=_target_response(incident.target),
             status=incident.status,
+            lifecycle_status=incident.lifecycle_status,
             created_at=incident.created_at,
         ),
-        selected_run=_selected_run(detail.run),
+        selected_run=_selected_run(detail.run) if detail.run is not None else None,
         event_page=EventPageResponse(
             items=tuple(_stream_item(event) for event in detail.events),
             next_cursor=next_cursor,

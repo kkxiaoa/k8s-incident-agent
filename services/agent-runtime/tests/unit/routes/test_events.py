@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -10,16 +11,23 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import delete
 from starlette.types import Message, Scope
 from tests.factories import (
     diagnostic_model_stub,
     monitoring_health_service_stub,
     normalized_trigger,
     operator_sessions_stub,
+    seed_legacy_alert_incident,
+)
+from tests.unit.persistence.test_alert_intake import (
+    _occurrence,  # pyright: ignore[reportPrivateUsage]
+    _timestamp,  # pyright: ignore[reportPrivateUsage]
 )
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
+from k8s_incident_agent.application.event_projection import validated_stream_item
 from k8s_incident_agent.application.events import (
     EventDependencies,
     IncidentEventService,
@@ -29,6 +37,7 @@ from k8s_incident_agent.application.events import (
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import (
+    AlertSignalStatus,
     ModelSnapshot,
     RunBudget,
     RunStatus,
@@ -38,6 +47,7 @@ from k8s_incident_agent.persistence.database import (
     BusinessDatabase,
     create_business_database,
 )
+from k8s_incident_agent.persistence.models import RunEventRow, RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
@@ -51,6 +61,75 @@ MODEL = ModelSnapshot(
     prompt_version="stage1-v1",
 )
 BUDGET = RunBudget(max_model_calls=8, max_tool_calls=6, timeout_seconds=180)
+
+
+@pytest.mark.parametrize("without_run", [False, True])
+async def test_incident_owned_notification_replays_over_http_with_current_projection(
+    tmp_path: Path,
+    without_run: bool,
+) -> None:
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await seed_legacy_alert_incident(
+            repository, _occurrence(), MODEL, BUDGET
+        )
+        if without_run:
+            async with database.session_factory() as session, session.begin():
+                await session.execute(
+                    delete(RunEventRow).where(RunEventRow.run_id == str(created.run_id))
+                )
+                await session.execute(
+                    delete(RunRow).where(RunRow.id == str(created.run_id))
+                )
+        await repository.apply_alert_occurrences(
+            (_occurrence(status=AlertSignalStatus.RESOLVED, ends_at=_timestamp(5)),)
+        )
+        saved = (
+            await repository.list_incident_events(
+                created.incident_id, after_id=created.event.id, limit=10
+            )
+        )[0]
+
+        class OneEventService(IncidentEventService):
+            async def open_stream(
+                self, incident_id: UUID, last_event_id_header: str | None
+            ) -> AsyncGenerator[bytes]:
+                stream = await super().open_stream(incident_id, last_event_id_header)
+
+                async def finite() -> AsyncGenerator[bytes]:
+                    try:
+                        yield await anext(stream)
+                    finally:
+                        await stream.aclose()
+
+                return finite()
+
+        service = OneEventService(
+            EventDependencies(repository=repository, notifier=RunEventNotifier())
+        )
+        async with _client(tmp_path, service) as client:
+            response = await client.get(
+                f"/api/v1/incidents/{created.incident_id}/events",
+                headers={
+                    "Last-Event-ID": "0" if without_run else str(created.event.id)
+                },
+            )
+        assert response.status_code == 200
+        assert response.text.startswith(f"id: {saved.id}\nevent: alert.notification\n")
+        assert (
+            json.loads(response.text.split("data: ")[1])
+            == validated_stream_item(saved).model_dump(mode="json")["data"]
+        )
+        detail = await repository.get_incident_detail(
+            created.incident_id, run_id=None, event_limit=100
+        )
+        assert detail is not None and detail.event_cursor == saved.id
+        assert (detail.run is None) is without_run
+        assert all(item.event_type != "alert.notification" for item in detail.events)
+        stream = await IncidentEventService(
+            EventDependencies(repository=repository, notifier=RunEventNotifier())
+        ).open_stream(created.incident_id, str(saved.id))
+        await stream.aclose()
 
 
 class _EventService:
@@ -371,4 +450,4 @@ async def test_http_disconnect_cancels_stream_without_changing_run_state(
             event_limit=100,
         )
         assert detail is not None
-        assert detail.run.status is RunStatus.QUEUED
+        assert detail.run is not None and detail.run.status is RunStatus.QUEUED

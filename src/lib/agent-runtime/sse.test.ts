@@ -7,6 +7,7 @@ import {
   REPAIR_PROPOSAL_ID,
   RUN_ID,
   makeIncidentDetail,
+  makeIncidentWithoutRuns,
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
   makeRecoveryDetail,
@@ -25,12 +26,30 @@ import {
 const OTHER_RUN_ID = "55555555-5555-4555-8555-555555555555";
 const OTHER_INCIDENT_ID = "66666666-6666-4666-8666-666666666666";
 
+it.each([false, true])("replays Incident-owned notifications without changing Run state, no Run=%s", (noRun) => {
+  const detail = noRun ? makeIncidentWithoutRuns() : makeIncidentDetail();
+  const payload = { schemaVersion: 6, incidentId: INCIDENT_ID, runId: null, runKind: null,
+    occurredAt: "2026-09-03T00:10:00Z", fingerprint: "0123456789abcdef", alertStatus: "FIRING",
+    startsAt: "2026-09-03T00:00:00.000000001Z", endsAt: "2026-09-03T00:05:00.000000000Z" };
+  const event = parseRunEvent("alert.notification", "10", JSON.stringify(payload), INCIDENT_ID)!;
+  expect(requiresIncidentDetailRefresh(event, detail.selectedRun?.id ?? null)).toBe(true);
+  expect(isTerminalRunEvent(event)).toBe(false);
+  const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
+  expect(state.detail.selectedRun).toEqual(detail.selectedRun);
+  expect(state.detail.incident.status).toBe(detail.incident.status);
+  expect(state.detail.eventPage.items).toEqual([]);
+  expect(reduceIncidentStream(state, { type: "event", event })).toEqual(state);
+  for (const invalid of [{ runId: RUN_ID }, { runKind: "diagnosis" }, { incidentId: OTHER_INCIDENT_ID }, { alertStatus: "RESOLVED", endsAt: null }]) {
+    expect(() => parseRunEvent("alert.notification", "11", JSON.stringify({ ...payload, ...invalid }), INCIDENT_ID)).toThrow();
+  }
+});
+
 it.each([
   ["apply", "observing"], ["apply", "recovered"], ["apply", "monitoring_unavailable"],
   ["rollback", "observing"], ["rollback", "recovered"], ["rollback", "monitoring_unavailable"],
 ] as const)("refreshes %s %s verification and deduplicates its replay", (operation, outcome) => {
   const detail = operation === "rollback" ? makeRollbackRecoveryDetail(outcome) : makeRecoveryDetail(outcome);
-  const payload = { schemaVersion: 5, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-14T01:01:02Z", executionId: detail.verification!.executionId,
+  const payload = { schemaVersion: 6, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-14T01:01:02Z", executionId: detail.verification!.executionId,
     outcome, reason: detail.verification!.reason, sampleCount: detail.verification!.sampleCount, runStatus: detail.selectedRun.status, incidentStatus: detail.incident.status };
   const event = parseRunEvent("repair.verification_updated", "999", JSON.stringify(payload), detail.incident.id)!;
   expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id)).toBe(true);
@@ -46,14 +65,14 @@ it.each([
   ["UNKNOWN", "FAILED", "FAILED"],
 ] as const)("projects %s and refreshes the authoritative ledger", (executionStatus, runStatus, incidentStatus) => {
   const detail = makeRepairRunWaitingDetail();
-  const payload = { schemaVersion: 5, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-13T01:00:00Z", approvalId: OTHER_RUN_ID, executionId: OTHER_INCIDENT_ID, executionStatus, runStatus, incidentStatus, lateResult: false };
+  const payload = { schemaVersion: 6, incidentId: detail.incident.id, runId: detail.selectedRun.id, runKind: "repair", occurredAt: "2026-09-13T01:00:00Z", approvalId: OTHER_RUN_ID, executionId: OTHER_INCIDENT_ID, executionStatus, runStatus, incidentStatus, lateResult: false };
   const event = parseRunEvent("repair.execution_updated", "999", JSON.stringify(payload), detail.incident.id)!;
   expect(event).not.toBeNull();
   expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id)).toBe(true);
   expect(isTerminalRunEvent(event)).toBe(runStatus === "FAILED");
   const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
   expect(state.detail.incident.status).toBe(incidentStatus);
-  expect(state.detail.selectedRun.status).toBe(runStatus);
+  expect(state.detail.selectedRun?.status).toBe(runStatus);
   expect(() => parseRunEvent("repair.execution_updated", "999", JSON.stringify({ ...payload, incidentStatus: "RESOLVED" }), detail.incident.id)).toThrow("Invalid incident event");
 });
 
@@ -62,7 +81,7 @@ function incidentCreated(id: string) {
     "incident.created",
     id,
     JSON.stringify({
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       attempt: 1,
@@ -80,7 +99,7 @@ function runQueued(id: string, runId = OTHER_RUN_ID) {
     "run.queued",
     id,
     JSON.stringify({
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId,
       attempt: 2,
@@ -97,7 +116,7 @@ function runStarted(id: string, runId = RUN_ID) {
     "run.started",
     id,
     JSON.stringify({
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId,
       attempt: runId === RUN_ID ? 1 : 2,
@@ -115,7 +134,7 @@ function diagnosisCompleted(id: string, runId = RUN_ID) {
     "diagnosis.completed",
     id,
     JSON.stringify({
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId,
       diagnosisId: DIAGNOSIS_ID,
@@ -134,7 +153,7 @@ function repairDiagnosisCompleted(id: string) {
     "diagnosis.completed",
     id,
     JSON.stringify({
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       diagnosisId: DIAGNOSIS_ID,
@@ -165,7 +184,7 @@ function repairEvent(
     name,
     id,
     JSON.stringify({
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       proposalId: REPAIR_PROPOSAL_ID,
@@ -184,7 +203,7 @@ function alertResolved(id: string, runId = RUN_ID) {
     "alert.resolved",
     id,
     JSON.stringify({
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId,
       alertStatus: "RESOLVED",
@@ -200,14 +219,14 @@ describe("parseRunEvent", () => {
   it.each(["expired", "superseded", "withdrawn"])("ends a %s repair wait and refreshes the authoritative detail", (reason) => {
     const detail = makeRepairRunWaitingDetail();
     const payload = {
-      schemaVersion: 5, incidentId: INCIDENT_ID, runId: detail.selectedRun.id,
+      schemaVersion: 6, incidentId: INCIDENT_ID, runId: detail.selectedRun.id,
       runKind: "repair", runStatus: "COMPLETED", incidentStatus: "DIAGNOSED",
       occurredAt: "2026-08-29T01:16:00Z", reason,
     };
     const event = parseRunEvent("repair.wait_ended", "2", JSON.stringify(payload), INCIDENT_ID);
     expect(isTerminalRunEvent(event)).toBe(true);
     const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
-    expect(state.detail.selectedRun.status).toBe("COMPLETED");
+    expect(state.detail.selectedRun?.status).toBe("COMPLETED");
     expect(state.detail.incident.status).toBe("DIAGNOSED");
     expect(state.detailRefreshEventId).toBe("2");
     for (const change of [{ reason: "approved" }, { runKind: "diagnosis" }, { runStatus: "WAITING_APPROVAL" }]) {
@@ -237,8 +256,8 @@ describe("parseRunEvent", () => {
       { type: "event", event: waiting },
     );
     expect(state.connection).toBe("live");
-    expect(state.detail.selectedRun.status).toBe("WAITING_APPROVAL");
-    expect(state.detail.selectedRun.completedAt).toBeNull();
+    expect(state.detail.selectedRun?.status).toBe("WAITING_APPROVAL");
+    expect(state.detail.selectedRun?.completedAt).toBeNull();
     expect(state.detailRefreshEventId).toBe("2");
     for (const fields of [
       { runKind: "repair", runStatus: "COMPLETED" },
@@ -256,12 +275,12 @@ describe("parseRunEvent", () => {
 
   it.each([
     ["v1 payload", { schemaVersion: 1 }],
-    ["missing attempt", { schemaVersion: 5 }],
-    ["zero attempt", { schemaVersion: 5, attempt: 0 }],
-    ["first attempt", { schemaVersion: 5, attempt: 1 }],
+    ["missing attempt", { schemaVersion: 6 }],
+    ["zero attempt", { schemaVersion: 6, attempt: 0 }],
+    ["first attempt", { schemaVersion: 6, attempt: 1 }],
     [
       "another Incident owner",
-      { schemaVersion: 5, attempt: 2, incidentId: OTHER_INCIDENT_ID },
+      { schemaVersion: 6, attempt: 2, incidentId: OTHER_INCIDENT_ID },
     ],
   ])("rejects %s", (_label, override) => {
     expect(() =>
@@ -283,7 +302,7 @@ describe("parseRunEvent", () => {
 
   it("binds REST event history to its Incident and Run owners", () => {
     const response = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       items: [runStarted("2")],
       nextCursor: null,
     };
@@ -313,7 +332,7 @@ describe("parseRunEvent", () => {
         "alert.resolved",
         "3",
         JSON.stringify({
-          schemaVersion: 5,
+          schemaVersion: 6,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           alertStatus: "RESOLVED",
@@ -342,7 +361,7 @@ describe("parseRunEvent", () => {
         "repair.patch_ready",
         "4",
         JSON.stringify({
-          schemaVersion: 5,
+          schemaVersion: 6,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           proposalId: REPAIR_PROPOSAL_ID,
@@ -382,7 +401,7 @@ describe("reduceIncidentStream", () => {
     });
     const connected = reduceIncidentStream(terminal, { type: "connected" });
 
-    expect(connected.detail.selectedRun.status).toBe("COMPLETED");
+    expect(connected.detail.selectedRun?.status).toBe("COMPLETED");
     expect(connected.connection).toBe("live");
   });
 
@@ -396,7 +415,7 @@ describe("reduceIncidentStream", () => {
       event: repairDiagnosisCompleted("2"),
     });
     expect(state.detail.incident.status).toBe("DIAGNOSED");
-    expect(state.detail.selectedRun.status).toBe("RUNNING");
+    expect(state.detail.selectedRun?.status).toBe("RUNNING");
     expect(state.detailRefreshEventId).toBeNull();
 
     state = reduceIncidentStream(state, {
@@ -418,7 +437,7 @@ describe("reduceIncidentStream", () => {
       event: repairEvent("repair.waiting_approval", "5"),
     });
     expect(state.detail.incident.status).toBe("WAITING_APPROVAL");
-    expect(state.detail.selectedRun.status).toBe("COMPLETED");
+    expect(state.detail.selectedRun?.status).toBe("COMPLETED");
     expect(state.detailRefreshEventId).toBe("5");
   });
 
@@ -432,8 +451,8 @@ describe("reduceIncidentStream", () => {
     });
 
     expect(afterCurrentStart.detail.incident.status).toBe("TRIAGING");
-    expect(afterCurrentStart.detail.selectedRun.id).toBe(RUN_ID);
-    expect(afterCurrentStart.detail.selectedRun.status).toBe("QUEUED");
+    expect(afterCurrentStart.detail.selectedRun?.id).toBe(RUN_ID);
+    expect(afterCurrentStart.detail.selectedRun?.status).toBe("QUEUED");
     expect(afterCurrentStart.events).toEqual([]);
     expect(afterCurrentStart.detailRefreshEventId).toBeNull();
   });
@@ -450,7 +469,7 @@ describe("reduceIncidentStream", () => {
 
     expect(historical.detailRefreshEventId).toBe("2");
     const completed = parseRunEvent("run.failed", "3", JSON.stringify({
-      schemaVersion: 5, incidentId: INCIDENT_ID, runId: OTHER_RUN_ID, runKind: "diagnosis",
+      schemaVersion: 6, incidentId: INCIDENT_ID, runId: OTHER_RUN_ID, runKind: "diagnosis",
       occurredAt: "2026-08-29T01:00:03Z", incidentStatus: "FAILED", runStatus: "FAILED",
       errorCode: "diagnosis_failed", retryable: false,
     }), INCIDENT_ID);
@@ -514,7 +533,7 @@ describe("reduceIncidentStream", () => {
       type: "event", event: repairEvent("repair.patch_ready", "3"),
     });
     expect(replay.detail.incident.status).toBe("WAITING_APPROVAL");
-    expect(replay.detail.selectedRun.status).toBe("COMPLETED");
+    expect(replay.detail.selectedRun?.status).toBe("COMPLETED");
     expect(replay.lastEventId).toBe("5");
     expect(replay.eventPageCursor).toBe("3");
     expect(replay.events.map((event) => event.id)).toEqual(["1", "2", "3", "4", "5"]);
@@ -522,7 +541,7 @@ describe("reduceIncidentStream", () => {
       type: "event", event: runStarted("6", OTHER_RUN_ID),
     });
     expect(newer.detail.incident.status).toBe("TRIAGING");
-    expect(newer.detail.selectedRun.status).toBe("COMPLETED");
+    expect(newer.detail.selectedRun?.status).toBe("COMPLETED");
   });
 
   it("keeps newer streamed statuses when a slow snapshot arrives", () => {
@@ -540,7 +559,7 @@ describe("reduceIncidentStream", () => {
       type: "snapshot", afterEventId: "2", detail: persisted,
     });
     expect(snapshot.detail.incident.status).toBe("PATCH_READY");
-    expect(snapshot.detail.selectedRun.status).toBe("RUNNING");
+    expect(snapshot.detail.selectedRun?.status).toBe("RUNNING");
     expect(snapshot.detail.evidence).toEqual(persisted.evidence);
     expect(snapshot.detail.eventCursor).toBe("2");
     expect(snapshot.lastEventId).toBe("3");
@@ -559,6 +578,6 @@ describe("reduceIncidentStream", () => {
 
     expect(afterResolved.detailRefreshEventId).toBe("2");
     expect(afterResolved.detail.incident.status).toBe("DIAGNOSED");
-    expect(afterResolved.detail.selectedRun.status).toBe("COMPLETED");
+    expect(afterResolved.detail.selectedRun?.status).toBe("COMPLETED");
   });
 });

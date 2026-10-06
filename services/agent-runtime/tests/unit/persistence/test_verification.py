@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 from tests.recovery_fixtures import MonitoringFixture, RecoveryFixture
-from tests.unit.persistence.test_repair_persistence import BUDGET
 from tests.unit.repair.test_repair_preparation import (
     credential as diagnostic_credential,
 )
@@ -56,7 +55,7 @@ async def test_verification_audit_is_atomic_idempotent_and_readers_keep_one_snap
             harness.clock[0] += timedelta(seconds=seconds)
             kube.now = harness.now()
             await harness.repository.apply_alert_occurrences(
-                (), None, BUDGET, watchdog_received_at=harness.now()
+                (), watchdog_received_at=harness.now()
             )
             if harness.now() == started + timedelta(seconds=60):
                 raise asyncio.CancelledError
@@ -179,20 +178,20 @@ async def test_verification_audit_is_atomic_idempotent_and_readers_keep_one_snap
             release.set()
             await asyncio.gather(read_task, return_exceptions=True)
         assert snapshot is not None
-        assert (
-            snapshot.run_status
-            if isinstance(snapshot, RepairWorkflowRunSnapshot)
-            else snapshot.items[0].status
-            if isinstance(snapshot, RunListPage)
-            else cast(IncidentDetailRecord, snapshot).run.status
-        ) is RunStatus.RUNNING
+        if isinstance(snapshot, RepairWorkflowRunSnapshot):
+            assert snapshot.run_status is RunStatus.RUNNING
+        elif isinstance(snapshot, RunListPage):
+            assert snapshot.items[0].status is RunStatus.RUNNING
+        else:
+            assert isinstance(snapshot, IncidentDetailRecord)
+            assert snapshot.run is not None and snapshot.run.status is RunStatus.RUNNING
         await harness.repository.persist_verification(
             harness.run_id, context.record, updated, observation
         )
         after = await harness.repository.get_incident_detail(
             harness.incident_id, run_id=harness.run_id, event_limit=100
         )
-        assert after is not None and after.repair is not None
+        assert after is not None and after.run is not None and after.repair is not None
         assert (
             after.run.status is RunStatus.COMPLETED and not after.run_creation_blocked
         )

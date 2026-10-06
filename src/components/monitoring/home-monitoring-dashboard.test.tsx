@@ -46,7 +46,9 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
       firingAlerts,
       triagingIncidents: 3,
       waitingApprovalIncidents: 4,
+      unassignedSignals: 0,
     },
+    unassignedSignals: [],
     families:
       firingAlerts === 0
         ? []
@@ -67,6 +69,21 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
 }
 
 describe("HomeMonitoringDashboard", () => {
+  it("shows durable unassigned notifications without presenting them as Incidents or current source truth", () => {
+    const value = overview();
+    value.counts.unassignedSignals = 1;
+    value.unassignedSignals = [{ fingerprint: "0123456789abcdef", displayName: "Image pull failure",
+      target: { kind: "Deployment", namespace: "incident-demo", name: "broken-image" },
+      status: "FIRING", startsAt: "2026-09-03T01:00:00Z", endsAt: "2026-09-03T01:05:00Z",
+      lastReceivedAt: "2026-09-03T01:10:00Z", reason: "awaiting_association" }];
+    render(<HomeMonitoringDashboard initialOverview={value} initialHealth={HEALTH}
+      runtimeHealth={{ status: "ok", diagnosis: { status: "unavailable", reason: "authentication_failed" } }} />);
+    expect(screen.getByRole("heading", { name: "待归属告警信号（1）" })).toBeVisible();
+    expect(screen.getByText(/最多展示最近 20 条；通知状态不代表源端当前状态/)).toBeVisible();
+    expect(screen.getByText(/历史通知中的结束时间/)).toBeVisible();
+    expect(screen.getByText(/合法告警仍会持久化/)).toBeVisible();
+    expect(screen.queryByRole("link", { name: /broken-image/ })).toBeNull();
+  });
   it("separates model availability from healthy monitoring and refreshes the displayed state", () => {
     const { rerender } = render(<HomeMonitoringDashboard initialHealth={HEALTH}
       initialOverview={overview()} runtimeHealth={{ status: "ok", diagnosis: {
@@ -90,7 +107,7 @@ describe("HomeMonitoringDashboard", () => {
     expect(screen.getByRole("region", { name: "监控链路" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "监控链路" })).toBeVisible();
     expect(screen.getByLabelText("Incident 状态统计")).toHaveTextContent(
-      /已记录 Incident.*8告警中2诊断中3待审批4/,
+      /已记录 Incident.*8末次通知 FIRING2诊断中3待审批4/,
     );
     expect(
       screen.getByLabelText("说明已记录 Incident 的统计口径"),
@@ -100,11 +117,11 @@ describe("HomeMonitoringDashboard", () => {
     );
     expect(
       screen.getByRole("img", {
-        name: "告警中的 Incident 共 2 个，分布于 1 个故障族",
+        name: "末次通知 FIRING 信号共 2 个，分布于 1 个故障族",
       }),
     ).toBeVisible();
     expect(
-      screen.getByRole("list", { name: "告警中 Incident 故障族分布" }),
+      screen.getByRole("list", { name: "末次通知 FIRING 信号故障族分布" }),
     ).toHaveTextContent("Image pull failure2");
     expect(
       screen.getByRole("img", {
@@ -126,9 +143,9 @@ describe("HomeMonitoringDashboard", () => {
     );
 
     expect(
-      screen.getByRole("img", { name: "当前没有告警中的 Incident" }),
+      screen.getByRole("img", { name: "没有末次通知为 FIRING 的信号" }),
     ).toBeVisible();
-    expect(screen.getByText("当前没有告警中的 Incident。")).toBeVisible();
+    expect(screen.getByText("没有末次通知为 FIRING 的信号。")).toBeVisible();
   });
 
   it("keeps the latest health check time visible when overview data is unavailable", () => {

@@ -53,6 +53,7 @@ export interface IncidentListItemView {
   id: string;
   displayName: string;
   status: components["schemas"]["IncidentStatus"];
+  lifecycleStatus: components["schemas"]["IncidentLifecycleStatus"] | null;
   target: TargetView;
   updatedAt: string;
 }
@@ -73,6 +74,7 @@ export interface IncidentView {
   displayName: string;
   triggerSummary: string;
   status: components["schemas"]["IncidentStatus"];
+  lifecycleStatus: components["schemas"]["IncidentLifecycleStatus"] | null;
   source: IncidentSourceView;
   target: TargetView;
   createdAt: string;
@@ -150,7 +152,7 @@ export type ApprovalRequest = components["schemas"]["ApprovalRequest"];
 
 export interface IncidentDetailView {
   incident: IncidentView;
-  selectedRun: SelectedRunView;
+  selectedRun: SelectedRunView | null;
   eventPage: EventPageView;
   eventCursor: string;
   evidence: EvidenceView[];
@@ -190,6 +192,7 @@ export interface MonitoringOverviewView {
   counts: ApiMonitoringOverviewCounts;
   families: ApiMonitoringOverviewFamily[];
   samples: ApiMonitoringOverviewSample[];
+  unassignedSignals: Array<Omit<components["schemas"]["UnassignedAlertSignal"], "target"> & { target: TargetView }>;
 }
 
 export type MetricRiskDirectionView = components["schemas"]["MetricRiskDirection"];
@@ -416,6 +419,7 @@ function parseIncidentListItem(value: unknown): IncidentListItemView | null {
     !isUuid(value.id) ||
     typeof value.displayName !== "string" ||
     !isIncidentStatus(value.status) ||
+    (value.lifecycleStatus !== null && value.lifecycleStatus !== "OPEN" && value.lifecycleStatus !== "CLOSED") ||
     !isTimestamp(value.updatedAt)
   ) {
     return null;
@@ -428,6 +432,7 @@ function parseIncidentListItem(value: unknown): IncidentListItemView | null {
         id: value.id,
         displayName: value.displayName,
         status: value.status,
+        lifecycleStatus: value.lifecycleStatus,
         target,
         updatedAt: value.updatedAt,
       };
@@ -454,7 +459,6 @@ function parseAlertSignal(value: unknown): AlertSignalView | null {
     (value.status !== "FIRING" && value.status !== "RESOLVED") ||
     !isCanonicalAlertTimestamp(value.startsAt) ||
     (value.endsAt !== null && !isCanonicalAlertTimestamp(value.endsAt)) ||
-    (value.status === "FIRING" && value.endsAt !== null) ||
     (value.status === "RESOLVED" && value.endsAt === null) ||
     (typeof value.endsAt === "string" &&
       value.endsAt < value.startsAt)
@@ -475,6 +479,7 @@ function parseIncident(value: unknown): IncidentView | null {
     typeof value.displayName !== "string" ||
     typeof value.triggerSummary !== "string" ||
     !isIncidentStatus(value.status) ||
+    (value.lifecycleStatus !== null && value.lifecycleStatus !== "OPEN" && value.lifecycleStatus !== "CLOSED") ||
     !isTimestamp(value.createdAt)
   ) {
     return null;
@@ -489,6 +494,7 @@ function parseIncident(value: unknown): IncidentView | null {
         displayName: value.displayName,
         triggerSummary: value.triggerSummary,
         status: value.status,
+        lifecycleStatus: value.lifecycleStatus,
         source,
         target,
         createdAt: value.createdAt,
@@ -874,13 +880,13 @@ function parseRepairProposal(value: unknown): RepairProposalView | null {
 export function parseCreateIncidentResponse(
   value: unknown,
 ): CreateIncidentView | null {
-  return isObject(value) && value.schemaVersion === 5 && isUuid(value.incidentId)
+  return isObject(value) && value.schemaVersion === 6 && isUuid(value.incidentId)
     ? { incidentId: value.incidentId }
     : null;
 }
 
 export function parseCreateRunResponse(value: unknown): CreateRunView | null {
-  return isObject(value) && value.schemaVersion === 5 && isUuid(value.runId)
+  return isObject(value) && value.schemaVersion === 6 && isUuid(value.runId)
     ? { runId: value.runId }
     : null;
 }
@@ -903,7 +909,7 @@ export function parseIncidentListResponse(
 ): IncidentListView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 5 ||
+    value.schemaVersion !== 6 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -919,7 +925,7 @@ export function parseIncidentListResponse(
 export function parseRunHistoryResponse(value: unknown): RunHistoryView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 5 ||
+    value.schemaVersion !== 6 ||
     !Array.isArray(value.items) ||
     (value.nextCursor !== null && typeof value.nextCursor !== "string")
   ) {
@@ -937,7 +943,7 @@ export function parseRunEventHistoryResponse(
   expectedIncidentId: string,
   expectedRunId: string,
 ): EventPageView | null {
-  if (!isObject(value) || value.schemaVersion !== 5) {
+  if (!isObject(value) || value.schemaVersion !== 6) {
     return null;
   }
   const page = parseEventPage(value);
@@ -1045,8 +1051,8 @@ export function parseIncidentDetailResponse(
 ): IncidentDetailView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 5 ||
-    !isValidEventId(value.eventCursor) ||
+    value.schemaVersion !== 6 ||
+    (value.eventCursor !== "0" && !isValidEventId(value.eventCursor)) ||
     !Array.isArray(value.evidence)
   ) {
     return null;
@@ -1067,43 +1073,50 @@ export function parseIncidentDetailResponse(
     value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
   if (
     incident === null ||
-    selectedRun === null ||
+    (value.selectedRun !== null && selectedRun === null) ||
     eventPage === null ||
     eventPage.items.some(
       (event) =>
         event.data.incidentId !== incident.id ||
-        event.data.runId !== selectedRun.id ||
-        event.data.runKind !== selectedRun.kind,
+        event.data.runId !== selectedRun?.id ||
+        event.data.runKind !== selectedRun?.kind,
     ) ||
     evidence.some((item) => item === null) ||
     (value.diagnosis !== null && diagnosis === null) ||
-    (selectedRun.kind === "repair" && diagnosis !== null) ||
+    (selectedRun?.kind === "repair" && diagnosis !== null) ||
     (value.repair !== null && repair === null) ||
     (value.approval != null && approval === null) ||
     (value.verification != null && verification === null) ||
-    (verification !== null && (selectedRun.kind !== "repair" || approval?.execution?.status !== "APPLIED" ||
+    (verification !== null && (selectedRun === null || selectedRun.kind !== "repair" || approval?.execution?.status !== "APPLIED" ||
       verification.executionId !== approval.execution.id || approval.execution.reportedAt === null || Date.parse(verification.startedAt) !== Date.parse(approval.execution.reportedAt) || selectedRun.status !== (verification.outcome === "observing" ? "RUNNING" : verification.outcome === "recovered" || selectedRun.operation === "rollback" ? "COMPLETED" : "FAILED"))) ||
-    (approval !== null && (selectedRun.kind !== "repair" || approval.runId !== selectedRun.id || approval.proposalId !== repair?.id || approval.proposalDigest !== repair?.digest)) ||
+    (approval !== null && (selectedRun === null || selectedRun.kind !== "repair" || approval.runId !== selectedRun.id || approval.proposalId !== repair?.id || approval.proposalDigest !== repair?.digest)) ||
     (value.alertSignal !== null && alertSignal === null) ||
     (incident.source.type === "scenario" && value.alertSignal !== null) ||
     (incident.source.type === "alertmanager" && alertSignal === null)
   ) {
     return null;
   }
-  if (repair !== null) {
+  if (selectedRun === null && (
+    evidence.length !== 0 || diagnosis !== null || repair !== null || approval !== null || verification !== null ||
+    eventPage.items.length !== 0 || eventPage.nextCursor !== null ||
+    ["prepare", "refresh", "edit", "approve", "reject", "rerun", "rollback", "withdraw"].some(
+      (action) => actions[action as keyof IncidentActionsView] !== "not_applicable",
+    ) || actions.preparationSource !== null || actions.historyCandidates.length !== 0
+  )) return null;
+  if (repair !== null && selectedRun !== null) {
     const evidenceIds = new Set(
       (evidence as EvidenceView[]).map((item) => item.id),
     );
     const passed = repair.validation.outcome === "passed";
     if (
-      (selectedRun.kind === "diagnosis" && diagnosis?.outcome !== "diagnosed") ||
+      (selectedRun?.kind === "diagnosis" && diagnosis?.outcome !== "diagnosed") ||
       (selectedRun.operation === "rollback") !== (repair.sourceExecutionId != null) ||
       (repair.sourceExecutionId != null && (!selectedRun.sourceRunId || repair.sourceExecutionId === approval?.execution?.id)) ||
       repair.target.kind !== incident.target.kind ||
       repair.target.namespace !== incident.target.namespace ||
       repair.target.name !== incident.target.name ||
       repair.evidenceIds.some((evidenceId) => !evidenceIds.has(evidenceId)) ||
-      (passed && selectedRun.kind === "diagnosis" &&
+      (passed && selectedRun?.kind === "diagnosis" &&
         (selectedRun.status !== "COMPLETED" ||
           selectedRun.error !== null)) ||
       (!passed &&
@@ -1224,14 +1237,15 @@ export function parseMonitoringOverviewResponse(
 ): MonitoringOverviewView | null {
   if (
     !isObject(value) ||
-    value.schemaVersion !== 3 ||
+    value.schemaVersion !== 4 ||
     value.window !== "24h" ||
     !isTimestamp(value.generatedAt) ||
     !isObject(value.counts) ||
     !Array.isArray(value.families) ||
     value.families.length > 64 ||
     !Array.isArray(value.samples) ||
-    value.samples.length !== 24
+    value.samples.length !== 24 ||
+    !Array.isArray(value.unassignedSignals) || value.unassignedSignals.length > 20
   ) {
     return null;
   }
@@ -1240,10 +1254,28 @@ export function parseMonitoringOverviewResponse(
     !isNonNegativeInteger(counts.totalIncidents) ||
     !isNonNegativeInteger(counts.firingAlerts) ||
     !isNonNegativeInteger(counts.triagingIncidents) ||
-    !isNonNegativeInteger(counts.waitingApprovalIncidents)
+    !isNonNegativeInteger(counts.waitingApprovalIncidents) ||
+    !isNonNegativeInteger(counts.unassignedSignals)
   ) {
     return null;
   }
+  const unassignedSignals: MonitoringOverviewView["unassignedSignals"] = [];
+  for (const signal of value.unassignedSignals) {
+    if (!isObject(signal)) return null;
+    const target = parseTarget(signal.target);
+    const notification = parseAlertSignal(signal);
+    if (target === null || notification === null ||
+      typeof signal.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(signal.fingerprint) ||
+      typeof signal.displayName !== "string" || !signal.displayName ||
+      signal.reason !== "awaiting_association" ||
+      (signal.lastReceivedAt !== null && !isTimestamp(signal.lastReceivedAt))) return null;
+    unassignedSignals.push({
+      ...notification, fingerprint: signal.fingerprint, displayName: signal.displayName,
+      target,
+      lastReceivedAt: signal.lastReceivedAt, reason: signal.reason,
+    });
+  }
+  if (unassignedSignals.length !== Math.min(counts.unassignedSignals, 20)) return null;
   const families: ApiMonitoringOverviewFamily[] = [];
   const familyRefs = new Set<string>();
   for (const family of value.families) {
@@ -1314,9 +1346,11 @@ export function parseMonitoringOverviewResponse(
       firingAlerts: counts.firingAlerts,
       triagingIncidents: counts.triagingIncidents,
       waitingApprovalIncidents: counts.waitingApprovalIncidents,
+      unassignedSignals: counts.unassignedSignals,
     },
     families,
     samples,
+    unassignedSignals,
   };
 }
 

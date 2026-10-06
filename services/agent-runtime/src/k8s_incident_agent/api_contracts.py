@@ -22,6 +22,7 @@ from k8s_incident_agent.domain.models import (
     CANONICAL_ALERT_TIMESTAMP_PATTERN,
     AlertSignalStatus,
     DiagnosisOutcome,
+    IncidentLifecycleStatus,
     IncidentStatus,
     JsonValue,
     RepairOperation,
@@ -134,12 +135,12 @@ class CreateIncidentRequest(_ApiContract):
 
 
 class CreateIncidentResponse(_ApiContract):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     incident_id: UUID
 
 
 class CreateRunResponse(_ApiContract):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     run_id: UUID
 
 
@@ -235,11 +236,12 @@ class IncidentListItem(_ApiContract):
     display_name: str
     target: IncidentTargetResponse
     status: IncidentStatus
+    lifecycle_status: IncidentLifecycleStatus | None
     updated_at: datetime
 
 
 class IncidentListResponse(_ApiContract):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     items: tuple[IncidentListItem, ...]
     next_cursor: str | None
 
@@ -251,6 +253,7 @@ class IncidentResponse(_ApiContract):
     trigger_summary: str
     target: IncidentTargetResponse
     status: IncidentStatus
+    lifecycle_status: IncidentLifecycleStatus | None
     created_at: datetime
 
 
@@ -292,7 +295,7 @@ class SelectedRunResponse(RunSummaryResponse):
 
 
 class RunHistoryResponse(_ApiContract):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     items: tuple[RunSummaryResponse, ...]
     next_cursor: str | None
 
@@ -393,16 +396,19 @@ class AlertSignalResponse(_ApiContract):
     ends_at: _CanonicalAlertTimestamp | None
 
 
-class RunEventPayload(_ApiContract):
-    schema_version: Literal[5]
+class _EventPayload(_ApiContract):
+    schema_version: Literal[6]
     incident_id: UUID
-    run_id: UUID
     occurred_at: datetime
 
     @field_validator("occurred_at")
     @classmethod
     def require_utc_occurred_at(cls, value: datetime) -> datetime:
         return _require_utc_datetime(value, "occurredAt")
+
+
+class RunEventPayload(_EventPayload):
+    run_id: UUID
 
 
 class _DiagnosisRunEventPayload(RunEventPayload):
@@ -609,6 +615,23 @@ class AlertResolvedEventPayload(_TypedRunEventPayload):
     ends_at: _CanonicalAlertTimestamp
 
 
+class AlertNotificationEventPayload(_EventPayload):
+    run_id: None
+    run_kind: None
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
+    starts_at: _CanonicalAlertTimestamp
+    alert_status: AlertSignalStatus
+    ends_at: _CanonicalAlertTimestamp | None
+
+    @model_validator(mode="after")
+    def require_notification_times(self) -> "AlertNotificationEventPayload":
+        if (
+            self.alert_status is AlertSignalStatus.RESOLVED and self.ends_at is None
+        ) or (self.ends_at is not None and self.ends_at < self.starts_at):
+            raise ValueError("Notification times are inconsistent")
+        return self
+
+
 class VerificationUpdatedEventPayload(_TypedRunEventPayload):
     execution_id: UUID
     outcome: VerificationOutcome
@@ -720,6 +743,12 @@ class AlertResolvedStreamEvent(_ApiContract):
     data: AlertResolvedEventPayload
 
 
+class AlertNotificationStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["alert.notification"]
+    data: AlertNotificationEventPayload
+
+
 class ApprovalDecidedStreamEvent(_ApiContract):
     id: str = Field(pattern=r"^[1-9][0-9]*$")
     event: Literal["repair.approval_decided"]
@@ -757,7 +786,8 @@ class RunEventStreamItem(
             | ApprovalDecidedStreamEvent
             | ExecutionUpdatedStreamEvent
             | VerificationUpdatedStreamEvent
-            | AlertResolvedStreamEvent,
+            | AlertResolvedStreamEvent
+            | AlertNotificationStreamEvent,
             Field(discriminator="event"),
         ]
     ]
@@ -771,15 +801,15 @@ class EventPageResponse(_ApiContract):
 
 
 class RunEventHistoryResponse(_ApiContract):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     items: tuple[RunEventStreamItem, ...]
     next_cursor: str | None
 
 
 class IncidentDetailResponse(_ApiContract):
-    schema_version: Literal[5] = 5
+    schema_version: Literal[6] = 6
     incident: IncidentResponse
-    selected_run: SelectedRunResponse
+    selected_run: SelectedRunResponse | None
     event_page: EventPageResponse
     evidence: tuple[EvidenceResponse, ...]
     diagnosis: DiagnosisResponse | None
@@ -788,7 +818,7 @@ class IncidentDetailResponse(_ApiContract):
     verification: VerificationRecord | None = None
     actions: IncidentActions
     alert_signal: AlertSignalResponse | None
-    event_cursor: str = Field(pattern=r"^[1-9][0-9]*$")
+    event_cursor: str = Field(pattern=r"^(0|[1-9][0-9]*)$")
 
 
 class ErrorDetail(_ApiContract):

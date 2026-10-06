@@ -13,7 +13,7 @@ const RUN = "20000000-0000-4000-8000-000000000001";
 
 function detail(padding = 0): IncidentDetail {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     incident: { id: INCIDENT, displayName: "x".repeat(padding) },
     selectedRun: { id: RUN },
     evidence: [],
@@ -23,7 +23,7 @@ function detail(padding = 0): IncidentDetail {
 }
 
 function capture(events: unknown[], writes: string[]): ReviewPackageCapture {
-  const runtime: ReadJson = async () => ({ schemaVersion: 5, items: events, nextCursor: null });
+  const runtime: ReadJson = async () => ({ schemaVersion: 6, items: events, nextCursor: null });
   return {
     runtime,
     campaign: CAMPAIGN,
@@ -40,7 +40,7 @@ function capture(events: unknown[], writes: string[]): ReviewPackageCapture {
 
 test("the package is the compact serialization of the Incident projection and its Run events", async () => {
   const writes: string[] = [];
-  const events = [{ id: "1", event: "incident.created", data: { schemaVersion: 5 } }];
+  const events = [{ id: "1", event: "incident.created", data: { schemaVersion: 6 } }];
   assert.equal(await captureReviewPackage("crash-loop-backoff", 1, detail(), capture(events, writes)), "trials/crash-loop-backoff.json");
   const expected: ReviewPackage = {
     schemaVersion: 1,

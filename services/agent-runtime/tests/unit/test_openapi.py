@@ -102,6 +102,10 @@ EXPECTED_ERROR_STATUSES = {
 }
 
 EXPECTED_EVENT_COMPONENTS = {
+    "alert.notification": (
+        "AlertNotificationStreamEvent",
+        "AlertNotificationEventPayload",
+    ),
     "repair.verification_updated": (
         "VerificationUpdatedStreamEvent",
         "VerificationUpdatedEventPayload",

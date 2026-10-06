@@ -284,19 +284,22 @@ def test_unknown_alert_is_acknowledgeable_without_an_occurrence() -> None:
     assert parsed.watchdog_firing is False
 
 
-def test_same_occurrence_resolved_dominates_firing_within_one_batch() -> None:
-    occurrences = _occurrences(
-        _payload(
-            _alert(),
-            _alert(
-                status="resolved",
-                ends_at="2026-09-02T08:05:00Z",
-            ),
-        )
-    )
+@pytest.mark.parametrize("reverse", [False, True])
+def test_same_occurrence_preserves_resolved_fact_and_last_notification(
+    reverse: bool,
+) -> None:
+    alerts = [
+        _alert(),
+        _alert(status="resolved", ends_at="2026-09-02T08:05:00Z"),
+    ]
+    if reverse:
+        alerts.reverse()
+    occurrences = _occurrences(_payload(*alerts))
 
     assert len(occurrences) == 1
-    assert occurrences[0].status is AlertSignalStatus.RESOLVED
+    assert occurrences[0].status is (
+        AlertSignalStatus.FIRING if reverse else AlertSignalStatus.RESOLVED
+    )
     assert occurrences[0].ends_at is not None
     assert occurrences[0].ends_at == "2026-09-02T08:05:00.000000000Z"
 

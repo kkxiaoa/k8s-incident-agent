@@ -6,7 +6,7 @@ import {
   readIncident,
   readIncidentSummaries,
   splitSseFrames,
-  type IncidentDetail,
+  type IncidentWithRun,
   type RunEvent,
 } from "../../../src/contracts/runtime-api.ts";
 import { bindJsonReader, readEventStream } from "../../../src/environment/http.ts";
@@ -18,7 +18,7 @@ import { createHarness, type HarnessOptions } from "../../support/harness.ts";
 
 export interface Trial {
   scenario: EvaluationCase;
-  detail: IncidentDetail;
+  detail: IncidentWithRun;
   events: RunEvent[];
 }
 
@@ -43,6 +43,8 @@ export async function trialFor(scenarioId: string, options: HarnessOptions = {},
   const read = bindJsonReader(authenticated, runtime);
   const [incidentId] = [...(await readIncidentSummaries(read)).keys()];
   const detail = await readIncident(read, incidentId);
+  assert.ok(detail.selectedRun);
+  const selected = { ...detail, selectedRun: detail.selectedRun };
   const frames: string[] = [];
   let rest = "";
   await readEventStream(authenticated, runtime, `/api/v1/incidents/${incidentId}/events`, (chunk) => {
@@ -53,11 +55,11 @@ export async function trialFor(scenarioId: string, options: HarnessOptions = {},
   });
   let previous: string | undefined;
   const events = frames.map((frame) => {
-    const event = decodeSseFrame(frame, { incidentId, runId: detail.selectedRun.id }, previous);
+    const event = decodeSseFrame(frame, { incidentId, runId: selected.selectedRun.id }, previous);
     previous = event.id;
     return event;
   });
-  return { scenario: caseFor(scenarioId, expectedTerminal), detail, events };
+  return { scenario: caseFor(scenarioId, expectedTerminal), detail: selected, events };
 }
 
 export function coded(code: string, message?: string) {

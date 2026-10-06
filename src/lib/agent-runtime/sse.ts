@@ -62,9 +62,9 @@ export function isTerminalRunEvent(event: RunEventStreamItem): boolean {
 
 export function requiresIncidentDetailRefresh(
   event: RunEventStreamItem,
-  selectedRunId: string,
+  selectedRunId: string | null,
 ): boolean {
-  if (event.event === "alert.resolved") {
+  if (event.event === "alert.resolved" || event.event === "alert.notification") {
     return true;
   }
   if (event.event === "repair.approval_decided" || event.event === "repair.execution_updated" || event.event === "repair.verification_updated") {
@@ -133,6 +133,7 @@ function applyIncidentStatus(
     case "evidence.recorded":
     case "tool.failed":
     case "alert.resolved":
+    case "alert.notification":
       return detail;
   }
 }
@@ -141,7 +142,7 @@ function applySelectedRunStatus(
   detail: IncidentDetailResponse,
   event: RunEventStreamItem,
 ): IncidentDetailResponse {
-  if (event.data.runId !== detail.selectedRun.id) {
+  if (detail.selectedRun === null || event.data.runId !== detail.selectedRun.id) {
     return detail;
   }
 
@@ -170,6 +171,7 @@ function applySelectedRunStatus(
     case "evidence.recorded":
     case "tool.failed":
     case "alert.resolved":
+    case "alert.notification":
       return detail;
   }
 }
@@ -199,13 +201,13 @@ export function reduceIncidentStream(
         return { ...state, refreshing: false, refreshError: "详情版本落后于已保存的页面状态，请刷新后再操作。" };
       }
 
-      const sameRun = action.detail.selectedRun.id === state.detail.selectedRun.id;
+      const sameRun = action.detail.selectedRun?.id === state.detail.selectedRun?.id;
       const snapshotBehind = BigInt(action.detail.eventCursor) < BigInt(state.lastEventId);
       const detail = snapshotBehind
         ? {
             ...action.detail,
             incident: { ...action.detail.incident, status: state.detail.incident.status },
-            selectedRun: sameRun
+            selectedRun: sameRun && action.detail.selectedRun !== null && state.detail.selectedRun !== null
               ? { ...action.detail.selectedRun, status: state.detail.selectedRun.status }
               : action.detail.selectedRun,
           }
@@ -238,10 +240,10 @@ export function reduceIncidentStream(
         return state;
       }
 
-      const selected = action.event.data.runId === state.detail.selectedRun.id;
+      const selected = state.detail.selectedRun !== null && action.event.data.runId === state.detail.selectedRun.id;
       const refresh = requiresIncidentDetailRefresh(
         action.event,
-        state.detail.selectedRun.id,
+        state.detail.selectedRun?.id ?? null,
       );
       const incidentDetail = applyIncidentStatus(state.detail, action.event);
       return {

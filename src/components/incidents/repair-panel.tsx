@@ -42,6 +42,7 @@ export function RepairPanel({
   refreshing?: boolean;
 }) {
   const { repair, selectedRun, evidence } = detail;
+  if (selectedRun === null) return null;
   const verification = detail.verification;
   const verificationFailed = verification && verification.outcome !== "observing" && verification.outcome !== "recovered";
   const execution = detail.approval?.execution;

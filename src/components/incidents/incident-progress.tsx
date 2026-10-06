@@ -6,12 +6,13 @@ import { ApprovalCountdown } from "./approval-countdown";
 import { isPreparationFailure } from "./repair-preparation";
 import type { IncidentDetailView } from "@/lib/agent-runtime/response-contracts";
 
-export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun.kind === "diagnosis" ? detail : null, diagnosisLoading = false }: {
+export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun?.kind === "diagnosis" ? detail : null, diagnosisLoading = false }: {
   detail: IncidentDetailView;
   diagnosisDetail?: IncidentDetailView | null;
   diagnosisLoading?: boolean;
 }) {
   const { selectedRun: run, repair, approval, verification } = detail;
+  if (run === null) return <p role="status">尚无诊断运行。</p>;
   const diagnostic = run.kind === "diagnosis";
   const execution = approval?.execution;
   const stage = diagnostic ? 1 : execution || verification ? 4
@@ -22,7 +23,7 @@ export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun.
   const diagnosis = diagnosisDetail?.diagnosis;
   const diagnosisCaption = diagnosisLoading ? "读取来源诊断中"
     : diagnosis ? diagnosis.outcome === "diagnosed" ? "诊断已完成" : "证据不足"
-      : diagnosisDetail?.selectedRun.status === "FAILED" ? "诊断失败"
+      : diagnosisDetail?.selectedRun?.status === "FAILED" ? "诊断失败"
         : diagnostic && running ? "诊断处理中"
           : diagnostic && run.status === "QUEUED" ? "等待诊断"
           : diagnosisDetail ? "未保存诊断结论" : "来源记录加载失败";
@@ -72,14 +73,14 @@ export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun.
         const recoveryUnproven = index === 4 && verification != null
           && verification.outcome !== "observing" && verification.outcome !== "recovered";
         const attention = interrupted || recoveryUnproven || (index === 1 && !step.done && !loadingSource && (
-          diagnosis?.outcome === "insufficient_evidence" || diagnosisDetail?.selectedRun.status === "FAILED"
-          || diagnosisDetail?.selectedRun.status === "COMPLETED" || (!diagnostic && !diagnosisDetail)));
+          diagnosis?.outcome === "insufficient_evidence" || diagnosisDetail?.selectedRun?.status === "FAILED"
+          || diagnosisDetail?.selectedRun?.status === "COMPLETED" || (!diagnostic && !diagnosisDetail)));
         const processing = loadingSource || (running && index === stage && !step.done && !attention
           && (index !== 4 || (execution?.status !== "PENDING" && execution?.status !== "EXPIRED")));
         const content = <><span className="incident-progress__mark" aria-hidden="true">{step.done ? <UiIcon name="check" /> : attention ? <UiIcon name="exclamation" /> : loadingSource ? "…" : index + 1}</span>
           <span><strong>{step.title}</strong><small>{index === 3 && run.status === "WAITING_APPROVAL" && !approval && !expired
             ? <ApprovalCountdown /> : <ShimmerText active={processing}>{step.caption}</ShimmerText>}</small>
-            {index === 1 && !diagnostic && diagnosisDetail ? <small>引用第 {diagnosisDetail.selectedRun.attempt} 次运行</small> : null}
+            {index === 1 && !diagnostic && diagnosisDetail?.selectedRun ? <small>引用第 {diagnosisDetail.selectedRun.attempt} 次运行</small> : null}
           </span></>;
         return <li key={step.title} data-current={index === stage} data-done={step.done}
           data-attention={attention} data-running={processing}

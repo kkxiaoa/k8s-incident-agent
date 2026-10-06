@@ -9,6 +9,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
+from k8s_incident_agent.domain.contracts import KubernetesTarget
+
 WATCHDOG_STALE_AFTER = timedelta(minutes=6)
 
 
@@ -417,6 +419,7 @@ class MonitoringOverviewCounts(_MonitoringContract):
     firing_alerts: int = Field(ge=0)
     triaging_incidents: int = Field(ge=0)
     waiting_approval_incidents: int = Field(ge=0)
+    unassigned_signals: int = Field(ge=0)
 
 
 class MonitoringOverviewFamily(_MonitoringContract):
@@ -444,12 +447,24 @@ class MonitoringOverviewSample(_MonitoringContract):
         return normalized
 
 
+class UnassignedAlertSignal(_MonitoringContract):
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
+    display_name: str
+    target: KubernetesTarget
+    status: Literal["FIRING", "RESOLVED"]
+    starts_at: str
+    ends_at: str | None
+    last_received_at: datetime | None
+    reason: Literal["awaiting_association"] = "awaiting_association"
+
+
 class MonitoringOverviewSnapshot(_MonitoringContract):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     window: Literal["24h"] = "24h"
     generated_at: datetime
     counts: MonitoringOverviewCounts
     families: tuple[MonitoringOverviewFamily, ...] = Field(max_length=64)
+    unassigned_signals: tuple[UnassignedAlertSignal, ...] = Field(max_length=20)
     samples: tuple[MonitoringOverviewSample, ...] = Field(
         min_length=24,
         max_length=24,

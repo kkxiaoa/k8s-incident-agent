@@ -143,15 +143,15 @@ test("renders the tests-only chart showcase with drill-down data", async ({
 
   await page.goto("/");
   await expect(page.getByLabel("Incident 状态统计")).toContainText(
-    /已记录 Incident.*12告警中9诊断中4待审批0/,
+    /已记录 Incident.*12末次通知 FIRING9诊断中4待审批0/,
   );
   await expect(
     page.getByRole("img", {
-      name: "告警中的 Incident 共 9 个，分布于 5 个故障族",
+      name: "末次通知 FIRING 信号共 9 个，分布于 5 个故障族",
     }),
   ).toBeVisible();
   await expect(
-    page.getByRole("list", { name: "告警中 Incident 故障族分布" }),
+    page.getByRole("list", { name: "末次通知 FIRING 信号故障族分布" }),
   ).toContainText("Container restart loop3");
   await expect(
     page.getByRole("img", {
@@ -189,7 +189,8 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   expect(Math.abs((firstPanel?.width ?? 0) - (secondPanel?.width ?? 0))).toBeLessThanOrEqual(1);
   expect(firstPanel?.width ?? 0).toBeLessThan((dualContainer?.width ?? 0) * 0.6);
   await expect(page.locator(".metric-signal-state.is-firing")).toHaveCount(1);
-  await expect(page.getByText("告警中", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("告警中", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("末次通知 FIRING", { exact: true })).toBeVisible();
   await expect(page.getByRole("definition").filter({ hasText: /^< 3/ })).toBeVisible();
   await expect(page.getByRole("img", { name: /概览趋势/ })).toHaveCount(0);
   await expect(

@@ -56,14 +56,14 @@ describe("fixed REST helpers", () => {
       method: "POST", headers: { "content-type": "application/json", Origin: "https://console.example.test" },
       body: JSON.stringify({ sourceRunId: RUN_ID }),
     });
-    const creation = vi.fn(async () => new Response(JSON.stringify({ schemaVersion: 5, runId: RUN_ID }), { status: 202, headers: { "content-type": "application/json", "set-cookie": setCookie } }));
+    const creation = vi.fn(async () => new Response(JSON.stringify({ schemaVersion: 6, runId: RUN_ID }), { status: 202, headers: { "content-type": "application/json", "set-cookie": setCookie } }));
     vi.stubGlobal("fetch", creation);
     const rejected = await createRepairRun(INCIDENT_ID, request);
     expect(rejected.status).toBe(502);
     expect(rejected.headers.has("set-cookie")).toBe(false);
     expect(new Headers((creation.mock.calls[0] as unknown as [URL, RequestInit])[1].headers).has("cookie")).toBe(false);
     const incoming = new Headers({ cookie: `sibling=discard; ${cookie}`, Origin: "https://console.example.test", "X-CSRF-Token": csrf });
-    const read = vi.fn(async () => jsonResponse({ schemaVersion: 5, items: [], nextCursor: null }));
+    const read = vi.fn(async () => jsonResponse({ schemaVersion: 6, items: [], nextCursor: null }));
     vi.stubGlobal("fetch", read);
     await fetchRuns(INCIDENT_ID, new URLSearchParams("mine=true&limit=1&guestRef=forged"), incoming);
     const [url, init] = read.mock.calls[0] as unknown as [URL, RequestInit];
@@ -207,6 +207,13 @@ describe("fixed REST helpers", () => {
       expect(response.status).toBe(503);
       expect(await response.json()).toMatchObject({ error: { code: "diagnosis_unavailable", retryable: true } });
     }
+  });
+  it("preserves the no-Run rerun conflict across the BFF", async () => {
+    const body = { error: { code: "run_not_applicable", message: "Incident has no Run to diagnose again.", retryable: false } };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(body, 409)));
+    const response = await createRun(INCIDENT_ID, new Request("https://console.example.test/api/runtime/incidents/runs", { method: "POST" }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual(body);
   });
   it("preserves the base path and sends a no-store scenario GET", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));

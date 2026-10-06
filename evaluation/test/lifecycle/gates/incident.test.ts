@@ -12,7 +12,7 @@ import {
 import { coded, trialFor } from "./support.ts";
 
 const RUN_PAGE = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   items: [{ id: "20000000-0000-4000-8000-000000000001", kind: "diagnosis", operation: null, attempt: 1, status: "COMPLETED" }],
   nextCursor: null,
 };
@@ -36,11 +36,12 @@ test("exactly one new target Incident may exist; none means keep waiting", async
 test("terminal and resolved Incidents are recognised from the Runtime's own fields", async () => {
   const { detail } = await trialFor("crash-loop-backoff");
   assert.equal(isTerminalRun(detail), true);
+  assert.equal(isTerminalRun({ ...detail, selectedRun: null }), false);
   assert.equal(isTerminalRun({ ...detail, selectedRun: { ...detail.selectedRun, status: "RUNNING" } }), false);
   assert.equal(isResolvedIncident(detail), false);
-  const resolved = { ...detail, alertSignal: { startsAt: "2026-09-05T00:00:00Z", endsAt: null, status: "RESOLVED" as const }, eventPage: { items: [{ event: "alert.resolved" }], nextCursor: null } } as unknown as typeof detail;
+  const resolved = { ...detail, alertSignal: { startsAt: "2026-09-05T00:00:00Z", endsAt: "2026-09-05T01:00:00Z", status: "RESOLVED" as const }, eventPage: { items: [], nextCursor: null } };
   assert.equal(isResolvedIncident(resolved), true);
-  assert.equal(isResolvedIncident({ ...resolved, eventPage: { items: [], nextCursor: null } }), false);
+  assert.equal(isResolvedIncident({ ...resolved, alertSignal: { ...resolved.alertSignal, endsAt: null } }), false);
   assert.equal(isResolvedIncident({ ...resolved, alertSignal: { ...resolved.alertSignal!, status: "FIRING" } }), false);
   assert.doesNotThrow(() => requireIncidentNotResolved(detail));
   assert.throws(() => requireIncidentNotResolved({ ...detail, incident: { ...detail.incident, status: "RESOLVED" } }), coded("incident_resolution_invalid"));

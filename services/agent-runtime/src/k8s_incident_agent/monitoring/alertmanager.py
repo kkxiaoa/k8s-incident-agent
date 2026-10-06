@@ -215,22 +215,13 @@ def _merge_occurrence(
 ) -> NormalizedAlertOccurrence:
     if previous.trigger != current.trigger:
         raise AlertTargetInvalidError
-    if previous.status is AlertSignalStatus.RESOLVED:
-        if current.status is AlertSignalStatus.FIRING:
-            return previous
-        return _resolved_with_latest_end(previous, current)
-    if current.status is AlertSignalStatus.FIRING:
-        return previous
-    return current
-
-
-def _resolved_with_latest_end(
-    previous: NormalizedAlertOccurrence,
-    current: NormalizedAlertOccurrence,
-) -> NormalizedAlertOccurrence:
-    if previous.ends_at is None or current.ends_at is None:
-        raise AlertPayloadInvalidError
-    return previous if previous.ends_at >= current.ends_at else current
+    return NormalizedAlertOccurrence(
+        trigger=current.trigger,
+        fingerprint=current.fingerprint,
+        starts_at=current.starts_at,
+        status=current.status,
+        ends_at=current.ends_at if current.ends_at is not None else previous.ends_at,
+    )
 
 
 def _require_json_budget(value: object) -> None:

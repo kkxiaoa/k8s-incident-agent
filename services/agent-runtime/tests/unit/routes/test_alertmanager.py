@@ -1,14 +1,22 @@
+import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
 import httpx
 import pytest
+from sqlalchemy import event
+from sqlalchemy.exc import OperationalError
 from tests.factories import (
     diagnostic_model_stub,
     monitoring_health_service_stub,
     operator_sessions_stub,
+)
+from tests.unit.application.test_alerts import alert_payload, watchdog_payload
+from tests.unit.persistence.test_alert_intake import (
+    _database,  # pyright: ignore[reportPrivateUsage]
 )
 
 from k8s_incident_agent import api
@@ -18,6 +26,8 @@ from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.monitoring.alertmanager import MAX_WEBHOOK_BODY_BYTES
+from k8s_incident_agent.monitoring.auth import AlertmanagerWebhookAuthenticator
+from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.monitoring.errors import (
     AlertAuthenticationError,
     AlertPayloadInvalidError,
@@ -25,6 +35,7 @@ from k8s_incident_agent.monitoring.errors import (
     AlertPayloadTruncatedError,
     AlertTargetInvalidError,
 )
+from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
 
@@ -58,7 +69,7 @@ def _settings(tmp_path: Path) -> Settings:
 @asynccontextmanager
 async def _client(
     tmp_path: Path,
-    service: _AlertService,
+    service: _AlertService | AlertmanagerApplicationService,
 ) -> AsyncGenerator[httpx.AsyncClient]:
     @asynccontextmanager
     async def runtime_context(
@@ -91,6 +102,58 @@ def _headers() -> dict[str, str]:
         "authorization": f"Bearer {'a' * 32}",
         "content-type": "application/json",
     }
+
+
+@pytest.mark.parametrize("status", ["firing", "resolved"])
+async def test_webhook_acknowledges_only_committed_signal_and_watchdog_and_retry_is_safe(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    token = tmp_path / "credential"
+    token.write_bytes(b"a" * 32)
+    now = datetime(2026, 9, 2, 8, 5, tzinfo=UTC)
+    document = json.loads(alert_payload())
+    document["alerts"][0]["status"] = status
+    if status == "resolved":
+        document["alerts"][0]["endsAt"] = "2026-09-02T08:01:00Z"
+    document["alerts"].append(json.loads(watchdog_payload())["alerts"][0])
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        service = AlertmanagerApplicationService(
+            catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring/catalog"),
+            authenticator=AlertmanagerWebhookAuthenticator.from_file(token),
+            repository=repository,
+            cluster_id="k8s-incident-agent",
+            diagnostic_namespace="k8s-incident-scenarios",
+            now=lambda: now,
+        )
+
+        def fail_commit(_connection: object) -> None:
+            raise OperationalError(
+                "COMMIT", None, RuntimeError("injected commit failure")
+            )
+
+        async with _client(tmp_path, service) as client:
+            event.listen(database.engine.sync_engine, "commit", fail_commit)
+            try:
+                response = await client.post(
+                    "/api/v1/alerts/alertmanager", headers=_headers(), json=document
+                )
+                assert response.status_code == 500
+            finally:
+                event.remove(database.engine.sync_engine, "commit", fail_commit)
+            assert (await repository.get_monitoring_overview(now)).unassigned_count == 0
+            assert await repository.get_watchdog_last_received_at() is None
+            for _ in range(2):
+                response = await client.post(
+                    "/api/v1/alerts/alertmanager", headers=_headers(), json=document
+                )
+                assert response.status_code == 204 and response.content == b""
+            overview = await repository.get_monitoring_overview(now)
+            assert overview.unassigned_count == 1 and overview.total_incidents == 0
+            assert overview.unassigned_signals[0].status == status.upper()
+            assert await repository.list_recoverable_run_ids() == ()
+            assert await repository.get_watchdog_last_received_at() == now
 
 
 def _error(code: str, message: str) -> dict[str, object]:

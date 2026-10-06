@@ -8,10 +8,10 @@ const ApprovalWindowContext = createContext<ApprovalWindow | null>(null);
 
 export function ApprovalWindowProvider({ detail, children }: { detail: IncidentDetailView; children: ReactNode }) {
   const { selectedRun: run } = detail;
-  const expired = run.endReason === "expired" || detail.actions.approve === "proposal_expired";
-  const deadline = run.status === "WAITING_APPROVAL" && !detail.approval && !run.endReason
+  const expired = run?.endReason === "expired" || detail.actions.approve === "proposal_expired";
+  const deadline = run?.status === "WAITING_APPROVAL" && !detail.approval && !run.endReason
     ? run.waitingExpiresAt ?? null : null;
-  const key = `${run.id}:${deadline}`;
+  const key = `${run?.id}:${deadline}`;
   const [clock, setClock] = useState<{ key: string; seconds: number } | null>(null);
 
   useEffect(() => {

@@ -50,11 +50,13 @@ def test_monitoring_overview_rejects_a_stale_24_hour_window() -> None:
     with pytest.raises(ValueError, match="end at the current UTC hour"):
         MonitoringOverviewSnapshot(
             generated_at=NOW,
+            unassigned_signals=(),
             counts=MonitoringOverviewCounts(
                 total_incidents=0,
                 firing_alerts=0,
                 triaging_incidents=0,
                 waiting_approval_incidents=0,
+                unassigned_signals=0,
             ),
             families=(),
             samples=tuple(
@@ -97,11 +99,13 @@ class _MonitoringService:
         first_hour = NOW - timedelta(hours=23)
         return MonitoringOverviewSnapshot(
             generated_at=NOW,
+            unassigned_signals=(),
             counts=MonitoringOverviewCounts(
                 total_incidents=8,
                 firing_alerts=2,
                 triaging_incidents=1,
                 waiting_approval_incidents=5,
+                unassigned_signals=0,
             ),
             families=(
                 MonitoringOverviewFamily(
@@ -283,13 +287,14 @@ async def test_monitoring_overview_route_returns_fixed_24_hour_projection(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["schemaVersion"] == 3
+    assert payload["schemaVersion"] == 4
     assert payload["window"] == "24h"
     assert payload["counts"] == {
         "totalIncidents": 8,
         "firingAlerts": 2,
         "triagingIncidents": 1,
         "waitingApprovalIncidents": 5,
+        "unassignedSignals": 0,
     }
     assert payload["families"] == [
         {

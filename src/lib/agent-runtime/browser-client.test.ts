@@ -7,7 +7,7 @@ vi.mock("./operator-client", () => ({ authenticatedFetch: vi.fn() }));
 afterEach(() => vi.clearAllMocks());
 
 it("uses only the fixed same-origin repair route and preserves exact selection", async () => {
-  vi.mocked(authenticatedFetch).mockResolvedValue(new Response(JSON.stringify({ schemaVersion: 5, runId: "22222222-2222-4222-8222-222222222222" }), { headers: { "content-type": "application/json" } }));
+  vi.mocked(authenticatedFetch).mockResolvedValue(new Response(JSON.stringify({ schemaVersion: 6, runId: "22222222-2222-4222-8222-222222222222" }), { headers: { "content-type": "application/json" } }));
   const request = { sourceRunId: "11111111-1111-4111-8111-111111111111", selection: { revision: "9223372036854775806", replicaSetUid: "old-rs" } };
   expect((await prepareRepairFromBrowser("incident/id", request)).ok).toBe(true);
   expect(authenticatedFetch).toHaveBeenCalledWith("/api/runtime/incidents/incident%2Fid/repair-runs", expect.objectContaining({ method: "POST", body: JSON.stringify(request) }));

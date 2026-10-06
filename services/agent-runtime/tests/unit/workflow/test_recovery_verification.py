@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 from tests.recovery_fixtures import MonitoringFixture, RecoveryFixture
-from tests.unit.persistence.test_repair_persistence import BUDGET, MODEL
+from tests.unit.persistence.test_repair_persistence import MODEL
 from tests.unit.repair.test_repair_preparation import (
     credential as diagnostic_credential,
 )
@@ -43,7 +43,7 @@ async def test_supervisor_resumes_applied_progress_without_model_patch_or_new_de
             harness.clock[0] += timedelta(seconds=seconds)
             kube.now = harness.now()
             await harness.repository.apply_alert_occurrences(
-                (), None, BUDGET, watchdog_received_at=harness.now()
+                (), watchdog_received_at=harness.now()
             )
             if block and harness.now() >= started + timedelta(seconds=20):
                 paused.set()

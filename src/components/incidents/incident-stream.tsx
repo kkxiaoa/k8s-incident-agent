@@ -49,23 +49,6 @@ import { ApprovalWindowProvider } from "./approval-countdown";
 import { ShimmerText } from "@/components/ui/shimmer-text";
 import { ActionButton } from "@/components/ui/action-button";
 
-function runSummary(detail: IncidentDetailResponse): RunSummaryView {
-  const run = detail.selectedRun;
-  return {
-    id: run.id,
-    kind: run.kind,
-    operation: run.operation,
-    attempt: run.attempt,
-    status: run.status,
-    createdAt: run.createdAt,
-    startedAt: run.startedAt,
-    completedAt: run.completedAt,
-    requestSource: run.requestSource,
-    initiatedByYou: run.initiatedByYou,
-    sourceRunId: run.sourceRunId,
-  };
-}
-
 function requesterLabel(run: RunSummaryView): string {
   const source =
     run.requestSource === "operator"
@@ -99,9 +82,9 @@ function latestActivityAt(
 ): string {
   const timestamps = [
     detail.incident.createdAt,
-    detail.selectedRun.createdAt,
-    detail.selectedRun.startedAt,
-    detail.selectedRun.completedAt,
+    detail.selectedRun?.createdAt,
+    detail.selectedRun?.startedAt,
+    detail.selectedRun?.completedAt,
     detail.alertSignal?.startsAt,
     detail.alertSignal?.endsAt,
     ...detail.evidence.map((item) => item.observedAt),
@@ -135,11 +118,11 @@ export function IncidentStream({
     createIncidentStreamState,
   );
   const [runs, setRuns] = useState(() =>
-    mergeRuns(initialRuns.items, [runSummary(initialDetail)]),
+    mergeRuns(initialRuns.items, initialDetail.selectedRun ? [initialDetail.selectedRun] : []),
   );
   const [latestRun, setLatestRun] = useState(() => {
     const run = runs[0];
-    return { id: run.id, attempt: run.attempt };
+    return run ? { id: run.id, attempt: run.attempt } : null;
   });
   const [runCursor, setRunCursor] = useState(initialRuns.nextCursor);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -154,11 +137,11 @@ export function IncidentStream({
   const [confirmRerun, setConfirmRerun] = useState(false);
   const mutationLock = useRef(false);
   const refreshDetail = useRef<(() => Promise<void>) | null>(null);
-  const selectedRunId = useRef(state.detail.selectedRun.id);
+  const selectedRunId = useRef<string | null>(state.detail.selectedRun?.id ?? null);
 
   useEffect(() => {
-    selectedRunId.current = state.detail.selectedRun.id;
-  }, [state.detail.selectedRun.id]);
+    selectedRunId.current = state.detail.selectedRun?.id ?? null;
+  }, [state.detail.selectedRun?.id]);
 
   useEffect(() => {
     const closeOutside = (event: PointerEvent) => {
@@ -214,7 +197,7 @@ export function IncidentStream({
           pendingHistoryRefresh = false;
           const result = await fetchIncidentFromBrowser(
             initialDetail.incident.id,
-            initialDetail.selectedRun.id,
+            initialDetail.selectedRun?.id,
           );
           if (!active) {
             return;
@@ -243,7 +226,7 @@ export function IncidentStream({
               const newest = latest.data.items[0];
               if (newest)
                 setLatestRun((current) =>
-                  newest.attempt > current.attempt
+                  current === null || newest.attempt > current.attempt
                     ? { id: newest.id, attempt: newest.attempt }
                     : current,
                 );
@@ -331,11 +314,11 @@ export function IncidentStream({
   }, [
     initialDetail.eventCursor,
     initialDetail.incident.id,
-    initialDetail.selectedRun.id,
+    initialDetail.selectedRun?.id,
   ]);
 
-  const waitingExpiresAt = state.detail.selectedRun.waitingExpiresAt;
-  const waitingStatus = state.detail.selectedRun.status;
+  const waitingExpiresAt = state.detail.selectedRun?.waitingExpiresAt;
+  const waitingStatus = state.detail.selectedRun?.status;
   useEffect(() => {
     if (waitingStatus !== "WAITING_APPROVAL" || !waitingExpiresAt) return;
     const delay = Date.parse(waitingExpiresAt) - Date.now();
@@ -346,7 +329,7 @@ export function IncidentStream({
       Math.max(0, delay) + 50,
     );
     return () => window.clearTimeout(timer);
-  }, [state.detail.selectedRun.id, waitingStatus, waitingExpiresAt]);
+  }, [state.detail.selectedRun?.id, waitingStatus, waitingExpiresAt]);
 
   const loadOlderRuns = async () => {
     if (runCursor === null || historyLoading) {
@@ -392,7 +375,7 @@ export function IncidentStream({
 
   const loadOlderEvents = async () => {
     const cursor = state.eventPageCursor;
-    if (cursor === null || historyLoading) {
+    if (cursor === null || historyLoading || state.detail.selectedRun === null) {
       return;
     }
     setHistoryLoading(true);
@@ -417,6 +400,7 @@ export function IncidentStream({
   const createRun = async () => {
     if (
       mutationLock.current ||
+      state.detail.selectedRun === null ||
       state.detail.actions.rerun !== null ||
       state.refreshing ||
       state.refreshError !== null
@@ -508,14 +492,28 @@ export function IncidentStream({
 
   const { detail } = state;
   const sourceDiagnosis = useSourceDiagnosis(detail);
+  const selectedRun = detail.selectedRun;
+  if (selectedRun === null) {
+    return <section className="incident-overview" aria-labelledby="incident-heading">
+      <Link href="/">Incident 列表</Link>
+      <h1 id="incident-heading">{detail.incident.displayName}</h1>
+      <p>{detail.incident.triggerSummary}</p>
+      <p>{targetLabel(detail.incident.target)}</p>
+      <p>生命周期：{detail.incident.lifecycleStatus === null ? "历史未判定" : detail.incident.lifecycleStatus}</p>
+      <p role="status">尚无诊断运行。没有诊断证据、结论或可执行操作。</p>
+      {detail.alertSignal === null ? null : <p>末次通知：{detail.alertSignal.status}；通知不代表源端当前状态、Incident 关闭或恢复验证完成。</p>}
+      {state.refreshError || state.streamError ? <p role="alert">{state.refreshError ?? state.streamError}</p> : null}
+      <button type="button" onClick={() => void refreshDetail.current?.()} disabled={state.refreshing}>刷新记录</button>
+    </section>;
+  }
   const diagnosisDetail = sourceDiagnosis.detail;
   const referenceRunAttempt =
-    detail.selectedRun.kind === "repair"
-      ? diagnosisDetail?.selectedRun.attempt
+    selectedRun.kind === "repair"
+      ? diagnosisDetail?.selectedRun?.attempt
       : undefined;
   const visibleRuns = mergeRuns(
     runs,
-    !mine || detail.selectedRun.initiatedByYou ? [runSummary(detail)] : [],
+    !mine || selectedRun.initiatedByYou ? [selectedRun] : [],
   );
   const actionBusy =
     rerunPending ||
@@ -541,9 +539,9 @@ export function IncidentStream({
         : ACTION_UNAVAILABLE_LABELS[detail.actions.rerun]
       : actionBusyReason;
   const monitoringRefreshKey = [
-    detail.selectedRun.status,
-    detail.selectedRun.startedAt,
-    detail.selectedRun.completedAt,
+    selectedRun.status,
+    selectedRun?.startedAt,
+    selectedRun?.completedAt,
     detail.alertSignal?.endsAt ?? "firing",
   ].join(":");
   const updatedAt = latestActivityAt(detail, state.events);
@@ -567,7 +565,7 @@ export function IncidentStream({
             <h1 id="incident-heading">{detail.incident.displayName}</h1>
             <div className="marker-row">
               <IncidentStatusBadge status={detail.incident.status} />
-              <RunStatusBadge status={detail.selectedRun.status} />
+              <RunStatusBadge status={selectedRun.status} />
             </div>
           </div>
           <p>{detail.incident.triggerSummary}</p>
@@ -594,19 +592,15 @@ export function IncidentStream({
               <div>
                 <dt>告警信号</dt>
                 <dd
-                  title={
-                    detail.alertSignal.status === "RESOLVED"
-                      ? "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。"
-                      : undefined
-                  }
+                  title="Alertmanager 通知不代表源端当前状态、Incident 关闭或恢复验证完成。"
                 >
                   {detail.alertSignal.status === "FIRING"
-                    ? "告警中"
-                    : "告警条件解除"}
+                    ? "末次通知 FIRING"
+                    : "末次通知 RESOLVED"}
                   {detail.alertSignal.endsAt === null ? null : (
                     <>
                       {" "}
-                      · <LocalTimestamp timestamp={detail.alertSignal.endsAt} />
+                      · 历史通知中的结束时间 <LocalTimestamp timestamp={detail.alertSignal.endsAt} />
                     </>
                   )}
                 </dd>
@@ -624,15 +618,15 @@ export function IncidentStream({
         <div>
           <span className="eyebrow">Run history</span>
           <h2 id="run-controls-heading">运行记录</h2>
-          <p className="run-context">{requesterLabel(detail.selectedRun)}</p>
+          <p className="run-context">{requesterLabel(selectedRun)}</p>
           <p className="run-context">
-            正在查看第 {detail.selectedRun.attempt} 次 ·{" "}
-            {detail.selectedRun.kind === "diagnosis"
+            正在查看第 {selectedRun.attempt} 次 ·{" "}
+            {selectedRun.kind === "diagnosis"
               ? "诊断"
-              : detail.selectedRun.operation === "rollback"
+              : selectedRun.operation === "rollback"
                 ? "回滚"
                 : "修复"}
-            {latestRun.attempt > detail.selectedRun.attempt ? (
+            {latestRun !== null && latestRun.attempt > selectedRun.attempt ? (
               <>
                 {" "}
                 ·{" "}
@@ -683,10 +677,10 @@ export function IncidentStream({
                   if (historyMenu.current) historyMenu.current.open = false;
                 }}
                 aria-current={
-                  run.id === detail.selectedRun.id ? "page" : undefined
+                  run.id === selectedRun.id ? "page" : undefined
                 }
                 className={
-                  run.id === detail.selectedRun.id
+                  run.id === selectedRun.id
                     ? "run-selector__item is-selected"
                     : "run-selector__item"
                 }
@@ -701,7 +695,7 @@ export function IncidentStream({
                   · {runStatusLabel(run.status)}
                   <span> · {requesterLabel(run)}</span>
                 </span>
-                {run.id === latestRun.id ? (
+                {run.id === latestRun?.id ? (
                   <span className="run-selector__latest">最新</span>
                 ) : null}
               </Link>
@@ -734,7 +728,7 @@ export function IncidentStream({
               type="button"
               disabledReason={rerunDisabledReason}
               onClick={() =>
-                detail.selectedRun.status === "WAITING_APPROVAL"
+                selectedRun.status === "WAITING_APPROVAL"
                   ? setConfirmRerun(true)
                   : void createRun()
               }
@@ -795,11 +789,11 @@ export function IncidentStream({
         refreshKey={monitoringRefreshKey}
         alertStatus={detail.alertSignal?.status ?? null}
         selectedRun={{
-          id: detail.selectedRun.id,
-          attempt: detail.selectedRun.attempt,
-          completedAt: detail.selectedRun.completedAt,
+          id: selectedRun.id,
+          attempt: selectedRun.attempt,
+          completedAt: selectedRun?.completedAt,
         }}
-        latestRunId={latestRun.id}
+        latestRunId={latestRun?.id ?? null}
       />
 
       {state.streamError === null ? null : (
@@ -823,7 +817,7 @@ export function IncidentStream({
         </p>
       )}
 
-      {diagnosisDetail ? (
+      {diagnosisDetail?.selectedRun ? (
         <DiagnosisPanel
           diagnosis={diagnosisDetail.diagnosis}
           evidence={diagnosisDetail.evidence}
@@ -863,7 +857,7 @@ export function IncidentStream({
         diagnosis={diagnosisDetail?.diagnosis ?? null}
         evidence={diagnosisDetail?.evidence}
         referenceRunAttempt={referenceRunAttempt}
-        runCompletedAt={diagnosisDetail?.selectedRun.completedAt}
+        runCompletedAt={diagnosisDetail?.selectedRun?.completedAt}
       />
 
       <RepairPanel
@@ -880,7 +874,7 @@ export function IncidentStream({
       >
         {manualActions ? (
           <RepairActions
-            key={`${detail.selectedRun.id}:${detail.repair?.digest ?? "none"}`}
+            key={`${selectedRun.id}:${detail.repair?.digest ?? "none"}`}
             detail={detail}
             busy={actionBusy}
             refreshing={rerunPending || state.refreshing}
@@ -890,9 +884,9 @@ export function IncidentStream({
           />
         ) : null}
       </RepairPanel>
-      <details key={detail.selectedRun.id} className="run-event-records" open>
+      <details key={selectedRun.id} className="run-event-records" open>
         <summary>
-          事件记录<span>第 {detail.selectedRun.attempt} 次运行的关键事件</span>
+          事件记录<span>第 {selectedRun.attempt} 次运行的关键事件</span>
         </summary>
         {state.eventPageCursor === null ? null : (
           <ActionButton
@@ -910,8 +904,8 @@ export function IncidentStream({
       <EvidenceList
         evidence={detail.evidence}
         currentRunAttempt={
-          detail.selectedRun.kind === "repair"
-            ? detail.selectedRun.attempt
+          selectedRun.kind === "repair"
+            ? selectedRun.attempt
             : undefined
         }
       />

@@ -14,6 +14,7 @@ import {
   readRunHistory,
   splitSseFrames,
   type IncidentDetail,
+  type IncidentWithRun,
   type RunEvent,
 } from "../contracts/runtime-api.ts";
 import { adaptScenarioExecutor, runScenario, type Execute, type ScenarioRunner } from "../environment/commands.ts";
@@ -146,7 +147,7 @@ async function waitForNewIncident(scenario: EvaluationCase, incidentsBefore: Set
   );
 }
 
-async function waitForTerminalIncident(incidentId: string, runtime: ReadJson, sleep: Sleep): Promise<IncidentDetail> {
+async function waitForTerminalIncident(incidentId: string, runtime: ReadJson, sleep: Sleep): Promise<IncidentWithRun> {
   return waitUntil(
     "diagnosis_not_terminal",
     async () => {

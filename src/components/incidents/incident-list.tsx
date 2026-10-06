@@ -108,7 +108,7 @@ export function IncidentList({
     return (
       <div className="empty-state empty-state--panel">
         <p>还没有持久化的 Incident。</p>
-        <span>告警进入 Runtime 后，记录会出现在这里。</span>
+        <span>已接收的未归属告警可在运行监控概览中查看。</span>
       </div>
     );
   }
@@ -209,6 +209,7 @@ export function IncidentList({
                 </td>
                 <td data-label="状态" headers="incident-column-status">
                   <IncidentStatusBadge status={incident.status} />
+                  <span>{incident.lifecycleStatus === null ? "历史未判定" : incident.lifecycleStatus === "OPEN" ? "未关闭" : "已关闭"}</span>
                 </td>
                 <td className="incident-table__action" headers="incident-column-action">
                   <UiIcon name="chevron-right" />

@@ -55,7 +55,7 @@ describe("source diagnosis for the selected repair", () => {
     fetchDetail.mockResolvedValue({ ok: true, data: source });
     const { result } = renderHook(() => useSourceDiagnosis(repair));
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.detail?.selectedRun.status).toBe("FAILED");
+    expect(result.current.detail?.selectedRun?.status).toBe("FAILED");
     expect(result.current.detail?.diagnosis).toBeNull();
   });
 
@@ -70,7 +70,7 @@ describe("source diagnosis for the selected repair", () => {
     other.selectedRun.id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     rerender({ detail: other });
     await act(async () => finish({ ok: true, data: source }));
-    expect(result.current.detail?.selectedRun.id).toBe(other.selectedRun.id);
+    expect(result.current.detail?.selectedRun?.id).toBe(other.selectedRun.id);
     fetchDetail.mockResolvedValueOnce({ ok: false, failure: "unavailable" });
     rerender({ detail: repair });
     await waitFor(() => expect(result.current.loading).toBe(false));

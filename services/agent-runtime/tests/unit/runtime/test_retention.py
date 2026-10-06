@@ -23,6 +23,7 @@ from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import (
     DiagnosisOutcome,
     EvidenceRecord,
+    IncidentLifecycleStatus,
     ModelSnapshot,
     RootCauseRecord,
     RunBudget,
@@ -119,6 +120,10 @@ async def _create_failed_run(
             output_tokens=None,
         )
     )
+    async with repository._session_factory() as session, session.begin():  # pyright: ignore[reportPrivateUsage]
+        incident = await session.get(IncidentRow, str(created.incident_id))
+        assert incident
+        incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
     return created.incident_id, created.run_id
 
 
@@ -170,6 +175,10 @@ async def _create_diagnosed_run(
             output_tokens=50,
         )
     )
+    async with repository._session_factory() as session, session.begin():  # pyright: ignore[reportPrivateUsage]
+        incident = await session.get(IncidentRow, str(created.incident_id))
+        assert incident
+        incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
     return created.incident_id, created.run_id
 
 
@@ -183,6 +192,35 @@ async def _row_count(
             count = await session.scalar(select(func.count()).select_from(row_type))
         assert isinstance(count, int)
         return count
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.parametrize("lifecycle", [None, IncidentLifecycleStatus.OPEN])
+async def test_prune_protects_unclosed_incidents_and_rechecks_before_delete(
+    tmp_path: Path,
+    lifecycle: IncidentLifecycleStatus | None,
+) -> None:
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    command.upgrade(_alembic_config(paths), "head")
+    database = await _open_database(paths)
+    try:
+        repository = IncidentRepository(database.session_factory)
+        incident_id, _ = await _create_failed_run(
+            repository, CUTOFF - timedelta(days=1)
+        )
+        targets = await repository.list_prune_targets(CUTOFF, paths.run_artifacts)
+        assert len(targets) == 1
+        async with database.session_factory() as session, session.begin():
+            incident = await session.get(IncidentRow, str(incident_id))
+            assert incident is not None
+            incident.lifecycle_status = lifecycle
+        assert await repository.list_prune_targets(CUTOFF, paths.run_artifacts) == ()
+        with pytest.raises(RecoveryConsistencyError):
+            await repository.delete_prune_target(
+                targets[0], CUTOFF, paths.run_artifacts
+            )
+        assert await repository.incident_exists(incident_id)
     finally:
         await database.dispose()
 

@@ -54,6 +54,11 @@ class IncidentStatus(StrEnum):
         return self in _TERMINAL_INCIDENT_STATUSES
 
 
+class IncidentLifecycleStatus(StrEnum):
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+
+
 class RunStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
@@ -110,7 +115,7 @@ class RunBudget:
 class RunEvent:
     id: int
     incident_id: UUID
-    run_id: UUID
+    run_id: UUID | None
     event_key: str
     event_type: str
     occurred_at: datetime
@@ -145,13 +150,6 @@ class AlertSignalRecord:
     status: AlertSignalStatus
     starts_at: CanonicalAlertTimestamp
     ends_at: CanonicalAlertTimestamp | None
-
-
-@dataclass(frozen=True, slots=True)
-class PersistedAlertBatch:
-    created_run_ids: tuple[UUID, ...]
-    events: tuple[RunEvent, ...]
-    blocked_new_firing: bool
 
 
 @dataclass(frozen=True, slots=True)

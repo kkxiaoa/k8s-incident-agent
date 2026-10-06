@@ -12,6 +12,7 @@ import {
   REPAIR_PROPOSAL_ID,
   REPAIR_PROPOSAL_DIGEST,
   makeIncidentDetail,
+  makeIncidentWithoutRuns,
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
   makeRecoveryDetail,
@@ -132,6 +133,35 @@ function renderIncidentStream(detail = makeIncidentDetail()) {
   );
 }
 
+it("renders an Incident without a Run and refreshes Incident-owned notifications without inventing diagnosis", async () => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const detail = makeIncidentWithoutRuns();
+  detail.incident.lifecycleStatus = null;
+  detail.incident.source = { type: "alertmanager", ref: "K8sIncidentImagePullBackOff", revision: "1" };
+  detail.alertSignal = { status: "FIRING", startsAt: "2026-09-03T00:00:00.000000000Z", endsAt: null };
+  const updated = { ...detail, eventCursor: "2", alertSignal: {
+    startsAt: "2026-09-03T00:00:00.000000000Z", endsAt: "2026-09-03T00:05:00.000000000Z", status: "RESOLVED",
+  } };
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(updated), {
+    status: 200, headers: { "content-type": "application/json" },
+  }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<IncidentStream authenticated initialDetail={detail} initialRuns={{ items: [], nextCursor: null }} manualActions />);
+  expect(screen.getByText(/尚无诊断运行/)).toBeVisible();
+  expect(screen.getByText("生命周期：历史未判定")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "重新诊断" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "诊断结论" })).toBeNull();
+  await act(async () => FakeEventSource.current?.emit("alert.notification", "2", {
+    schemaVersion: 6, incidentId: INCIDENT_ID, runId: null, runKind: null,
+    occurredAt: "2026-09-03T00:05:01Z", fingerprint: "0123456789abcdef",
+    alertStatus: "RESOLVED", startsAt: updated.alertSignal.startsAt, endsAt: updated.alertSignal.endsAt,
+  }));
+  await waitFor(() => expect(screen.getByText(/末次通知：RESOLVED/)).toBeVisible());
+  expect(screen.getByText(/末次通知：RESOLVED/)).toHaveTextContent("Incident 关闭或恢复验证完成");
+  expect(String(fetchMock.mock.calls[0][0])).not.toContain("runId=");
+  expect(screen.getByText(/尚无诊断运行/)).toBeVisible();
+});
+
 it.each(["apply", "rollback"] as const)("labels a waiting %s Run and allows operator rediagnosis", async (operation) => {
   vi.stubGlobal("EventSource", FakeEventSource);
   const detail = makeRepairRunWaitingDetail();
@@ -161,7 +191,7 @@ it.each([false, true])("announces a newer Run from SSE without changing selectio
   const newer = makeRepairRunWaitingDetail();
   stubSessionFetch("fetch", vi.fn(async (input: RequestInfo | URL) => {
     if (String(input).includes("/runs?")) return Response.json({
-      schemaVersion: 5, items: String(input).includes("mine=true") ? [detail.selectedRun] : [newer.selectedRun, detail.selectedRun], nextCursor: null,
+      schemaVersion: 6, items: String(input).includes("mine=true") ? [detail.selectedRun] : [newer.selectedRun, detail.selectedRun], nextCursor: null,
     });
     return detailResponse(detail);
   }));
@@ -176,7 +206,7 @@ it.each([false, true])("announces a newer Run from SSE without changing selectio
     await user.click(within(history).getByRole("heading", { name: "运行记录" }));
   }
   act(() => FakeEventSource.current!.emit("run.queued", "900", {
-    schemaVersion: 5, incidentId: INCIDENT_ID, runId: newer.selectedRun.id,
+    schemaVersion: 6, incidentId: INCIDENT_ID, runId: newer.selectedRun.id,
     runKind: "repair", attempt: 2, runStatus: "QUEUED", occurredAt: "2026-09-16T01:00:00Z",
   }));
   await waitFor(() => expect(within(history).getByRole("link", { name: "最新运行" })).toHaveAttribute("href", `/incidents/${INCIDENT_ID}?runId=${newer.selectedRun.id}`));
@@ -208,8 +238,8 @@ describe("repair detail refresh", () => {
       if (!url.pathname.endsWith("/runs")) return detailResponse(detail);
       if (url.searchParams.get("mine") === "true") return failMine
         ? new Response(null, { status: 503 })
-        : Response.json({ schemaVersion: 5, items: [records[21]], nextCursor: null });
-      return Response.json({ schemaVersion: 5,
+        : Response.json({ schemaVersion: 6, items: [records[21]], nextCursor: null });
+      return Response.json({ schemaVersion: 6,
         items: url.searchParams.has("cursor") ? records.slice(20) : records.slice(0, 20),
         nextCursor: url.searchParams.has("cursor") ? null : "older-runs",
       });
@@ -253,7 +283,7 @@ describe("repair detail refresh", () => {
     initial.eventCursor = "1";
     renderIncidentStream(initial);
     act(() => FakeEventSource.current!.emit("repair.waiting_approval", "20", {
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId: RUN_ID,
       proposalId: terminal.repair!.id,
@@ -314,7 +344,7 @@ describe("ScenarioLauncher", () => {
     resolveRequest?.(
       new Response(
         JSON.stringify({
-          schemaVersion: 5,
+          schemaVersion: 6,
           incidentId: INCIDENT_ID,
         }),
         { status: 202, headers: { "content-type": "application/json" } },
@@ -330,7 +360,7 @@ describe("ScenarioLauncher", () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          schemaVersion: 5,
+          schemaVersion: 6,
           incidentId: INCIDENT_ID,
         }),
         { status: 202, headers: { "content-type": "application/json" } },
@@ -405,7 +435,7 @@ describe("ScenarioLauncher", () => {
 });
 
 describe("read-only incident presentation", () => {
-  it("keeps Alertmanager signal state distinct from the Incident status", () => {
+  it.each(["FIRING", "RESOLVED"] as const)("labels historical end time for %s without claiming current state or recovery", (status) => {
     const detail = makeIncidentDetail();
     detail.incident.status = "DIAGNOSED";
     detail.incident.source = {
@@ -414,7 +444,7 @@ describe("read-only incident presentation", () => {
       revision: "2026-09-02.1",
     };
     detail.alertSignal = {
-      status: "RESOLVED",
+      status,
       startsAt: "2026-09-02T08:00:00.000000000Z",
       endsAt: "2026-09-02T08:05:00.000000000Z",
     };
@@ -427,9 +457,11 @@ describe("read-only incident presentation", () => {
         "Alertmanager · K8sIncidentImagePullBackOff · catalog 2026-09-02.1",
       ),
     ).toBeVisible();
-    expect(screen.getByText(/告警条件解除/, { selector: "dd" })).toHaveAttribute(
+    const signal = screen.getByText(new RegExp(`末次通知 ${status}`), { selector: "dd" });
+    expect(signal).toHaveTextContent("历史通知中的结束时间");
+    expect(signal).toHaveAttribute(
       "title",
-      "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。",
+      "Alertmanager 通知不代表源端当前状态、Incident 关闭或恢复验证完成。",
     );
     expect(screen.getByText("已诊断")).toBeVisible();
   });
@@ -441,7 +473,7 @@ describe("read-only incident presentation", () => {
         "incident.created",
         "1",
         JSON.stringify({
-          schemaVersion: 5,
+          schemaVersion: 6,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           attempt: 1,
@@ -465,7 +497,7 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("diagnosis.completed", "2", {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         diagnosisId: DIAGNOSIS_ID,
@@ -488,7 +520,7 @@ describe("read-only incident presentation", () => {
     const source = FakeEventSource.current;
     act(() => {
       source?.emit("run.started", "2", {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: "66666666-6666-4666-8666-666666666666",
         runId: RUN_ID,
         attempt: 1,
@@ -530,7 +562,7 @@ describe("read-only incident presentation", () => {
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            schemaVersion: 5,
+            schemaVersion: 6,
             runId: "55555555-5555-4555-8555-555555555555",
           }),
           { status: 202, headers: { "content-type": "application/json" } },
@@ -560,7 +592,7 @@ describe("read-only incident presentation", () => {
     expired.actions.approve = expired.actions.reject = "proposal_expired";
     let snapshot = expired;
     const reads = vi.fn(async (input: RequestInfo | URL) => String(input).includes("/runs?")
-      ? Response.json({ schemaVersion: 5, items: [snapshot.selectedRun], nextCursor: null })
+      ? Response.json({ schemaVersion: 6, items: [snapshot.selectedRun], nextCursor: null })
       : Response.json(snapshot));
     stubSessionFetch("fetch", reads);
     vi.stubGlobal("EventSource", FakeEventSource);
@@ -638,7 +670,7 @@ describe("read-only incident presentation", () => {
     expect(screen.getByRole("button", { name: "重新诊断" })).toBeEnabled();
 
     act(() => FakeEventSource.current!.emit("repair.execution_updated", "999", {
-      schemaVersion: 5,
+      schemaVersion: 6,
       incidentId: INCIDENT_ID,
       runId: "55555555-5555-4555-8555-555555555555",
       runKind: "repair",
@@ -695,7 +727,7 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("incident.created", "1", {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         attempt: 1,
@@ -705,7 +737,7 @@ describe("read-only incident presentation", () => {
         occurredAt: "2026-08-29T01:00:00Z",
       });
       source?.emit("run.started", "2", {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         attempt: 1,
@@ -715,7 +747,7 @@ describe("read-only incident presentation", () => {
         occurredAt: "2026-08-29T01:00:01Z",
       });
       source?.emit("tool.started", "3", {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -729,7 +761,7 @@ describe("read-only incident presentation", () => {
     act(() => {
       for (const id of ["4", "5", "6"]) {
         source?.emit("evidence.recorded", id, {
-          schemaVersion: 5,
+          schemaVersion: 6,
           incidentId: INCIDENT_ID,
           runId: RUN_ID,
           evidenceId: EVIDENCE_ID,
@@ -768,7 +800,7 @@ describe("read-only incident presentation", () => {
 
     act(() => {
       source?.emit("evidence.recorded", "4", {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         evidenceId: EVIDENCE_ID,
@@ -782,7 +814,7 @@ describe("read-only incident presentation", () => {
         occurredAt: "2026-08-29T01:00:03Z",
       });
       source?.emit("tool.started", "5", {
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-2",
@@ -858,6 +890,7 @@ describe("read-only incident presentation", () => {
             displayName: detail.incident.displayName,
             target: detail.incident.target,
             status: "TRIAGING",
+            lifecycleStatus: null,
             updatedAt: detail.incident.createdAt,
           },
         ]}
@@ -891,9 +924,9 @@ describe("read-only incident presentation", () => {
     const user = userEvent.setup();
     const target = makeIncidentDetail().incident.target;
     const incidents = [
-      { id: "a", displayName: "失败 · 较旧", status: "FAILED", updatedAt: "2026-09-16T01:00:00Z", target },
-      { id: "b", displayName: "已诊断 · 最新", status: "DIAGNOSED", updatedAt: "2026-09-16T03:00:00Z", target },
-      { id: "c", displayName: "失败 · 较新", status: "FAILED", updatedAt: "2026-09-16T02:00:00Z", target },
+      { id: "a", displayName: "失败 · 较旧", status: "FAILED", lifecycleStatus: null, updatedAt: "2026-09-16T01:00:00Z", target },
+      { id: "b", displayName: "已诊断 · 最新", status: "DIAGNOSED", lifecycleStatus: null, updatedAt: "2026-09-16T03:00:00Z", target },
+      { id: "c", displayName: "失败 · 较新", status: "FAILED", lifecycleStatus: null, updatedAt: "2026-09-16T02:00:00Z", target },
     ] satisfies Parameters<typeof IncidentList>[0]["incidents"];
     const original = structuredClone(incidents);
     render(<IncidentList incidents={incidents} />);
@@ -1035,7 +1068,7 @@ describe("read-only incident presentation", () => {
     ["repair.verification_updated", { outcome: "monitoring_unavailable", incidentStatus: "FAILED", runStatus: "FAILED", reason: "monitoring_unavailable", sampleCount: 3 }, "warning", "恢复验证已停止"],
   ] as const)("colors the recorded outcome of %s without claiming later success: %j", (name, payload, tone, boundary) => {
     const event = parseRunEvent(name, "1", JSON.stringify({
-      schemaVersion: 5, incidentId: INCIDENT_ID, runId: RUN_ID, runKind: "repair",
+      schemaVersion: 6, incidentId: INCIDENT_ID, runId: RUN_ID, runKind: "repair",
       occurredAt: "2026-09-16T01:00:00Z", proposalId: REPAIR_PROPOSAL_ID,
       proposalDigest: REPAIR_PROPOSAL_DIGEST, approvalId: REPAIR_PROPOSAL_ID,
       executionId: REPAIR_PROPOSAL_ID, ...payload,
@@ -1050,7 +1083,7 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "1",
       JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -1064,7 +1097,7 @@ describe("read-only incident presentation", () => {
       "evidence.recorded",
       "2",
       JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         evidenceId: EVIDENCE_ID,
@@ -1083,7 +1116,7 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "3",
       JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-2",
@@ -1206,7 +1239,7 @@ describe("read-only incident presentation", () => {
       "tool.started",
       "7",
       JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -1220,7 +1253,7 @@ describe("read-only incident presentation", () => {
       "tool.failed",
       "8",
       JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         toolCallId: "tool-call-1",
@@ -1261,7 +1294,7 @@ describe("read-only incident presentation", () => {
       "alert.resolved",
       "9",
       JSON.stringify({
-        schemaVersion: 5,
+        schemaVersion: 6,
         incidentId: INCIDENT_ID,
         runId: RUN_ID,
         alertStatus: "RESOLVED",
@@ -1274,10 +1307,10 @@ describe("read-only incident presentation", () => {
 
     render(<RunTimeline events={[resolved]} connection="live" />);
 
-    expect(screen.getByText("告警条件已解除")).toBeVisible();
+    expect(screen.getByText("收到 RESOLVED 通知")).toBeVisible();
     expect(
       screen.getByText(
-        "Alertmanager 已报告 resolved；不代表 Incident 关闭或恢复验证完成。",
+        "Alertmanager 通知不代表源端当前状态、Incident 关闭或恢复验证完成。",
       ),
     ).toBeVisible();
     expect(screen.queryByText("Incident 已恢复")).toBeNull();
@@ -1288,7 +1321,7 @@ describe("read-only incident presentation", () => {
     ["superseded", "后继运行已取代此提案，未执行修复"],
   ])("renders %s as an ended wait, not recovery", (reason, message) => {
     const ended = parseRunEvent("repair.wait_ended", "9", JSON.stringify({
-      schemaVersion: 5, incidentId: INCIDENT_ID, runId: RUN_ID, runKind: "repair",
+      schemaVersion: 6, incidentId: INCIDENT_ID, runId: RUN_ID, runKind: "repair",
       runStatus: "COMPLETED", incidentStatus: "DIAGNOSED", reason,
       occurredAt: "2026-09-02T08:05:00Z",
     }), INCIDENT_ID);

@@ -519,7 +519,10 @@ def test_new_nonempty_database_is_not_a_reset_target(tmp_path: Path) -> None:
     command.upgrade(_alembic_config(paths), "head")
     with closing(sqlite3.connect(paths.business_database)) as connection, connection:
         connection.execute(
-            "INSERT INTO incidents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO incidents (id, trigger_source, trigger_ref, trigger_revision, "
+            "display_name, trigger_summary, cluster, namespace, api_version, kind, "
+            "resource_name, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 str(INCIDENT_ID),
                 "scenario",

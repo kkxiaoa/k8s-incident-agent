@@ -46,7 +46,7 @@ test("the fake environment answers the evaluator's reads through the real sessio
   assert.deepEqual(panels.map((panel) => panel.signalRole), ["trigger", "context"]);
   const trigger = await readPanel(read, incidentId, panels[0].panelId, panels[0].recommendedWindow);
   assert.equal(trigger.result.state, "ok");
-  const events = await readRunEvents(read, incidentId, detail.selectedRun.id);
+  const events = await readRunEvents(read, incidentId, detail.selectedRun!.id);
   assert.equal(events.events.length, 3);
 
   const frames: string[] = [];
@@ -57,7 +57,7 @@ test("the fake environment answers the evaluator's reads through the real sessio
     rest = split.rest;
     return false;
   });
-  const decoded = frames.map((frame, index) => decodeSseFrame(frame, { incidentId, runId: detail.selectedRun.id }, index === 0 ? undefined : String(index)));
+  const decoded = frames.map((frame, index) => decodeSseFrame(frame, { incidentId, runId: detail.selectedRun!.id }, index === 0 ? undefined : String(index)));
   assert.deepEqual(decoded.map((event) => event.event), ["incident.created", "run.started", "diagnosis.completed"]);
 
   const consoleOrigin = endpointOrigin("console");
@@ -94,7 +94,7 @@ test("the switches shape the fixture the campaign tests depend on", async () => 
   const failedRead = bindJsonReader(session, runtime);
   const [failedId] = [...(await readIncidentSummaries(failedRead)).keys()];
   const detail = await readIncident(failedRead, failedId);
-  assert.deepEqual({ status: detail.selectedRun.status, error: detail.selectedRun.error, diagnosis: detail.diagnosis }, {
+  assert.deepEqual({ status: detail.selectedRun!.status, error: detail.selectedRun!.error, diagnosis: detail.diagnosis }, {
     status: "FAILED",
     error: { code: "tool_timeout", retryable: true },
     diagnosis: null,

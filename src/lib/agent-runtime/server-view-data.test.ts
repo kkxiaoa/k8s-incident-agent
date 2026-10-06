@@ -31,14 +31,15 @@ function monitoringHealth() {
 function monitoringOverview() {
   const start = Date.parse("2026-09-02T03:00:00.000Z");
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
+    unassignedSignals: [],
     window: "24h",
     generatedAt: "2026-09-03T02:15:00.000Z",
     counts: {
       totalIncidents: 0,
       firingAlerts: 0,
       triagingIncidents: 0,
-      waitingApprovalIncidents: 0,
+      unassignedSignals: 0, waitingApprovalIncidents: 0,
     },
     families: [],
     samples: Array.from({ length: 24 }, (_, index) => ({
@@ -58,6 +59,7 @@ function monitoringOverviewView() {
     counts: overview.counts,
     families: overview.families,
     samples: overview.samples,
+    unassignedSignals: overview.unassignedSignals,
   };
 }
 
@@ -72,7 +74,7 @@ describe("server view data", () => {
       url.pathname === "/healthz" ? health
         : url.pathname.endsWith("/monitoring/health") ? monitoringHealth()
         : url.pathname.endsWith("/monitoring/overview") ? monitoringOverview()
-        : { schemaVersion: 5, items: [], nextCursor: null },
+        : { schemaVersion: 6, items: [], nextCursor: null },
     ))));
     const result = await loadIncidentConsoleOverview("online");
     expect(result.runtimeHealth).toEqual(health);
@@ -91,7 +93,7 @@ describe("server view data", () => {
             : url.pathname.endsWith("/scenarios")
             ? jsonResponse({ schemaVersion: 1, items: [null] })
             : jsonResponse({
-                schemaVersion: 5,
+                schemaVersion: 6,
                 items: [null],
                 nextCursor: null,
               }),
@@ -117,7 +119,7 @@ describe("server view data", () => {
           ? jsonResponse(monitoringHealth())
           : url.pathname.endsWith("/monitoring/overview")
           ? jsonResponse(monitoringOverview())
-          : jsonResponse({ schemaVersion: 5, items: [], nextCursor: null }),
+          : jsonResponse({ schemaVersion: 6, items: [], nextCursor: null }),
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -174,7 +176,7 @@ describe("server view data", () => {
             })
           : url.pathname.endsWith("/runs")
             ? jsonResponse({
-                schemaVersion: 5,
+                schemaVersion: 6,
                 items: [
                   {
                     id: makeIncidentDetail().selectedRun.id,

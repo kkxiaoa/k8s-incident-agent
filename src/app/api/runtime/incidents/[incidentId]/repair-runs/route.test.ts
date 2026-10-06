@@ -12,7 +12,7 @@ it("forwards the exact source/selection payload through the fixed Runtime endpoi
     selection: { revision: "9223372036854775807", replicaSetUid: "rs-old" },
     replacesRunId: INCIDENT_ID,
   });
-  const fetchMock = vi.fn().mockResolvedValue(Response.json({ schemaVersion: 5, runId: INCIDENT_ID }, { status: 202 }));
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ schemaVersion: 6, runId: INCIDENT_ID }, { status: 202 }));
   vi.stubGlobal("fetch", fetchMock);
   const response = await POST(new Request("https://console.test/repair-runs?url=discard", {
     method: "POST", headers: { "content-type": "application/json", "x-operator-ref": "forged" }, body,
@@ -22,7 +22,7 @@ it("forwards the exact source/selection payload through the fixed Runtime endpoi
   expect(new TextDecoder().decode(init.body as ArrayBuffer)).toBe(body);
   expect(new Headers(init.headers).has("x-operator-ref")).toBe(false);
   expect(response.status).toBe(202);
-  expect(await response.json()).toEqual({ schemaVersion: 5, runId: INCIDENT_ID });
+  expect(await response.json()).toEqual({ schemaVersion: 6, runId: INCIDENT_ID });
 });
 
 it.each([

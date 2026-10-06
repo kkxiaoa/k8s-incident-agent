@@ -51,7 +51,7 @@ export function RepairActions({ detail, busy, busyReason, refreshing, onAction, 
   }
 
   async function submit(action: Action) {
-    if (busy || refreshing || actions[action] !== null || (deadlineReached && (action === "approve" || action === "reject"))) return;
+    if (run === null || busy || refreshing || actions[action] !== null || (deadlineReached && (action === "approve" || action === "reject"))) return;
     if (action === "approve" || action === "reject") {
       if (repair === null) return;
       await onAction({ action, request: {
@@ -77,6 +77,7 @@ export function RepairActions({ detail, busy, busyReason, refreshing, onAction, 
   // An advice-only Run has no controlled repair to offer, and a generic next
   // step here would imply a preparation entry that does not exist. Runs that
   // did enter the repair path keep their explanation even without an action.
+  if (run === null) return null;
   if (
     run.kind === "diagnosis" &&
     repair === null &&

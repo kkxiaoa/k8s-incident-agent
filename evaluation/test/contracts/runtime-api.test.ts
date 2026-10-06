@@ -47,13 +47,38 @@ function reader(responses: Record<string, unknown> | ((pathname: string) => unkn
 }
 
 function detail(overrides: Record<string, unknown> = {}) {
-  return { schemaVersion: 5, incident: { id: INCIDENT }, selectedRun: { id: RUN }, ...overrides };
+  return { schemaVersion: 6, incident: { id: INCIDENT }, selectedRun: { id: RUN }, ...overrides };
 }
+
+test("general reads accept no-Run Incidents but Run-specific evaluation cannot use them", async () => {
+  const noRun = detail({ selectedRun: null, evidence: [], diagnosis: null, repair: null,
+    eventCursor: "0", eventPage: { items: [], nextCursor: null },
+    actions: Object.fromEntries(["rerun", "prepare", "refresh", "edit", "approve", "reject", "rollback", "withdraw"].map((action) => [action, "not_applicable"])) });
+  assert.equal((await readIncident(reader(() => noRun).read, INCIDENT)).selectedRun, null);
+  await assert.rejects(readIncidentForRun(reader(() => noRun).read, INCIDENT, RUN), coded("upstream_contract_invalid"));
+  for (const invalid of [{ evidence: [{}] }, { diagnosis: {} }, { actions: {} }, { eventCursor: "" }]) {
+    await assert.rejects(readIncident(reader(() => ({ ...noRun, ...invalid })).read, INCIDENT), coded("upstream_contract_invalid"));
+  }
+});
+
+test("SSE replay accepts Incident ownership only for alert notifications and keeps strict cursor ordering", () => {
+  const data = { schemaVersion: 6, incidentId: INCIDENT, runId: null, runKind: null,
+    occurredAt: "2026-09-03T00:05:01Z", alertStatus: "RESOLVED", fingerprint: "0123456789abcdef",
+    startsAt: "2026-09-03T00:00:00.000000001Z", endsAt: "2026-09-03T00:05:00Z" };
+  const frame = (event: string, changes = {}) => `id: 8\nevent: ${event}\ndata: ${JSON.stringify({ ...data, ...changes })}`;
+  const expected = { incidentId: INCIDENT, runId: RUN };
+  assert.equal(decodeSseFrame(frame("alert.notification"), expected, "7").data.runId, null);
+  for (const invalid of [{ incidentId: uuid(99) }, { runId: RUN }, { runKind: "diagnosis" }, { endsAt: null }]) {
+    assert.throws(() => decodeSseFrame(frame("alert.notification", invalid), expected, "7"), coded("sse_replay_invalid"));
+  }
+  assert.throws(() => decodeSseFrame(frame("run.failed"), expected, "7"), coded("sse_replay_invalid"));
+  assert.throws(() => decodeSseFrame(frame("alert.notification"), expected, "8"), coded("sse_replay_invalid"));
+});
 
 test("incident detail is read through the gateway-tolerant path and checked for identity", async () => {
   const { read, calls } = reader({ [`/api/v1/incidents/${INCIDENT}`]: detail() });
   const document = await readIncident(read, INCIDENT);
-  assert.equal(document.selectedRun.id, RUN);
+  assert.equal(document.selectedRun?.id, RUN);
   assert.deepEqual(calls[0], { pathname: `/api/v1/incidents/${INCIDENT}`, options: { transientStatuses: TRANSIENT_GATEWAY_STATUSES } });
 
   for (const bad of [
@@ -84,7 +109,7 @@ test("incident summaries follow cursors, keep every item once and bound the page
     const cursor = new URL(pathname, "http://runtime").searchParams.get("cursor");
     const page = cursor === null ? 0 : Number(cursor);
     return {
-      schemaVersion: 5,
+      schemaVersion: 6,
       items: Array.from({ length: perPage }, (_, index) => ({ id: uuid(page * perPage + index + 1), updatedAt: "2026-09-05T00:00:00Z" })),
       nextCursor: page + 1 < count ? String(page + 1) : null,
     };
@@ -98,34 +123,34 @@ test("incident summaries follow cursors, keep every item once and bound the page
   await assert.rejects(readIncidentSummaries(reader(pages(PAGE_BOUND + 1, 1)).read), coded("response_too_large"));
   assert.equal((await readIncidentSummaries(reader(pages(PAGE_BOUND, 1)).read)).size, PAGE_BOUND);
 
-  const duplicate = reader(() => ({ schemaVersion: 5, items: [{ id: uuid(1) }, { id: uuid(1) }], nextCursor: null }));
+  const duplicate = reader(() => ({ schemaVersion: 6, items: [{ id: uuid(1) }, { id: uuid(1) }], nextCursor: null }));
   await assert.rejects(readIncidentSummaries(duplicate.read), coded("upstream_contract_invalid"));
-  const looping = reader(() => ({ schemaVersion: 5, items: [], nextCursor: "again" }));
+  const looping = reader(() => ({ schemaVersion: 6, items: [], nextCursor: "again" }));
   await assert.rejects(readIncidentSummaries(looping.read), coded("upstream_contract_invalid"));
   for (const bad of [
     { schemaVersion: 4, items: [], nextCursor: null },
-    { schemaVersion: 5, items: [{ id: "not-a-uuid" }], nextCursor: null },
-    { schemaVersion: 5, items: [null], nextCursor: null },
-    { schemaVersion: 5, items: [], nextCursor: " padded" },
-    { schemaVersion: 5, items: [], nextCursor: "c".repeat(2_049) },
-    { schemaVersion: 5, items: {}, nextCursor: null },
+    { schemaVersion: 6, items: [{ id: "not-a-uuid" }], nextCursor: null },
+    { schemaVersion: 6, items: [null], nextCursor: null },
+    { schemaVersion: 6, items: [], nextCursor: " padded" },
+    { schemaVersion: 6, items: [], nextCursor: "c".repeat(2_049) },
+    { schemaVersion: 6, items: {}, nextCursor: null },
   ]) {
     await assert.rejects(readIncidentSummaries(reader(() => bad).read), coded("upstream_contract_invalid"));
   }
 });
 
 test("run history is fetched for the deduplication gate to judge as a whole", async () => {
-  const page = { schemaVersion: 5, items: [{ id: RUN, kind: "diagnosis", operation: null, attempt: 1, status: "COMPLETED" }], nextCursor: null };
+  const page = { schemaVersion: 6, items: [{ id: RUN, kind: "diagnosis", operation: null, attempt: 1, status: "COMPLETED" }], nextCursor: null };
   const { read, calls } = reader({ [`/api/v1/incidents/${INCIDENT}/runs?limit=50`]: page });
   const history = await readRunHistory(read, INCIDENT);
   assert.equal(calls.length, 1);
   assert.ok(isRunHistoryPage(history));
   assert.equal(history.items.length, 1);
-  assert.equal(isRunHistoryPage({ schemaVersion: 5, items: [] }), true);
+  assert.equal(isRunHistoryPage({ schemaVersion: 6, items: [] }), true);
   assert.equal(isRunHistoryPage({ schemaVersion: 4, items: [] }), false);
-  assert.equal(isRunHistoryPage({ schemaVersion: 5, items: null }), false);
-  assert.equal(isRunHistoryPage({ schemaVersion: 5, items: [null] }), false);
-  assert.equal(isRunHistoryPage({ schemaVersion: 5, items: [page.items[0], "run"] }), false);
+  assert.equal(isRunHistoryPage({ schemaVersion: 6, items: null }), false);
+  assert.equal(isRunHistoryPage({ schemaVersion: 6, items: [null] }), false);
+  assert.equal(isRunHistoryPage({ schemaVersion: 6, items: [page.items[0], "run"] }), false);
   assert.equal(isRunHistoryPage(undefined), false);
 });
 
@@ -133,7 +158,7 @@ test("run events are paginated up to the bound and marked truncated beyond it", 
   const pages = (count: number) => (pathname: string) => {
     const cursor = new URL(pathname, "http://runtime").searchParams.get("cursor");
     const page = cursor === null ? 0 : Number(cursor);
-    return { schemaVersion: 5, items: [{ id: String(page + 1), event: "tool.started", data: {} }], nextCursor: page + 1 < count ? String(page + 1) : null };
+    return { schemaVersion: 6, items: [{ id: String(page + 1), event: "tool.started", data: {} }], nextCursor: page + 1 < count ? String(page + 1) : null };
   };
   const { read, calls } = reader(pages(3));
   const complete = await readRunEvents(read, INCIDENT, RUN);
@@ -147,9 +172,9 @@ test("run events are paginated up to the bound and marked truncated beyond it", 
 
   for (const bad of [
     { schemaVersion: 4, items: [], nextCursor: null },
-    { schemaVersion: 5, items: "none", nextCursor: null },
-    { schemaVersion: 5, items: [], nextCursor: "" },
-    { schemaVersion: 5, items: [], nextCursor: 7 },
+    { schemaVersion: 6, items: "none", nextCursor: null },
+    { schemaVersion: 6, items: [], nextCursor: "" },
+    { schemaVersion: 6, items: [], nextCursor: 7 },
   ]) {
     await assert.rejects(readRunEvents(reader(() => bad).read, INCIDENT, RUN), coded("upstream_contract_invalid"));
   }
@@ -206,8 +231,8 @@ test("monitoring health is read tolerantly and judged by the healthy predicate",
 });
 
 test("accepted reruns, error codes and diagnosis availability are recognised structurally", () => {
-  assert.equal(isRerunAccepted({ schemaVersion: 5, runId: RUN }), true);
-  assert.equal(isRerunAccepted({ schemaVersion: 5, runId: "run" }), false);
+  assert.equal(isRerunAccepted({ schemaVersion: 6, runId: RUN }), true);
+  assert.equal(isRerunAccepted({ schemaVersion: 6, runId: "run" }), false);
   assert.equal(isRerunAccepted({ schemaVersion: 4, runId: RUN }), false);
 
   assert.equal(errorCode({ error: { code: "active_run_exists" } }), "active_run_exists");
@@ -222,7 +247,7 @@ test("accepted reruns, error codes and diagnosis availability are recognised str
 
 test("SSE frames split on blank LF lines with CRLF line ends normalised and decode into identity-checked events", () => {
   const payload = (fields: Record<string, unknown>) => JSON.stringify({
-    schemaVersion: 5, incidentId: INCIDENT, runId: RUN, runKind: "diagnosis", occurredAt: "2026-09-05T00:00:00.000Z", ...fields,
+    schemaVersion: 6, incidentId: INCIDENT, runId: RUN, runKind: "diagnosis", occurredAt: "2026-09-05T00:00:00.000Z", ...fields,
   });
   const stream = `id: 1\r\nevent: incident.created\r\ndata: ${payload({ attempt: 1 })}\n\nid: 2\nevent: run.started\ndata: ${payload({ attempt: 1 })}\n\nid: 3\nevent: diag`;
   const { frames, rest } = splitSseFrames(stream);
@@ -252,6 +277,6 @@ test("SSE frames split on blank LF lines with CRLF line ends normalised and deco
   invalid(`id: 2\nevent: \ndata: ${payload({})}`);
   assert.throws(() => decodeSseFrame("id: 2\nevent: run.started\ndata: {not json", identity, undefined), coded("upstream_contract_invalid"));
 
-  const multiline = decodeSseFrame(`id: 4\nevent: tool.started\ndata: {"schemaVersion":5,\ndata: "incidentId":"${INCIDENT}","runId":"${RUN}","runKind":"diagnosis"}`, identity, "3");
+  const multiline = decodeSseFrame(`id: 4\nevent: tool.started\ndata: {"schemaVersion":6,\ndata: "incidentId":"${INCIDENT}","runId":"${RUN}","runKind":"diagnosis"}`, identity, "3");
   assert.equal(multiline.event, "tool.started");
 });

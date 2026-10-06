@@ -96,7 +96,7 @@ test("the online artifact, review package and reports keep their schema versions
   const pkg = golden("review-package");
   assert.equal(pkg.schemaVersion, REVIEW_PACKAGE_SCHEMA_VERSION);
   assert.deepEqual(keys(pkg), ["campaignId", "capturedAt", "events", "incident", "incidentId", "runId", "scenarioId", "schemaVersion", "trial", "truncated"]);
-  assert.equal((pkg.incident as Record<string, unknown>).schemaVersion, 5);
+  assert.equal((pkg.incident as Record<string, unknown>).schemaVersion, 6);
 
   for (const name of ["report-pending", "report-reviewed"]) {
     const report = golden(name);

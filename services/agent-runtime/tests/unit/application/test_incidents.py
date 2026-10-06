@@ -410,6 +410,7 @@ async def test_detail_projects_terminal_run_and_sorts_evidence_by_time_then_id(
 
         response = await service.get_incident(created.incident_id, run_id=None)
 
+        assert response.selected_run is not None
         assert response.selected_run.id == created.run_id
         assert response.selected_run.attempt == 1
         assert response.selected_run.status is RunStatus.COMPLETED

@@ -17,6 +17,97 @@
         ],
         "type": "string"
       },
+      "AlertNotificationEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "alertStatus": {
+            "$ref": "#/components/schemas/AlertSignalStatus"
+          },
+          "endsAt": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endsat"
+          },
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{16}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "null"
+          },
+          "runKind": {
+            "title": "Runkind",
+            "type": "null"
+          },
+          "schemaVersion": {
+            "const": 6,
+            "title": "Schemaversion",
+            "type": "integer"
+          },
+          "startsAt": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
+            "title": "Startsat",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "occurredAt",
+          "runId",
+          "runKind",
+          "fingerprint",
+          "startsAt",
+          "alertStatus",
+          "endsAt"
+        ],
+        "title": "AlertNotificationEventPayload",
+        "type": "object"
+      },
+      "AlertNotificationStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AlertNotificationEventPayload"
+          },
+          "event": {
+            "const": "alert.notification",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "AlertNotificationStreamEvent",
+        "type": "object"
+      },
       "AlertResolvedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -49,7 +140,7 @@
             "$ref": "#/components/schemas/RunKind"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -57,8 +148,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "alertStatus",
           "endsAt"
@@ -343,7 +434,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -351,8 +442,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "approvalId",
           "proposalId",
@@ -570,8 +661,8 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
-            "default": 5,
+            "const": 6,
+            "default": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -659,8 +750,8 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
-            "default": 5,
+            "const": 6,
+            "default": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -718,7 +809,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -726,8 +817,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "diagnosisId",
           "outcome",
@@ -805,7 +896,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -813,8 +904,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "diagnosisId",
           "outcome",
@@ -1058,7 +1149,7 @@
             "$ref": "#/components/schemas/RunKind"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -1078,8 +1169,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "evidenceId",
           "toolCallId",
@@ -1397,7 +1488,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1405,8 +1496,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "executionId",
           "approvalId",
@@ -1598,7 +1689,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1606,8 +1697,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "attempt",
           "incidentStatus",
@@ -1677,7 +1768,7 @@
             ]
           },
           "eventCursor": {
-            "pattern": "^[1-9][0-9]*$",
+            "pattern": "^(0|[1-9][0-9]*)$",
             "title": "Eventcursor",
             "type": "string"
           },
@@ -1705,13 +1796,20 @@
             ]
           },
           "schemaVersion": {
-            "const": 5,
-            "default": 5,
+            "const": 6,
+            "default": 6,
             "title": "Schemaversion",
             "type": "integer"
           },
           "selectedRun": {
-            "$ref": "#/components/schemas/SelectedRunResponse"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelectedRunResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "verification": {
             "anyOf": [
@@ -1738,6 +1836,14 @@
         "title": "IncidentDetailResponse",
         "type": "object"
       },
+      "IncidentLifecycleStatus": {
+        "enum": [
+          "OPEN",
+          "CLOSED"
+        ],
+        "title": "IncidentLifecycleStatus",
+        "type": "string"
+      },
       "IncidentListItem": {
         "additionalProperties": false,
         "properties": {
@@ -1749,6 +1855,16 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "lifecycleStatus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IncidentLifecycleStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "status": {
             "$ref": "#/components/schemas/IncidentStatus"
@@ -1767,6 +1883,7 @@
           "displayName",
           "target",
           "status",
+          "lifecycleStatus",
           "updatedAt"
         ],
         "title": "IncidentListItem",
@@ -1794,8 +1911,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 5,
-            "default": 5,
+            "const": 6,
+            "default": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -1881,6 +1998,16 @@
             "title": "Id",
             "type": "string"
           },
+          "lifecycleStatus": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IncidentLifecycleStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source": {
             "$ref": "#/components/schemas/IncidentSourceResponse"
           },
@@ -1902,6 +2029,7 @@
           "triggerSummary",
           "target",
           "status",
+          "lifecycleStatus",
           "createdAt"
         ],
         "title": "IncidentResponse",
@@ -1994,6 +2122,51 @@
           "name"
         ],
         "title": "IncidentTargetResponse",
+        "type": "object"
+      },
+      "KubernetesTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "minLength": 1,
+            "title": "Api Version",
+            "type": "string"
+          },
+          "cluster": {
+            "minLength": 1,
+            "title": "Cluster",
+            "type": "string"
+          },
+          "kind": {
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "namespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Namespace"
+          }
+        },
+        "required": [
+          "cluster",
+          "namespace",
+          "api_version",
+          "kind",
+          "name"
+        ],
+        "title": "KubernetesTarget",
         "type": "object"
       },
       "MetricMarker": {
@@ -2418,6 +2591,11 @@
             "title": "Triagingincidents",
             "type": "integer"
           },
+          "unassignedSignals": {
+            "minimum": 0.0,
+            "title": "Unassignedsignals",
+            "type": "integer"
+          },
           "waitingApprovalIncidents": {
             "minimum": 0.0,
             "title": "Waitingapprovalincidents",
@@ -2428,7 +2606,8 @@
           "totalIncidents",
           "firingAlerts",
           "triagingIncidents",
-          "waitingApprovalIncidents"
+          "waitingApprovalIncidents",
+          "unassignedSignals"
         ],
         "title": "MonitoringOverviewCounts",
         "type": "object"
@@ -2524,10 +2703,18 @@
             "type": "array"
           },
           "schemaVersion": {
-            "const": 3,
-            "default": 3,
+            "const": 4,
+            "default": 4,
             "title": "Schemaversion",
             "type": "integer"
+          },
+          "unassignedSignals": {
+            "items": {
+              "$ref": "#/components/schemas/UnassignedAlertSignal"
+            },
+            "maxItems": 20,
+            "title": "Unassignedsignals",
+            "type": "array"
           },
           "window": {
             "const": "24h",
@@ -2540,6 +2727,7 @@
           "generatedAt",
           "counts",
           "families",
+          "unassignedSignals",
           "samples"
         ],
         "title": "MonitoringOverviewSnapshot",
@@ -2800,7 +2988,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2808,8 +2996,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "proposalId",
           "proposalDigest",
@@ -2968,7 +3156,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -2976,8 +3164,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "proposalId",
           "proposalDigest",
@@ -3261,7 +3449,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -3269,8 +3457,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "reason",
           "incidentStatus",
@@ -3349,7 +3537,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -3357,8 +3545,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "proposalId",
           "proposalDigest",
@@ -3471,8 +3659,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 5,
-            "default": 5,
+            "const": 6,
+            "default": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -3487,6 +3675,7 @@
       "RunEventStreamItem": {
         "discriminator": {
           "mapping": {
+            "alert.notification": "#/components/schemas/AlertNotificationStreamEvent",
             "alert.resolved": "#/components/schemas/AlertResolvedStreamEvent",
             "diagnosis.completed": "#/components/schemas/DiagnosisCompletedStreamEvent",
             "diagnosis.insufficient": "#/components/schemas/DiagnosisInsufficientStreamEvent",
@@ -3558,6 +3747,9 @@
           },
           {
             "$ref": "#/components/schemas/AlertResolvedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AlertNotificationStreamEvent"
           }
         ],
         "title": "RunEventStreamItem"
@@ -3605,7 +3797,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -3613,8 +3805,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "errorCode",
           "retryable",
@@ -3670,8 +3862,8 @@
             "title": "Nextcursor"
           },
           "schemaVersion": {
-            "const": 5,
-            "default": 5,
+            "const": 6,
+            "default": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -3723,7 +3915,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -3731,8 +3923,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "attempt",
           "runStatus"
@@ -3804,7 +3996,7 @@
             "type": "string"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -3812,8 +4004,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "attempt",
           "incidentStatus",
@@ -4279,7 +4471,7 @@
             "$ref": "#/components/schemas/RunKind"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -4295,8 +4487,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "toolCallId",
           "toolName",
@@ -4362,7 +4554,7 @@
             "$ref": "#/components/schemas/RunKind"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           },
@@ -4378,8 +4570,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "toolCallId",
           "toolName"
@@ -4409,6 +4601,75 @@
           "data"
         ],
         "title": "ToolStartedStreamEvent",
+        "type": "object"
+      },
+      "UnassignedAlertSignal": {
+        "additionalProperties": false,
+        "properties": {
+          "displayName": {
+            "title": "Displayname",
+            "type": "string"
+          },
+          "endsAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endsat"
+          },
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{16}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "lastReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastreceivedat"
+          },
+          "reason": {
+            "const": "awaiting_association",
+            "default": "awaiting_association",
+            "title": "Reason",
+            "type": "string"
+          },
+          "startsAt": {
+            "title": "Startsat",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "FIRING",
+              "RESOLVED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/KubernetesTarget"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "displayName",
+          "target",
+          "status",
+          "startsAt",
+          "endsAt",
+          "lastReceivedAt"
+        ],
+        "title": "UnassignedAlertSignal",
         "type": "object"
       },
       "VerificationOutcome": {
@@ -4593,7 +4854,7 @@
             "type": "integer"
           },
           "schemaVersion": {
-            "const": 5,
+            "const": 6,
             "title": "Schemaversion",
             "type": "integer"
           }
@@ -4601,8 +4862,8 @@
         "required": [
           "schemaVersion",
           "incidentId",
-          "runId",
           "occurredAt",
+          "runId",
           "runKind",
           "executionId",
           "outcome",

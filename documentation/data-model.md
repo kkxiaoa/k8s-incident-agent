@@ -1,6 +1,6 @@
 # Data model
 
-The business schema targets migration `20260919_0013`: 13 business tables plus Alembic metadata. The diagram describes the schema, not the migration state or contents of an installation.
+The business schema targets migration `20261006_0014`: 13 business tables plus Alembic metadata. The diagram describes the schema, not the migration state or contents of an installation.
 
 Authority: [ORM models](../services/agent-runtime/src/k8s_incident_agent/persistence/models.py), [migration history](../services/agent-runtime/migrations/versions), and [repository invariants](../services/agent-runtime/src/k8s_incident_agent/persistence/repositories.py). The diagram shows all 13 business tables with selected columns and **actual database foreign keys**, not every field or application-level association. `PK`, `FK` and `UK` mean primary key, foreign key and individually unique key; compound uniqueness is listed separately.
 
@@ -28,10 +28,11 @@ erDiagram
     classDef legendBox fill:#f8fafc,stroke:#64748b,stroke-dasharray:5 5,color:#334155
     class legend legendBox
 
-    incidents ||--o| alert_signals : "has occurrence (1 → 0..1)"
+    incidents |o--o{ alert_signals : "associates occurrences (0..1 → 0..N)"
     incidents ||--o{ agent_runs : "has attempts (1 → 0..N)"
     agent_runs |o--o{ agent_runs : "source for (0..1 → 0..N)"
-    agent_runs ||--o{ run_events : "emits (1 → 0..N)"
+    agent_runs |o--o{ run_events : "owns Run events (0..1 → 0..N)"
+    incidents |o--o{ run_events : "owns Incident events (0..1 → 0..N)"
     agent_runs ||--o{ evidence : "owns (1 → 0..N)"
     agent_runs ||--o| diagnoses : "has diagnosis (1 → 0..1)"
     agent_runs ||--o| repair_proposals : "owns (1 → 0..1)"
@@ -44,12 +45,18 @@ erDiagram
     incidents {
         string id PK
         string status
+        string lifecycle_status "OPEN / CLOSED; nullable historical state"
     }
     alert_signals {
-        string incident_id PK, FK
-        string fingerprint
-        datetime starts_at
-        datetime ends_at "nullable"
+        string incident_id FK "nullable"
+        string fingerprint PK "compound PK with starts_at"
+        string starts_at PK "canonical nanosecond timestamp"
+        string ends_at "historical resolved fact; nullable"
+        string status "last notification FIRING / RESOLVED"
+        string trigger_ref "catalog alert ID"
+        datetime first_received_at "nullable for historical rows"
+        datetime last_received_at "nullable for historical rows"
+        datetime resolved_received_at "nullable"
     }
     agent_runs {
         string id PK
@@ -63,7 +70,8 @@ erDiagram
     }
     run_events {
         int id PK
-        string run_id FK
+        string run_id FK "nullable; exactly one event owner"
+        string incident_id FK "nullable; exactly one event owner"
         string event_key
         string event_type
         text payload_json
@@ -142,17 +150,22 @@ The dashed legend box explains notation; it is not a fourteenth table. Read the 
 
 ## Incidents, runs and evidence
 
-Each FK-linked child has exactly one parent except the optional `source_run_id`: a Run may have no source, and a source may be referenced by multiple later Runs. Parent records may exist without any child yet; the diagram does not require every Run to have a diagnosis, proposal or events.
+An alert occurrence may be unassigned or belong to one Incident; an Incident may have many occurrences. An event has exactly one owner: either a Run or an Incident. The two optional event-owner edges are mutually exclusive, not two independently optional parents. A Run may have no `source_run_id`, and a source may be referenced by multiple later Runs. Parent records may exist without children; an Incident without Runs has no selected Run, diagnosis, Evidence or applicable action.
 
 | Database constraint | Meaning |
 | --- | --- |
 | Unique `(incident_id, attempt)`; `attempt >= 1` | Stable per-Incident attempt numbering |
 | Partial unique `incident_id` for `QUEUED`, `RUNNING`, `WAITING_APPROVAL` | At most one active Run per Incident |
-| Unique `(fingerprint, starts_at)` | One stored alert occurrence despite repeated delivery |
-| Unique `(run_id, event_key)` | Idempotent event recording |
+| Compound PK `(fingerprint, starts_at)` | One stored alert occurrence despite repeated delivery; nanosecond precision is preserved |
+| Unique `(run_id, event_key)` | Idempotent Run-owned event recording |
+| Event-owner CHECK | Exactly one of `run_id` and `incident_id` is non-null |
 | Unique `(run_id, tool_call_id)` | One Evidence record per tool call |
 | Run-kind CHECK | Diagnosis has model configuration and no repair operation; repair has apply/rollback but no model configuration or model/token counters; diagnosis cannot wait for approval |
-| Alert CHECK | Firing has no end time; resolved has an end time not before its start |
+| Alert CHECK | Resolved requires an end time; any end time is not before the start; later firing does not erase historical resolved facts |
+
+Occurrences own their source, display, target and receipt facts independently of Incident association. Historical receipt timestamps stay null because business `updated_at` is not a notification clock. `lifecycle_status = NULL` means historical lifecycle is undetermined; existing manual creation initializes `OPEN`. Business diagnostic/repair status is separate from lifecycle. Retention protects both `OPEN` and undetermined lifecycle and rechecks eligibility before deletion.
+
+Incident-owned `alert.notification` events and Run-owned events share the globally increasing event ID. Incident replay includes both ownership kinds, while Run event history excludes Incident-owned events. Migration preserves existing event payloads and the ID high-water mark, including IDs removed by retention. Downgrade refuses to discard notification, association or lifecycle facts; restore a consistent pre-upgrade business/checkpoint backup with Runtime stopped when downgrade cannot preserve them.
 
 Repositories add rules beyond those FKs: source and child belong to the same Incident, the source attempt is earlier, and rollback must reference an eligible executed apply Run. Do not infer these guarantees from the self-reference alone.
 

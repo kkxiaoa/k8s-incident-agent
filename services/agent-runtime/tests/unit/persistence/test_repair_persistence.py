@@ -205,6 +205,7 @@ async def test_repair_success_is_atomic_replayable_and_projected(
         assert first.incident_status is IncidentStatus.WAITING_APPROVAL
         assert first.run_status is RunStatus.COMPLETED
         assert detail is not None
+        assert detail.run is not None
         assert detail.incident.status is IncidentStatus.WAITING_APPROVAL
         assert detail.run.status is RunStatus.COMPLETED
         assert detail.diagnosis is not None
@@ -260,6 +261,7 @@ async def test_historical_repair_run_remains_readable_after_rerun_starts(
         replay = await repository.persist_repair_terminal(terminal)
 
         assert historical is not None
+        assert historical.run is not None
         assert historical.incident.status is IncidentStatus.TRIAGING
         assert historical.run.id == run_id
         assert historical.repair is not None

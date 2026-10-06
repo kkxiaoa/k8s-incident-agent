@@ -105,6 +105,11 @@ const RUNTIME_ERROR_CONTRACTS = {
     message: "An active run already exists.",
     retryable: true,
   },
+  run_not_applicable: {
+    status: 409,
+    message: "Incident has no Run to diagnose again.",
+    retryable: false,
+  },
   repair_source_invalid: {
     status: 409,
     message: "Repair source is not applicable.",
@@ -184,6 +189,7 @@ const RUN_CREATE_ERROR_CODES = [
   "diagnosis_unavailable",
   "incident_not_found",
   "active_run_exists",
+  "run_not_applicable",
   "invalid_request",
   "runtime_not_ready",
   "internal_error",

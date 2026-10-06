@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   makeIncidentDetail,
+  makeIncidentWithoutRuns,
   makeWaitingApprovalIncidentDetail,
   makeRepairRunWaitingDetail,
   makeRecoveryDetail,
@@ -17,6 +18,17 @@ import {
   parseMonitoringPanelListResponse,
   parseRuntimeHealthResponse,
 } from "./response-contracts";
+
+it("accepts a persisted Incident without a Run only with empty Run-owned data and disabled actions", () => {
+  const detail = makeIncidentWithoutRuns();
+  expect(parseIncidentDetailResponse(detail)).toMatchObject({ selectedRun: null, eventCursor: "0", evidence: [], diagnosis: null, repair: null });
+  for (const changes of [
+    { selectedRun: {} }, { eventCursor: "-1" }, { evidence: [{}] },
+    { diagnosis: {} }, { repair: {} }, { approval: {} }, { verification: {} },
+    { eventPage: { items: [], nextCursor: "1" } },
+    { actions: { ...detail.actions, rerun: null } },
+  ]) expect(parseIncidentDetailResponse({ ...detail, ...changes })).toBeNull();
+});
 
 it("requires authoritative action availability and preserves int64 candidate identities", () => {
   const detail = makeWaitingApprovalIncidentDetail();
@@ -393,14 +405,15 @@ describe("monitoring response contracts", () => {
   it("accepts a complete 24-hour overview and rejects inconsistent totals", () => {
     const start = Date.parse("2026-09-02T03:00:00.000Z");
     const overview = {
-      schemaVersion: 3,
+      schemaVersion: 4,
+    unassignedSignals: [],
       window: "24h",
       generatedAt: "2026-09-03T02:15:00.000Z",
       counts: {
         totalIncidents: 8,
         firingAlerts: 2,
         triagingIncidents: 1,
-        waitingApprovalIncidents: 5,
+        unassignedSignals: 0, waitingApprovalIncidents: 5,
       },
       families: [
         {
@@ -423,7 +436,18 @@ describe("monitoring response contracts", () => {
       counts: overview.counts,
       families: overview.families,
       samples: overview.samples,
+      unassignedSignals: [],
     });
+    const pending = { fingerprint: "0123456789abcdef", displayName: "Image pull failure",
+      target: { cluster: "k8s-incident-agent", api_version: "apps/v1", kind: "Deployment", namespace: "incident-demo", name: "broken-image" },
+      status: "FIRING", startsAt: "2026-09-03T01:00:00.000000001Z", endsAt: "2026-09-03T01:05:00.000000000Z",
+      lastReceivedAt: "2026-09-03T01:10:00Z", reason: "awaiting_association" };
+    const withPending = { ...overview, counts: { ...overview.counts, unassignedSignals: 1 }, unassignedSignals: [pending] };
+    expect(parseMonitoringOverviewResponse(withPending)?.unassignedSignals).toEqual([
+      { ...pending, target: { kind: "Deployment", namespace: "incident-demo", name: "broken-image" } },
+    ]);
+    expect(parseMonitoringOverviewResponse({ ...withPending, unassignedSignals: [] })).toBeNull();
+    expect(parseMonitoringOverviewResponse({ ...withPending, unassignedSignals: [{ ...pending, reason: "unknown" }] })).toBeNull();
     expect(parseMonitoringOverviewResponse({ ...overview, schemaVersion: 1 })).toBeNull();
     for (const waitingApprovalIncidents of [undefined, -1, 0.5]) {
       expect(parseMonitoringOverviewResponse({

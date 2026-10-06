@@ -57,7 +57,7 @@ export default async function IncidentPage({ params, searchParams }: IncidentPag
         </>
       ) : (
         <IncidentStream
-          key={pageData.detail.selectedRun.id}
+          key={pageData.detail.selectedRun?.id ?? "no-run"}
           initialDetail={pageData.detail}
           initialRuns={pageData.runs}
           monitoringPanels={pageData.monitoringPanels}
