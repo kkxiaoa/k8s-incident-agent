@@ -762,6 +762,166 @@
         "title": "CreateRunResponse",
         "type": "object"
       },
+      "CurrentAlertOverview": {
+        "additionalProperties": false,
+        "properties": {
+          "firingRules": {
+            "minimum": 0.0,
+            "title": "Firingrules",
+            "type": "integer"
+          },
+          "oldestObservedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldestobservedat"
+          },
+          "pendingRules": {
+            "minimum": 0.0,
+            "title": "Pendingrules",
+            "type": "integer"
+          },
+          "totalTargets": {
+            "minimum": 0.0,
+            "title": "Totaltargets",
+            "type": "integer"
+          },
+          "unknownTargets": {
+            "minimum": 0.0,
+            "title": "Unknowntargets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "totalTargets",
+          "unknownTargets",
+          "firingRules",
+          "pendingRules",
+          "oldestObservedAt"
+        ],
+        "title": "CurrentAlertOverview",
+        "type": "object"
+      },
+      "CurrentAlertState": {
+        "enum": [
+          "FIRING",
+          "PENDING",
+          "CLEAR",
+          "UNKNOWN"
+        ],
+        "title": "CurrentAlertState",
+        "type": "string"
+      },
+      "CurrentAlertSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "default": false,
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "lastKnownAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastknownat"
+          },
+          "lastKnownState": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CurrentAlertState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observedat"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObservationReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "not_observed"
+          },
+          "receivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receivedat"
+          },
+          "rules": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RuleAlertObservation"
+            },
+            "maxItems": 13,
+            "title": "Rules",
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CurrentAlertState",
+            "default": "UNKNOWN"
+          },
+          "targetHealthy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targethealthy"
+          }
+        },
+        "required": [
+          "state",
+          "complete",
+          "observedAt",
+          "receivedAt",
+          "targetHealthy",
+          "reason",
+          "rules",
+          "lastKnownState",
+          "lastKnownAt"
+        ],
+        "title": "CurrentAlertSummary",
+        "type": "object"
+      },
       "DiagnosisCompletedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1747,6 +1907,9 @@
               }
             ]
           },
+          "alertSummary": {
+            "$ref": "#/components/schemas/CurrentAlertSummary"
+          },
           "approval": {
             "anyOf": [
               {
@@ -1831,6 +1994,7 @@
           "repair",
           "actions",
           "alertSignal",
+          "alertSummary",
           "eventCursor"
         ],
         "title": "IncidentDetailResponse",
@@ -2680,6 +2844,9 @@
           "counts": {
             "$ref": "#/components/schemas/MonitoringOverviewCounts"
           },
+          "currentAlerts": {
+            "$ref": "#/components/schemas/CurrentAlertOverview"
+          },
           "families": {
             "items": {
               "$ref": "#/components/schemas/MonitoringOverviewFamily"
@@ -2725,6 +2892,7 @@
         },
         "required": [
           "generatedAt",
+          "currentAlerts",
           "counts",
           "families",
           "unassignedSignals",
@@ -2798,6 +2966,25 @@
         ],
         "title": "MonitoringPanelReference",
         "type": "object"
+      },
+      "ObservationReason": {
+        "enum": [
+          "not_observed",
+          "stale",
+          "clock_invalid",
+          "identity_unverified",
+          "facts_changed",
+          "rule_mismatch",
+          "input_missing",
+          "incomplete",
+          "waiting_evaluation",
+          "unavailable",
+          "permission_denied",
+          "request_timeout",
+          "budget_exceeded"
+        ],
+        "title": "ObservationReason",
+        "type": "string"
       },
       "OperatorSessionResponse": {
         "properties": {
@@ -3616,6 +3803,55 @@
           "evidenceIds"
         ],
         "title": "RootCauseResponse",
+        "type": "object"
+      },
+      "RuleAlertObservation": {
+        "additionalProperties": false,
+        "properties": {
+          "alertId": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Alertid",
+            "type": "string"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "evaluatedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluatedat"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObservationReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/CurrentAlertState"
+          }
+        },
+        "required": [
+          "alertId",
+          "state",
+          "complete",
+          "reason",
+          "evaluatedAt"
+        ],
+        "title": "RuleAlertObservation",
         "type": "object"
       },
       "RunErrorResponse": {

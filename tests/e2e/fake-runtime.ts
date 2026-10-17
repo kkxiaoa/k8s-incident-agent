@@ -573,6 +573,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
       repair: null,
       verification: null,
       alertSignal: null,
+      alertSummary: { state: "UNKNOWN", complete: false, observedAt: null, receivedAt: null, targetHealthy: null, reason: "not_observed", rules: [], lastKnownState: null, lastKnownAt: null },
     },
   };
 }
@@ -1081,6 +1082,10 @@ function monitoringOverview() {
     (record) => record.detail.alertSignal?.status === "FIRING",
   );
   const families = new Map<string, { displayName: string; count: number }>();
+  const currentTargets = new Set(records.map(({ detail }) => {
+    const target = detail.incident.target;
+    return JSON.stringify([target.cluster, target.namespace, target.apiVersion, target.kind, target.name]);
+  }));
   for (const record of firingRecords) {
     const sourceRef = record.detail.incident.source.ref;
     const current = families.get(sourceRef);
@@ -1094,6 +1099,7 @@ function monitoringOverview() {
     unassignedSignals: [],
     window: "24h",
     generatedAt: generatedAt.toISOString(),
+    currentAlerts: { totalTargets: currentTargets.size, unknownTargets: currentTargets.size, firingRules: 0, pendingRules: 0, oldestObservedAt: null },
     counts: {
       totalIncidents: records.length,
       firingAlerts: firingRecords.length,

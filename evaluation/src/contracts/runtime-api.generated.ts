@@ -659,6 +659,50 @@ export interface components {
              */
             schemaVersion: 6;
         };
+        /** CurrentAlertOverview */
+        CurrentAlertOverview: {
+            /** Firingrules */
+            firingRules: number;
+            /** Oldestobservedat */
+            oldestObservedAt: string | null;
+            /** Pendingrules */
+            pendingRules: number;
+            /** Totaltargets */
+            totalTargets: number;
+            /** Unknowntargets */
+            unknownTargets: number;
+        };
+        /**
+         * CurrentAlertState
+         * @enum {string}
+         */
+        CurrentAlertState: "FIRING" | "PENDING" | "CLEAR" | "UNKNOWN";
+        /** CurrentAlertSummary */
+        CurrentAlertSummary: {
+            /**
+             * Complete
+             * @default false
+             */
+            complete: boolean;
+            /** Lastknownat */
+            lastKnownAt: string | null;
+            lastKnownState: components["schemas"]["CurrentAlertState"] | null;
+            /** Observedat */
+            observedAt: string | null;
+            /** @default not_observed */
+            reason: components["schemas"]["ObservationReason"] | null;
+            /** Receivedat */
+            receivedAt: string | null;
+            /**
+             * Rules
+             * @default []
+             */
+            rules: components["schemas"]["RuleAlertObservation"][];
+            /** @default UNKNOWN */
+            state: components["schemas"]["CurrentAlertState"];
+            /** Targethealthy */
+            targetHealthy: boolean | null;
+        };
         /** DiagnosisCompletedEventPayload */
         DiagnosisCompletedEventPayload: {
             /**
@@ -1093,6 +1137,7 @@ export interface components {
         IncidentDetailResponse: {
             actions: components["schemas"]["IncidentActions"];
             alertSignal: components["schemas"]["AlertSignalResponse"] | null;
+            alertSummary: components["schemas"]["CurrentAlertSummary"];
             approval?: components["schemas"]["ApprovalResponse"] | null;
             diagnosis: components["schemas"]["DiagnosisResponse"] | null;
             /** Eventcursor */
@@ -1436,6 +1481,7 @@ export interface components {
         /** MonitoringOverviewSnapshot */
         MonitoringOverviewSnapshot: {
             counts: components["schemas"]["MonitoringOverviewCounts"];
+            currentAlerts: components["schemas"]["CurrentAlertOverview"];
             /** Families */
             families: components["schemas"]["MonitoringOverviewFamily"][];
             /**
@@ -1477,6 +1523,11 @@ export interface components {
             /** Unit */
             unit: string;
         };
+        /**
+         * ObservationReason
+         * @enum {string}
+         */
+        ObservationReason: "not_observed" | "stale" | "clock_invalid" | "identity_unverified" | "facts_changed" | "rule_mismatch" | "input_missing" | "incomplete" | "waiting_evaluation" | "unavailable" | "permission_denied" | "request_timeout" | "budget_exceeded";
         /** OperatorSessionResponse */
         OperatorSessionResponse: {
             /** Csrftoken */
@@ -1866,6 +1917,17 @@ export interface components {
             evidenceIds: string[];
             /** Statement */
             statement: string;
+        };
+        /** RuleAlertObservation */
+        RuleAlertObservation: {
+            /** Alertid */
+            alertId: string;
+            /** Complete */
+            complete: boolean;
+            /** Evaluatedat */
+            evaluatedAt: string | null;
+            reason: components["schemas"]["ObservationReason"] | null;
+            state: components["schemas"]["CurrentAlertState"];
         };
         /** RunErrorResponse */
         RunErrorResponse: {

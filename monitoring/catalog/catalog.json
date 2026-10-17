@@ -7,7 +7,7 @@
       "displayName": "Image pull failure",
       "triggerSummary": "A Deployment cannot pull its configured container image.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) (kube_pod_container_status_waiting_reason{reason=~\"ErrImagePull|ImagePullBackOff\"} == 1) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) (kube_pod_container_status_waiting_reason{reason=~\"ErrImagePull|ImagePullBackOff\"} == 1) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
         "for": "30s"
       },
       "target": {
@@ -63,7 +63,7 @@
       "displayName": "Container restart loop",
       "triggerSummary": "A Deployment container repeatedly exits and is waiting in CrashLoopBackOff.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((kube_pod_container_status_waiting_reason{reason=\"CrashLoopBackOff\"} == 1) * on (namespace, pod, container) (kube_pod_container_status_restarts_total > 0)) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((kube_pod_container_status_waiting_reason{reason=\"CrashLoopBackOff\"} == 1) * on (namespace, pod, container) (kube_pod_container_status_restarts_total > 0)) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
         "for": "30s",
         "keepFiringFor": "2m"
       },
@@ -145,7 +145,7 @@
       "displayName": "Service has no ready endpoints",
       "triggerSummary": "A monitored selector-based Service has candidate Pods but no ready EndpointSlice endpoints.",
       "rule": {
-        "expression": "(((max by (namespace, service) (kube_service_labels{label_k8s_incident_agent_io_monitor_selector=\"true\"}) * on (namespace, service) max by (namespace, service) (kube_service_spec_type{type=~\"ClusterIP|NodePort|LoadBalancer\"} == 1)) * on (namespace, service) max by (namespace, service) (kube_service_info{cluster_ip!=\"None\"} == 1)) and on (namespace, service) max by (namespace, service) (label_replace(kube_pod_labels{label_k8s_incident_agent_io_service!=\"\"}, \"service\", \"$1\", \"label_k8s_incident_agent_io_service\", \"(.+)\"))) unless on (namespace, service) max by (namespace, service) ((kube_endpointslice_endpoints{ready=\"true\"} > 0) * on (namespace, endpointslice) group_left(service) label_replace(kube_endpointslice_labels{label_kubernetes_io_service_name!=\"\"}, \"service\", \"$1\", \"label_kubernetes_io_service_name\", \"(.+)\"))",
+        "expression": "(((max by (namespace, service) (kube_service_labels{label_k8s_incident_agent_io_monitor_selector=\"true\"}) * on (namespace, service) max by (namespace, service) (kube_service_spec_type{type=~\"ClusterIP|NodePort|LoadBalancer\"} == 1)) * on (namespace, service) max by (namespace, service) (kube_service_info{cluster_ip!=\"None\"} == 1)) and on (namespace, service) max by (namespace, service) (label_replace(kube_pod_labels{label_k8s_incident_agent_io_service!=\"\"}, \"service\", \"$1\", \"label_k8s_incident_agent_io_service\", \"(.+)\"))) unless on (namespace, service) max by (namespace, service) ((kube_endpointslice_endpoints{ready=\"true\"} > 0) * on (namespace, endpointslice) group_left (service) label_replace(kube_endpointslice_labels{label_kubernetes_io_service_name!=\"\"}, \"service\", \"$1\", \"label_kubernetes_io_service_name\", \"(.+)\"))",
         "for": "30s"
       },
       "target": {
@@ -178,7 +178,7 @@
       "displayName": "Readiness probe unavailable",
       "triggerSummary": "A monitored Deployment container remains running but is not ready.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) (((kube_pod_container_status_ready == bool 0) * on (namespace, pod, container) (kube_pod_container_status_running == 1)) * on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_readiness_container!=\"\",label_k8s_incident_agent_io_readiness_slo=\"2m\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_readiness_container\", \"(.+)\")) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) (((kube_pod_container_status_ready == bool 0) * on (namespace, pod, container) (kube_pod_container_status_running == 1)) * on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_readiness_container!=\"\",label_k8s_incident_agent_io_readiness_slo=\"2m\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_readiness_container\", \"(.+)\")) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
         "for": "2m"
       },
       "target": {
@@ -211,7 +211,7 @@
       "displayName": "Liveness probe restart",
       "triggerSummary": "A Deployment container selected for liveness monitoring restarted.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((increase(kube_pod_container_status_restarts_total[5m]) > 0) * on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_liveness_container!=\"\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\")) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((increase(kube_pod_container_status_restarts_total[5m]) > 0) * on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_liveness_container!=\"\"} == 1, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\")) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
         "for": "30s"
       },
       "target": {
@@ -244,7 +244,7 @@
       "displayName": "Recent container OOM kill",
       "triggerSummary": "A Deployment container was terminated with OOMKilled in the last 10 minutes.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"} == 1) and on (namespace, pod, uid, container) ((time() - kube_pod_container_status_last_terminated_timestamp) < 600)) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0 unless on (namespace, deployment) max_over_time(ALERTS{alertname=\"K8sIncidentCrashLoopBackOff\"}[10m])",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"} == 1) and on (namespace, pod, uid, container) ((time() - kube_pod_container_status_last_terminated_timestamp) < 600)) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0 unless on (namespace, deployment) max_over_time(ALERTS{alertname=\"K8sIncidentCrashLoopBackOff\"}[10m])",
         "for": "15s"
       },
       "target": {
@@ -277,7 +277,7 @@
       "displayName": "Container abnormal exit",
       "triggerSummary": "A Deployment container restarted after a non-zero or abnormal termination.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((increase(kube_pod_container_status_restarts_total[10m]) > 0) and on (namespace, pod, uid, container) (kube_pod_container_status_last_terminated_reason{reason!~\"Completed|OOMKilled\"} == 1)) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0 unless on (namespace, deployment) max_over_time(ALERTS{alertname=~\"K8sIncidentCrashLoopBackOff|K8sIncidentLivenessProbeRestart|K8sIncidentContainerOOMKilled|K8sIncidentContainerProbeFailing\"}[10m])",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((increase(kube_pod_container_status_restarts_total[10m]) > 0) and on (namespace, pod, uid, container) (kube_pod_container_status_last_terminated_reason{reason!~\"Completed|OOMKilled\"} == 1)) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0 unless on (namespace, deployment) max_over_time(ALERTS{alertname=~\"K8sIncidentCrashLoopBackOff|K8sIncidentLivenessProbeRestart|K8sIncidentContainerOOMKilled|K8sIncidentContainerProbeFailing\"}[10m])",
         "for": "1m"
       },
       "target": {
@@ -310,7 +310,7 @@
       "displayName": "Container memory near limit",
       "triggerSummary": "A Deployment container's memory working set stays above 90% of its memory limit.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((max by (namespace, pod, container) (container_memory_working_set_bytes{job=\"kubelet-resource\"}) / on (namespace, pod, container) (max by (namespace, pod, container) (kube_pod_container_resource_limits{resource=\"memory\"}) > 0)) > 0.9) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((max by (namespace, pod, container) (container_memory_working_set_bytes{job=\"kubelet-resource\"}) / on (namespace, pod, container) (max by (namespace, pod, container) (kube_pod_container_resource_limits{resource=\"memory\"}) > 0)) > 0.9) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
         "for": "5m"
       },
       "target": {
@@ -343,7 +343,7 @@
       "displayName": "Container CPU throttled",
       "triggerSummary": "A Deployment container spends more than 25% of its CFS periods throttled.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((sum by (namespace, pod, container) (increase(container_cpu_cfs_throttled_periods_total{job=\"kubelet-cadvisor\"}[5m])) / on (namespace, pod, container) (sum by (namespace, pod, container) (increase(container_cpu_cfs_periods_total{job=\"kubelet-cadvisor\"}[5m])) > 0)) > 0.25) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((sum by (namespace, pod, container) (increase(container_cpu_cfs_throttled_periods_total{job=\"kubelet-cadvisor\"}[5m])) / on (namespace, pod, container) (sum by (namespace, pod, container) (increase(container_cpu_cfs_periods_total{job=\"kubelet-cadvisor\"}[5m])) > 0)) > 0.25) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
         "for": "10m"
       },
       "target": {
@@ -376,7 +376,7 @@
       "displayName": "Container probe failing",
       "triggerSummary": "A started Deployment container keeps failing its probes outside the controlled readiness and liveness rules.",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((sum by (namespace, pod, container) (increase(prober_probe_total{job=\"kubelet-probes\",result=\"failed\"}[5m])) >= 3) and on (namespace, pod, container) ((time() - max by (namespace, pod, container) (kube_pod_container_state_started)) > 300) unless on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_readiness_container!=\"\",label_k8s_incident_agent_io_readiness_slo=\"2m\"}, \"container\", \"$1\", \"label_k8s_incident_agent_io_readiness_container\", \"(.+)\") unless on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_liveness_container!=\"\"}, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\")) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) ((sum by (namespace, pod, container) (increase(prober_probe_total{job=\"kubelet-probes\",result=\"failed\"}[5m])) >= 3) and on (namespace, pod, container) ((time() - max by (namespace, pod, container) (kube_pod_container_state_started)) > 300) unless on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_readiness_container!=\"\",label_k8s_incident_agent_io_readiness_slo=\"2m\"}, \"container\", \"$1\", \"label_k8s_incident_agent_io_readiness_container\", \"(.+)\") unless on (namespace, pod, container) label_replace(kube_pod_labels{label_k8s_incident_agent_io_liveness_container!=\"\"}, \"container\", \"$1\", \"label_k8s_incident_agent_io_liveness_container\", \"(.+)\")) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
         "for": "2m"
       },
       "target": {
@@ -409,7 +409,7 @@
       "displayName": "Pod unschedulable",
       "triggerSummary": "A Deployment Pod stays unscheduled (PodScheduled=False).",
       "rule": {
-        "expression": "max by (namespace, deployment) (max by (namespace, pod) (kube_pod_status_unschedulable == 1) * on (namespace, pod) group_left(replicaset) label_replace(kube_pod_owner{owner_kind=\"ReplicaSet\",owner_is_controller=\"true\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left(deployment) label_replace(kube_replicaset_owner{owner_kind=\"Deployment\",owner_is_controller=\"true\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
+        "expression": "max by (namespace, deployment) (max by (namespace, pod) (kube_pod_status_unschedulable == 1) * on (namespace, pod) group_left (replicaset) label_replace(kube_pod_owner{owner_is_controller=\"true\",owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") * on (namespace, replicaset) group_left (deployment) label_replace(kube_replicaset_owner{owner_is_controller=\"true\",owner_kind=\"Deployment\"}, \"deployment\", \"$1\", \"owner_name\", \"(.+)\")) > 0",
         "for": "2m"
       },
       "target": {

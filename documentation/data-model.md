@@ -1,8 +1,8 @@
 # Data model
 
-The business schema targets migration `20261006_0014`: 13 business tables plus Alembic metadata. The diagram describes the schema, not the migration state or contents of an installation.
+The business schema targets migration `20261006_0015`: 14 business tables plus Alembic metadata. The diagram describes the workflow ledger; the independent current-observation table is described below. Neither describes the migration state or contents of an installation.
 
-Authority: [ORM models](../services/agent-runtime/src/k8s_incident_agent/persistence/models.py), [migration history](../services/agent-runtime/migrations/versions), and [repository invariants](../services/agent-runtime/src/k8s_incident_agent/persistence/repositories.py). The diagram shows all 13 business tables with selected columns and **actual database foreign keys**, not every field or application-level association. `PK`, `FK` and `UK` mean primary key, foreign key and individually unique key; compound uniqueness is listed separately.
+Authority: [ORM models](../services/agent-runtime/src/k8s_incident_agent/persistence/models.py), [migration history](../services/agent-runtime/migrations/versions), and [repository invariants](../services/agent-runtime/src/k8s_incident_agent/persistence/repositories.py). The diagram shows workflow ledger tables with selected columns and **actual database foreign keys**, not every field or application-level association. `PK`, `FK` and `UK` mean primary key, foreign key and individually unique key; compound uniqueness is listed separately.
 
 ## Business schema
 
@@ -146,7 +146,13 @@ erDiagram
     }
 ```
 
-The dashed legend box explains notation; it is not a fourteenth table. Read the markers at **both** ends: `||` means exactly one, `o|` means zero or one, and a fork means many. Relationship labels also spell out the same cardinality numerically. No many-to-many association table exists in this schema.
+The dashed legend box explains notation; it is not a business table. Read the markers at **both** ends: `||` means exactly one, `o|` means zero or one, and a fork means many. Relationship labels also spell out the same cardinality numerically. No many-to-many association table exists in this schema.
+
+## Current target observations
+
+`current_alert_observations` is independent of Run and Incident foreign keys. Its compound primary key is `(cluster, namespace, api_version, kind, resource_name)`, so many historical references to the same target share one latest observation. `observation_json` holds a bounded typed SDK projection, catalog version, per-rule source state and completeness, observation/receipt times, target health and a last-known complete state/time. It contains no raw Prometheus responses, EndpointSlice addresses, log stream or polling history. A changed target UID cannot inherit the previous UID's last-known state.
+
+The indexed `checked_order` is a durable work-order ordinal, not a business timestamp. Failed attempts also advance it, while targets not attempted within the pass budget retain their place. Updates to this table do not change Incident, Run, notification, approval, event or checkpoint records. Reads older than 60 seconds or with inconsistent/future times project as `UNKNOWN`; historical Incident detail additionally requires matching existing Kubernetes Evidence identity. Nonempty observation data cannot be discarded by downgrade; restore a consistent pre-upgrade backup instead.
 
 ## Incidents, runs and evidence
 

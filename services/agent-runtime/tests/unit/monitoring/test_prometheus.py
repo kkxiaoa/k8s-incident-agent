@@ -683,6 +683,10 @@ def _health_rules_response(
     rules = [
         {
             "name": name,
+            "query": entry.rule.expression if entry else "vector(1)",
+            "duration": entry.rule.duration_seconds if entry else 0,
+            "keepFiringFor": entry.rule.keep_firing_seconds if entry else 0,
+            "labels": {"severity": "warning" if entry else "none"},
             "type": "alerting",
             "health": "err" if fault == "error" and index == 0 else "ok",
             "lastEvaluation": (
@@ -690,6 +694,8 @@ def _health_rules_response(
             ).isoformat(),
         }
         for index, name in enumerate(names)
+        for catalog in [load_alert_catalog(REPOSITORY_ROOT / "monitoring/catalog")]
+        for entry in [catalog.find(name) or catalog.find_health(name)]
     ]
     return httpx.Response(
         200,

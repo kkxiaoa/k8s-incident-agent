@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -61,6 +62,18 @@ async def test_whole_batch_is_validated_before_any_signal_is_committed(
     received_at = datetime(2026, 9, 2, 8, 1, tzinfo=UTC)
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory)
+        committed_signals: list[int] = []
+
+        def request_reconciliation() -> None:
+            with sqlite3.connect(
+                tmp_path / "runtime" / "incidents.sqlite3"
+            ) as connection:
+                committed_signals.append(
+                    connection.execute("SELECT count(*) FROM alert_signals").fetchone()[
+                        0
+                    ]
+                )
+
         service = AlertmanagerApplicationService(
             catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog"),
             authenticator=AlertmanagerWebhookAuthenticator.from_file(credential),
@@ -68,6 +81,7 @@ async def test_whole_batch_is_validated_before_any_signal_is_committed(
             cluster_id="k8s-incident-agent",
             diagnostic_namespace="k8s-incident-scenarios",
             now=lambda: received_at,
+            request_reconciliation=request_reconciliation,
         )
         document = json.loads(alert_payload())
         other = json.loads(watchdog_payload())["alerts"][0]
@@ -83,6 +97,7 @@ async def test_whole_batch_is_validated_before_any_signal_is_committed(
         overview = await repository.get_monitoring_overview(received_at)
         assert overview.unassigned_count == (0 if invalid_target else 1)
         assert overview.total_incidents == 0
+        assert committed_signals == ([] if invalid_target else [1])
         assert await repository.get_watchdog_last_received_at() == (
             None if invalid_target else received_at
         )

@@ -73,6 +73,14 @@ class AlertRuleContract(_CatalogContract):
     def require_normalized_expression(cls, value: str) -> str:
         return _require_normalized(value)
 
+    @property
+    def duration_seconds(self) -> float:
+        return _duration_seconds(self.for_duration)
+
+    @property
+    def keep_firing_seconds(self) -> float:
+        return _duration_seconds(self.keep_firing_for) if self.keep_firing_for else 0.0
+
 
 class MetricPanelContract(_CatalogContract):
     panel_id: str = Field(
@@ -416,3 +424,9 @@ def _require_normalized(value: str) -> str:
     ):
         raise ValueError("Catalog text must be normalized")
     return value
+
+
+def _duration_seconds(value: str) -> float:
+    match = re.fullmatch(r"([1-9][0-9]*)(ms|s|m|h)", value)
+    assert match is not None
+    return int(match[1]) * {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}[match[2]]

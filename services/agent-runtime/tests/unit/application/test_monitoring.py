@@ -19,6 +19,7 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.monitoring.catalog import AlertCatalog, load_alert_catalog
 from k8s_incident_agent.monitoring.contracts import (
+    CurrentAlertOverview,
     FiringHealthAlert,
     MetricMarkerKind,
     MetricPanelResult,
@@ -127,6 +128,15 @@ class _PanelRepository:
 
 
 class _OverviewRepository:
+    async def get_current_alert_overview(self, at: datetime) -> CurrentAlertOverview:
+        return CurrentAlertOverview(
+            total_targets=0,
+            unknown_targets=0,
+            firing_rules=0,
+            pending_rules=0,
+            oldest_observed_at=None,
+        )
+
     def __init__(self, overview: MonitoringOverviewRecord) -> None:
         self.overview = overview
         self.generated_at: datetime | None = None

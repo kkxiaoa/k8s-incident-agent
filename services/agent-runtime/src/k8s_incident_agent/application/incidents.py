@@ -652,6 +652,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
         verification=detail.repair.verification if detail.repair is not None else None,
         actions=detail.actions,
         alert_signal=alert_signal,
+        alert_summary=detail.alert_summary,
         event_cursor=str(detail.event_cursor),
     )
 

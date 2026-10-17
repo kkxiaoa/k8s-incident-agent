@@ -214,6 +214,20 @@ def _adapter(
     )
 
 
+@pytest.mark.parametrize("phase", ["Pending", "Bound", "Lost"])
+async def test_current_claim_health_is_bound_phase_without_storage_or_event_reads(
+    phase: str,
+) -> None:
+    adapter, _, storage, events = _adapter(
+        _claim("standard", phase=phase), _storage_class("standard")
+    )
+    facts = await adapter.read_current_target(TARGET)
+    assert facts.healthy is (phase == "Bound")
+    assert facts.target_ref.uid == "claim-uid"
+    assert storage.calls == [] and events.calls == []
+    assert "must-not-be-projected" not in facts.model_dump_json()
+
+
 @pytest.mark.asyncio
 async def test_read_pvc_storage_projects_only_exact_referenced_resources() -> None:
     class_name = "delayed-storage"

@@ -197,6 +197,9 @@ class MonitoringApplicationService:
             )
         return MonitoringOverviewSnapshot(
             generated_at=generated_at,
+            current_alerts=await self._repository.get_current_alert_overview(
+                generated_at
+            ),
             counts=MonitoringOverviewCounts(
                 total_incidents=overview.total_incidents,
                 firing_alerts=overview.firing_alerts,

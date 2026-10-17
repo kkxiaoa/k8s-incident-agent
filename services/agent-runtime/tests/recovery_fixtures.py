@@ -107,6 +107,18 @@ class MonitoringFixture:
                                 "rules": [
                                     {
                                         "name": name,
+                                        "query": entry.rule.expression
+                                        if entry
+                                        else "vector(1)",
+                                        "duration": entry.rule.duration_seconds
+                                        if entry
+                                        else 0,
+                                        "keepFiringFor": entry.rule.keep_firing_seconds
+                                        if entry
+                                        else 0,
+                                        "labels": {
+                                            "severity": "warning" if entry else "none"
+                                        },
                                         "type": "alerting",
                                         "health": self.rule_health,
                                         "lastEvaluation": at.isoformat(),
@@ -118,6 +130,10 @@ class MonitoringFixture:
                                     for name in request.url.params.get_list(
                                         "rule_name[]"
                                     )
+                                    for entry in [
+                                        self.catalog.find(name)
+                                        or self.catalog.find_health(name)
+                                    ]
                                 ],
                             }
                         ]

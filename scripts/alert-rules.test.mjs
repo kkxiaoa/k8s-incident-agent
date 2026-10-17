@@ -66,6 +66,12 @@ test("managed alert rules pass their promtool unit tests on the locked Prometheu
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   writeFileSync(path.join(directory, "alerts.yaml"), renderedRules());
   copyFileSync(RULE_TESTS, path.join(directory, "alert-rules.promtool.yaml"));
+  const reconciliationTests = execFileSync(
+    "uv",
+    ["run", "--offline", "--no-sync", "--no-cache", "python", "-m", "tests.unit.monitoring.test_reconciliation"],
+    { cwd: path.join(REPOSITORY_ROOT, "services", "agent-runtime"), encoding: "utf8" },
+  );
+  writeFileSync(path.join(directory, "reconciliation.promtool.yaml"), reconciliationTests);
 
   const result = spawnSync(
     "docker",
@@ -87,6 +93,7 @@ test("managed alert rules pass their promtool unit tests on the locked Prometheu
       "test",
       "rules",
       "alert-rules.promtool.yaml",
+      "reconciliation.promtool.yaml",
     ],
     { encoding: "utf8" },
   );

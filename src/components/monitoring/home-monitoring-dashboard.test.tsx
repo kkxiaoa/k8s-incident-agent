@@ -41,6 +41,7 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
   return {
     window: "24h",
     generatedAt: "2026-09-03T02:15:00.000Z",
+    currentAlerts: { totalTargets: 2, unknownTargets: 1, firingRules: 1, pendingRules: 0, oldestObservedAt: "2026-09-03T02:14:45.000Z" },
     counts: {
       totalIncidents: 8,
       firingAlerts,
@@ -69,6 +70,12 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
 }
 
 describe("HomeMonitoringDashboard", () => {
+  it("keeps current partial activity separate from last notification totals", () => {
+    render(<HomeMonitoringDashboard initialOverview={overview(12)} initialHealth={HEALTH} runtimeHealth={null} />);
+    expect(screen.getByRole("region", { name: "当前源端告警" })).toHaveTextContent("已知 FIRING 1 · 已知 PENDING 0 · UNKNOWN 目标 1 / 2");
+    expect(screen.getByRole("region", { name: "当前源端告警" })).toHaveTextContent("不能解释为没有活动");
+    expect(screen.getByText("末次通知 FIRING").closest("article")).toHaveTextContent("12");
+  });
   it("shows durable unassigned notifications without presenting them as Incidents or current source truth", () => {
     const value = overview();
     value.counts.unassignedSignals = 1;

@@ -67,6 +67,10 @@ class PrometheusRule:
     name: str
     health: Literal["ok", "err", "unknown"]
     last_evaluation: datetime
+    query: str
+    duration: float
+    keep_firing_for: float
+    labels: tuple[tuple[str, str], ...]
 
 
 class PrometheusHttpClient:
@@ -262,8 +266,34 @@ def _parse_alert_rules(
             parsed = datetime.fromisoformat(at.replace("Z", "+00:00"))
             if parsed.utcoffset() is None:
                 raise ValueError
+            query = rule.get("query")
+            duration = rule.get("duration")
+            keep_firing_for = rule.get("keepFiringFor")
+            labels = rule.get("labels")
+            if (
+                not isinstance(query, str)
+                or not query
+                or len(query) > 16 * 1024
+                or not isinstance(labels, dict)
+                or any(
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                    or value < 0
+                    for value in (duration, keep_firing_for)
+                )
+            ):
+                raise ValueError
             projected.append(
-                PrometheusRule(cast(str, name), health, parsed.astimezone(UTC))
+                PrometheusRule(
+                    cast(str, name),
+                    health,
+                    parsed.astimezone(UTC),
+                    query,
+                    float(cast(float, duration)),
+                    float(cast(float, keep_firing_for)),
+                    _parse_labels(cast(dict[object, object], labels)),
+                )
             )
         if len({rule.name for rule in projected}) != len(names):
             raise ValueError

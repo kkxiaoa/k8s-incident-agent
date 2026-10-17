@@ -7,12 +7,44 @@ from typing import Any, cast
 import pytest
 from tests.recovery_fixtures import RecoveryFixture
 from tests.unit.kubernetes.test_adapter_rollout_history import TARGET
+from tests.unit.monitoring.test_reconciliation import CurrentTargetFixture
 from tests.unit.repair.test_repair_preparation import PREVIOUS
 
 from k8s_incident_agent.execution.contracts import ExecutionReceipt
 from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.repair.contracts import RepairProposal
 from k8s_incident_agent.repair.verification_policy import workload_ready
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "pod_ready",
+        "container_ready",
+        "terminating",
+        "generation",
+        "missing_status",
+    ],
+)
+async def test_current_deployment_health_requires_owner_bound_ready_containers(
+    fault: str | None,
+) -> None:
+    fixture = CurrentTargetFixture()
+    if fault == "pod_ready":
+        fixture.pod.status.conditions[0].status = "False"
+    elif fault == "container_ready":
+        fixture.pod.status.container_statuses[0].ready = False
+    elif fault == "terminating":
+        fixture.pod.metadata.deletion_timestamp = fixture.now
+    elif fault == "generation":
+        fixture.deployment.status.observed_generation -= 1
+    elif fault == "missing_status":
+        fixture.pod.status.container_statuses = []
+    fixture.pod.spec.containers[0].args = ["token=must-not-enter-observation"]
+    facts = await fixture.adapter().read_current_target(TARGET)
+    assert facts.healthy is (fault is None)
+    assert "must-not-enter-observation" not in facts.model_dump_json()
 
 
 @pytest.mark.parametrize(

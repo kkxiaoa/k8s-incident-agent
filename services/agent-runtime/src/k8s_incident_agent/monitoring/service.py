@@ -3,19 +3,23 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import batched
 from typing import Final
 
 from pydantic import ValidationError
 
 from k8s_incident_agent.domain.contracts import KubernetesTarget
+from k8s_incident_agent.kubernetes.contracts import CurrentTargetFacts
 from k8s_incident_agent.monitoring.catalog import (
     RANGE_PLACEHOLDER,
     AlertCatalog,
+    AlertCatalogEntry,
     MetricPanelContract,
 )
 from k8s_incident_agent.monitoring.contracts import (
+    CurrentAlertState,
     FiringHealthAlert,
     MetricPanelPayload,
     MetricPanelResult,
@@ -26,9 +30,11 @@ from k8s_incident_agent.monitoring.contracts import (
     MetricTargetRef,
     MetricTimeAnchor,
     MetricWindow,
+    ObservationReason,
     PrometheusHealthSignals,
     PrometheusObservation,
     RecoveryMonitoring,
+    RuleAlertObservation,
 )
 from k8s_incident_agent.monitoring.errors import (
     MonitoringBoundaryError,
@@ -37,6 +43,7 @@ from k8s_incident_agent.monitoring.errors import (
 from k8s_incident_agent.monitoring.prometheus import (
     PrometheusHttpClient,
     PrometheusQueryResult,
+    PrometheusRule,
 )
 
 _WINDOW_STEPS: Final[dict[MetricWindow, int]] = {
@@ -115,6 +122,156 @@ class PrometheusQueryService:
 
     async def close(self) -> None:
         await self._client.close()
+
+    @property
+    def catalog_version(self) -> str:
+        return self._catalog.version
+
+    async def read_reconciliation_rules(
+        self,
+    ) -> dict[str, PrometheusRule | ObservationReason]:
+        """Share the bounded rule definition reads across one reconciliation pass."""
+        result: dict[str, PrometheusRule | ObservationReason] = {}
+        for batch in batched(self._catalog.entries, 8, strict=False):
+            names = tuple(entry.alert_id for entry in batch)
+            try:
+                rules = await self._client.read_alert_rules(names)
+                result.update((rule.name, rule) for rule in rules)
+            except MonitoringBoundaryError as error:
+                result.update((name, _observation_failure(error)) for name in names)
+        return result
+
+    async def observe_current_alerts(
+        self,
+        target: KubernetesTarget,
+        facts: CurrentTargetFacts,
+        rules: dict[str, PrometheusRule | ObservationReason],
+        *,
+        at: datetime,
+    ) -> tuple[RuleAlertObservation, ...]:
+        if target.cluster != self._cluster_id or target.namespace is None:
+            raise MonitoringBoundaryError(MonitoringErrorCode.TARGET_UNSUPPORTED)
+        entries = tuple(
+            entry
+            for entry in self._catalog.entries
+            if (entry.target.api_version, entry.target.kind)
+            == (target.api_version, target.kind)
+        )
+        if not entries:
+            raise MonitoringBoundaryError(MonitoringErrorCode.TARGET_UNSUPPORTED)
+        definitions = _rule_definition_reasons(entries, rules, at=at)
+        # Rule evaluation uses wall time; PromQL samples use millisecond slots.
+        at = _utc_now(at)
+        inputs = _reconciliation_inputs(facts)
+        windows = {
+            entry.alert_id: window
+            for entry in entries
+            if (definition := inputs.get(entry.alert_id)) is not None
+            and (
+                window := max(
+                    (item.window_seconds for item in definition.specific), default=0
+                )
+            )
+        }
+        alerts, expressions, coverage = await self._read_current_checks(
+            target, entries, inputs, at=at
+        )
+        ranges = await self._read_range_checks(inputs, windows, at=at)
+        return _rule_observations(
+            entries,
+            rules,
+            definitions,
+            alerts=alerts,
+            expressions=expressions,
+            coverage=coverage,
+            ranges=ranges,
+            windows=windows,
+        )
+
+    async def _read_current_checks(
+        self,
+        target: KubernetesTarget,
+        entries: tuple[AlertCatalogEntry, ...],
+        inputs: dict[str, _RuleInputs],
+        *,
+        at: datetime,
+    ) -> tuple[_QueryChecks, _QueryChecks, _QueryChecks]:
+        observed = (_QueryChecks(), _QueryChecks(), _QueryChecks())
+        # The batch itself, not only the HTTP semaphore, bounds queued work.
+        for batch in batched(entries, 8, strict=False):
+            names, queries = _current_alert_queries(target, batch, inputs, at=at)
+            results = await asyncio.gather(
+                *(
+                    self._client.query_instant(query, at=at, lookback_seconds=60)
+                    for query in queries
+                ),
+                return_exceptions=True,
+            )
+            for checks, result in zip(observed, results, strict=True):
+                if isinstance(result, BaseException):
+                    if not isinstance(result, MonitoringBoundaryError):
+                        raise result
+                    reason = _observation_failure(result)
+                else:
+                    try:
+                        checks.values.update(_check_values(result, names, at=at))
+                        reason = (
+                            ObservationReason.INCOMPLETE if result.partial else None
+                        )
+                    except MonitoringBoundaryError as error:
+                        reason = _observation_failure(error)
+                if reason is not None:
+                    checks.failures.update((name, reason) for name in names)
+        return observed
+
+    async def _read_range_checks(
+        self,
+        inputs: dict[str, _RuleInputs],
+        windows: dict[str, int],
+        *,
+        at: datetime,
+    ) -> _QueryChecks:
+        observed = _QueryChecks()
+        # Ten minutes / 15 seconds gives 41 points; eight rules remain within
+        # the existing 512-sample ceiling. Missing grid points are never filled.
+        for names in batched(windows, 8, strict=False):
+            window = max(windows[name] for name in names)
+            start = at - timedelta(seconds=window)
+            query = _input_coverage_query(inputs, names, at=at, range_sample=True)
+            try:
+                result = await self._client.query_range(
+                    query, start=start, end=at, step_seconds=15, lookback_seconds=60
+                )
+                if result.partial:
+                    raise MonitoringBoundaryError(
+                        MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+                    )
+                for series in result.series:
+                    name = series.label("alertname")
+                    if name not in names or len(series.labels) != 1:
+                        raise MonitoringBoundaryError(
+                            MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID
+                        )
+                    required_window = windows[name]
+                    required_start = at - timedelta(seconds=required_window)
+                    samples = tuple(
+                        sample
+                        for sample in series.samples
+                        if sample.timestamp >= required_start
+                    )
+                    expected = tuple(
+                        required_start + timedelta(seconds=15 * index)
+                        for index in range(required_window // 15 + 1)
+                    )
+                    observed.values[name] = float(
+                        tuple(sample.timestamp for sample in samples) == expected
+                        and all(sample.value == 1 for sample in samples)
+                    )
+            except MonitoringBoundaryError as error:
+                observed.failures.update(
+                    (name, _observation_failure(error)) for name in names
+                )
+        return observed
 
     async def observe_recovery(
         self,
@@ -581,3 +738,729 @@ def _utc_now(value: datetime) -> datetime:
         raise ValueError("Monitoring clock must include a timezone")
     utc_value = value.astimezone(UTC)
     return utc_value.replace(microsecond=(utc_value.microsecond // 1000) * 1000)
+
+
+@dataclass(frozen=True, slots=True)
+class _RawInput:
+    selector: str
+    since: datetime | None
+    count: int = 1
+    value: float | None = None
+    window_seconds: int = 0
+    absent_counter: bool = False
+    whole_seconds: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _RuleInputs:
+    common: tuple[_RawInput, ...] = ()
+    specific: tuple[_RawInput, ...] = ()
+
+
+@dataclass(slots=True)
+class _QueryChecks:
+    values: dict[str, float] = field(default_factory=dict[str, float])
+    failures: dict[str, ObservationReason] = field(
+        default_factory=dict[str, ObservationReason]
+    )
+
+
+def _rule_definition_reasons(
+    entries: tuple[AlertCatalogEntry, ...],
+    rules: dict[str, PrometheusRule | ObservationReason],
+    *,
+    at: datetime,
+) -> dict[str, ObservationReason | None]:
+    definitions: dict[str, ObservationReason | None] = {}
+    for entry in entries:
+        rule = rules.get(entry.alert_id, ObservationReason.RULE_MISMATCH)
+        reason = rule if isinstance(rule, ObservationReason) else None
+        if isinstance(rule, PrometheusRule):
+            if (
+                rule.query != entry.rule.expression
+                or rule.duration != entry.rule.duration_seconds
+                or rule.keep_firing_for != entry.rule.keep_firing_seconds
+                or rule.labels != (("severity", "warning"),)
+            ):
+                reason = ObservationReason.RULE_MISMATCH
+            elif rule.health != "ok" or not _fresh(rule.last_evaluation, at):
+                reason = ObservationReason.STALE
+        definitions[entry.alert_id] = reason
+    return definitions
+
+
+def _current_alert_queries(
+    target: KubernetesTarget,
+    entries: tuple[AlertCatalogEntry, ...],
+    inputs: dict[str, _RuleInputs],
+    *,
+    at: datetime,
+) -> tuple[tuple[str, ...], tuple[str, str, str]]:
+    names = tuple(entry.alert_id for entry in entries)
+    selector = _selector(
+        "ALERTS",
+        {
+            "namespace": target.namespace or "",
+            entries[0].target.name_label: target.name,
+        },
+        f'alertname=~"{"|".join(names)}",alertstate=~"pending|firing"',
+    )
+    pending = selector.replace('alertstate=~"pending|firing"', 'alertstate="pending"')
+    firing = selector.replace('alertstate=~"pending|firing"', 'alertstate="firing"')
+    alerts = (
+        f"max by(alertname) (({pending}) or (2 * {firing})) * on(alertname) "
+        f"min by(alertname) ((timestamp({selector}) >= bool (time() - 60)) "
+        f"* (timestamp({selector}) <= bool time()))"
+    )
+    expressions = " or ".join(
+        _named_check(
+            f"count(({entry.rule.expression}) and on(namespace, {entry.target.name_label}) "
+            f"{_target_vector(target, entry)})",
+            entry.alert_id,
+        )
+        for entry in entries
+    )
+    return names, (alerts, expressions, _input_coverage_query(inputs, names, at=at))
+
+
+def _input_coverage_query(
+    inputs: dict[str, _RuleInputs],
+    names: tuple[str, ...],
+    *,
+    at: datetime,
+    range_sample: bool = False,
+) -> str:
+    groups: dict[tuple[_RawInput, ...], list[str]] = {}
+    for name in names:
+        definition = inputs.get(name)
+        common = (
+            definition.common if definition is not None and not range_sample else ()
+        )
+        specific = (
+            tuple(
+                item
+                for item in definition.specific
+                if not range_sample or item.window_seconds
+            )
+            if definition is not None
+            else None
+        )
+        groups.setdefault(common, []).append(
+            _named_check(
+                _input_checks(specific, at=at, range_sample=range_sample), name
+            )
+        )
+    queries: list[str] = []
+    for common, checks in groups.items():
+        query = " or ".join(checks)
+        if common:
+            # One unlabeled ownership proof gates every rule in this group;
+            # rule-specific failures retain their own alertname and value.
+            query = f"({_input_checks(common, at=at)}) * on() group_right() ({query})"
+        queries.append(f"({query})")
+    return " or ".join(queries)
+
+
+def _rule_observations(
+    entries: tuple[AlertCatalogEntry, ...],
+    rules: dict[str, PrometheusRule | ObservationReason],
+    definitions: dict[str, ObservationReason | None],
+    *,
+    alerts: _QueryChecks,
+    expressions: _QueryChecks,
+    coverage: _QueryChecks,
+    ranges: _QueryChecks,
+    windows: dict[str, int],
+) -> tuple[RuleAlertObservation, ...]:
+    observed: list[RuleAlertObservation] = []
+    for entry in entries:
+        name = entry.alert_id
+        rule = rules.get(name, ObservationReason.RULE_MISMATCH)
+        reason = definitions[name]
+        for dependency in {
+            "K8sIncidentContainerOOMKilled": ("K8sIncidentCrashLoopBackOff",),
+            "K8sIncidentContainerAbnormalExit": (
+                "K8sIncidentCrashLoopBackOff",
+                "K8sIncidentLivenessProbeRestart",
+                "K8sIncidentContainerOOMKilled",
+                "K8sIncidentContainerProbeFailing",
+            ),
+        }.get(name, ()):
+            reason = reason or definitions[dependency]
+        for checks in (alerts, expressions, coverage, ranges):
+            reason = reason or checks.failures.get(name)
+        active = alerts.values.get(name)
+        state = (
+            CurrentAlertState.FIRING
+            if active == 2
+            else CurrentAlertState.PENDING
+            if active == 1
+            else CurrentAlertState.UNKNOWN
+        )
+        if active == 0:
+            reason = reason or ObservationReason.STALE
+        elif active not in (None, 1, 2):
+            reason = reason or ObservationReason.INCOMPLETE
+        if coverage.values.get(name) != 1 or (
+            name in windows and ranges.values.get(name) != 1
+        ):
+            reason = reason or ObservationReason.INPUT_MISSING
+        if active is None:
+            if name in expressions.values:
+                reason = reason or ObservationReason.WAITING_EVALUATION
+            elif reason is None:
+                state = CurrentAlertState.CLEAR
+        observed.append(
+            RuleAlertObservation(
+                alert_id=name,
+                state=state,
+                complete=reason is None,
+                reason=reason,
+                evaluated_at=rule.last_evaluation
+                if isinstance(rule, PrometheusRule)
+                else None,
+            )
+        )
+    return tuple(observed)
+
+
+def _selector(metric: str, labels: dict[str, str], extra: str = "") -> str:
+    matchers = [
+        f'{key}="{_escape_promql_label_value(value)}"' for key, value in labels.items()
+    ]
+    if extra:
+        matchers.append(extra)
+    return f"{metric}{{{','.join(matchers)}}}"
+
+
+def _named_check(expression: str, name: str) -> str:
+    return f'label_replace(({expression}), "alertname", "{name}", "", "")'
+
+
+def _target_vector(target: KubernetesTarget, entry: AlertCatalogEntry) -> str:
+    return (
+        f'label_replace(label_replace(vector(1), "namespace", "{_escape_promql_label_value(target.namespace or "")}", "", ""), '
+        f'"{entry.target.name_label}", "{_escape_promql_label_value(target.name)}", "", "")'
+    )
+
+
+def _input_checks(
+    inputs: tuple[_RawInput, ...] | None, *, at: datetime, range_sample: bool = False
+) -> str:
+    if inputs is None:
+        return "vector(0)"
+    checks: list[str] = []
+    for item in inputs:
+        if item.since is None or item.since > at - timedelta(
+            seconds=item.window_seconds
+        ):
+            return "vector(0)"
+        selector = item.selector
+        count = f"(count({selector}) or vector(0))"
+        check = f"({count} == bool {item.count})"
+        if item.count:
+            valid = f"timestamp({selector}) >= (time() - 60)"
+            valid = f"({valid}) and (timestamp({selector}) <= time())"
+            valid = (
+                f"({valid}) and (timestamp({selector}) >= {item.since.timestamp():.3f})"
+            )
+            check += f" * ((count({valid}) or vector(0)) == bool {item.count})"
+            if item.value is not None and not range_sample:
+                value = f"floor({selector})" if item.whole_seconds else selector
+                check += f" * ((count({value} == {item.value}) or vector(0)) == bool {item.count})"
+            if item.window_seconds and not range_sample:
+                check += f" * ((count(count_over_time({selector}[{item.window_seconds}s]) >= 2) or vector(0)) == bool {item.count})"
+        if item.absent_counter:
+            # A never-created failed counter is normal. This alternative is
+            # valid only with the separately required, UID-bound probe producer.
+            absent = f"absent_over_time({selector}[{item.window_seconds}s] @ {at.timestamp():.3f})"
+            check = f"((({check}) == 1) or max({absent}))"
+        checks.append(f"({check})")
+    return " * ".join(checks) if checks else "vector(1)"
+
+
+def _check_values(
+    result: PrometheusQueryResult, names: tuple[str, ...], *, at: datetime
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for series in result.series:
+        name = series.label("alertname")
+        if (
+            name not in names
+            or len(series.labels) != 1
+            or name in values
+            or series.samples[-1].timestamp != at
+        ):
+            raise MonitoringBoundaryError(MonitoringErrorCode.UPSTREAM_CONTRACT_INVALID)
+        values[name] = series.samples[-1].value
+    return values
+
+
+def _observation_failure(error: MonitoringBoundaryError) -> ObservationReason:
+    return {
+        MonitoringErrorCode.REQUEST_TIMEOUT: ObservationReason.REQUEST_TIMEOUT,
+        MonitoringErrorCode.UNAVAILABLE: ObservationReason.UNAVAILABLE,
+        MonitoringErrorCode.RESULT_BUDGET_EXCEEDED: ObservationReason.BUDGET_EXCEEDED,
+    }.get(error.code, ObservationReason.INCOMPLETE)
+
+
+def _reconciliation_inputs(
+    facts: CurrentTargetFacts,
+) -> dict[str, _RuleInputs]:
+    """Project only registered raw dependencies from the current SDK identities.
+
+    Each expected object/container gets its own cardinality check before any
+    aggregation. An extra series cannot compensate for a missing identity.
+    """
+    reference = facts.target_ref
+    namespace = reference.namespace
+    created = facts.created_at
+    source = {"job": "kube-state-metrics", "namespace": namespace}
+    if facts.claim is not None:
+        labels = {**source, "persistentvolumeclaim": reference.name}
+        return {
+            "K8sIncidentPersistentVolumeClaimPending": _RuleInputs(
+                specific=(
+                    _RawInput(
+                        _selector("kube_persistentvolumeclaim_created", labels),
+                        created,
+                        value=float(int(created.timestamp())) if created else None,
+                    ),
+                    _RawInput(
+                        _selector(
+                            "kube_persistentvolumeclaim_status_phase",
+                            {**labels, "phase": "Pending"},
+                        ),
+                        created,
+                        value=float(facts.claim.phase == "Pending"),
+                    ),
+                    _RawInput(
+                        _selector(
+                            "kube_persistentvolumeclaim_labels",
+                            {
+                                **labels,
+                                "label_k8s_incident_agent_io_pending_policy": facts.pending_policy
+                                or "",
+                            },
+                        ),
+                        created,
+                        value=1,
+                    ),
+                )
+            )
+        }
+    if facts.service is not None:
+        service = facts.service
+        labels = {**source, "service": reference.name, "uid": reference.uid}
+        inputs = [
+            _RawInput(
+                _selector(
+                    "kube_service_labels",
+                    {
+                        **labels,
+                        "label_k8s_incident_agent_io_monitor_selector": "true"
+                        if service.service.monitoring_enabled
+                        else "",
+                    },
+                ),
+                created,
+                value=1,
+            ),
+            _RawInput(
+                _selector(
+                    "kube_service_spec_type",
+                    {**labels, "type": service.service.service_type},
+                ),
+                created,
+                value=1,
+            ),
+            _RawInput(_selector("kube_service_info", labels), created, value=1),
+        ]
+        for candidate in service.candidate_pods:
+            inputs.append(
+                _RawInput(
+                    _selector(
+                        "kube_pod_labels",
+                        {
+                            **source,
+                            "pod": candidate.pod_ref.name,
+                            "uid": candidate.pod_ref.uid,
+                            "label_k8s_incident_agent_io_service": reference.name,
+                        },
+                    ),
+                    created,
+                    value=1,
+                )
+            )
+        for item in service.endpoint_slices:
+            slice_labels = {**source, "endpointslice": item.endpoint_slice_ref.name}
+            inputs.append(
+                _RawInput(
+                    _selector(
+                        "kube_endpointslice_labels",
+                        {
+                            **slice_labels,
+                            "label_kubernetes_io_service_name": reference.name,
+                        },
+                    ),
+                    created,
+                    value=1,
+                )
+            )
+            inputs.extend(
+                _RawInput(
+                    _selector(
+                        "kube_endpointslice_endpoints", {**slice_labels, "ready": ready}
+                    ),
+                    created,
+                    count=count,
+                    value=1,
+                )
+                for ready, count in facts.endpoint_sample_counts[
+                    item.endpoint_slice_ref.name
+                ].items()
+            )
+        return {
+            "K8sIncidentServiceEndpointsUnavailable": _RuleInputs(
+                specific=tuple(inputs)
+            )
+        }
+    workload = facts.workload
+    if workload is None:
+        return {}
+    deployment = {**source, "deployment": reference.name}
+    result: dict[str, _RuleInputs] = {
+        "K8sIncidentDeploymentReplicasUnavailable": _RuleInputs(
+            specific=(
+                _RawInput(
+                    _selector("kube_deployment_spec_replicas", deployment),
+                    created,
+                    value=float(workload.replicas.desired),
+                ),
+                _RawInput(
+                    _selector("kube_deployment_status_replicas_available", deployment),
+                    created,
+                    value=float(workload.replicas.available),
+                ),
+            )
+        )
+    }
+    if not facts.pods:
+        return result
+    common: list[_RawInput] = []
+    dependencies: dict[str, list[_RawInput]] = {
+        name: []
+        for name in (
+            "ImagePullBackOff",
+            "CrashLoopBackOff",
+            "ReadinessProbeFailure",
+            "LivenessProbeRestart",
+            "ContainerOOMKilled",
+            "ContainerAbnormalExit",
+            "ContainerMemoryNearLimit",
+            "ContainerCPUThrottled",
+            "ContainerProbeFailing",
+            "PodUnschedulable",
+        )
+    }
+    for current in facts.pods:
+        pod = current.pod
+        labels = {**source, "pod": pod.name, "uid": pod.uid}
+        common.append(
+            _RawInput(
+                _selector(
+                    "kube_pod_owner",
+                    {
+                        **labels,
+                        "owner_kind": "ReplicaSet",
+                        "owner_is_controller": "true",
+                        "owner_name": pod.owner.name,
+                    },
+                ),
+                current.created_at,
+                value=1,
+            )
+        )
+        common.append(
+            _RawInput(
+                _selector(
+                    "kube_replicaset_owner",
+                    {
+                        **source,
+                        "replicaset": pod.owner.name,
+                        "owner_kind": "Deployment",
+                        "owner_is_controller": "true",
+                        "owner_name": reference.name,
+                    },
+                ),
+                created,
+                value=1,
+            )
+        )
+        monitored = {
+            key: current.monitoring_labels.get(f"k8s-incident-agent.io/{key}", "")
+            for key in ("readiness-container", "readiness-slo", "liveness-container")
+        }
+        pod_labels = _RawInput(
+            _selector(
+                "kube_pod_labels",
+                {
+                    **labels,
+                    **{
+                        f"label_k8s_incident_agent_io_{key.replace('-', '_')}": value
+                        for key, value in monitored.items()
+                    },
+                },
+            ),
+            current.created_at,
+            value=1,
+        )
+        for name in (
+            "ReadinessProbeFailure",
+            "LivenessProbeRestart",
+            "ContainerProbeFailing",
+        ):
+            dependencies[name].append(pod_labels)
+        scheduled = next(
+            (item.status for item in pod.conditions if item.type == "PodScheduled"),
+            None,
+        )
+        dependencies["PodUnschedulable"].append(
+            _RawInput(
+                _selector("kube_pod_status_unschedulable", labels),
+                current.created_at if scheduled in ("True", "False") else None,
+                count=1 if scheduled == "False" else 0,
+                value=1,
+            )
+        )
+        for container in pod.containers:
+            identity = {**labels, "container": container.name}
+            since = current.created_at
+            running = _RawInput(
+                _selector("kube_pod_container_status_running", identity),
+                since if container.state.status != "unknown" else None,
+                value=float(container.state.status == "running"),
+            )
+            waiting = _RawInput(
+                _selector(
+                    "kube_pod_container_status_waiting_reason",
+                    {
+                        **identity,
+                        **(
+                            {"reason": container.state.reason}
+                            if container.state.status == "waiting"
+                            and container.state.reason
+                            else {}
+                        ),
+                    },
+                ),
+                since,
+                count=1 if container.state.status == "waiting" else 0,
+                value=1,
+            )
+            restarts = _selector("kube_pod_container_status_restarts_total", identity)
+            dependencies["ImagePullBackOff"].extend((running, waiting))
+            dependencies["CrashLoopBackOff"].extend(
+                (
+                    running,
+                    waiting,
+                    _RawInput(
+                        restarts,
+                        since,
+                        value=float(container.restart_count)
+                        if container.restart_count is not None
+                        else None,
+                    ),
+                )
+            )
+            if (
+                monitored["readiness-container"] == container.name
+                and monitored["readiness-slo"] == "2m"
+            ):
+                ready = current.container_ready.get(container.name)
+                dependencies["ReadinessProbeFailure"].extend(
+                    (
+                        running,
+                        _RawInput(
+                            _selector("kube_pod_container_status_ready", identity),
+                            since if ready is not None else None,
+                            value=float(bool(ready)),
+                        ),
+                    )
+                )
+            if monitored["liveness-container"] == container.name:
+                dependencies["LivenessProbeRestart"].append(
+                    _RawInput(restarts, since, window_seconds=300)
+                )
+            previous = container.last_state
+            terminated = previous is not None and previous.status == "terminated"
+            termination = _RawInput(
+                _selector(
+                    "kube_pod_container_status_last_terminated_reason",
+                    {
+                        **identity,
+                        **(
+                            {"reason": previous.reason}
+                            if terminated and previous and previous.reason
+                            else {}
+                        ),
+                    },
+                ),
+                since,
+                count=int(terminated),
+                value=1,
+            )
+            dependencies["ContainerOOMKilled"].append(termination)
+            dependencies["ContainerAbnormalExit"].extend(
+                (termination, _RawInput(restarts, since, window_seconds=600))
+            )
+            if terminated:
+                ended = (
+                    datetime.fromisoformat(previous.finished_at)
+                    if previous and previous.finished_at
+                    else None
+                )
+                dependencies["ContainerOOMKilled"].append(
+                    _RawInput(
+                        _selector(
+                            "kube_pod_container_status_last_terminated_timestamp",
+                            identity,
+                        ),
+                        since if ended else None,
+                        value=float(int(ended.timestamp())) if ended else None,
+                    )
+                )
+            # Kubelet series without UID must belong to this running container
+            # lifetime; limits alone cannot prove that CFS quota is available.
+            started = (
+                datetime.fromisoformat(container.state.started_at)
+                if container.state.started_at
+                else None
+            )
+            kubelet = {
+                "namespace": namespace,
+                "pod": pod.name,
+                "container": container.name,
+            }
+            start_input = _RawInput(
+                _selector(
+                    "container_start_time_seconds",
+                    {**kubelet, "job": "kubelet-resource"},
+                ),
+                started,
+                # Resource metrics retain nanoseconds; Kubernetes API Time
+                # serializes seconds. Freshness still reads the raw timestamp.
+                value=float(int(started.timestamp())) if started else None,
+                whole_seconds=True,
+            )
+            resources = container.configured_resources
+            memory = resources.limits.memory_bytes if resources else None
+            memory_limit = _RawInput(
+                _selector(
+                    "kube_pod_container_resource_limits",
+                    {**identity, "resource": "memory"},
+                ),
+                since,
+                count=int(memory is not None),
+                value=memory,
+            )
+            dependencies["ContainerMemoryNearLimit"].append(memory_limit)
+            if memory is not None and memory > 0:
+                dependencies["ContainerMemoryNearLimit"].extend(
+                    (
+                        start_input,
+                        _RawInput(
+                            _selector(
+                                "container_memory_working_set_bytes",
+                                {**kubelet, "job": "kubelet-resource"},
+                            ),
+                            started,
+                        ),
+                    )
+                )
+            container_id = current.container_ids.get(container.name)
+            runtime, _, current_id = (container_id or "").partition("://")
+            pod_path = re.escape(pod.uid)
+            systemd_pod = re.escape(pod.uid.replace("-", "_"))
+            cgroup = (
+                f"(.*/)?(pod{pod_path}|kubepods(-burstable|-besteffort)?-pod{systemd_pod}\\.slice)/"
+                f"({re.escape(current_id)}|cri-containerd-{re.escape(current_id)}\\.scope)"
+            )
+            for metric in (
+                "container_cpu_cfs_periods_total",
+                "container_cpu_cfs_throttled_periods_total",
+            ):
+                # The catalog sums all cgroups for a container name. An old
+                # cgroup must not dilute the current container's ratio.
+                dependencies["ContainerCPUThrottled"].append(
+                    _RawInput(
+                        _selector(metric, {**kubelet, "job": "kubelet-cadvisor"}),
+                        started,
+                        window_seconds=300,
+                    )
+                )
+                dependencies["ContainerCPUThrottled"].append(
+                    _RawInput(
+                        _selector(
+                            metric,
+                            {**kubelet, "job": "kubelet-cadvisor"},
+                            f'id=~"{_escape_promql_label_value(cgroup)}"',
+                        ),
+                        started if runtime == "containerd" and current_id else None,
+                        window_seconds=300,
+                    )
+                )
+            probes = current.container_probes.get(container.name, [])
+            excluded = (
+                monitored["readiness-container"] == container.name
+                and monitored["readiness-slo"] == "2m"
+            ) or monitored["liveness-container"] == container.name
+            if probes and not excluded:
+                dependencies["ContainerProbeFailing"].append(
+                    _RawInput(
+                        _selector("kube_pod_container_state_started", identity),
+                        started,
+                        value=float(int(started.timestamp())) if started else None,
+                    )
+                )
+                for probe in probes:
+                    probe_labels = {
+                        **kubelet,
+                        "job": "kubelet-probes",
+                        "pod_uid": pod.uid,
+                        "probe_type": probe.probe_kind.title(),
+                    }
+                    dependencies["ContainerProbeFailing"].extend(
+                        (
+                            _RawInput(
+                                _selector(
+                                    "prober_probe_total",
+                                    {**probe_labels, "result": "successful"},
+                                ),
+                                started,
+                                window_seconds=300,
+                            ),
+                            _RawInput(
+                                _selector(
+                                    "prober_probe_total",
+                                    {**probe_labels, "result": "failed"},
+                                ),
+                                started,
+                                window_seconds=300,
+                                absent_counter=True,
+                            ),
+                        )
+                    )
+        container_names = {item.name for item in pod.containers}
+        for label, rule in (
+            ("readiness-container", "ReadinessProbeFailure"),
+            ("liveness-container", "LivenessProbeRestart"),
+        ):
+            if monitored[label] and monitored[label] not in container_names:
+                dependencies[rule].append(_RawInput("vector(0)", None))
+    ownership = tuple(dict.fromkeys(common))
+    for name, items in dependencies.items():
+        result[f"K8sIncident{name}"] = _RuleInputs(
+            common=ownership, specific=tuple(items)
+        )
+    return result

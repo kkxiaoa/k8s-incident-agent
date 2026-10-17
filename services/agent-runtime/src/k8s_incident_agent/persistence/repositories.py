@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.dml import Delete
+from sqlalchemy.sql.selectable import Subquery
 
 from k8s_incident_agent.auth.public_demo import (
     RunOwnershipError,
@@ -83,13 +84,22 @@ from k8s_incident_agent.execution.contracts import (
 )
 from k8s_incident_agent.kubernetes.contracts import (
     RolloutHistoryPayload,
+    TargetRef,
     WorkloadObservation,
 )
-from k8s_incident_agent.monitoring.contracts import UnassignedAlertSignal
+from k8s_incident_agent.monitoring.contracts import (
+    CurrentAlertObservation,
+    CurrentAlertOverview,
+    CurrentAlertState,
+    CurrentAlertSummary,
+    ObservationReason,
+    UnassignedAlertSignal,
+)
 from k8s_incident_agent.persistence.canonical import canonical_json, parse_json_object
 from k8s_incident_agent.persistence.models import (
     AlertSignalRow,
     ApprovalRow,
+    CurrentAlertObservationRow,
     DiagnosisRow,
     EvidenceRow,
     ExecutionRow,
@@ -254,6 +264,7 @@ class IncidentDetailRecord:
     event_cursor: int
     run_creation_blocked: bool = False
     actions: IncidentActions | None = None
+    alert_summary: CurrentAlertSummary = field(default_factory=CurrentAlertSummary)
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,6 +467,180 @@ class IncidentRepository:
         self._execution_enabled = sandbox_execution_enabled
         self._execution_cluster = execution_cluster
         self._now = now
+
+    async def reconciliation_targets(self) -> tuple[KubernetesTarget, ...]:
+        targets = _current_targets()
+        try:
+            async with self._session_factory() as session:
+                rows = await session.execute(
+                    select(targets)
+                    .outerjoin(
+                        CurrentAlertObservationRow,
+                        and_(
+                            *(
+                                getattr(CurrentAlertObservationRow, name)
+                                == targets.c[name]
+                                for name in _TARGET_COLUMNS
+                            )
+                        ),
+                    )
+                    .order_by(
+                        func.coalesce(CurrentAlertObservationRow.checked_order, 0),
+                        *(targets.c[name] for name in _TARGET_COLUMNS),
+                    )
+                    .limit(8)
+                )
+                return tuple(
+                    KubernetesTarget(
+                        cluster=row.cluster,
+                        namespace=row.namespace,
+                        api_version=row.api_version,
+                        kind=row.kind,
+                        name=row.resource_name,
+                    )
+                    for row in rows
+                )
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def get_current_alert_observation(
+        self, target: KubernetesTarget
+    ) -> CurrentAlertObservation | None:
+        try:
+            async with self._session_factory() as session:
+                row = await session.get(
+                    CurrentAlertObservationRow, _observation_key(target)
+                )
+                return _alert_observation(row.observation_json) if row else None
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def save_current_alert_observation(
+        self, observation: CurrentAlertObservation
+    ) -> None:
+        """Advance fair work order without changing any Incident business time."""
+        try:
+            async with self._session_factory() as session:
+                await session.execute(text("BEGIN IMMEDIATE"))
+                row = await session.get(
+                    CurrentAlertObservationRow, _observation_key(observation.target)
+                )
+                previous = _alert_observation(row.observation_json) if row else None
+                summary = observation.summary
+                if summary.complete:
+                    summary = summary.model_copy(
+                        update={
+                            "last_known_state": summary.state,
+                            "last_known_at": summary.observed_at,
+                        }
+                    )
+                elif previous is not None and (
+                    observation.facts is None
+                    or previous.facts is None
+                    or observation.facts.target_ref.uid == previous.facts.target_ref.uid
+                ):
+                    summary = summary.model_copy(
+                        update={
+                            "last_known_state": previous.summary.last_known_state,
+                            "last_known_at": previous.summary.last_known_at,
+                        }
+                    )
+                observation = observation.model_copy(
+                    update={
+                        "summary": summary,
+                        "facts": observation.facts
+                        or (previous.facts if previous else None),
+                    }
+                )
+                order = (
+                    int(
+                        await session.scalar(
+                            select(
+                                func.coalesce(
+                                    func.max(CurrentAlertObservationRow.checked_order),
+                                    0,
+                                )
+                            )
+                        )
+                        or 0
+                    )
+                    + 1
+                )
+                if row is None:
+                    row = CurrentAlertObservationRow(
+                        **dict(
+                            zip(
+                                _TARGET_COLUMNS,
+                                _observation_key(observation.target),
+                                strict=True,
+                            )
+                        )
+                    )
+                    session.add(row)
+                row.checked_order = order
+                row.observation_json = observation.model_dump_json()
+                await session.commit()
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def get_current_alert_overview(self, at: datetime) -> CurrentAlertOverview:
+        targets = _current_targets()
+        total = unknown = firing = pending = 0
+        oldest: datetime | None = None
+        try:
+            async with self._session_factory() as session:
+                summaries = await session.stream_scalars(
+                    select(
+                        func.json_extract(
+                            CurrentAlertObservationRow.observation_json, "$.summary"
+                        )
+                    )
+                    .select_from(targets)
+                    .outerjoin(
+                        CurrentAlertObservationRow,
+                        and_(
+                            *(
+                                getattr(CurrentAlertObservationRow, name)
+                                == targets.c[name]
+                                for name in _TARGET_COLUMNS
+                            )
+                        ),
+                    )
+                    .execution_options(yield_per=100)
+                )
+                async for value in summaries:
+                    total += 1
+                    if value is None:
+                        unknown += 1
+                        continue
+                    summary = _fresh_alert_summary(
+                        CurrentAlertSummary.model_validate_json(value), at
+                    )
+                    unknown += not summary.complete
+                    if summary.observed_at is not None:
+                        oldest = (
+                            min(oldest, summary.observed_at)
+                            if oldest
+                            else summary.observed_at
+                        )
+                    firing += sum(
+                        rule.state is CurrentAlertState.FIRING for rule in summary.rules
+                    )
+                    pending += sum(
+                        rule.state is CurrentAlertState.PENDING
+                        for rule in summary.rules
+                    )
+                return CurrentAlertOverview(
+                    total_targets=total,
+                    unknown_targets=unknown,
+                    firing_rules=firing,
+                    pending_rules=pending,
+                    oldest_observed_at=oldest,
+                )
+        except ValidationError:
+            raise RecoveryConsistencyError from None
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
 
     async def incident_exists(self, incident_id: UUID) -> bool:
         try:
@@ -866,6 +1051,12 @@ class IncidentRepository:
                 if incident is None:
                     return None
 
+                alert_summary = await _incident_alert_summary(
+                    session,
+                    incident,
+                    _require_aware_datetime(now or self._now()),
+                )
+
                 if run_id is None:
                     run = await session.scalar(
                         select(RunRow)
@@ -905,6 +1096,7 @@ class IncidentRepository:
                         events=(),
                         has_older_events=False,
                         event_cursor=event_cursor,
+                        alert_summary=alert_summary,
                         actions=IncidentActions(
                             prepare="not_applicable",
                             refresh="not_applicable",
@@ -992,7 +1184,11 @@ class IncidentRepository:
                         self._require_execution_scope(rows.repair.proposal)
                     except ApprovalConflictError:
                         in_scope = False
-                detail = replace(detail, run_creation_blocked=bool(occupied))
+                detail = replace(
+                    detail,
+                    run_creation_blocked=bool(occupied),
+                    alert_summary=alert_summary,
+                )
                 assert detail.run is not None
                 projected = replace(
                     detail,
@@ -6603,6 +6799,133 @@ def _recommendation_records(
 def _string_list_json(values: tuple[str, ...]) -> str:
     json_values: list[JsonValue] = list(values)
     return canonical_json(json_values)
+
+
+_TARGET_COLUMNS = ("cluster", "namespace", "api_version", "kind", "resource_name")
+
+
+def _current_targets() -> Subquery:
+    targets = (
+        select(*(getattr(IncidentRow, name) for name in _TARGET_COLUMNS))
+        .union(select(*(getattr(AlertSignalRow, name) for name in _TARGET_COLUMNS)))
+        .subquery()
+    )
+    return (
+        select(targets)
+        .where(
+            targets.c.namespace.is_not(None),
+            or_(
+                and_(
+                    targets.c.api_version == "apps/v1", targets.c.kind == "Deployment"
+                ),
+                and_(
+                    targets.c.api_version == "v1",
+                    targets.c.kind.in_(("Service", "PersistentVolumeClaim")),
+                ),
+            ),
+        )
+        .subquery()
+    )
+
+
+def _observation_key(target: KubernetesTarget) -> tuple[str, str | None, str, str, str]:
+    return (
+        target.cluster,
+        target.namespace,
+        target.api_version,
+        target.kind,
+        target.name,
+    )
+
+
+def _alert_observation(value: str) -> CurrentAlertObservation:
+    try:
+        return CurrentAlertObservation.model_validate_json(value)
+    except ValidationError:
+        raise RecoveryConsistencyError from None
+
+
+def _fresh_alert_summary(
+    summary: CurrentAlertSummary, at: datetime
+) -> CurrentAlertSummary:
+    observed = summary.observed_at
+    received = summary.received_at
+    reason = (
+        ObservationReason.NOT_OBSERVED
+        if observed is None or received is None
+        else ObservationReason.CLOCK_INVALID
+        if observed > received or received > at
+        else ObservationReason.STALE
+        if at - observed > timedelta(seconds=60)
+        else None
+    )
+    if reason is None:
+        return summary
+    return summary.model_copy(
+        update={
+            "state": CurrentAlertState.UNKNOWN,
+            "complete": False,
+            "target_healthy": None,
+            "reason": reason,
+            "rules": tuple(
+                rule.model_copy(
+                    update={
+                        "state": CurrentAlertState.UNKNOWN,
+                        "complete": False,
+                        "reason": reason,
+                    }
+                )
+                for rule in summary.rules
+            ),
+        }
+    )
+
+
+async def _incident_alert_summary(
+    session: AsyncSession, incident: IncidentRow, at: datetime
+) -> CurrentAlertSummary:
+    row = await session.get(
+        CurrentAlertObservationRow,
+        tuple(getattr(incident, name) for name in _TARGET_COLUMNS),
+    )
+    if row is None:
+        return CurrentAlertSummary()
+    observation = _alert_observation(row.observation_json)
+    summary = _fresh_alert_summary(observation.summary, at)
+    # Historical names do not establish identity. Check all saved target Evidence,
+    # not only the selected Run, so contradictory UIDs cannot be hidden by a tab.
+    references = await session.scalars(
+        select(EvidenceRow.target_ref_json)
+        .join(RunRow, EvidenceRow.run_id == RunRow.id)
+        .where(
+            RunRow.incident_id == incident.id,
+            EvidenceRow.evidence_kind.in_(
+                ("workload", "pods", "service_network", "pvc_storage")
+            ),
+        )
+        .distinct()
+    )
+    uids: set[str] = set()
+    for value in references:
+        try:
+            reference = TargetRef.model_validate_json(value)
+        except ValidationError:
+            continue
+        if (
+            reference.namespace,
+            reference.api_version,
+            reference.kind,
+            reference.name,
+        ) == (
+            incident.namespace,
+            incident.api_version,
+            incident.kind,
+            incident.resource_name,
+        ):
+            uids.add(reference.uid)
+    if observation.facts is None or uids != {observation.facts.target_ref.uid}:
+        return CurrentAlertSummary(reason=ObservationReason.IDENTITY_UNVERIFIED)
+    return summary
 
 
 def _require_aware_datetime(value: datetime) -> datetime:

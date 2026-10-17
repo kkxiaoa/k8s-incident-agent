@@ -171,6 +171,19 @@ def install_runtime_fakes(
         async def schedule(self, _run_id: UUID) -> None:
             pass
 
+    class FakeAlertReconciler:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            events.append("reconciliation.start")
+
+        async def close(self) -> None:
+            events.append("reconciliation.close")
+
+        def request_reconciliation(self) -> None:
+            pass
+
     async def discover(_settings: Settings, **_kwargs: object) -> tuple[str, ...]:
         _settings.require_deepseek_api_key()
         events.append("discovery")
@@ -313,6 +326,7 @@ def install_runtime_fakes(
     monkeypatch.setattr(api, "create_deepseek_model", create_model)
     monkeypatch.setattr(api, "PrometheusHttpClient", FakePrometheusHttpClient)
     monkeypatch.setattr(api, "RunSupervisor", FakeSupervisor)
+    monkeypatch.setattr(api, "AlertReconciler", FakeAlertReconciler)
 
 
 @pytest.mark.asyncio
@@ -347,9 +361,11 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
             "model.create",
             "supervisor.init",
             "supervisor.start",
+            "reconciliation.start",
         ]
 
-    assert events[-9:-1] == [
+    assert events[-10:-1] == [
+        "reconciliation.close",
         "supervisor.close",
         "prometheus.close",
         "patch-validator.http.close",
@@ -394,6 +410,7 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
             "model.create",
             "supervisor.init",
             "supervisor.start",
+            "reconciliation.start",
         ]
 
     assert "catalog" not in events
@@ -624,6 +641,7 @@ async def test_missing_model_key_keeps_core_ready_without_model_calls(
         assert "database.head" in events
         assert "checkpoint.open" in events
         assert "supervisor.start" in events
+        assert "reconciliation.start" in events
 
     assert "discovery" not in events
     assert "model.create" not in events

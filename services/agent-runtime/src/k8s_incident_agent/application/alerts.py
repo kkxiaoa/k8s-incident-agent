@@ -17,6 +17,7 @@ class AlertmanagerApplicationService:
         cluster_id: str,
         diagnostic_namespace: str,
         now: Callable[[], datetime],
+        request_reconciliation: Callable[[], None],
     ) -> None:
         self._catalog = catalog
         self._authenticator = authenticator
@@ -24,6 +25,7 @@ class AlertmanagerApplicationService:
         self._cluster_id = cluster_id
         self._diagnostic_namespace = diagnostic_namespace
         self._now = now
+        self._request_reconciliation = request_reconciliation
 
     def require_authentication(self, credentials: str | None) -> None:
         self._authenticator.require(credentials)
@@ -41,3 +43,5 @@ class AlertmanagerApplicationService:
             received_at=received_at,
             watchdog_received_at=(received_at if parsed.watchdog_firing else None),
         )
+        if parsed.occurrences:
+            self._request_reconciliation()

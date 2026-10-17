@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
@@ -13,6 +13,7 @@ from kubernetes.aio.client import (  # pyright: ignore[reportMissingTypeStubs]
     V1EndpointSliceList,
     V1ListMeta,
     V1ObjectMeta,
+    V1ObjectReference,
     V1OwnerReference,
     V1Pod,
     V1PodCondition,
@@ -201,6 +202,56 @@ def _adapter(
         ),
     )
     return KubernetesEvidenceAdapter(clients, clock=clock), core_api, discovery_api
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "old_pod_uid", "not_ready", "selector", "missing_target_ref"]
+)
+async def test_current_service_health_attributes_ready_endpoints_to_current_candidate_pod_uid(
+    fault: str | None,
+) -> None:
+    service = _service(selector={"app": "actual"})
+    endpoint_slice = cast(Any, _endpoint_slice(ready=fault != "not_ready"))
+    assert endpoint_slice.endpoints is not None
+    endpoint_slice.endpoints[0].target_ref = V1ObjectReference(
+        api_version="v1",
+        kind="Pod",
+        namespace=TARGET.namespace,
+        name="candidate",
+        uid="old-pod-uid" if fault == "old_pod_uid" else "candidate-uid",
+    )
+    if fault == "missing_target_ref":
+        endpoint_slice.endpoints[0].target_ref = None
+    pod = _pod("candidate", app="other" if fault == "selector" else "actual")
+    adapter, _, _ = _adapter(service, [pod], [endpoint_slice])
+    facts = await adapter.read_current_target(TARGET)
+    assert facts.healthy is (fault is None)
+    assert facts.endpoint_sample_counts == {
+        f"{TARGET.name}-abcde": {
+            "true": int(fault != "not_ready"),
+            "false": int(fault == "not_ready"),
+            "": 0,
+        }
+    }
+    assert "10.244." not in facts.model_dump_json()
+
+
+@pytest.mark.parametrize("ready", [True, False, None])
+async def test_current_service_counts_addresses_by_endpoint_ready_condition(
+    ready: bool | None,
+) -> None:
+    endpoint_slice = cast(Any, _endpoint_slice(ready=ready))
+    endpoint_slice.endpoints[0].addresses.append("10.244.0.2")
+    adapter, _, _ = _adapter(_service(), [], [endpoint_slice])
+    facts = await adapter.read_current_target(TARGET)
+    assert facts.endpoint_sample_counts == {
+        f"{TARGET.name}-abcde": {
+            "true": 2 if ready is True else 0,
+            "false": 2 if ready is False else 0,
+            "": 2 if ready is None else 0,
+        }
+    }
+    assert "10.244." not in facts.model_dump_json()
 
 
 @pytest.mark.asyncio

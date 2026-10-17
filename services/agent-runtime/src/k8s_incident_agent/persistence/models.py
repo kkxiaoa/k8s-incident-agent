@@ -189,6 +189,21 @@ class MonitoringSourceStateRow(Base):
     )
 
 
+class CurrentAlertObservationRow(Base):
+    __tablename__ = "current_alert_observations"
+    __table_args__ = (
+        Index("ix_current_alert_observations_checked_order", "checked_order"),
+    )
+
+    cluster: Mapped[str] = mapped_column(String, primary_key=True)
+    namespace: Mapped[str] = mapped_column(String, primary_key=True)
+    api_version: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, primary_key=True)
+    resource_name: Mapped[str] = mapped_column(String, primary_key=True)
+    checked_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    observation_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class RunRow(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (

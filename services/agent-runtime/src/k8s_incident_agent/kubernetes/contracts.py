@@ -468,6 +468,37 @@ class PvcStoragePayload(_EvidenceContract):
     events: list[EventSummary]
 
 
+class CurrentPodFacts(_EvidenceContract):
+    pod: PodSummary
+    created_at: datetime | None
+    terminating: bool
+    monitoring_labels: dict[str, str] = Field(max_length=4)
+    container_ready: dict[str, bool | None]
+    container_ids: dict[str, str | None]
+    container_probes: dict[str, list[ContainerProbe]]
+
+
+class CurrentTargetFacts(_EvidenceContract):
+    """Bounded SDK facts for reconciliation, independent of saved Evidence."""
+
+    target_ref: TargetRef
+    created_at: datetime | None
+    observed_at: datetime
+    terminating: bool
+    healthy: bool
+    workload: WorkloadDetail | None = None
+    pods: list[CurrentPodFacts] = Field(
+        default_factory=list[CurrentPodFacts], max_length=100
+    )
+    service: ServiceNetworkPayload | None = None
+    ready_endpoint_pod_uids: list[str] | None = Field(default=None, max_length=256)
+    endpoint_sample_counts: dict[str, dict[Literal["true", "false", ""], int]] = Field(
+        default_factory=dict, max_length=64
+    )
+    claim: PersistentVolumeClaimDetail | None = None
+    pending_policy: str | None = None
+
+
 class _Observation(_EvidenceContract):
     target_ref: TargetRef
     observed_at: datetime

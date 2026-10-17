@@ -16,6 +16,7 @@ from k8s_incident_agent.application.incidents import IncidentApplicationService
 from k8s_incident_agent.application.monitoring import MonitoringApplicationService
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.monitoring.contracts import (
+    CurrentAlertOverview,
     IncidentMetricPanel,
     IncidentMonitoringPanels,
     MetricMarker,
@@ -50,6 +51,13 @@ def test_monitoring_overview_rejects_a_stale_24_hour_window() -> None:
     with pytest.raises(ValueError, match="end at the current UTC hour"):
         MonitoringOverviewSnapshot(
             generated_at=NOW,
+            current_alerts=CurrentAlertOverview(
+                total_targets=0,
+                unknown_targets=0,
+                firing_rules=0,
+                pending_rules=0,
+                oldest_observed_at=None,
+            ),
             unassigned_signals=(),
             counts=MonitoringOverviewCounts(
                 total_incidents=0,
@@ -99,6 +107,13 @@ class _MonitoringService:
         first_hour = NOW - timedelta(hours=23)
         return MonitoringOverviewSnapshot(
             generated_at=NOW,
+            current_alerts=CurrentAlertOverview(
+                total_targets=2,
+                unknown_targets=1,
+                firing_rules=1,
+                pending_rules=0,
+                oldest_observed_at=NOW,
+            ),
             unassigned_signals=(),
             counts=MonitoringOverviewCounts(
                 total_incidents=8,

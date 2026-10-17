@@ -175,6 +175,7 @@ export function makeIncidentDetail(): IncidentDetailResponse {
     diagnosis: null,
     repair: null,
     alertSignal: null,
+    alertSummary: { state: "UNKNOWN", complete: false, observedAt: null, receivedAt: null, targetHealthy: null, reason: "not_observed", rules: [], lastKnownState: null, lastKnownAt: null },
   };
 }
 

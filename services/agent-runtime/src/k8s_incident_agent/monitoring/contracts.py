@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic.alias_generators import to_camel
 
 from k8s_incident_agent.domain.contracts import KubernetesTarget
+from k8s_incident_agent.kubernetes.contracts import CurrentTargetFacts
 
 WATCHDOG_STALE_AFTER = timedelta(minutes=6)
 
@@ -116,6 +117,66 @@ class _MonitoringContract(BaseModel):
         serialize_by_alias=True,
         strict=True,
     )
+
+
+class CurrentAlertState(StrEnum):
+    FIRING = "FIRING"
+    PENDING = "PENDING"
+    CLEAR = "CLEAR"
+    UNKNOWN = "UNKNOWN"
+
+
+class ObservationReason(StrEnum):
+    NOT_OBSERVED = "not_observed"
+    STALE = "stale"
+    CLOCK_INVALID = "clock_invalid"
+    IDENTITY_UNVERIFIED = "identity_unverified"
+    FACTS_CHANGED = "facts_changed"
+    RULE_MISMATCH = "rule_mismatch"
+    INPUT_MISSING = "input_missing"
+    INCOMPLETE = "incomplete"
+    WAITING_EVALUATION = "waiting_evaluation"
+    UNAVAILABLE = "unavailable"
+    PERMISSION_DENIED = "permission_denied"
+    REQUEST_TIMEOUT = "request_timeout"
+    BUDGET_EXCEEDED = "budget_exceeded"
+
+
+class RuleAlertObservation(_MonitoringContract):
+    alert_id: str = Field(min_length=1, max_length=128)
+    state: CurrentAlertState
+    complete: bool
+    reason: ObservationReason | None
+    evaluated_at: datetime | None
+
+
+class CurrentAlertSummary(_MonitoringContract):
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
+    state: CurrentAlertState = CurrentAlertState.UNKNOWN
+    complete: bool = False
+    observed_at: datetime | None = None
+    received_at: datetime | None = None
+    target_healthy: bool | None = None
+    reason: ObservationReason | None = ObservationReason.NOT_OBSERVED
+    rules: tuple[RuleAlertObservation, ...] = Field(default=(), max_length=13)
+    last_known_state: CurrentAlertState | None = None
+    last_known_at: datetime | None = None
+
+
+class CurrentAlertObservation(_MonitoringContract):
+    target: KubernetesTarget
+    catalog_version: str
+    facts: CurrentTargetFacts | None
+    summary: CurrentAlertSummary
+
+
+class CurrentAlertOverview(_MonitoringContract):
+    total_targets: int = Field(ge=0)
+    unknown_targets: int = Field(ge=0)
+    firing_rules: int = Field(ge=0)
+    pending_rules: int = Field(ge=0)
+    oldest_observed_at: datetime | None
 
 
 class MetricSample(_MonitoringContract):
@@ -462,6 +523,7 @@ class MonitoringOverviewSnapshot(_MonitoringContract):
     schema_version: Literal[4] = 4
     window: Literal["24h"] = "24h"
     generated_at: datetime
+    current_alerts: CurrentAlertOverview
     counts: MonitoringOverviewCounts
     families: tuple[MonitoringOverviewFamily, ...] = Field(max_length=64)
     unassigned_signals: tuple[UnassignedAlertSignal, ...] = Field(max_length=20)

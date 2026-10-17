@@ -145,6 +145,8 @@ export type AlertSignalView = Pick<
   "status" | "startsAt" | "endsAt"
 >;
 
+type CurrentAlertSummaryView = components["schemas"]["CurrentAlertSummary"];
+
 export type RepairProposalView = ApiRepairProposal;
 export type IncidentActionsView = components["schemas"]["IncidentActions"];
 export type RepairRunRequest = components["schemas"]["CreateRepairRunRequest"];
@@ -162,6 +164,7 @@ export interface IncidentDetailView {
   verification?: VerificationView | null;
   actions: IncidentActionsView;
   alertSignal: AlertSignalView | null;
+  alertSummary: CurrentAlertSummaryView;
 }
 
 export type MetricWindowView = components["schemas"]["MetricWindow"];
@@ -189,6 +192,7 @@ export type MonitoringHealthView = Pick<
 export interface MonitoringOverviewView {
   window: ApiMonitoringOverview["window"];
   generatedAt: string;
+  currentAlerts: components["schemas"]["CurrentAlertOverview"];
   counts: ApiMonitoringOverviewCounts;
   families: ApiMonitoringOverviewFamily[];
   samples: ApiMonitoringOverviewSample[];
@@ -470,6 +474,33 @@ function parseAlertSignal(value: unknown): AlertSignalView | null {
     startsAt: value.startsAt,
     endsAt: value.endsAt,
   };
+}
+
+function isCurrentAlertState(value: unknown): value is components["schemas"]["CurrentAlertState"] {
+  return value === "FIRING" || value === "PENDING" || value === "CLEAR" || value === "UNKNOWN";
+}
+
+function isObservationReason(value: unknown): value is components["schemas"]["ObservationReason"] | null {
+  return value === null || (typeof value === "string" && ["not_observed", "stale", "clock_invalid", "identity_unverified", "facts_changed", "rule_mismatch", "input_missing", "incomplete", "waiting_evaluation", "unavailable", "permission_denied", "request_timeout", "budget_exceeded"].includes(value));
+}
+
+function parseCurrentAlertSummary(value: unknown): CurrentAlertSummaryView | null {
+  if (!isObject(value) || !isCurrentAlertState(value.state) || typeof value.complete !== "boolean" ||
+    (value.observedAt !== null && !isTimestamp(value.observedAt)) ||
+    (value.receivedAt !== null && !isTimestamp(value.receivedAt)) ||
+    (value.targetHealthy !== null && typeof value.targetHealthy !== "boolean") ||
+    !isObservationReason(value.reason) || !Array.isArray(value.rules) || value.rules.length > 13 ||
+    (value.lastKnownState !== null && !isCurrentAlertState(value.lastKnownState)) ||
+    (value.lastKnownAt !== null && !isTimestamp(value.lastKnownAt))) return null;
+  const rules: components["schemas"]["RuleAlertObservation"][] = [];
+  for (const rule of value.rules) {
+    if (!isObject(rule) || !isBoundedText(rule.alertId, 128) || !isCurrentAlertState(rule.state) ||
+      typeof rule.complete !== "boolean" || !isObservationReason(rule.reason) ||
+      (rule.evaluatedAt !== null && !isTimestamp(rule.evaluatedAt)) ||
+      rules.some((other) => other.alertId === rule.alertId)) return null;
+    rules.push({ alertId: rule.alertId, state: rule.state, complete: rule.complete, reason: rule.reason, evaluatedAt: rule.evaluatedAt });
+  }
+  return { state: value.state, complete: value.complete, observedAt: value.observedAt, receivedAt: value.receivedAt, targetHealthy: value.targetHealthy, reason: value.reason, rules, lastKnownState: value.lastKnownState, lastKnownAt: value.lastKnownAt };
 }
 
 function parseIncident(value: unknown): IncidentView | null {
@@ -1071,7 +1102,9 @@ export function parseIncidentDetailResponse(
   const verification = value.verification == null ? null : parseVerification(value.verification);
   const alertSignal =
     value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
+  const alertSummary = parseCurrentAlertSummary(value.alertSummary);
   if (
+    alertSummary === null ||
     incident === null ||
     (value.selectedRun !== null && selectedRun === null) ||
     eventPage === null ||
@@ -1141,6 +1174,7 @@ export function parseIncidentDetailResponse(
     ...(value.verification !== undefined ? { verification } : {}),
     actions,
     alertSignal,
+    alertSummary,
   };
 }
 
@@ -1250,6 +1284,11 @@ export function parseMonitoringOverviewResponse(
     return null;
   }
   const counts = value.counts;
+  const currentAlerts = value.currentAlerts;
+  if (!isObject(currentAlerts) || !isNonNegativeInteger(currentAlerts.totalTargets) ||
+    !isNonNegativeInteger(currentAlerts.unknownTargets) || currentAlerts.unknownTargets > currentAlerts.totalTargets ||
+    !isNonNegativeInteger(currentAlerts.firingRules) || !isNonNegativeInteger(currentAlerts.pendingRules) ||
+    (currentAlerts.oldestObservedAt !== null && !isTimestamp(currentAlerts.oldestObservedAt))) return null;
   if (
     !isNonNegativeInteger(counts.totalIncidents) ||
     !isNonNegativeInteger(counts.firingAlerts) ||
@@ -1341,6 +1380,7 @@ export function parseMonitoringOverviewResponse(
   return {
     window: "24h",
     generatedAt: value.generatedAt,
+    currentAlerts: { totalTargets: currentAlerts.totalTargets, unknownTargets: currentAlerts.unknownTargets, firingRules: currentAlerts.firingRules, pendingRules: currentAlerts.pendingRules, oldestObservedAt: currentAlerts.oldestObservedAt },
     counts: {
       totalIncidents: counts.totalIncidents,
       firingAlerts: counts.firingAlerts,

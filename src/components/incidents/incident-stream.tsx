@@ -76,6 +76,74 @@ function sourceLabel(detail: IncidentDetailResponse): string {
   return `Scenario · ${source.ref} · v${source.revision}`;
 }
 
+const OBSERVATION_REASON_LABELS = {
+  not_observed: "尚未观察",
+  stale: "观察已过期",
+  clock_invalid: "观察时间不可信",
+  identity_unverified: "历史目标身份无法核对",
+  facts_changed: "读取期间目标发生变化",
+  rule_mismatch: "源端规则与目录不一致",
+  input_missing: "原始输入覆盖不足",
+  incomplete: "上游结果不完整",
+  waiting_evaluation: "等待源端规则计算",
+  unavailable: "依赖暂不可用",
+  permission_denied: "只读访问被拒绝",
+  request_timeout: "读取超时",
+  budget_exceeded: "本轮读取预算不足",
+} as const;
+
+function CurrentAlertStatus({
+  summary,
+}: {
+  summary: IncidentDetailResponse["alertSummary"];
+}) {
+  const active = summary.rules.filter(
+    (rule) => rule.state === "FIRING" || rule.state === "PENDING",
+  );
+  return (
+    <section aria-label="当前目标观察">
+      <p>
+        当前源端：{summary.state}
+        {summary.complete ? "" : "（观察不完整）"}；目标健康：
+        {summary.targetHealthy === null
+          ? "尚未确认"
+          : summary.targetHealthy
+            ? "受支持检查通过"
+            : "未通过"}
+      </p>
+      {summary.reason === null ? null : (
+        <p>{OBSERVATION_REASON_LABELS[summary.reason]}</p>
+      )}
+      {summary.observedAt === null ? null : (
+        <p>
+          观察时间 <LocalTimestamp timestamp={summary.observedAt} />
+        </p>
+      )}
+      {summary.lastKnownState === null ||
+      summary.lastKnownAt === null ? null : (
+        <p>
+          最后完整观察：{summary.lastKnownState} ·{" "}
+          <LocalTimestamp timestamp={summary.lastKnownAt} />
+        </p>
+      )}
+      {active.length === 0 ? null : (
+        <ul>
+          {active.map((rule) => (
+            <li key={rule.alertId}>
+              {rule.alertId}：{rule.state}
+              {rule.complete ? "" : "（输入不完整）"}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p>
+        这是目标层观察，源端活动与具体通知归属待确认；不代表 Incident
+        已关闭，也不替代修复恢复验证。
+      </p>
+    </section>
+  );
+}
+
 function latestActivityAt(
   detail: IncidentDetailResponse,
   events: ReadonlyArray<{ data: { occurredAt: string } }>,
@@ -118,7 +186,10 @@ export function IncidentStream({
     createIncidentStreamState,
   );
   const [runs, setRuns] = useState(() =>
-    mergeRuns(initialRuns.items, initialDetail.selectedRun ? [initialDetail.selectedRun] : []),
+    mergeRuns(
+      initialRuns.items,
+      initialDetail.selectedRun ? [initialDetail.selectedRun] : [],
+    ),
   );
   const [latestRun, setLatestRun] = useState(() => {
     const run = runs[0];
@@ -137,7 +208,9 @@ export function IncidentStream({
   const [confirmRerun, setConfirmRerun] = useState(false);
   const mutationLock = useRef(false);
   const refreshDetail = useRef<(() => Promise<void>) | null>(null);
-  const selectedRunId = useRef<string | null>(state.detail.selectedRun?.id ?? null);
+  const selectedRunId = useRef<string | null>(
+    state.detail.selectedRun?.id ?? null,
+  );
 
   useEffect(() => {
     selectedRunId.current = state.detail.selectedRun?.id ?? null;
@@ -259,8 +332,12 @@ export function IncidentStream({
       refreshInFlight ??= refreshPersistedDetail();
       return refreshInFlight;
     };
+
     const manualRefresh = () => scheduleDetailRefresh(lastKnownEventId, true);
     refreshDetail.current = manualRefresh;
+    const currentObservationTimer = window.setInterval(() => {
+      void scheduleDetailRefresh(lastKnownEventId);
+    }, 30_000);
     const onFocus = () => {
       void manualRefresh();
     };
@@ -304,6 +381,7 @@ export function IncidentStream({
     return () => {
       active = false;
       refreshDetail.current = null;
+      window.clearInterval(currentObservationTimer);
       window.removeEventListener("focus", onFocus);
       pendingRefreshEventId = null;
       for (const eventName of RUN_EVENT_NAMES) {
@@ -375,7 +453,11 @@ export function IncidentStream({
 
   const loadOlderEvents = async () => {
     const cursor = state.eventPageCursor;
-    if (cursor === null || historyLoading || state.detail.selectedRun === null) {
+    if (
+      cursor === null ||
+      historyLoading ||
+      state.detail.selectedRun === null
+    ) {
       return;
     }
     setHistoryLoading(true);
@@ -494,17 +576,38 @@ export function IncidentStream({
   const sourceDiagnosis = useSourceDiagnosis(detail);
   const selectedRun = detail.selectedRun;
   if (selectedRun === null) {
-    return <section className="incident-overview" aria-labelledby="incident-heading">
-      <Link href="/">Incident 列表</Link>
-      <h1 id="incident-heading">{detail.incident.displayName}</h1>
-      <p>{detail.incident.triggerSummary}</p>
-      <p>{targetLabel(detail.incident.target)}</p>
-      <p>生命周期：{detail.incident.lifecycleStatus === null ? "历史未判定" : detail.incident.lifecycleStatus}</p>
-      <p role="status">尚无诊断运行。没有诊断证据、结论或可执行操作。</p>
-      {detail.alertSignal === null ? null : <p>末次通知：{detail.alertSignal.status}；通知不代表源端当前状态、Incident 关闭或恢复验证完成。</p>}
-      {state.refreshError || state.streamError ? <p role="alert">{state.refreshError ?? state.streamError}</p> : null}
-      <button type="button" onClick={() => void refreshDetail.current?.()} disabled={state.refreshing}>刷新记录</button>
-    </section>;
+    return (
+      <section className="incident-overview" aria-labelledby="incident-heading">
+        <Link href="/">Incident 列表</Link>
+        <h1 id="incident-heading">{detail.incident.displayName}</h1>
+        <p>{detail.incident.triggerSummary}</p>
+        <p>{targetLabel(detail.incident.target)}</p>
+        <p>
+          生命周期：
+          {detail.incident.lifecycleStatus === null
+            ? "历史未判定"
+            : detail.incident.lifecycleStatus}
+        </p>
+        <p role="status">尚无诊断运行。没有诊断证据、结论或可执行操作。</p>
+        <CurrentAlertStatus summary={detail.alertSummary} />
+        {detail.alertSignal === null ? null : (
+          <p>
+            末次通知：{detail.alertSignal.status}
+            ；通知不代表源端当前状态、Incident 关闭或恢复验证完成。
+          </p>
+        )}
+        {state.refreshError || state.streamError ? (
+          <p role="alert">{state.refreshError ?? state.streamError}</p>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void refreshDetail.current?.()}
+          disabled={state.refreshing}
+        >
+          刷新记录
+        </button>
+      </section>
+    );
   }
   const diagnosisDetail = sourceDiagnosis.detail;
   const referenceRunAttempt =
@@ -571,6 +674,7 @@ export function IncidentStream({
           <p>{detail.incident.triggerSummary}</p>
         </div>
         <div className="incident-facts">
+          <CurrentAlertStatus summary={detail.alertSummary} />
           <dl className="incident-facts__column incident-facts__column--primary">
             <div>
               <dt>目标</dt>
@@ -591,16 +695,15 @@ export function IncidentStream({
             {detail.alertSignal === null ? null : (
               <div>
                 <dt>告警信号</dt>
-                <dd
-                  title="Alertmanager 通知不代表源端当前状态、Incident 关闭或恢复验证完成。"
-                >
+                <dd title="Alertmanager 通知不代表源端当前状态、Incident 关闭或恢复验证完成。">
                   {detail.alertSignal.status === "FIRING"
                     ? "末次通知 FIRING"
                     : "末次通知 RESOLVED"}
                   {detail.alertSignal.endsAt === null ? null : (
                     <>
                       {" "}
-                      · 历史通知中的结束时间 <LocalTimestamp timestamp={detail.alertSignal.endsAt} />
+                      · 历史通知中的结束时间{" "}
+                      <LocalTimestamp timestamp={detail.alertSignal.endsAt} />
                     </>
                   )}
                 </dd>
@@ -676,9 +779,7 @@ export function IncidentStream({
                 onClick={() => {
                   if (historyMenu.current) historyMenu.current.open = false;
                 }}
-                aria-current={
-                  run.id === selectedRun.id ? "page" : undefined
-                }
+                aria-current={run.id === selectedRun.id ? "page" : undefined}
                 className={
                   run.id === selectedRun.id
                     ? "run-selector__item is-selected"
@@ -904,9 +1005,7 @@ export function IncidentStream({
       <EvidenceList
         evidence={detail.evidence}
         currentRunAttempt={
-          selectedRun.kind === "repair"
-            ? selectedRun.attempt
-            : undefined
+          selectedRun.kind === "repair" ? selectedRun.attempt : undefined
         }
       />
       {referenceRunAttempt !== undefined && diagnosisDetail ? (

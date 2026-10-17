@@ -402,6 +402,14 @@ describe("monitoring response contracts", () => {
     }
   });
 
+  it("requires a typed current observation without inferring it from notification history", () => {
+    const detail = makeIncidentDetail();
+    expect(parseIncidentDetailResponse(detail)?.alertSummary.state).toBe("UNKNOWN");
+    for (const alertSummary of [undefined, null, { ...detail.alertSummary, state: "RESOLVED" }, { ...detail.alertSummary, reason: "provider-text" }, { ...detail.alertSummary, observedAt: "not-a-time" }, { ...detail.alertSummary, targetHealthy: "true" }]) {
+      expect(parseIncidentDetailResponse({ ...detail, alertSummary })).toBeNull();
+    }
+  });
+
   it("accepts a complete 24-hour overview and rejects inconsistent totals", () => {
     const start = Date.parse("2026-09-02T03:00:00.000Z");
     const overview = {
@@ -409,6 +417,7 @@ describe("monitoring response contracts", () => {
     unassignedSignals: [],
       window: "24h",
       generatedAt: "2026-09-03T02:15:00.000Z",
+      currentAlerts: { totalTargets: 2, unknownTargets: 1, firingRules: 1, pendingRules: 0, oldestObservedAt: "2026-09-03T02:14:45.000Z" },
       counts: {
         totalIncidents: 8,
         firingAlerts: 2,
@@ -433,6 +442,7 @@ describe("monitoring response contracts", () => {
     expect(parseMonitoringOverviewResponse(overview)).toEqual({
       window: "24h",
       generatedAt: overview.generatedAt,
+      currentAlerts: overview.currentAlerts,
       counts: overview.counts,
       families: overview.families,
       samples: overview.samples,

@@ -26,6 +26,7 @@ from k8s_incident_agent.application.incidents import (
     RuntimeNotReadyError,
 )
 from k8s_incident_agent.application.monitoring import MonitoringApplicationService
+from k8s_incident_agent.application.reconciliation import AlertReconciler
 from k8s_incident_agent.auth.http import (
     BusinessRequestBounds,
     PublicApiNoStore,
@@ -404,6 +405,15 @@ async def build_runtime_container(
         resources.push_async_callback(supervisor.close)
         await supervisor.start()
 
+        reconciliation = AlertReconciler(
+            repository=repository,
+            adapter=adapter,
+            prometheus=prometheus,
+            now=now,
+        )
+        resources.push_async_callback(reconciliation.close)
+        await reconciliation.start()
+
         yield RuntimeContainer(
             incidents=IncidentApplicationService(
                 catalog=catalog,
@@ -428,6 +438,7 @@ async def build_runtime_container(
                     cluster_id=kubernetes_clients.cluster_id,
                     diagnostic_namespace=kubernetes_clients.diagnostic_namespace,
                     now=now,
+                    request_reconciliation=reconciliation.request_reconciliation,
                 )
                 if alert_authenticator is not None
                 else None

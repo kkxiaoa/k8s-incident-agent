@@ -133,6 +133,43 @@ function renderIncidentStream(detail = makeIncidentDetail()) {
   );
 }
 
+it("renders partial current source facts separately from a historical FIRING notification", () => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const detail = makeIncidentDetail();
+  detail.incident.source = { type: "alertmanager", ref: "K8sIncidentImagePullBackOff", revision: "1" };
+  detail.alertSignal = { status: "FIRING", startsAt: "2026-08-29T01:00:00Z", endsAt: null };
+  detail.alertSummary = { state: "UNKNOWN", complete: false, observedAt: "2026-08-29T01:01:00Z", receivedAt: "2026-08-29T01:01:01Z", targetHealthy: true, reason: "input_missing", lastKnownState: "CLEAR", lastKnownAt: "2026-08-29T01:00:30Z", rules: [{ alertId: "K8sIncidentImagePullBackOff", state: "PENDING", complete: true, reason: null, evaluatedAt: "2026-08-29T01:01:00Z" }] };
+  renderIncidentStream(detail);
+  const current = screen.getByRole("region", { name: "当前目标观察" });
+  expect(current).toHaveTextContent("当前源端：UNKNOWN（观察不完整）");
+  expect(current).toHaveTextContent("K8sIncidentImagePullBackOff：PENDING");
+  expect(current).toHaveTextContent("最后完整观察：CLEAR");
+  expect(current).toHaveTextContent("不代表 Incident 已关闭");
+  expect(screen.getByText("末次通知 FIRING", { selector: "dd" })).toBeVisible();
+});
+
+it("periodically rereads source state at the same event cursor without switching the selected Run", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const detail = makeIncidentDetail();
+  const refreshed = makeIncidentDetail();
+  refreshed.alertSummary = { state: "CLEAR", complete: true, observedAt: "2026-08-29T01:01:00Z", receivedAt: "2026-08-29T01:01:00Z", targetHealthy: true, reason: null, rules: [], lastKnownState: "CLEAR", lastKnownAt: "2026-08-29T01:01:00Z" };
+  const fetchMock = vi.fn().mockResolvedValue(detailResponse(refreshed));
+  vi.stubGlobal("fetch", fetchMock);
+  const view = renderIncidentStream(detail);
+  try {
+    expect(screen.getByRole("region", { name: "当前目标观察" })).toHaveTextContent("UNKNOWN");
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(screen.getByRole("region", { name: "当前目标观察" })).toHaveTextContent("当前源端：CLEAR");
+    expect(screen.getByText(/正在查看第 1 次 · 诊断/)).toBeVisible();
+    expect(String(fetchMock.mock.calls[0][0])).toContain(`runId=${RUN_ID}`);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  } finally {
+    view.unmount();
+    vi.useRealTimers();
+  }
+});
+
 it("renders an Incident without a Run and refreshes Incident-owned notifications without inventing diagnosis", async () => {
   vi.stubGlobal("EventSource", FakeEventSource);
   const detail = makeIncidentWithoutRuns();

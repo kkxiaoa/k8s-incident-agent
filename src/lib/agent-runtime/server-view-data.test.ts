@@ -35,6 +35,13 @@ function monitoringOverview() {
     unassignedSignals: [],
     window: "24h",
     generatedAt: "2026-09-03T02:15:00.000Z",
+    currentAlerts: {
+      totalTargets: 0,
+      unknownTargets: 0,
+      firingRules: 0,
+      pendingRules: 0,
+      oldestObservedAt: null,
+    },
     counts: {
       totalIncidents: 0,
       firingAlerts: 0,
@@ -56,6 +63,7 @@ function monitoringOverviewView() {
   return {
     window: overview.window,
     generatedAt: overview.generatedAt,
+    currentAlerts: overview.currentAlerts,
     counts: overview.counts,
     families: overview.families,
     samples: overview.samples,

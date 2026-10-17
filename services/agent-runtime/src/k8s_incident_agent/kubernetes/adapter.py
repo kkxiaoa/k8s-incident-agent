@@ -74,6 +74,8 @@ from k8s_incident_agent.kubernetes.contracts import (
     ContainerProbe,
     ContainerResources,
     ContainerStateSummary,
+    CurrentPodFacts,
+    CurrentTargetFacts,
     DiagnosticTarget,
     EndpointSliceSummary,
     EventsObservation,
@@ -259,6 +261,7 @@ class _MetadataView(Protocol):
     labels: object
     annotations: object
     deletion_timestamp: object
+    creation_timestamp: object
 
 
 class _DeploymentSpecView(Protocol):
@@ -416,6 +419,8 @@ class _EndpointSliceView(Protocol):
 
 class _EndpointView(Protocol):
     conditions: object
+    target_ref: object
+    addresses: object
 
 
 class _EndpointConditionsView(Protocol):
@@ -438,6 +443,7 @@ class _ContainerStatusView(Protocol):
     state: object
     last_state: object
     container_id: object
+    ready: object
 
 
 class _ContainerStateView(Protocol):
@@ -586,6 +592,218 @@ class KubernetesEvidenceAdapter:
         self._diagnostic_namespace = clients.diagnostic_namespace
         self._server_timeout_seconds = max(1, math.ceil(clients.timeout_seconds))
         self._clock = clock or _utc_now
+
+    async def read_current_target(self, target: DiagnosticTarget) -> CurrentTargetFacts:
+        """Read supported health and identity without logs, Events or model Tools."""
+        try:
+            namespace = require_diagnostic_target_scope(
+                target,
+                cluster_id=self._cluster_id,
+                diagnostic_namespace=self._diagnostic_namespace,
+            )
+            state = _SanitizationState()
+            if (target.api_version, target.kind) == ("apps/v1", "Deployment"):
+                associations = await self._read_associations(target, state)
+                metadata = _metadata(
+                    cast(_DeploymentView, associations.workload.deployment).metadata
+                )
+                workload = _project_workload(
+                    associations.workload, state, include_context=False
+                )
+                pods: list[CurrentPodFacts] = []
+                for associated in associations.pods:
+                    pod_metadata = _metadata(cast(_PodView, associated.pod).metadata)
+                    bindings = _pod_containers(associated.pod)
+                    labels = _metadata_labels(pod_metadata)
+                    pods.append(
+                        CurrentPodFacts(
+                            pod=_project_pod(associated, state, include_context=False),
+                            created_at=_creation_time(pod_metadata),
+                            terminating=pod_metadata.deletion_timestamp is not None,
+                            monitoring_labels={
+                                name: labels[name]
+                                for name in (
+                                    "k8s-incident-agent.io/readiness-container",
+                                    "k8s-incident-agent.io/readiness-slo",
+                                    "k8s-incident-agent.io/liveness-container",
+                                    SERVICE_ASSOCIATION_LABEL,
+                                )
+                                if name in labels
+                            },
+                            container_ready={
+                                _required_string(spec.name): (
+                                    None
+                                    if status is None
+                                    else _optional_bool(status.ready)
+                                )
+                                for spec, status in bindings
+                            },
+                            container_ids={
+                                _required_string(spec.name): (
+                                    None
+                                    if status is None or not status.container_id
+                                    else _required_string(status.container_id)
+                                )
+                                for spec, status in bindings
+                            },
+                            container_probes={
+                                _required_string(spec.name): [
+                                    _project_probe(
+                                        cast(
+                                            Literal["readiness", "liveness", "startup"],
+                                            kind,
+                                        ),
+                                        raw,
+                                        state,
+                                    )
+                                    for kind, raw in (
+                                        ("readiness", spec.readiness_probe),
+                                        ("liveness", spec.liveness_probe),
+                                        ("startup", spec.startup_probe),
+                                    )
+                                    if raw is not None
+                                ]
+                                for spec, _ in bindings
+                            },
+                        )
+                    )
+                replicas = workload.replicas
+                healthy = (
+                    workload.generation is not None
+                    and workload.observed_generation is not None
+                    and workload.observed_generation >= workload.generation
+                    and replicas.desired > 0
+                    and min(replicas.updated, replicas.ready, replicas.available)
+                    >= replicas.desired
+                    and len(pods) >= replicas.desired
+                    and all(
+                        not pod.terminating
+                        and bool(pod.pod.containers)
+                        and any(
+                            condition.type == "Ready" and condition.status == "True"
+                            for condition in pod.pod.conditions
+                        )
+                        and all(
+                            container.state.status == "running"
+                            and pod.container_ready.get(container.name) is True
+                            for container in pod.pod.containers
+                        )
+                        for pod in pods
+                    )
+                )
+                result = CurrentTargetFacts(
+                    target_ref=associations.workload.target_ref,
+                    created_at=_creation_time(metadata),
+                    observed_at=_observation_time(self._clock),
+                    terminating=metadata.deletion_timestamp is not None,
+                    healthy=healthy and metadata.deletion_timestamp is None,
+                    workload=workload,
+                    pods=sorted(pods, key=lambda item: item.pod.uid),
+                )
+            elif (target.api_version, target.kind) == ("v1", "Service"):
+                observation, service, slices = await self._read_service_snapshot(target)
+                if observation.truncated or observation.redacted:
+                    raise _contract_error()
+                metadata = _metadata(cast(_ServiceView, service).metadata)
+                ready_uids: set[str] = set()
+                attributed = True
+                endpoint_samples: dict[
+                    str, dict[Literal["true", "false", ""], int]
+                ] = {}
+                candidates = {
+                    item.pod_ref.uid: item
+                    for item in observation.payload.candidate_pods
+                }
+                for item in slices:
+                    item_view = cast(_EndpointSliceView, item)
+                    slice_name = _required_string(_metadata(item_view.metadata).name)
+                    endpoint_samples[slice_name] = {"true": 0, "false": 0, "": 0}
+                    for endpoint in cast(list[V1Endpoint], item_view.endpoints or []):
+                        endpoint_view = cast(_EndpointView, endpoint)
+                        addresses = endpoint_view.addresses
+                        if not isinstance(addresses, list):
+                            raise _contract_error()
+                        conditions = cast(
+                            _EndpointConditionsView | None, endpoint_view.conditions
+                        )
+                        ready = conditions.ready if conditions is not None else None
+                        ready_label: Literal["true", "false", ""] = (
+                            "true"
+                            if ready is True
+                            else "false"
+                            if ready is False
+                            else ""
+                        )
+                        endpoint_samples[slice_name][ready_label] += len(
+                            cast(list[object], addresses)
+                        )
+                        if conditions is None or conditions.ready is not True:
+                            continue
+                        reference = endpoint_view.target_ref
+                        if not isinstance(reference, V1ObjectReference):
+                            attributed = False
+                            continue
+                        reference = cast(_ObjectReferenceView, reference)
+                        candidate = (
+                            candidates.get(reference.uid)
+                            if isinstance(reference.uid, str)
+                            else None
+                        )
+                        if (
+                            candidate is None
+                            or reference.kind != "Pod"
+                            or reference.namespace != namespace
+                            or reference.name != candidate.pod_ref.name
+                            or not candidate.matches_selector
+                            or candidate.ready is not True
+                            or conditions.terminating is True
+                        ):
+                            attributed = False
+                            continue
+                        ready_uids.add(candidate.pod_ref.uid)
+                result = CurrentTargetFacts(
+                    target_ref=observation.target_ref,
+                    created_at=_creation_time(metadata),
+                    observed_at=_observation_time(self._clock),
+                    terminating=metadata.deletion_timestamp is not None,
+                    healthy=(
+                        observation.payload.summary.state == "endpoints_ready"
+                        and attributed
+                        and bool(ready_uids)
+                        and metadata.deletion_timestamp is None
+                    ),
+                    service=observation.payload,
+                    ready_endpoint_pod_uids=sorted(ready_uids) if attributed else None,
+                    endpoint_sample_counts=endpoint_samples,
+                )
+            elif (target.api_version, target.kind) == ("v1", "PersistentVolumeClaim"):
+                claim = await self._read_persistent_volume_claim(target.name, namespace)
+                detail, reference = _project_persistent_volume_claim(
+                    claim, target, state
+                )
+                metadata = _metadata(cast(_PersistentVolumeClaimView, claim).metadata)
+                result = CurrentTargetFacts(
+                    target_ref=reference,
+                    created_at=_creation_time(metadata),
+                    observed_at=_observation_time(self._clock),
+                    terminating=metadata.deletion_timestamp is not None,
+                    healthy=detail.phase == "Bound"
+                    and metadata.deletion_timestamp is None,
+                    claim=detail,
+                    pending_policy=_metadata_labels(metadata).get(
+                        "k8s-incident-agent.io/pending-policy"
+                    ),
+                )
+            else:
+                raise _contract_error()
+            if state.truncated or state.redacted:
+                raise _contract_error()
+            _enforce_payload_budget(result)
+            return result
+        except KubernetesBoundaryError:
+            raise
+        except Exception as error:
+            raise map_kubernetes_exception(error) from None
 
     async def read_recovery_workload(
         self, target: DiagnosticTarget, container_name: str
@@ -1019,6 +1237,13 @@ class KubernetesEvidenceAdapter:
         self,
         target: DiagnosticTarget,
     ) -> ServiceNetworkObservation:
+        observation, _, _ = await self._read_service_snapshot(target)
+        return observation
+
+    async def _read_service_snapshot(
+        self,
+        target: DiagnosticTarget,
+    ) -> tuple[ServiceNetworkObservation, V1Service, list[V1EndpointSlice]]:
         try:
             state = _SanitizationState()
             namespace = require_diagnostic_target_scope(
@@ -1098,13 +1323,17 @@ class KubernetesEvidenceAdapter:
                 endpoint_slices=projected_slices,
             )
             _enforce_payload_budget(payload)
-            return ServiceNetworkObservation(
-                evidence_kind="service_network",
-                target_ref=target_ref,
-                observed_at=_observation_time(self._clock),
-                payload=payload,
-                truncated=state.truncated,
-                redacted=state.redacted,
+            return (
+                ServiceNetworkObservation(
+                    evidence_kind="service_network",
+                    target_ref=target_ref,
+                    observed_at=_observation_time(self._clock),
+                    payload=payload,
+                    truncated=state.truncated,
+                    redacted=state.redacted,
+                ),
+                service,
+                endpoint_slices,
             )
         except KubernetesBoundaryError:
             raise
@@ -2182,6 +2411,8 @@ def _project_recovery_pod(pod: V1Pod, container_name: str) -> RecoveryPod:
 def _project_workload(
     context: _DeploymentContext,
     state: _SanitizationState,
+    *,
+    include_context: bool = True,
 ) -> WorkloadDetail:
     deployment = context.deployment
     deployment_view = cast(_DeploymentView, deployment)
@@ -2196,7 +2427,9 @@ def _project_workload(
         raise _contract_error()
     containers = sorted(
         (
-            _project_workload_container(container, state, source_index=index)
+            _project_workload_container(
+                container, state, source_index=index, include_arguments=include_context
+            )
             for index, container in enumerate(cast(list[V1Container], containers_value))
         ),
         key=lambda container: container.name,
@@ -2219,7 +2452,11 @@ def _project_workload(
         raise _contract_error()
     conditions = cast(list[V1DeploymentCondition], condition_values)
     projected_conditions = sorted(
-        (_project_sdk_condition(condition, state) for condition in conditions),
+        (
+            _project_sdk_condition(condition, state)
+            for condition in conditions
+            if include_context
+        ),
         key=lambda condition: (
             condition.type,
             condition.status,
@@ -2248,7 +2485,7 @@ def _project_workload(
         ),
         selector=context.selector,
         containers=containers,
-        conditions=projected_conditions,
+        conditions=projected_conditions if include_context else [],
     )
 
 
@@ -2335,14 +2572,15 @@ def _project_workload_container(
     state: _SanitizationState,
     *,
     source_index: int,
+    include_arguments: bool = True,
 ) -> WorkloadContainer:
     container_view = cast(_WorkloadContainerView, container)
     command, redact_next = _project_workload_arguments(
-        container_view.command,
+        container_view.command if include_arguments else None,
         state,
     )
     arguments, _ = _project_workload_arguments(
-        container_view.args,
+        container_view.args if include_arguments else None,
         state,
         redact_value=redact_next,
     )
@@ -2628,6 +2866,8 @@ def _controller_owner(
 def _project_pod(
     associated: _AssociatedPod,
     state: _SanitizationState,
+    *,
+    include_context: bool = True,
 ) -> PodSummary:
     pod = associated.pod
     pod_view = cast(_PodView, pod)
@@ -2648,7 +2888,16 @@ def _project_pod(
         raise _contract_error()
     conditions = cast(list[V1PodCondition], condition_values)
     projected_conditions = sorted(
-        (_project_sdk_condition(condition, state) for condition in conditions),
+        (
+            _project_sdk_condition(condition, state)
+            if include_context
+            else ConditionSummary(
+                type=_required_string(cast(_ConditionView, condition).type),
+                status=_required_string(cast(_ConditionView, condition).status),
+                reason=None,
+            )
+            for condition in conditions
+        ),
         key=lambda condition: (
             condition.type,
             condition.status,
@@ -2657,7 +2906,9 @@ def _project_pod(
     )
     containers = sorted(
         (
-            _project_pod_container(container, status, state)
+            _project_pod_container(
+                container, status, state, include_messages=include_context
+            )
             for container, status in _pod_containers(pod)
         ),
         key=lambda container: container.name,
@@ -2901,6 +3152,8 @@ def _project_pod_container(
     spec: _WorkloadContainerView,
     container: _ContainerStatusView | None,
     state: _SanitizationState,
+    *,
+    include_messages: bool = True,
 ) -> PodContainer:
     image_id = None if container is None else container.image_id
     return PodContainer(
@@ -2910,10 +3163,16 @@ def _project_pod_container(
         restart_count=None
         if container is None
         else _nonnegative_int(container.restart_count),
-        state=_container_state(None if container is None else container.state, state),
+        state=_container_state(
+            None if container is None else container.state,
+            state,
+            include_message=include_messages,
+        ),
         last_state=None
         if container is None or container.last_state is None
-        else _container_state(container.last_state, state),
+        else _container_state(
+            container.last_state, state, include_message=include_messages
+        ),
         configured_resources=_container_resources(spec.resources),
     )
 
@@ -2921,6 +3180,8 @@ def _project_pod_container(
 def _container_state(
     value: object,
     state: _SanitizationState,
+    *,
+    include_message: bool = True,
 ) -> ContainerStateSummary:
     if value is None:
         return ContainerStateSummary(status="unknown", reason=None, message=None)
@@ -2944,7 +3205,7 @@ def _container_state(
         return ContainerStateSummary(
             status="waiting",
             reason=state.optional(waiting_view.reason),
-            message=state.optional(waiting_view.message),
+            message=state.optional(waiting_view.message) if include_message else None,
         )
     if running is not None:
         if not isinstance(running, V1ContainerStateRunning):
@@ -2965,7 +3226,9 @@ def _container_state(
         return ContainerStateSummary(
             status="terminated",
             reason=state.optional(terminated_view.reason),
-            message=state.optional(terminated_view.message),
+            message=state.optional(terminated_view.message)
+            if include_message
+            else None,
             started_at=_optional_rfc3339(terminated_view.started_at),
             finished_at=_optional_rfc3339(terminated_view.finished_at),
             exit_code=exit_code,
@@ -3109,6 +3372,11 @@ def _metadata(value: object) -> _MetadataView:
     if not isinstance(value, V1ObjectMeta):
         raise _contract_error()
     return cast(_MetadataView, value)
+
+
+def _creation_time(metadata: _MetadataView) -> datetime | None:
+    value = _optional_rfc3339(metadata.creation_timestamp)
+    return datetime.fromisoformat(value) if value is not None else None
 
 
 def _metadata_labels(metadata: _MetadataView) -> dict[str, str]:
@@ -3332,6 +3600,7 @@ def _enforce_payload_budget(
         | ContainerLogsPayload
         | ServiceNetworkPayload
         | PvcStoragePayload
+        | CurrentTargetFacts
     ),
 ) -> None:
     value = cast(JsonValue, payload.model_dump(mode="json", by_alias=True))

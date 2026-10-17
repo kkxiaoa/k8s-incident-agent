@@ -126,6 +126,7 @@ async def test_webhook_acknowledges_only_committed_signal_and_watchdog_and_retry
             cluster_id="k8s-incident-agent",
             diagnostic_namespace="k8s-incident-scenarios",
             now=lambda: now,
+            request_reconciliation=lambda: None,
         )
 
         def fail_commit(_connection: object) -> None:

@@ -67,6 +67,8 @@ test("keeps Service risk visible when the firing event is outside the chart wind
   expect(panel.result.series[0].samples).toHaveLength(61);
   expect(panel.result.series[0].samples.every((sample) => sample.value === 0)).toBe(true);
   await page.goto(`/incidents/${incidentId}`);
+  await expect(page.getByRole("region", { name: "当前目标观察" })).toContainText("当前源端：UNKNOWN");
+  await expect(page.getByRole("region", { name: "当前目标观察" })).toContainText("不代表 Incident 已关闭");
   const card = page.locator(".metric-panel");
   await expect(card.getByRole("heading", { name: "Service 就绪 Endpoint" })).toBeVisible();
   await expect(card.getByText("告警中", { exact: true })).toBeVisible();
@@ -80,6 +82,7 @@ test("model outage preserves history while refusing new diagnosis", async ({ pag
   await control("/__test__/showcase", {});
   await control("/__test__/mode", { mode: "diagnosis-unavailable" });
   await page.goto("/");
+  await expect(page.getByRole("region", { name: "当前源端告警" })).toContainText("UNKNOWN 目标");
   await expect(page.getByText(/模型诊断暂不可用（模型服务暂不可用）/)).toBeVisible();
   await expect(page.getByLabel("Runtime：正常")).toBeVisible();
   await expect(page.locator(".incident-list__link")).toHaveCount(12);

@@ -122,6 +122,15 @@ export function HomeMonitoringDashboard({
         </div>
       </div>
 
+      <section className="chart-card" aria-label="当前源端告警">
+        <h2>当前源端告警</h2>
+        {overview === null ? <p>当前观察暂不可用。</p> : <>
+          <p>已知 FIRING {overview.currentAlerts.firingRules} · 已知 PENDING {overview.currentAlerts.pendingRules} · UNKNOWN 目标 {overview.currentAlerts.unknownTargets} / {overview.currentAlerts.totalTargets}</p>
+          <p>按唯一目标统计源端规则活动，尚未归属具体通知；不按历史 Incident 重复计数。UNKNOWN 表示观察不完整或已过期，不能解释为没有活动。</p>
+          {overview.currentAlerts.oldestObservedAt === null ? <p>尚无源端观察。</p> : <p>最早一项观察 <LocalTimestamp timestamp={overview.currentAlerts.oldestObservedAt} /></p>}
+        </>}
+      </section>
+
       <div className="home-monitoring__charts">
         <article className="chart-card chart-card--families">
           <header className="chart-card__header">

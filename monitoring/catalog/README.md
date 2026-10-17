@@ -20,7 +20,7 @@
 | Pod unschedulable | `K8sIncidentPodUnschedulable` | Deployment | kube-state-metrics | Kind, K3s | — |
 | PVC Pending (opt-in) | `K8sIncidentPersistentVolumeClaimPending` | PersistentVolumeClaim | kube-state-metrics | Kind, K3s | `pvc-binding-pending`, `pvc-storage-class-missing` |
 
-An accepted alert opens an Incident and schedules its Evidence-first diagnosis; the Console charts that alert's catalog panels. Only `K8sIncidentImagePullBackOff` defines a repair action, `set_container_image`. Its `recoveryAlerts` name the rules that recovery verification requires to be neither pending nor firing for the repaired Deployment, so discovery-only rules never join that gate. Versioned scenarios live in [`scenarios/`](../../scenarios/README.md); an alert without one has no fault-injection fixture.
+An accepted alert is durably stored as a notification occurrence; notification intake does not create an Incident or Run. The Console charts catalog panels for Incident targets. Only `K8sIncidentImagePullBackOff` defines a repair action, `set_container_image`. Its `recoveryAlerts` name the rules that recovery verification requires to be neither pending nor firing for the repaired Deployment, so discovery-only rules never join that gate. Versioned scenarios live in [`scenarios/`](../../scenarios/README.md); an alert without one has no fault-injection fixture.
 
 Opt-in rules only watch objects that carry their label: a Service labelled `k8s-incident-agent.io/monitor-selector: "true"` with candidate Pods that name it in `k8s-incident-agent.io/service`, a container named in `k8s-incident-agent.io/readiness-container` with `k8s-incident-agent.io/readiness-slo: 2m` or in `k8s-incident-agent.io/liveness-container`, and a PVC labelled `k8s-incident-agent.io/pending-policy: immediate`.
 
@@ -30,6 +30,16 @@ Opt-in rules only watch objects that carry their label: a Service labelled `k8s-
 - The OOM and abnormal-exit rules stand down for 10 minutes after an overlapping symptom alert on the same Deployment, so one crash episode does not reopen Incidents under new start times.
 - The kubelet-backed alerts need the node-metrics collection that only the K3s profiles enable. On Kind they have no series, which means not enabled rather than healthy.
 - `Watchdog` is monitoring-path health evidence: the Runtime rejects a delivery whose Watchdog names another cluster or severity, and recovery verification requires a recent Watchdog receipt. It does not create an Incident and is not a fault family.
+
+## Current source observations
+
+Runtime reconciles registered business rules for persisted targets independently of notification delivery and model availability. Catalog expressions use the locked Prometheus rules API's native query representation. Definition, duration, keep-firing duration, static labels, health and evaluation time must match the source contract before an observation is complete. Each target's actual `ALERTS` and catalog expressions are evaluated at the same query time; a nonempty expression without a corresponding source alert is `UNKNOWN`, not a Python-emulated pending timer.
+
+Native expressions evaluate suppression history. OOM also requires the CrashLoop source rule's contract verdict; abnormal exit requires the CrashLoop, liveness restart, OOM and generic probe source-rule verdicts. An unavailable dependency prevents a complete observation without discarding observed activity. This does not require suppression alert series to exist when no alert was active, nor does it propagate unrelated raw-input failures.
+
+Raw proofs distinguish missing inputs from real zero samples, check timestamps before aggregation, and bind applicable inputs to current SDK identities and container lifetimes. Counter windows use a 15-second coverage grid with a 60-second freshness ceiling across their complete five- or ten-minute window; two recent points cannot repair an earlier gap. Conditional absence is accepted only with the corresponding positive SDK/producer facts. CFS input without provable current cgroup coverage remains unknown; another cgroup cannot dilute the native rule's ratio. Service endpoint addresses are aggregated inside Prometheus, not returned in observations.
+
+Queries retain the HTTP limits of five seconds including queue time, four concurrent requests, 256 KiB, eight returned series and 512 samples. Rule batches are also bounded, and the overall target observation has a separate pass budget. Current source activity is a target-level observation with explicit completeness, not an occurrence identity or proof of Incident closure. An incomplete rule does not erase another rule's known activity. Monitoring-chain health and repair recovery gates retain their own contracts.
 
 ## Monitoring health
 

@@ -34,6 +34,66 @@ SERVICE_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.mark.parametrize("fail_ddl", [False, True])
+async def test_current_observation_migration_preserves_nonempty_ledger_and_checkpoint(
+    tmp_path: Path,
+    credential: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_ddl: bool,
+) -> None:
+    from tests.unit.persistence.test_alert_observations import current_observation
+
+    async with approval_harness(
+        tmp_path, credential, occurrence=_occurrence()
+    ) as harness:
+        await harness.approve()
+        await applied_result(harness)
+        paths = RuntimePaths.prepare(tmp_path / "runtime")
+        config = _alembic_config(paths)
+        command.downgrade(config, "20261006_0014")
+        schema = _schema_snapshot(paths.business_database)
+        with sqlite3.connect(paths.business_database) as connection:
+            before = {
+                table: connection.execute(
+                    f'SELECT * FROM "{table}" ORDER BY rowid'
+                ).fetchall()
+                for table in (*schema["tables"], "sqlite_sequence")
+            }
+        with sqlite3.connect(paths.checkpoint_database) as connection:
+            checkpoints = tuple(connection.iterdump())
+        original = op.create_table
+
+        def interrupted(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "current_alert_observations":
+                raise RuntimeError("injected observation DDL failure")
+            return original(name, *args, **kwargs)
+
+        if fail_ddl:
+            monkeypatch.setattr(op, "create_table", interrupted)
+            with pytest.raises(RuntimeError, match="injected observation DDL failure"):
+                command.upgrade(config, "head")
+            assert _schema_snapshot(paths.business_database) == schema
+        else:
+            command.upgrade(config, "head")
+        with sqlite3.connect(paths.business_database) as connection:
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            for table, rows in before.items():
+                assert (
+                    connection.execute(
+                        f'SELECT * FROM "{table}" ORDER BY rowid'
+                    ).fetchall()
+                    == rows
+                )
+        with sqlite3.connect(paths.checkpoint_database) as connection:
+            assert tuple(connection.iterdump()) == checkpoints
+        if not fail_ddl:
+            await harness.repository.save_current_alert_observation(
+                await current_observation()
+            )
+            with pytest.raises(RuntimeError, match="consistent pre-upgrade backup"):
+                command.downgrade(config, "20261006_0014")
+
+
+@pytest.mark.parametrize("fail_ddl", [False, True])
 async def test_durable_intake_migration_preserves_nonempty_ledger_checkpoint_and_event_highwater(
     tmp_path: Path,
     credential: tuple[str, str],
@@ -97,7 +157,7 @@ async def test_durable_intake_migration_preserves_nonempty_ledger_checkpoint_and
             ).fetchone() == (500,)
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260919_0013" if fail_ddl else "20261006_0014",)
+            ).fetchone() == ("20260919_0013" if fail_ddl else "20261006_0015",)
             if not fail_ddl:
                 assert connection.execute(
                     "SELECT lifecycle_status FROM incidents"
@@ -389,7 +449,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
             } == before
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260913_0008" if fail_ddl else "20261006_0014",)
+            ).fetchone() == ("20260913_0008" if fail_ddl else "20261006_0015",)
             if fail_ddl:
                 assert (
                     connection.execute(
@@ -402,6 +462,15 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
 
 
 EXPECTED_COLUMNS = {
+    "current_alert_observations": (
+        "cluster",
+        "namespace",
+        "api_version",
+        "kind",
+        "resource_name",
+        "checked_order",
+        "observation_json",
+    ),
     "public_demo_budgets": ("category", "used", "window_started_at"),
     "verifications": ("execution_id", "record_json"),
     "approvals": (
@@ -555,6 +624,7 @@ EXPECTED_COLUMNS = {
 }
 
 EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
+    "current_alert_observations": set(),
     "public_demo_budgets": set(),
     "verifications": {("execution_id", "executions", "id")},
     "approvals": {
@@ -577,6 +647,7 @@ EXPECTED_FOREIGN_KEYS: dict[str, set[tuple[str, str, str]]] = {
 }
 
 EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
+    "current_alert_observations": set(),
     "public_demo_budgets": set(),
     "verifications": set(),
     "approvals": {("run_id",), ("proposal_id",)},
@@ -597,6 +668,7 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
 }
 
 EXPECTED_QUERY_INDEXES: dict[str, set[tuple[str, ...]]] = {
+    "current_alert_observations": {("checked_order",)},
     "public_demo_budgets": set(),
     "verifications": set(),
     "approvals": set(),
@@ -978,7 +1050,7 @@ def test_alertmanager_intake_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20261006_0014",)
+        ).fetchone() == ("20261006_0015",)
 
 
 def test_alertmanager_intake_upgrade_rejects_nonempty_lifecycle_tables_before_ddl(
