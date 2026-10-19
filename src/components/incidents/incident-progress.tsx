@@ -21,6 +21,7 @@ export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun?
   const stopped = run.status === "FAILED" || run.endReason != null || expired || approval?.decision === "reject";
   const running = run.status === "RUNNING";
   const diagnosis = diagnosisDetail?.diagnosis;
+  const source = diagnosisDetail?.selectedRun?.diagnosisTrigger?.source ?? diagnosisDetail?.incident.source;
   const diagnosisCaption = diagnosisLoading ? "读取来源诊断中"
     : diagnosis ? diagnosis.outcome === "diagnosed" ? "诊断已完成" : "证据不足"
       : diagnosisDetail?.selectedRun?.status === "FAILED" ? "诊断失败"
@@ -36,7 +37,7 @@ export function IncidentProgress({ detail, diagnosisDetail = detail.selectedRun?
   );
   const repairPath = !diagnostic || repair !== null || preparationFailed;
   const path = [
-    { title: "故障发现", caption: detail.incident.source.type === "alertmanager" ? "告警已记录" : "场景已记录", href: "#incident-heading", done: true },
+    { title: "故障发现", caption: source?.type === "alertmanager" ? "告警已记录" : source?.type === "scenario" ? "场景已记录" : "来源待核对", href: "#incident-heading", done: true },
     { title: "诊断分析", caption: diagnosisCaption, href: "#diagnosis-heading", done: diagnosis?.outcome === "diagnosed" },
     { title: run.operation === "rollback" ? "回滚准备" : "修复准备", caption: preparationFailed ? "准备未通过"
       : diagnostic ? "尚未准备执行"

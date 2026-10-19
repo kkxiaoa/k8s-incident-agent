@@ -77,7 +77,7 @@ async function waitForFreshWatchdog(baseline: number, runtime: ReadJson, sleep: 
 async function findLatestIncidentIdForScenario(scenario: EvaluationCase, runtime: ReadJson): Promise<string | undefined> {
   for (const incidentId of await readIncidentIds(runtime)) {
     const detail = await readIncident(runtime, incidentId);
-    if (matchesScenarioIncident(detail.incident, scenario)) return incidentId;
+    if (matchesScenarioIncident(detail, scenario)) return incidentId;
   }
   return undefined;
 }

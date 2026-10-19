@@ -102,6 +102,15 @@ EXPECTED_ERROR_STATUSES = {
 }
 
 EXPECTED_EVENT_COMPONENTS = {
+    "alert.associated": ("AlertAssociatedStreamEvent", "AlertAssociatedEventPayload"),
+    "diagnosis.change_recorded": (
+        "DiagnosisChangeRecordedStreamEvent",
+        "DiagnosisChangeRecordedEventPayload",
+    ),
+    "diagnosis.deferred": (
+        "DiagnosisDeferredStreamEvent",
+        "DiagnosisDeferredEventPayload",
+    ),
     "alert.notification": (
         "AlertNotificationStreamEvent",
         "AlertNotificationEventPayload",

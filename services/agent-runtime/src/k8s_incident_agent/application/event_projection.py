@@ -1,11 +1,11 @@
 from pydantic import ValidationError
 
 from k8s_incident_agent.api_contracts import (
-    AlertNotificationEventPayload,
     ApprovalDecidedEventPayload,
     DiagnosisCompletedEventPayload,
     EvidenceRecordedEventPayload,
     ExecutionUpdatedEventPayload,
+    IncidentEventPayload,
     RepairWaitingApprovalEventPayload,
     RunEventPayload,
     RunEventStreamItem,
@@ -14,9 +14,11 @@ from k8s_incident_agent.api_contracts import (
     ToolStartedEventPayload,
     VerificationUpdatedEventPayload,
 )
+from k8s_incident_agent.diagnosis.changes import RecordedDiagnosisChange
 from k8s_incident_agent.diagnosis.tool_execution import (
     validate_diagnostic_tool_failure_contract,
 )
+from k8s_incident_agent.domain.contracts import DiagnosisChangeReference
 from k8s_incident_agent.domain.models import RunEvent
 from k8s_incident_agent.persistence.canonical import canonical_json
 from k8s_incident_agent.persistence.repositories import RecoveryConsistencyError
@@ -29,6 +31,16 @@ def validated_stream_item(event: RunEvent) -> RunEventStreamItem:
         raise RecoveryConsistencyError
     wire_payload = {**event.payload, "schemaVersion": 6}
     try:
+        if event.event_type == "diagnosis.change_recorded":
+            recorded = RecordedDiagnosisChange.model_validate(
+                wire_payload.get("change")
+            )
+            wire_payload["change"] = DiagnosisChangeReference(
+                source=recorded.source,
+                fingerprint=recorded.fingerprint,
+                starts_at=recorded.starts_at,
+                event_id=str(event.id),
+            ).model_dump(mode="json")
         stream_item = RunEventStreamItem.model_validate_json(
             canonical_json(
                 {
@@ -64,7 +76,7 @@ def validated_stream_item(event: RunEvent) -> RunEventStreamItem:
 
 
 def _event_payload(
-    payload: RunEventPayload | AlertNotificationEventPayload,
+    payload: RunEventPayload | IncidentEventPayload,
 ) -> dict[str, object]:
     serialized = payload.model_dump(mode="json")
     if isinstance(payload, ToolStartedEventPayload):
@@ -83,7 +95,7 @@ def validated_event_json(event: RunEvent) -> str:
 
 def _expected_event_key(
     event_type: str,
-    payload: RunEventPayload | AlertNotificationEventPayload,
+    payload: RunEventPayload | IncidentEventPayload,
 ) -> str:
     if isinstance(payload, VerificationUpdatedEventPayload):
         return (

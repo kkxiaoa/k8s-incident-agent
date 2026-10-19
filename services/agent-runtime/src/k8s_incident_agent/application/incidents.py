@@ -64,6 +64,7 @@ from k8s_incident_agent.kubernetes.credentials import (
 )
 from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.model.availability import DiagnosisUnavailableError
+from k8s_incident_agent.monitoring.catalog import AlertCatalog
 from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
     IncidentDetailRecord,
@@ -130,6 +131,18 @@ class IncidentApplicationService:
         return ScenarioListResponse(
             items=tuple(_scenario_response(scenario) for scenario in self._catalog)
         )
+
+    async def reconcile_alert_target(
+        self, target: KubernetesTarget, catalog: AlertCatalog
+    ) -> None:
+        try:
+            model = self._require_diagnostic_readiness()
+        except (RuntimeNotReadyError, DiagnosisUnavailableError):
+            model = None
+        for run_id in await self._repository.reconcile_episode_diagnosis(
+            target, catalog, model, self._budget
+        ):
+            await schedule_committed_run(self._supervisor, run_id)
 
     async def create_incident(
         self,
@@ -478,6 +491,7 @@ def _run_summary(run: IncidentRunDetail) -> RunSummaryResponse:
         request_source=run.request_source,
         initiated_by_you=run.initiated_by_you,
         source_run_id=run.source_run_id,
+        diagnosis_trigger=run.diagnosis_trigger,
     )
 
 
@@ -559,6 +573,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             status=detail.alert_signal.status,
             starts_at=detail.alert_signal.starts_at,
             ends_at=detail.alert_signal.ends_at,
+            last_received_at=detail.alert_signal.last_received_at,
         )
     repair = None
     if detail.repair is not None:
@@ -653,6 +668,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
         actions=detail.actions,
         alert_signal=alert_signal,
         alert_summary=detail.alert_summary,
+        diagnosis_deferral=detail.diagnosis_deferral,
         event_cursor=str(detail.event_cursor),
     )
 

@@ -1,6 +1,7 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic.alias_generators import to_camel
 
 
 class _ImmutableContract(BaseModel):
@@ -56,6 +57,40 @@ class NormalizedIncidentTrigger(_ImmutableContract):
     @classmethod
     def require_normalized_text(cls, value: str) -> str:
         return _normalized_string(value)
+
+
+class DiagnosisChangeReference(_ImmutableContract):
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, serialize_by_alias=True
+    )
+
+    source: IncidentSource
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
+    starts_at: str
+    event_id: str = Field(pattern=r"^[1-9][0-9]*$")
+
+
+class DiagnosisTrigger(_ImmutableContract):
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, serialize_by_alias=True
+    )
+
+    source: IncidentSource
+    summary: str = Field(min_length=1)
+    occurred_at: AwareDatetime
+    reason: Literal["first_observation", "new_symptom", "facts_changed", "manual"]
+    changes: tuple[DiagnosisChangeReference, ...] = Field(max_length=3)
+
+
+class DiagnosisDeferral(_ImmutableContract):
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, serialize_by_alias=True
+    )
+
+    reason: Literal[
+        "busy", "cooldown", "unavailable", "budget_exhausted", "awaiting_observation"
+    ]
+    review_after: AwareDatetime | None
 
 
 def _normalized_string(value: str) -> str:

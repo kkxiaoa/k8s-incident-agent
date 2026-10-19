@@ -64,7 +64,7 @@ export function requiresIncidentDetailRefresh(
   event: RunEventStreamItem,
   selectedRunId: string | null,
 ): boolean {
-  if (event.event === "alert.resolved" || event.event === "alert.notification") {
+  if (event.event === "alert.resolved" || event.data.runId === null) {
     return true;
   }
   if (event.event === "repair.approval_decided" || event.event === "repair.execution_updated" || event.event === "repair.verification_updated") {
@@ -134,6 +134,9 @@ function applyIncidentStatus(
     case "tool.failed":
     case "alert.resolved":
     case "alert.notification":
+    case "alert.associated":
+    case "diagnosis.change_recorded":
+    case "diagnosis.deferred":
       return detail;
   }
 }
@@ -172,6 +175,9 @@ function applySelectedRunStatus(
     case "tool.failed":
     case "alert.resolved":
     case "alert.notification":
+    case "alert.associated":
+    case "diagnosis.change_recorded":
+    case "diagnosis.deferred":
       return detail;
   }
 }

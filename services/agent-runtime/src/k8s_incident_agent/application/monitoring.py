@@ -37,6 +37,7 @@ from k8s_incident_agent.monitoring.service import (
 from k8s_incident_agent.persistence.repositories import (
     IncidentMonitoringContext,
     IncidentRepository,
+    RunNotFoundRepositoryError,
 )
 from k8s_incident_agent.scenarios.contracts import PublicScenario
 
@@ -220,8 +221,12 @@ class MonitoringApplicationService:
             ),
         )
 
-    async def list_panels(self, incident_id: UUID) -> IncidentMonitoringPanels:
-        context = await self._monitoring_context(incident_id, run_limit=1)
+    async def list_panels(
+        self, incident_id: UUID, *, run_id: UUID | None = None
+    ) -> IncidentMonitoringPanels:
+        context = await self._monitoring_context(
+            incident_id, run_limit=1, run_id=run_id
+        )
         entry = self._entry_for_context(context)
         return IncidentMonitoringPanels(
             panels=(
@@ -253,11 +258,12 @@ class MonitoringApplicationService:
         anchor: MetricTimeAnchor = MetricTimeAnchor.CURRENT,
         run_id: UUID | None = None,
     ) -> IncidentMetricPanel:
-        if (anchor is MetricTimeAnchor.RUN) is not (run_id is not None):
+        if anchor is MetricTimeAnchor.RUN and run_id is None:
             raise MonitoringAnchorInvalidError
         context = await self._monitoring_context(
             incident_id,
             run_limit=_MARKER_RUN_LIMIT,
+            run_id=run_id,
         )
         entry = self._entry_for_context(context)
         if entry is None or all(
@@ -270,7 +276,9 @@ class MonitoringApplicationService:
             anchor,
             queried_at=queried_at,
             occurred_at=context.occurred_at,
-            run_completed_at=_anchored_run_completion(context, run_id),
+            run_completed_at=_anchored_run_completion(context, run_id)
+            if anchor is MetricTimeAnchor.RUN
+            else None,
         )
         try:
             result = await self._prometheus.query_panel(
@@ -298,11 +306,16 @@ class MonitoringApplicationService:
         incident_id: UUID,
         *,
         run_limit: int,
+        run_id: UUID | None = None,
     ) -> IncidentMonitoringContext:
-        context = await self._repository.get_incident_monitoring_context(
-            incident_id,
-            run_limit=run_limit,
-        )
+        try:
+            context = await self._repository.get_incident_monitoring_context(
+                incident_id,
+                run_limit=run_limit,
+                run_id=run_id,
+            )
+        except RunNotFoundRepositoryError:
+            raise MonitoringPanelNotFoundError from None
         if context is None:
             raise IncidentNotFoundError
         return context

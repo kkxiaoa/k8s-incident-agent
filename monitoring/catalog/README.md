@@ -22,12 +22,14 @@
 
 An accepted alert is durably stored as a notification occurrence; notification intake does not create an Incident or Run. The Console charts catalog panels for Incident targets. Only `K8sIncidentImagePullBackOff` defines a repair action, `set_container_image`. Its `recoveryAlerts` name the rules that recovery verification requires to be neither pending nor firing for the repaired Deployment, so discovery-only rules never join that gate. Versioned scenarios live in [`scenarios/`](../../scenarios/README.md); an alert without one has no fault-injection fixture.
 
+`correlationGroup` groups liveness restart, CrashLoop and Deployment replica unavailability for the same reliably observed target UID. Every other alert uses its own ID as its group. Runtime associates actual received occurrences only after their source rules are freshly and completely `FIRING`; a group does not synthesize webhook identities or merge different object UIDs. Run-specific source and catalog revision select diagnosis policy and panels even when an Incident contains more than one alert type.
+
 Opt-in rules only watch objects that carry their label: a Service labelled `k8s-incident-agent.io/monitor-selector: "true"` with candidate Pods that name it in `k8s-incident-agent.io/service`, a container named in `k8s-incident-agent.io/readiness-container` with `k8s-incident-agent.io/readiness-slo: 2m` or in `k8s-incident-agent.io/liveness-container`, and a PVC labelled `k8s-incident-agent.io/pending-policy: immediate`.
 
 ## Rule interactions
 
 - Startup that exceeds its window is covered by `K8sIncidentDeploymentReplicasUnavailable`; there is no separate startup rule. Alertmanager suppresses that alert while an image-pull, restart-loop, probe, OOM, abnormal-exit or unschedulable alert fires for the same Deployment.
-- The OOM and abnormal-exit rules stand down for 10 minutes after an overlapping symptom alert on the same Deployment, so one crash episode does not reopen Incidents under new start times.
+- The OOM and abnormal-exit rules stand down for 10 minutes after an overlapping symptom alert on the same Deployment.
 - The kubelet-backed alerts need the node-metrics collection that only the K3s profiles enable. On Kind they have no series, which means not enabled rather than healthy.
 - `Watchdog` is monitoring-path health evidence: the Runtime rejects a delivery whose Watchdog names another cluster or severity, and recovery verification requires a recent Watchdog receipt. It does not create an Incident and is not a fault family.
 

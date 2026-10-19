@@ -20,7 +20,7 @@ from k8s_incident_agent.domain.models import (
 )
 from k8s_incident_agent.model.availability import DiagnosticModelAvailability
 from k8s_incident_agent.monitoring.service import PrometheusQueryService
-from k8s_incident_agent.persistence.models import AlertSignalRow, IncidentRow
+from k8s_incident_agent.persistence.models import AlertSignalRow, IncidentRow, RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
@@ -93,6 +93,9 @@ async def seed_legacy_alert_incident(
         incident = await session.get(IncidentRow, str(created.incident_id))
         assert incident is not None
         incident.lifecycle_status = None
+        run = await session.get(RunRow, str(created.run_id))
+        assert run is not None
+        run.diagnosis_trigger_json = None
     return created
 
 

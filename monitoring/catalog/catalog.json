@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 11,
+  "schemaVersion": 12,
   "catalogVersion": "2026-09-17.2",
   "alerts": [
     {
@@ -60,6 +60,7 @@
     },
     {
       "alertId": "K8sIncidentCrashLoopBackOff",
+      "correlationGroup": "deployment-runtime-failure",
       "displayName": "Container restart loop",
       "triggerSummary": "A Deployment container repeatedly exits and is waiting in CrashLoopBackOff.",
       "rule": {
@@ -109,6 +110,7 @@
     },
     {
       "alertId": "K8sIncidentDeploymentReplicasUnavailable",
+      "correlationGroup": "deployment-runtime-failure",
       "displayName": "Deployment replica availability degraded",
       "triggerSummary": "A Deployment has fewer available replicas than desired.",
       "rule": {
@@ -208,6 +210,7 @@
     },
     {
       "alertId": "K8sIncidentLivenessProbeRestart",
+      "correlationGroup": "deployment-runtime-failure",
       "displayName": "Liveness probe restart",
       "triggerSummary": "A Deployment container selected for liveness monitoring restarted.",
       "rule": {

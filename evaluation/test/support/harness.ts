@@ -213,7 +213,6 @@ export function createHarness(options: HarnessOptions = {}): Harness {
       const active = context.activeScenario();
       if (active !== undefined && !active.repeated) {
         active.repeated = true;
-        active.updatedAt = "2026-09-05T00:00:01.000Z";
       }
     },
     verifyDeploymentStatus: fakeDeploymentStatus(releaseFixture.manifest),

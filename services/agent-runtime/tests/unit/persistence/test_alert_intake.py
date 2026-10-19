@@ -260,14 +260,14 @@ async def test_receipt_bounds_survive_out_of_order_commits(
         for row in (IncidentRow, RunRow, RunEventRow):
             assert await _count(database, row) == int(legacy)
         if created is not None:
-            assert (
-                await repository.get_incident_detail(
-                    created.incident_id,
-                    run_id=None,
-                    event_limit=100,
-                )
-                == before
+            after = await repository.get_incident_detail(
+                created.incident_id, run_id=None, event_limit=100
             )
+            assert after is not None and before is not None
+            assert after.incident == before.incident
+            assert after.run == before.run and after.events == before.events
+            assert after.alert_signal is not None
+            assert after.alert_signal.last_received_at == later
         else:
             overview = await repository.get_monitoring_overview(later)
             assert overview.unassigned_signals[0].last_received_at == later

@@ -148,6 +148,21 @@ it("renders partial current source facts separately from a historical FIRING not
   expect(screen.getByText("末次通知 FIRING", { selector: "dd" })).toBeVisible();
 });
 
+it("shows the selected diagnosis trigger instead of the Incident's initial source", () => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const detail = makeIncidentDetail();
+  detail.selectedRun.diagnosisTrigger = {
+    source: { type: "alertmanager", ref: "K8sIncidentLivenessProbeRestart", revision: "catalog-revision" },
+    summary: "新的存活探针异常", occurredAt: "2026-09-03T00:00:00Z", reason: "new_symptom", changes: [],
+  };
+  detail.diagnosisDeferral = { reason: "budget_exhausted", reviewAfter: null };
+  renderIncidentStream(detail);
+  expect(screen.getByText("新的存活探针异常")).toBeVisible();
+  expect(screen.getByText("Alertmanager · K8sIncidentLivenessProbeRestart · catalog catalog-revision")).toBeVisible();
+  expect(screen.getByText(/自动诊断次数已用完/)).toBeVisible();
+  expect(screen.queryByText(detail.incident.triggerSummary)).not.toBeInTheDocument();
+});
+
 it("periodically rereads source state at the same event cursor without switching the selected Run", async () => {
   vi.useFakeTimers();
   vi.stubGlobal("EventSource", FakeEventSource);

@@ -18,6 +18,10 @@ function eventCopy(event: RunEventStreamItem): {
   tone: string;
 } {
   switch (event.event) {
+    case "alert.associated":
+    case "diagnosis.change_recorded":
+    case "diagnosis.deferred":
+      return { title: "Incident 记录已更新", detail: "不属于单次运行进度", tone: "neutral" };
     case "incident.created":
       return {
         title: "Incident 已创建",

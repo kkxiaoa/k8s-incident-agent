@@ -176,7 +176,7 @@ export async function fetchIncidentsFromBrowser(
 }
 
 export type MonitoringPanelAnchor =
-  | { kind: "current" }
+  | { kind: "current"; runId?: string }
   | { kind: "run"; runId: string };
 
 export async function fetchMonitoringPanelFromBrowser(
@@ -186,7 +186,7 @@ export async function fetchMonitoringPanelFromBrowser(
   anchor: MonitoringPanelAnchor = { kind: "current" },
 ): Promise<BrowserRuntimeResult<IncidentMetricPanelView>> {
   const query = new URLSearchParams({ window, anchor: anchor.kind });
-  if (anchor.kind === "run") {
+  if (anchor.runId !== undefined) {
     query.set("runId", anchor.runId);
   }
   let response: Response;

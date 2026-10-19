@@ -7,6 +7,7 @@ from typing import Final, Literal, NewType
 from uuid import UUID
 
 from k8s_incident_agent.domain.contracts import (
+    DiagnosisTrigger,
     IncidentSource,
     KubernetesTarget,
     NormalizedIncidentTrigger,
@@ -150,6 +151,7 @@ class AlertSignalRecord:
     status: AlertSignalStatus
     starts_at: CanonicalAlertTimestamp
     ends_at: CanonicalAlertTimestamp | None
+    last_received_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +187,7 @@ class DiagnosisWorkflowRunSnapshot(_WorkflowRunSnapshot):
     model: ModelSnapshot
     budget: RunBudget
     occurred_at: datetime
+    diagnosis_trigger: DiagnosisTrigger | None = None
     kind: Literal[RunKind.DIAGNOSIS] = field(default=RunKind.DIAGNOSIS, init=False)
 
 

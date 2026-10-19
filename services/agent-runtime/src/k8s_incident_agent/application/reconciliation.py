@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
+from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.kubernetes.adapter import KubernetesEvidenceAdapter
 from k8s_incident_agent.kubernetes.contracts import CurrentTargetFacts
 from k8s_incident_agent.kubernetes.errors import (
@@ -26,7 +27,7 @@ from k8s_incident_agent.persistence.repositories import (
 
 
 class AlertReconciler:
-    """Single Runtime-owned, recoverable read loop; it never schedules a Run."""
+    """Runtime-owned read loop that rechecks durable signals before diagnosis."""
 
     def __init__(
         self,
@@ -35,11 +36,13 @@ class AlertReconciler:
         adapter: KubernetesEvidenceAdapter,
         prometheus: PrometheusQueryService,
         now: Callable[[], datetime],
+        diagnose: Callable[[KubernetesTarget], Awaitable[None]],
     ) -> None:
         self._repository = repository
         self._adapter = adapter
         self._prometheus = prometheus
         self._now = now
+        self._diagnose = diagnose
         self._wake = asyncio.Event()
         self._pass = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
@@ -231,6 +234,7 @@ class AlertReconciler:
                         await self._repository.save_current_alert_observation(
                             observation
                         )
+                        await self._diagnose(target)
             except TimeoutError:
                 pass
         return attempted or 1

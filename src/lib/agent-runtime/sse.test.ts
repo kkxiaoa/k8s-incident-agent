@@ -26,6 +26,31 @@ import {
 const OTHER_RUN_ID = "55555555-5555-4555-8555-555555555555";
 const OTHER_INCIDENT_ID = "66666666-6666-4666-8666-666666666666";
 
+it.each([
+  ["alert.associated", { source: { type: "alertmanager", ref: "K8sIncidentCrashLoopBackOff", revision: "v1" }, fingerprint: "0123456789abcdef", startsAt: "2026-09-03T00:00:00.000000000Z", targetUid: "workload-uid" }],
+  ["diagnosis.change_recorded", { change: { source: { type: "alertmanager", ref: "K8sIncidentCrashLoopBackOff", revision: "v1" }, fingerprint: "0123456789abcdef", startsAt: "2026-09-03T00:00:00.000000000Z", eventId: "10" } }],
+  ["diagnosis.deferred", { deferral: { reason: "busy", reviewAfter: null } }],
+])("refreshes %s without changing the selected historical Run or its progress", (name, fields) => {
+  const detail = makeIncidentDetail();
+  const payload = { schemaVersion: 6, incidentId: INCIDENT_ID, runId: null, runKind: null,
+    occurredAt: "2026-09-03T00:10:00Z", ...fields };
+  const event = parseRunEvent(name, "10", JSON.stringify(payload), INCIDENT_ID);
+  expect(requiresIncidentDetailRefresh(event, detail.selectedRun.id)).toBe(true);
+  const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event });
+  expect(state.events).toEqual([]);
+  expect(state.detail.selectedRun).toEqual(detail.selectedRun);
+  expect(state.detail.incident.status).toEqual(detail.incident.status);
+  expect(state.detailRefreshEventId).toBe("10");
+  expect(() => parseRunEvent(name, "10", JSON.stringify({ ...payload, runId: RUN_ID }), INCIDENT_ID)).toThrow();
+});
+
+it("accepts a first Run queued after the Incident was saved without a Run", () => {
+  const event = parseRunEvent("run.queued", "2", JSON.stringify({ schemaVersion: 6, incidentId: INCIDENT_ID,
+    runId: RUN_ID, runKind: "diagnosis", occurredAt: "2026-09-03T00:00:00Z", attempt: 1, runStatus: "QUEUED" }), INCIDENT_ID);
+  expect(requiresIncidentDetailRefresh(event, null)).toBe(true);
+  expect(reduceIncidentStream(createIncidentStreamState(makeIncidentWithoutRuns()), { type: "event", event }).detail.selectedRun).toBeNull();
+});
+
 it.each([false, true])("replays Incident-owned notifications without changing Run state, no Run=%s", (noRun) => {
   const detail = noRun ? makeIncidentWithoutRuns() : makeIncidentDetail();
   const payload = { schemaVersion: 6, incidentId: INCIDENT_ID, runId: null, runKind: null,
@@ -277,7 +302,6 @@ describe("parseRunEvent", () => {
     ["v1 payload", { schemaVersion: 1 }],
     ["missing attempt", { schemaVersion: 6 }],
     ["zero attempt", { schemaVersion: 6, attempt: 0 }],
-    ["first attempt", { schemaVersion: 6, attempt: 1 }],
     [
       "another Incident owner",
       { schemaVersion: 6, attempt: 2, incidentId: OTHER_INCIDENT_ID },

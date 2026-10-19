@@ -17,6 +17,103 @@
         ],
         "type": "string"
       },
+      "AlertAssociatedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{16}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "null"
+          },
+          "runKind": {
+            "title": "Runkind",
+            "type": "null"
+          },
+          "schemaVersion": {
+            "const": 6,
+            "title": "Schemaversion",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/IncidentSource"
+          },
+          "startsAt": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
+            "title": "Startsat",
+            "type": "string"
+          },
+          "targetUid": {
+            "minLength": 1,
+            "title": "Targetuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "occurredAt",
+          "runId",
+          "runKind",
+          "source",
+          "fingerprint",
+          "startsAt",
+          "targetUid"
+        ],
+        "title": "AlertAssociatedEventPayload",
+        "type": "object"
+      },
+      "AlertAssociatedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AlertAssociatedEventPayload"
+          },
+          "event": {
+            "const": "alert.associated",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "AlertAssociatedStreamEvent",
+        "type": "object"
+      },
+      "AlertAssociationReason": {
+        "enum": [
+          "awaiting_association",
+          "awaiting_observation",
+          "rule_mismatch",
+          "not_firing",
+          "identity_unverified",
+          "closed_conflict",
+          "ambiguous_incident"
+        ],
+        "title": "AlertAssociationReason",
+        "type": "string"
+      },
       "AlertNotificationEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -195,6 +292,18 @@
               }
             ],
             "title": "Endsat"
+          },
+          "lastReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastreceivedat"
           },
           "startsAt": {
             "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
@@ -922,6 +1031,102 @@
         "title": "CurrentAlertSummary",
         "type": "object"
       },
+      "DiagnosisChangeRecordedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "$ref": "#/components/schemas/DiagnosisChangeReference"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "null"
+          },
+          "runKind": {
+            "title": "Runkind",
+            "type": "null"
+          },
+          "schemaVersion": {
+            "const": 6,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "occurredAt",
+          "runId",
+          "runKind",
+          "change"
+        ],
+        "title": "DiagnosisChangeRecordedEventPayload",
+        "type": "object"
+      },
+      "DiagnosisChangeRecordedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/DiagnosisChangeRecordedEventPayload"
+          },
+          "event": {
+            "const": "diagnosis.change_recorded",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "DiagnosisChangeRecordedStreamEvent",
+        "type": "object"
+      },
+      "DiagnosisChangeReference": {
+        "additionalProperties": false,
+        "properties": {
+          "eventId": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Eventid",
+            "type": "string"
+          },
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{16}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/IncidentSource"
+          },
+          "startsAt": {
+            "title": "Startsat",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "fingerprint",
+          "startsAt",
+          "eventId"
+        ],
+        "title": "DiagnosisChangeReference",
+        "type": "object"
+      },
       "DiagnosisCompletedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1010,6 +1215,106 @@
           "data"
         ],
         "title": "DiagnosisCompletedStreamEvent",
+        "type": "object"
+      },
+      "DiagnosisDeferral": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "enum": [
+              "busy",
+              "cooldown",
+              "unavailable",
+              "budget_exhausted",
+              "awaiting_observation"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "reviewAfter": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewafter"
+          }
+        },
+        "required": [
+          "reason",
+          "reviewAfter"
+        ],
+        "title": "DiagnosisDeferral",
+        "type": "object"
+      },
+      "DiagnosisDeferredEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "deferral": {
+            "$ref": "#/components/schemas/DiagnosisDeferral"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "null"
+          },
+          "runKind": {
+            "title": "Runkind",
+            "type": "null"
+          },
+          "schemaVersion": {
+            "const": 6,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "occurredAt",
+          "runId",
+          "runKind",
+          "deferral"
+        ],
+        "title": "DiagnosisDeferredEventPayload",
+        "type": "object"
+      },
+      "DiagnosisDeferredStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/DiagnosisDeferredEventPayload"
+          },
+          "event": {
+            "const": "diagnosis.deferred",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "DiagnosisDeferredStreamEvent",
         "type": "object"
       },
       "DiagnosisInsufficientEventPayload": {
@@ -1172,6 +1477,51 @@
           "createdAt"
         ],
         "title": "DiagnosisResponse",
+        "type": "object"
+      },
+      "DiagnosisTrigger": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosisChangeReference"
+            },
+            "maxItems": 3,
+            "title": "Changes",
+            "type": "array"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "first_observation",
+              "new_symptom",
+              "facts_changed",
+              "manual"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/IncidentSource"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "summary",
+          "occurredAt",
+          "reason",
+          "changes"
+        ],
+        "title": "DiagnosisTrigger",
         "type": "object"
       },
       "DiagnosticAvailabilityResponse": {
@@ -1930,6 +2280,16 @@
               }
             ]
           },
+          "diagnosisDeferral": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiagnosisDeferral"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "eventCursor": {
             "pattern": "^(0|[1-9][0-9]*)$",
             "title": "Eventcursor",
@@ -2197,6 +2557,36 @@
           "createdAt"
         ],
         "title": "IncidentResponse",
+        "type": "object"
+      },
+      "IncidentSource": {
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "minLength": 1,
+            "title": "Ref",
+            "type": "string"
+          },
+          "revision": {
+            "minLength": 1,
+            "title": "Revision",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "scenario",
+              "alertmanager"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "ref",
+          "revision"
+        ],
+        "title": "IncidentSource",
         "type": "object"
       },
       "IncidentSourceResponse": {
@@ -3911,9 +4301,12 @@
       "RunEventStreamItem": {
         "discriminator": {
           "mapping": {
+            "alert.associated": "#/components/schemas/AlertAssociatedStreamEvent",
             "alert.notification": "#/components/schemas/AlertNotificationStreamEvent",
             "alert.resolved": "#/components/schemas/AlertResolvedStreamEvent",
+            "diagnosis.change_recorded": "#/components/schemas/DiagnosisChangeRecordedStreamEvent",
             "diagnosis.completed": "#/components/schemas/DiagnosisCompletedStreamEvent",
+            "diagnosis.deferred": "#/components/schemas/DiagnosisDeferredStreamEvent",
             "diagnosis.insufficient": "#/components/schemas/DiagnosisInsufficientStreamEvent",
             "evidence.recorded": "#/components/schemas/EvidenceRecordedStreamEvent",
             "incident.created": "#/components/schemas/IncidentCreatedStreamEvent",
@@ -3986,6 +4379,15 @@
           },
           {
             "$ref": "#/components/schemas/AlertNotificationStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/AlertAssociatedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/DiagnosisChangeRecordedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/DiagnosisDeferredStreamEvent"
           }
         ],
         "title": "RunEventStreamItem"
@@ -4123,7 +4525,7 @@
         "additionalProperties": false,
         "properties": {
           "attempt": {
-            "minimum": 2.0,
+            "minimum": 1.0,
             "title": "Attempt",
             "type": "integer"
           },
@@ -4309,6 +4711,16 @@
             "format": "date-time",
             "title": "Createdat",
             "type": "string"
+          },
+          "diagnosisTrigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiagnosisTrigger"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "format": "uuid",
@@ -4546,6 +4958,16 @@
             "format": "date-time",
             "title": "Createdat",
             "type": "string"
+          },
+          "diagnosisTrigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiagnosisTrigger"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "endReason": {
             "anyOf": [
@@ -4875,10 +5297,8 @@
             "title": "Lastreceivedat"
           },
           "reason": {
-            "const": "awaiting_association",
-            "default": "awaiting_association",
-            "title": "Reason",
-            "type": "string"
+            "$ref": "#/components/schemas/AlertAssociationReason",
+            "default": "awaiting_association"
           },
           "startsAt": {
             "title": "Startsat",
@@ -5826,6 +6246,23 @@
               "format": "uuid",
               "title": "Incident Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "runId",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Runid"
             }
           }
         ],

@@ -55,10 +55,21 @@ describe("GET /api/runtime/incidents/:incidentId/monitoring/:panelId", () => {
     expect(forwarded.searchParams.get("anchor")).toBe("run");
     expect(forwarded.searchParams.get("runId")).toBe(runId);
 
+    for (const anchor of ["current", "occurrence"]) {
+      fetchMock.mockClear();
+      const response = await GET(new Request(
+        `http://console.test/api/runtime/incidents/${INCIDENT_ID}/monitoring/image-pull-affected-pods?window=15m&anchor=${anchor}&runId=${runId}`,
+      ), { params: Promise.resolve({ incidentId: INCIDENT_ID, panelId: "image-pull-affected-pods" }) });
+      expect(response.status).toBe(200);
+      const url = new URL(String((fetchMock.mock.calls[0] as unknown as [URL])[0]));
+      expect(url.searchParams.get("runId")).toBe(runId);
+      expect(url.searchParams.get("anchor")).toBe(anchor);
+    }
+
     for (const query of [
       "window=15m&anchor=run",
-      `window=15m&runId=${runId}`,
-      `window=15m&anchor=occurrence`,
+      `window=15m&runId=${runId}&runId=${runId}`,
+      `window=15m&anchor=invalid`,
       `window=15m&anchor=run&runId=not-a-uuid`,
     ]) {
       fetchMock.mockClear();

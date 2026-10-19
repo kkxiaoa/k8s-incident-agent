@@ -4,6 +4,8 @@ import {
   isCanonicalAlertTimestamp,
   isValidEventId,
   parseRunEventItem,
+  parseIncidentSource,
+  parseDiagnosisDeferral,
   type RunEventStreamItem,
 } from "./event-contracts";
 
@@ -95,6 +97,7 @@ export interface SelectedRunView {
   requestSource?: "system" | "operator" | null;
   initiatedByYou?: boolean;
   sourceRunId?: string | null;
+  diagnosisTrigger?: components["schemas"]["DiagnosisTrigger"] | null;
   selection?: components["schemas"]["RepairHistorySelectionResponse"] | null;
   waitingExpiresAt?: string | null;
   endReason?: "expired" | "superseded" | "rejected" | "execution_expired" | "withdrawn" | null;
@@ -142,7 +145,7 @@ export type DiagnosisView = Pick<
 
 export type AlertSignalView = Pick<
   ApiAlertSignal,
-  "status" | "startsAt" | "endsAt"
+  "status" | "startsAt" | "endsAt" | "lastReceivedAt"
 >;
 
 type CurrentAlertSummaryView = components["schemas"]["CurrentAlertSummary"];
@@ -165,6 +168,7 @@ export interface IncidentDetailView {
   actions: IncidentActionsView;
   alertSignal: AlertSignalView | null;
   alertSummary: CurrentAlertSummaryView;
+  diagnosisDeferral?: components["schemas"]["DiagnosisDeferral"] | null;
 }
 
 export type MetricWindowView = components["schemas"]["MetricWindow"];
@@ -442,21 +446,6 @@ function parseIncidentListItem(value: unknown): IncidentListItemView | null {
       };
 }
 
-function parseIncidentSource(value: unknown): IncidentSourceView | null {
-  if (
-    !isObject(value) ||
-    (value.type !== "scenario" && value.type !== "alertmanager") ||
-    typeof value.ref !== "string" ||
-    value.ref.length === 0 ||
-    typeof value.revision !== "string" ||
-    value.revision.length === 0
-  ) {
-    return null;
-  }
-
-  return { type: value.type, ref: value.ref, revision: value.revision };
-}
-
 function parseAlertSignal(value: unknown): AlertSignalView | null {
   if (
     !isObject(value) ||
@@ -464,6 +453,7 @@ function parseAlertSignal(value: unknown): AlertSignalView | null {
     !isCanonicalAlertTimestamp(value.startsAt) ||
     (value.endsAt !== null && !isCanonicalAlertTimestamp(value.endsAt)) ||
     (value.status === "RESOLVED" && value.endsAt === null) ||
+    (value.lastReceivedAt != null && !isTimestamp(value.lastReceivedAt)) ||
     (typeof value.endsAt === "string" &&
       value.endsAt < value.startsAt)
   ) {
@@ -473,6 +463,7 @@ function parseAlertSignal(value: unknown): AlertSignalView | null {
     status: value.status,
     startsAt: value.startsAt,
     endsAt: value.endsAt,
+    ...(value.lastReceivedAt !== undefined ? { lastReceivedAt: value.lastReceivedAt as string | null } : {}),
   };
 }
 
@@ -559,6 +550,9 @@ function parseRunBase(value: unknown): RunSummaryView | null {
     return null;
   }
 
+  const trigger = value.diagnosisTrigger == null ? null : parseDiagnosisTrigger(value.diagnosisTrigger);
+  if ((value.diagnosisTrigger != null && trigger === null) || (value.kind === "repair" && trigger !== null)) return null;
+
   return {
     id: value.id,
     kind: value.kind as SelectedRunView["kind"],
@@ -571,7 +565,25 @@ function parseRunBase(value: unknown): RunSummaryView | null {
     ...(value.requestSource !== undefined ? { requestSource: value.requestSource as SelectedRunView["requestSource"] } : {}),
     ...(value.initiatedByYou !== undefined ? { initiatedByYou: value.initiatedByYou as boolean } : {}),
     ...(value.sourceRunId !== undefined ? { sourceRunId: value.sourceRunId as string | null } : {}),
+    ...(value.diagnosisTrigger !== undefined ? { diagnosisTrigger: trigger } : {}),
   };
+}
+
+function parseDiagnosisTrigger(value: unknown): components["schemas"]["DiagnosisTrigger"] | null {
+  if (!isObject(value) || typeof value.summary !== "string" || !value.summary || !isTimestamp(value.occurredAt) ||
+    (value.reason !== "first_observation" && value.reason !== "new_symptom" && value.reason !== "facts_changed" && value.reason !== "manual") ||
+    !Array.isArray(value.changes) || value.changes.length > 3) return null;
+  const source = parseIncidentSource(value.source);
+  if (source === null) return null;
+  const changes: components["schemas"]["DiagnosisChangeReference"][] = [];
+  for (const item of value.changes) {
+    if (!isObject(item) || typeof item.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(item.fingerprint) ||
+      !isCanonicalAlertTimestamp(item.startsAt) || !isValidEventId(item.eventId)) return null;
+    const relatedSource = parseIncidentSource(item.source);
+    if (relatedSource === null) return null;
+    changes.push({ source: relatedSource, fingerprint: item.fingerprint, startsAt: item.startsAt, eventId: item.eventId });
+  }
+  return { source, summary: value.summary, occurredAt: value.occurredAt, reason: value.reason, changes };
 }
 
 function parseSelectedRun(value: unknown): SelectedRunView | null {
@@ -1103,7 +1115,9 @@ export function parseIncidentDetailResponse(
   const alertSignal =
     value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
   const alertSummary = parseCurrentAlertSummary(value.alertSummary);
+  const diagnosisDeferral = value.diagnosisDeferral == null ? null : parseDiagnosisDeferral(value.diagnosisDeferral);
   if (
+    (value.diagnosisDeferral != null && diagnosisDeferral === null) ||
     alertSummary === null ||
     incident === null ||
     (value.selectedRun !== null && selectedRun === null) ||
@@ -1175,6 +1189,7 @@ export function parseIncidentDetailResponse(
     actions,
     alertSignal,
     alertSummary,
+    ...(value.diagnosisDeferral !== undefined ? { diagnosisDeferral } : {}),
   };
 }
 
@@ -1306,12 +1321,12 @@ export function parseMonitoringOverviewResponse(
     if (target === null || notification === null ||
       typeof signal.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(signal.fingerprint) ||
       typeof signal.displayName !== "string" || !signal.displayName ||
-      signal.reason !== "awaiting_association" ||
+      !["awaiting_association", "awaiting_observation", "rule_mismatch", "not_firing", "identity_unverified", "closed_conflict", "ambiguous_incident"].includes(signal.reason as string) ||
       (signal.lastReceivedAt !== null && !isTimestamp(signal.lastReceivedAt))) return null;
     unassignedSignals.push({
       ...notification, fingerprint: signal.fingerprint, displayName: signal.displayName,
       target,
-      lastReceivedAt: signal.lastReceivedAt, reason: signal.reason,
+      lastReceivedAt: signal.lastReceivedAt, reason: signal.reason as MonitoringOverviewView["unassignedSignals"][number]["reason"],
     });
   }
   if (unassignedSignals.length !== Math.min(counts.unassignedSignals, 20)) return null;

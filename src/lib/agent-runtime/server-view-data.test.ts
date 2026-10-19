@@ -207,7 +207,8 @@ describe("server view data", () => {
       fetchMock,
     );
 
-    const pageData = await loadIncidentPage(INCIDENT_ID);
+    const selectedRunId = makeIncidentDetail().selectedRun.id;
+    const pageData = await loadIncidentPage(INCIDENT_ID, selectedRunId);
 
     expect(pageData.state).toBe("ready");
     if (pageData.state === "ready") {
@@ -233,6 +234,8 @@ describe("server view data", () => {
       expect(pageData.detail.incident).not.toHaveProperty("updatedAt");
     }
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    const panelsUrl = fetchMock.mock.calls.map(call => call[0] as URL).find(url => url.pathname.endsWith("/monitoring/panels"));
+    expect(panelsUrl?.searchParams.get("runId")).toBe(selectedRunId);
     expect(
       fetchMock.mock.calls.map((call) => (call[0] as URL).pathname),
     ).not.toContain("/api/v1/monitoring/health");

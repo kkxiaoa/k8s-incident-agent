@@ -362,7 +362,8 @@ function incidentDetail(scenario: HarnessScenario, isOtherIncident: boolean, isC
       }],
     },
     repair: options.repairDrift === true && terminal.outcome !== "diagnosed" ? { drift: true } : repair,
-    alertSignal: { status: scenario.resolved ? "RESOLVED" : "FIRING", startsAt: "2026-09-05T00:00:00.000000000Z", endsAt: scenario.resolved ? "2026-09-05T01:00:00.000000000Z" : null },
+    alertSignal: { status: scenario.resolved ? "RESOLVED" : "FIRING", startsAt: "2026-09-05T00:00:00.000000000Z", endsAt: scenario.resolved ? "2026-09-05T01:00:00.000000000Z" : null,
+      lastReceivedAt: scenario.repeated ? "2026-09-05T00:00:01.000Z" : "2026-09-05T00:00:00.000Z" },
     eventCursor: repair === null ? "3" : "6",
   });
 }

@@ -77,9 +77,10 @@ async def test_current_observation_migration_preserves_nonempty_ledger_and_check
         with sqlite3.connect(paths.business_database) as connection:
             assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
             for table, rows in before.items():
+                columns = ",".join(schema["columns"].get(table, ("name", "seq")))
                 assert (
                     connection.execute(
-                        f'SELECT * FROM "{table}" ORDER BY rowid'
+                        f'SELECT {columns} FROM "{table}" ORDER BY rowid'
                     ).fetchall()
                     == rows
                 )
@@ -157,7 +158,7 @@ async def test_durable_intake_migration_preserves_nonempty_ledger_checkpoint_and
             ).fetchone() == (500,)
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260919_0013" if fail_ddl else "20261006_0015",)
+            ).fetchone() == ("20260919_0013" if fail_ddl else "20261018_0016",)
             if not fail_ddl:
                 assert connection.execute(
                     "SELECT lifecycle_status FROM incidents"
@@ -263,6 +264,7 @@ async def test_rollback_migration_preserves_ledger_and_releases_only_known_apply
         config = _alembic_config(paths)
         with sqlite3.connect(paths.business_database) as connection:
             connection.execute("UPDATE incidents SET lifecycle_status = NULL")
+            connection.execute("UPDATE agent_runs SET diagnosis_trigger_json = NULL")
         command.downgrade(config, "20260914_0010")
         schema = _schema_snapshot(paths.business_database)
         tables = (*schema["tables"], "alembic_version")
@@ -353,6 +355,7 @@ async def test_verification_upgrade_preserves_applied_ledger_and_transactional_d
         config = _alembic_config(paths)
         with sqlite3.connect(paths.business_database) as connection:
             connection.execute("UPDATE incidents SET lifecycle_status = NULL")
+            connection.execute("UPDATE agent_runs SET diagnosis_trigger_json = NULL")
         command.downgrade(config, "20260913_0009")
         schema = _schema_snapshot(paths.business_database)
         with sqlite3.connect(paths.business_database) as connection:
@@ -407,6 +410,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
         config = _alembic_config(paths)
         with sqlite3.connect(paths.business_database) as connection:
             connection.execute("UPDATE incidents SET lifecycle_status = NULL")
+            connection.execute("UPDATE agent_runs SET diagnosis_trigger_json = NULL")
         command.downgrade(config, "20260913_0008")
         tables = (
             "incidents",
@@ -449,7 +453,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
             } == before
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260913_0008" if fail_ddl else "20261006_0015",)
+            ).fetchone() == ("20260913_0008" if fail_ddl else "20261018_0016",)
             if fail_ddl:
                 assert (
                     connection.execute(
@@ -523,6 +527,9 @@ EXPECTED_COLUMNS = {
         "created_at",
         "updated_at",
         "lifecycle_status",
+        "target_uid",
+        "correlation_group",
+        "pending_diagnosis_json",
     ),
     "agent_runs": (
         "id",
@@ -555,6 +562,7 @@ EXPECTED_COLUMNS = {
         "selection_replica_set_uid",
         "waiting_expires_at",
         "end_reason",
+        "diagnosis_trigger_json",
     ),
     "alert_signals": (
         "incident_id",
@@ -574,6 +582,7 @@ EXPECTED_COLUMNS = {
         "first_received_at",
         "last_received_at",
         "resolved_received_at",
+        "association_reason",
     ),
     "monitoring_source_state": (
         "singleton_id",
@@ -657,7 +666,17 @@ EXPECTED_UNIQUE_KEYS: dict[str, set[tuple[str, ...]]] = {
         ("cluster", "namespace", "kind", "resource_name"),
     },
     "operator_sessions": set(),
-    "incidents": set(),
+    "incidents": {
+        (
+            "cluster",
+            "namespace",
+            "api_version",
+            "kind",
+            "resource_name",
+            "target_uid",
+            "correlation_group",
+        )
+    },
     "agent_runs": {("incident_id",), ("incident_id", "attempt")},
     "run_events": {("run_id", "event_key")},
     "evidence": {("run_id", "tool_call_id")},
@@ -1050,7 +1069,7 @@ def test_alertmanager_intake_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20261006_0015",)
+        ).fetchone() == ("20261018_0016",)
 
 
 def test_alertmanager_intake_upgrade_rejects_nonempty_lifecycle_tables_before_ddl(

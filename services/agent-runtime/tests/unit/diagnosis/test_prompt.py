@@ -71,6 +71,8 @@ def test_prompt_encodes_evidence_and_untrusted_content_boundaries() -> None:
     assert "use a window wider than that duration" in normalized
     assert "start with anchor=occurrence" in normalized
     assert "runStartedAt" in normalized
+    assert "diagnosisTrigger" in normalized
+    assert "audit references, never evidenceId values" in normalized
     assert "never less than its stated interval" in normalized
     assert "when empty" not in prompt
     assert "image-pull-affected-pods is the registered signal of the alert rule" in (

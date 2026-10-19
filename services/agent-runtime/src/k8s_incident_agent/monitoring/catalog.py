@@ -152,6 +152,7 @@ class AlertCatalogEntry(_CatalogContract):
     alert_id: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=128)
     display_name: str = Field(min_length=1, max_length=160)
     trigger_summary: str = Field(min_length=1, max_length=512)
+    correlation_group: Literal["deployment-runtime-failure"] | None = None
     rule: AlertRuleContract
     target: AlertTargetMapping
     repair_action: RepairAction | None = None
@@ -169,6 +170,19 @@ class AlertCatalogEntry(_CatalogContract):
 
     @model_validator(mode="after")
     def require_trigger_and_repair_consistency(self) -> Self:
+        if self.correlation_group is not None and (
+            self.alert_id
+            not in {
+                "K8sIncidentLivenessProbeRestart",
+                "K8sIncidentCrashLoopBackOff",
+                "K8sIncidentDeploymentReplicasUnavailable",
+            }
+            or self.target.api_version != "apps/v1"
+            or self.target.kind != "Deployment"
+        ):
+            raise ValueError(
+                "Correlation group requires a registered Deployment symptom"
+            )
         trigger_panels = [
             panel for panel in self.panels if panel.signal_role == "trigger"
         ]
@@ -243,7 +257,7 @@ class ContextPanelGroup(_CatalogContract):
 
 
 class _AlertCatalogDocument(_CatalogContract):
-    schema_version: Literal[11]
+    schema_version: Literal[12]
     catalog_version: str = Field(
         min_length=1,
         max_length=64,

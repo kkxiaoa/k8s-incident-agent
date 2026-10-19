@@ -11,6 +11,7 @@ from tests.unit.monitoring.test_reconciliation import (
     CurrentMonitoringFixture,
     CurrentTargetFixture,
 )
+from tests.unit.persistence.test_episode_diagnosis import CATALOG
 from tests.unit.persistence.test_repair_persistence import (
     BUDGET,
     MODEL,
@@ -19,10 +20,15 @@ from tests.unit.persistence.test_repair_persistence import (
 from tests.unit.repair.test_repair_preparation import FRESH_NOW, TARGET
 
 from k8s_incident_agent.application.reconciliation import AlertReconciler
+from k8s_incident_agent.domain.contracts import KubernetesTarget
 from k8s_incident_agent.kubernetes.errors import KubernetesErrorCode
 from k8s_incident_agent.monitoring.contracts import CurrentAlertState, ObservationReason
 from k8s_incident_agent.persistence.models import CurrentAlertObservationRow, RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
+
+
+async def _diagnose(repository: IncidentRepository, target: KubernetesTarget) -> None:
+    await repository.reconcile_episode_diagnosis(target, CATALOG, None, BUDGET)
 
 
 @pytest.mark.parametrize(
@@ -61,6 +67,7 @@ async def test_reconciler_keeps_wall_clock_precision_and_uses_millisecond_promql
         await repository.create_incident_and_run(normalized_trigger(), MODEL, BUDGET)
         reconciler = AlertReconciler(
             repository=repository,
+            diagnose=lambda target: _diagnose(repository, target),
             adapter=fixture.adapter(),
             prometheus=service,
             now=lambda: clock[0],
@@ -144,6 +151,7 @@ async def test_reconciler_persists_current_health_and_never_creates_or_updates_a
         service = monitoring.service()
         reconciler = AlertReconciler(
             repository=repository,
+            diagnose=lambda target: _diagnose(repository, target),
             adapter=fixture.adapter(),
             prometheus=service,
             now=lambda: clock[0],
@@ -191,6 +199,7 @@ async def test_reconciliation_recovers_durable_work_after_missing_wake_and_depen
         try:
             failed = AlertReconciler(
                 repository=repository,
+                diagnose=lambda target: _diagnose(repository, target),
                 adapter=fixture.adapter(),
                 prometheus=service,
                 now=lambda: FRESH_NOW,
@@ -199,6 +208,7 @@ async def test_reconciliation_recovers_durable_work_after_missing_wake_and_depen
             fixture.error = None
             restarted = AlertReconciler(
                 repository=IncidentRepository(database.session_factory),
+                diagnose=lambda target: _diagnose(repository, target),
                 adapter=fixture.adapter(),
                 prometheus=service,
                 now=lambda: FRESH_NOW,
@@ -241,6 +251,7 @@ async def test_concurrent_pass_and_repeated_wake_cannot_duplicate_reads(
         service = monitoring.service()
         reconciler = AlertReconciler(
             repository=repository,
+            diagnose=lambda target: _diagnose(repository, target),
             adapter=fixture.adapter(),
             prometheus=service,
             now=lambda: FRESH_NOW,
@@ -300,6 +311,7 @@ async def test_exhausted_pass_budget_persists_unknown_and_leaves_unattempted_tar
         try:
             reconciler = AlertReconciler(
                 repository=repository,
+                diagnose=lambda target: _diagnose(repository, target),
                 adapter=fixture.adapter(),
                 prometheus=service,
                 now=lambda: FRESH_NOW,

@@ -7,7 +7,7 @@ from k8s_incident_agent.diagnosis.policy_contracts import (
 from k8s_incident_agent.diagnosis.tool_execution import OBSERVATION_LIMIT
 from k8s_incident_agent.repair.contracts import RepairAction
 
-DIAGNOSTIC_PROMPT_VERSION = "stage3-dc8-summary-budget-v12"
+DIAGNOSTIC_PROMPT_VERSION = "bounded-diagnosis-trigger-v13"
 
 
 def build_diagnostic_system_prompt(
@@ -58,7 +58,7 @@ def build_diagnostic_system_prompt(
         else ""
     )
     trigger_instruction = (
-        f"- {trigger_panel_id} is the registered signal of the alert rule this incident "
+        f"- {trigger_panel_id} is the registered signal of the alert rule this Run "
         "is mapped to. Its values approximate that rule's condition; they are not the "
         "alert's firing or resolved state. Query it first. A value back on the "
         "non-alerting side of its threshold (see the result's riskDirection) does not "
@@ -173,6 +173,11 @@ def build_diagnostic_system_prompt(
 ## Evidence interpretation
 
 - Establish cluster facts only from successful tool results.
+- diagnosisTrigger records why this Run was requested. Its related sources are
+  symptoms to investigate, not facts or Evidence references. Change event IDs are
+  audit references, never evidenceId values; obtain tool Evidence for every claim.
+- The main source and occurredAt belong to this Run. Do not assume another symptom
+  was explained by an earlier diagnosis or infer shared causes from association.
 - Explain causal inferences using related observations and bound them to the observed
   conditions. Distinguish an inference from a directly observed fact; a missing direct
   check does not by itself invalidate an evidence-supported inference.

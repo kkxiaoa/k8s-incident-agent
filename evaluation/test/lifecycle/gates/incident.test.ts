@@ -19,10 +19,12 @@ const RUN_PAGE = {
 
 test("an Incident belongs to a scenario when its target and Alertmanager source match", async () => {
   const { scenario, detail } = await trialFor("crash-loop-backoff");
-  assert.equal(matchesScenarioIncident(detail.incident, scenario), true);
-  assert.equal(matchesScenarioIncident({ ...detail.incident, source: { ...detail.incident.source, ref: "K8sIncidentDeploymentReplicasUnavailable" } }, scenario), false);
-  assert.equal(matchesScenarioIncident({ ...detail.incident, source: { ...detail.incident.source, type: "scenario" } }, scenario), false);
-  assert.equal(matchesScenarioIncident({ ...detail.incident, target: { ...detail.incident.target, name: "other" } }, scenario), false);
+  assert.equal(matchesScenarioIncident(detail, scenario), true);
+  const other = { ...detail, incident: { ...detail.incident, source: { ...detail.incident.source, ref: "K8sIncidentDeploymentReplicasUnavailable" } } };
+  assert.equal(matchesScenarioIncident(other, scenario), false);
+  assert.equal(matchesScenarioIncident({ ...other, selectedRun: { ...detail.selectedRun, diagnosisTrigger: { source: detail.incident.source } } }, scenario), true);
+  assert.equal(matchesScenarioIncident({ ...detail, incident: { ...detail.incident, source: { ...detail.incident.source, type: "scenario" } } }, scenario), false);
+  assert.equal(matchesScenarioIncident({ ...detail, incident: { ...detail.incident, target: { ...detail.incident.target, name: "other" } } }, scenario), false);
   assert.equal(matchesScenarioIncident(null, scenario), false);
 });
 

@@ -148,7 +148,7 @@ export function MetricPanelCard({
   const [window, setWindow] = useState(panel.recommendedWindow);
   const isTrigger = panel.signalRole === "trigger";
   const anchorKey =
-    anchor.kind === "run" ? `run:${anchor.runId}` : "current";
+    `${anchor.kind}:${anchor.runId ?? ""}`;
   const requestKey = [
     incidentId,
     panel.panelId,
@@ -171,14 +171,15 @@ export function MetricPanelCard({
   >(null);
   // Callers pass a fresh anchor object per render; depend on its primitives so
   // the effect does not refetch on every render.
-  const anchorRunId = anchor.kind === "run" ? anchor.runId : null;
+  const anchorRunId = anchor.runId;
+  const anchorKind = anchor.kind;
 
   useEffect(() => {
     let active = true;
     const requestAnchor: MonitoringPanelAnchor =
-      anchorRunId === null
-        ? { kind: "current" }
-        : { kind: "run", runId: anchorRunId };
+      anchorKind === "run" && anchorRunId !== undefined
+        ? { kind: "run", runId: anchorRunId }
+        : { kind: "current", runId: anchorRunId };
     onLoadSnapshot?.(panel.panelId, { state: "loading", result: null });
     void fetchMonitoringPanelFromBrowser(
       incidentId,
@@ -212,6 +213,7 @@ export function MetricPanelCard({
       active = false;
     };
   }, [
+    anchorKind,
     anchorRunId,
     incidentId,
     onLoadSnapshot,

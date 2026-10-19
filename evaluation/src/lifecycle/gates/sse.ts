@@ -42,7 +42,7 @@ export function validateReplayEvents(
   }
   const eventTypes = new Set<string>(events.map((item) => item.event));
   if (
-    !eventTypes.has("incident.created") ||
+    (!eventTypes.has("incident.created") && !eventTypes.has("run.queued")) ||
     !eventTypes.has("run.started") ||
     !eventTypes.has(TERMINAL_EVENTS[expectedTerminal.outcome])
   ) {

@@ -405,25 +405,29 @@ async def build_runtime_container(
         resources.push_async_callback(supervisor.close)
         await supervisor.start()
 
+        incidents = IncidentApplicationService(
+            catalog=catalog,
+            repository=repository,
+            supervisor=supervisor,
+            credential=credential,
+            model=diagnostic_model.get_snapshot,
+            budget=budget,
+            now=now,
+        )
         reconciliation = AlertReconciler(
             repository=repository,
             adapter=adapter,
             prometheus=prometheus,
             now=now,
+            diagnose=lambda target: incidents.reconcile_alert_target(
+                target, alert_catalog
+            ),
         )
         resources.push_async_callback(reconciliation.close)
         await reconciliation.start()
 
         yield RuntimeContainer(
-            incidents=IncidentApplicationService(
-                catalog=catalog,
-                repository=repository,
-                supervisor=supervisor,
-                credential=credential,
-                model=diagnostic_model.get_snapshot,
-                budget=budget,
-                now=now,
-            ),
+            incidents=incidents,
             events=IncidentEventService(
                 EventDependencies(
                     repository=repository,

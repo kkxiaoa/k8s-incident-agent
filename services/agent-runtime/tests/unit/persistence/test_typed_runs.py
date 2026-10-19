@@ -141,6 +141,8 @@ async def test_nonempty_upgrade_retains_owners_proposal_evidence_and_legacy_term
     after = _rows(paths)
     for row in after["incidents"]:
         assert row.pop("lifecycle_status") is None
+        for column in ("target_uid", "correlation_group", "pending_diagnosis_json"):
+            assert row.pop(column) is None
     for row in after["agent_runs"]:
         assert row.pop("kind") == "diagnosis"
         assert row.pop("operation") is None
@@ -152,6 +154,7 @@ async def test_nonempty_upgrade_retains_owners_proposal_evidence_and_legacy_term
             "selection_replica_set_uid",
             "waiting_expires_at",
             "end_reason",
+            "diagnosis_trigger_json",
         ):
             assert row.pop(column) is None
     for row in after["diagnoses"]:
@@ -334,6 +337,7 @@ async def test_repair_active_run_blocks_unbound_rerun_and_retention_but_is_recov
         await database.dispose()
     with sqlite3.connect(paths.business_database) as connection:
         connection.execute("UPDATE incidents SET lifecycle_status = NULL")
+        connection.execute("UPDATE agent_runs SET diagnosis_trigger_json = NULL")
     before = _dump(paths)
     with pytest.raises(RuntimeError, match="would discard request facts"):
         command.downgrade(_alembic_config(paths), "20260907_0005")

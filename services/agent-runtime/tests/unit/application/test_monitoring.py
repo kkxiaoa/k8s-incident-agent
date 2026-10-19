@@ -122,6 +122,7 @@ class _PanelRepository:
         _incident_id: UUID,
         *,
         run_limit: int,
+        run_id: UUID | None = None,
     ) -> IncidentMonitoringContext | None:
         self.run_limits.append(run_limit)
         return self.context
@@ -643,14 +644,15 @@ async def test_foreign_or_mismatched_run_anchors_never_reach_prometheus() -> Non
             window=MetricWindow.FIFTEEN_MINUTES,
             anchor=MetricTimeAnchor.RUN,
         )
-    with pytest.raises(MonitoringAnchorInvalidError):
-        await service.get_panel(
-            uuid4(),
-            panel_id="image-pull-affected-pods",
-            window=MetricWindow.FIFTEEN_MINUTES,
-            run_id=RUN_2_ID,
-        )
     assert prometheus.calls == []
+    panel = await service.get_panel(
+        uuid4(),
+        panel_id="image-pull-affected-pods",
+        window=MetricWindow.FIFTEEN_MINUTES,
+        run_id=RUN_2_ID,
+    )
+    assert panel.result.anchor is MetricTimeAnchor.CURRENT
+    assert len(prometheus.calls) == 1
 
 
 @pytest.mark.asyncio

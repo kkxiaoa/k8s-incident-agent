@@ -32,7 +32,7 @@ export function monitoringPanelAnchor(
     selectedRun.id !== latestRunId &&
     selectedRun.completedAt !== null
     ? { kind: "run", runId: selectedRun.id, attempt: selectedRun.attempt }
-    : { kind: "current" };
+    : { kind: "current", ...(selectedRun === null ? {} : { runId: selectedRun.id }) };
 }
 
 function isUnavailable(snapshot: MetricPanelLoadSnapshot | undefined): boolean {

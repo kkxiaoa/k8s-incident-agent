@@ -28,6 +28,15 @@ from k8s_incident_agent.auth.sessions import (
     OperatorAuthenticationError,
     OperatorSession,
 )
+from k8s_incident_agent.diagnosis.changes import (
+    DiagnosisFacts,
+    PendingDiagnosis,
+    PendingDiagnosisChange,
+    RecordedDiagnosisChange,
+    cited_diagnosis_values,
+    diagnosis_facts,
+    has_new_diagnosis_facts,
+)
 from k8s_incident_agent.diagnosis.contracts import (
     ValidatedDiagnosis,
     recommendation_records,
@@ -37,6 +46,9 @@ from k8s_incident_agent.diagnosis.tool_execution import (
     normalize_diagnostic_tool_call_identity,
 )
 from k8s_incident_agent.domain.contracts import (
+    DiagnosisChangeReference,
+    DiagnosisDeferral,
+    DiagnosisTrigger,
     IncidentSource,
     KubernetesTarget,
     NormalizedIncidentTrigger,
@@ -87,7 +99,9 @@ from k8s_incident_agent.kubernetes.contracts import (
     TargetRef,
     WorkloadObservation,
 )
+from k8s_incident_agent.monitoring.catalog import AlertCatalog
 from k8s_incident_agent.monitoring.contracts import (
+    AlertAssociationReason,
     CurrentAlertObservation,
     CurrentAlertOverview,
     CurrentAlertState,
@@ -202,6 +216,7 @@ class IncidentRunDetail:
         Literal["expired", "superseded", "rejected", "execution_expired", "withdrawn"]
         | None
     )
+    diagnosis_trigger: DiagnosisTrigger | None = None
     initiated_by_you: bool = False
 
 
@@ -265,6 +280,7 @@ class IncidentDetailRecord:
     run_creation_blocked: bool = False
     actions: IncidentActions | None = None
     alert_summary: CurrentAlertSummary = field(default_factory=CurrentAlertSummary)
+    diagnosis_deferral: DiagnosisDeferral | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -642,6 +658,85 @@ class IncidentRepository:
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
+    async def reconcile_episode_diagnosis(
+        self,
+        target: KubernetesTarget,
+        catalog: AlertCatalog,
+        model: ModelSnapshot | None,
+        budget: RunBudget,
+    ) -> tuple[UUID, ...]:
+        """Bind fresh signals and consume exactly the facts queued in this transaction."""
+        events: list[RunEvent] = []
+        created: list[UUID] = []
+        at = _require_aware_datetime(self._now())
+        target_key = _observation_key(target)
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                observation_row = await session.get(
+                    CurrentAlertObservationRow, target_key
+                )
+                if observation_row is None:
+                    return ()
+                observation = _alert_observation(observation_row.observation_json)
+                summary = _fresh_alert_summary(observation.summary, at)
+                incidents, current = await _associate_episode_signals(
+                    session, target_key, catalog, observation, summary, at, events
+                )
+                projected = (
+                    diagnosis_facts(observation.facts)
+                    if observation.facts is not None
+                    else None
+                )
+                for incident in incidents.values():
+                    runs = list(
+                        await session.scalars(
+                            select(RunRow)
+                            .where(
+                                RunRow.incident_id == incident.id,
+                                RunRow.kind == RunKind.DIAGNOSIS,
+                            )
+                            .order_by(RunRow.attempt.desc())
+                        )
+                    )
+                    triggered_runs = [(run, _diagnosis_trigger(run)) for run in runs]
+                    consumed = await _consumed_diagnosis_changes(
+                        session, incident, triggered_runs
+                    )
+                    pending, available = await _merge_pending_diagnosis_changes(
+                        session,
+                        incident,
+                        current.get(incident.id, {}),
+                        consumed,
+                        summary,
+                        projected,
+                        at,
+                        events,
+                        has_runs=bool(runs),
+                    )
+                    if not pending.changes:
+                        continue
+                    run_id = await _admit_automatic_diagnosis(
+                        session,
+                        incident,
+                        pending,
+                        available,
+                        triggered_runs,
+                        model,
+                        budget,
+                        at,
+                        events,
+                    )
+                    if run_id is not None:
+                        created.append(run_id)
+        except ValidationError:
+            raise RecoveryConsistencyError from None
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+        for event in events:
+            await self._notify_committed_event(event)
+        return tuple(created)
+
     async def incident_exists(self, incident_id: UUID) -> bool:
         try:
             async with self._session_factory() as session:
@@ -723,6 +818,9 @@ class IncidentRepository:
                 )
                 unassigned_signals = tuple(
                     UnassignedAlertSignal(
+                        reason=AlertAssociationReason(
+                            row.association_reason or "awaiting_association"
+                        ),
                         fingerprint=row.fingerprint,
                         display_name=row.display_name,
                         target=KubernetesTarget(
@@ -852,6 +950,7 @@ class IncidentRepository:
         incident_id: UUID,
         *,
         run_limit: int,
+        run_id: UUID | None = None,
     ) -> IncidentMonitoringContext | None:
         if run_limit < 1 or run_limit > 50:
             raise ValueError("Monitoring Run limit must be between 1 and 50")
@@ -861,7 +960,6 @@ class IncidentRepository:
                 if incident_row is None:
                     return None
                 incident = _incident_list_record(incident_row)
-                alert_signal = await _primary_alert_signal(session, incident_row)
                 run_rows = list(
                     await session.scalars(
                         select(RunRow)
@@ -870,10 +968,37 @@ class IncidentRepository:
                         .limit(run_limit + 1)
                     )
                 )
+                selected = (
+                    await session.get(RunRow, str(run_id))
+                    if run_id is not None
+                    else (run_rows[0] if run_rows else None)
+                )
+                if run_id is not None and (
+                    selected is None or selected.incident_id != incident_row.id
+                ):
+                    raise RunNotFoundRepositoryError
+                source_run = (
+                    await _diagnosis_source_row(session, selected)
+                    if selected is not None
+                    else None
+                )
+                trigger = (
+                    _diagnosis_trigger(source_run) if source_run is not None else None
+                )
+                alert_signal = await _primary_alert_signal(
+                    session, incident_row, trigger=trigger
+                )
+                marker_rows = run_rows[:run_limit]
+                if selected is not None and all(
+                    row.id != selected.id for row in marker_rows
+                ):
+                    marker_rows = [*marker_rows[: run_limit - 1], selected]
                 return IncidentMonitoringContext(
-                    source=incident.source,
+                    source=trigger.source if trigger is not None else incident.source,
                     target=incident.target,
-                    occurred_at=_incident_onset(incident_row, alert_signal),
+                    occurred_at=trigger.occurred_at
+                    if trigger is not None
+                    else _incident_onset(incident_row, alert_signal),
                     alert_signal=_alert_signal_record(alert_signal, incident),
                     runs=tuple(
                         MonitoringRunInterval(
@@ -890,7 +1015,7 @@ class IncidentRepository:
                                 else None
                             ),
                         )
-                        for row in run_rows[:run_limit]
+                        for row in marker_rows
                     ),
                     runs_truncated=len(run_rows) > run_limit,
                 )
@@ -1097,6 +1222,7 @@ class IncidentRepository:
                         has_older_events=False,
                         event_cursor=event_cursor,
                         alert_summary=alert_summary,
+                        diagnosis_deferral=_pending_diagnosis(incident).deferral,
                         actions=IncidentActions(
                             prepare="not_applicable",
                             refresh="not_applicable",
@@ -1188,6 +1314,7 @@ class IncidentRepository:
                     detail,
                     run_creation_blocked=bool(occupied),
                     alert_summary=alert_summary,
+                    diagnosis_deferral=_pending_diagnosis(incident).deferral,
                 )
                 assert detail.run is not None
                 projected = replace(
@@ -1637,6 +1764,7 @@ class IncidentRepository:
                     trigger,
                     model=model,
                     budget=budget,
+                    occurred_at=_require_aware_datetime(self._now()),
                 )
                 if operator_ref is not None:
                     run = await session.get(RunRow, str(created.run_id))
@@ -1754,8 +1882,8 @@ class IncidentRepository:
         operator_ref: str | None = None,
         requester: OperatorSession | None = None,
     ) -> CreatedRun | None:
-        run_id = uuid4()
-        occurred_at = datetime.now(UTC)
+        occurred_at = _require_aware_datetime(self._now())
+        additional_event: RunEvent | None = None
         try:
             async with self._session_factory() as session, session.begin():
                 await session.execute(text("BEGIN IMMEDIATE"))
@@ -1770,57 +1898,118 @@ class IncidentRepository:
                     await _replace_waiting_run(
                         session, incident, replaces_run_id, occurred_at
                     )
-                await _require_no_incident_execution(session, incident.id)
-                active = await session.scalar(
-                    select(
-                        exists().where(
+                pending = _pending_diagnosis(incident)
+                available = await _fresh_pending_changes(
+                    session, incident, pending, occurred_at
+                )
+                if available:
+                    trigger = await _trigger_from_changes(
+                        session, incident, available, manual=True
+                    )
+                else:
+                    previous = await session.scalar(
+                        select(RunRow)
+                        .where(
                             RunRow.incident_id == incident.id,
-                            RunRow.status.in_(_ACTIVE_RUN_STATUSES),
+                            RunRow.kind == RunKind.DIAGNOSIS,
+                        )
+                        .order_by(RunRow.attempt.desc())
+                        .limit(1)
+                    )
+                    fixed = (
+                        _diagnosis_trigger(previous) if previous is not None else None
+                    )
+                    trigger = (
+                        fixed.model_copy(update={"reason": "manual"})
+                        if fixed is not None
+                        else DiagnosisTrigger(
+                            source=_incident_list_record(incident).source,
+                            summary=incident.trigger_summary,
+                            occurred_at=_incident_onset(
+                                incident, await _primary_alert_signal(session, incident)
+                            ),
+                            reason="manual",
+                            changes=(),
                         )
                     )
-                )
-                if active is not False:
-                    raise ActiveRunExistsError
-                max_attempt = await session.scalar(
-                    select(func.max(RunRow.attempt)).where(
-                        RunRow.incident_id == incident.id
+                    row = await session.get(
+                        CurrentAlertObservationRow,
+                        tuple(getattr(incident, name) for name in _TARGET_COLUMNS),
                     )
+                    observation = (
+                        _alert_observation(row.observation_json)
+                        if row is not None
+                        else None
+                    )
+                    if (
+                        observation is not None
+                        and observation.facts is not None
+                        and observation.facts.target_ref.uid == incident.target_uid
+                        and any(
+                            rule.alert_id == trigger.source.ref
+                            and rule.complete
+                            and rule.state is CurrentAlertState.FIRING
+                            for rule in _fresh_alert_summary(
+                                observation.summary, occurred_at
+                            ).rules
+                        )
+                    ):
+                        signal = await session.scalar(
+                            select(AlertSignalRow)
+                            .where(
+                                AlertSignalRow.incident_id == incident.id,
+                                AlertSignalRow.trigger_ref == trigger.source.ref,
+                                AlertSignalRow.trigger_revision
+                                == trigger.source.revision,
+                            )
+                            .order_by(
+                                AlertSignalRow.starts_at.desc(),
+                                AlertSignalRow.fingerprint,
+                            )
+                            .limit(1)
+                        )
+                        if signal is not None:
+                            (
+                                captured,
+                                additional_event,
+                            ) = await _capture_diagnosis_change(
+                                session,
+                                incident,
+                                signal,
+                                diagnosis_facts(observation.facts),
+                                occurred_at,
+                                has_runs=True,
+                            )
+                            trigger = await _trigger_from_changes(
+                                session,
+                                incident,
+                                {
+                                    signal.trigger_ref: PendingDiagnosisChange(
+                                        first_event_id=captured.id, event_id=captured.id
+                                    ),
+                                },
+                                manual=True,
+                            )
+                run_row, event = await _queue_diagnosis_run(
+                    session,
+                    incident,
+                    model,
+                    budget,
+                    occurred_at,
+                    trigger,
+                    allow_initial=False,
+                    operator_ref=operator_ref,
                 )
-                if not isinstance(max_attempt, int) or max_attempt < 1:
-                    raise RunNotApplicableError
-                attempt = max_attempt + 1
-                run_row = _new_run_row(
-                    run_id=run_id,
-                    incident_id=incident_id,
-                    attempt=attempt,
-                    model=model,
-                    budget=budget,
-                    occurred_at=occurred_at,
-                )
-                session.add(run_row)
-                run_row.request_source = "operator" if operator_ref else "system"
-                run_row.operator_ref = operator_ref
-                await session.flush()
-                payload = _base_payload(incident_id, run_id, occurred_at)
-                payload.update(
-                    {
-                        "attempt": attempt,
-                        "runStatus": RunStatus.QUEUED.value,
-                    }
-                )
-                event_row = _new_event_row(
-                    run_id=run_id,
-                    event_key="run.queued",
-                    event_type="run.queued",
-                    occurred_at=occurred_at,
-                    payload=payload,
-                )
-                session.add(event_row)
-                incident.updated_at = occurred_at
-                await session.flush()
-                event = _event_from_row(
-                    event_row,
-                    expected_incident_id=incident_id,
+                run_id = UUID(run_row.id)
+                remaining = {
+                    key: value
+                    for key, value in pending.changes.items()
+                    if key not in available
+                }
+                incident.pending_diagnosis_json = (
+                    PendingDiagnosis(changes=remaining).model_dump_json()
+                    if remaining
+                    else None
                 )
         except ActiveRunExistsError:
             raise
@@ -1846,6 +2035,8 @@ class IncidentRepository:
             raise PersistenceOperationError from None
 
         created = CreatedRun(run_id=run_id)
+        if additional_event is not None:
+            await self._notify_committed_event(additional_event)
         await self._notify_committed_event(event)
         return created
 
@@ -3297,18 +3488,9 @@ class IncidentRepository:
             await self._on_event_committed(event.incident_id)
 
 
-async def _create_initial_incident(
-    session: AsyncSession,
-    trigger: NormalizedIncidentTrigger,
-    *,
-    model: ModelSnapshot,
-    budget: RunBudget,
-) -> CreatedIncident:
-    incident_id = uuid4()
-    run_id = uuid4()
-    occurred_at = datetime.now(UTC)
-    incident = IncidentRow(
-        id=str(incident_id),
+def _new_incident_row(trigger: NormalizedIncidentTrigger, at: datetime) -> IncidentRow:
+    return IncidentRow(
+        id=str(uuid4()),
         trigger_source=trigger.source.type,
         trigger_ref=trigger.source.ref,
         trigger_revision=trigger.source.revision,
@@ -3321,9 +3503,657 @@ async def _create_initial_incident(
         resource_name=trigger.target.name,
         status=IncidentStatus.RECEIVED,
         lifecycle_status=IncidentLifecycleStatus.OPEN,
-        created_at=occurred_at,
-        updated_at=occurred_at,
+        created_at=at,
+        updated_at=at,
     )
+
+
+def _signal_trigger(signal: AlertSignalRow) -> NormalizedIncidentTrigger:
+    return NormalizedIncidentTrigger(
+        source=IncidentSource(
+            type="alertmanager",
+            ref=signal.trigger_ref,
+            revision=signal.trigger_revision,
+        ),
+        display_name=signal.display_name,
+        trigger_summary=signal.trigger_summary,
+        target=KubernetesTarget(
+            cluster=signal.cluster,
+            namespace=signal.namespace,
+            api_version=signal.api_version,
+            kind=signal.kind,
+            name=signal.resource_name,
+        ),
+    )
+
+
+def _pending_diagnosis(incident: IncidentRow) -> PendingDiagnosis:
+    try:
+        return (
+            PendingDiagnosis.model_validate_json(incident.pending_diagnosis_json)
+            if incident.pending_diagnosis_json is not None
+            else PendingDiagnosis()
+        )
+    except ValidationError:
+        raise RecoveryConsistencyError from None
+
+
+def _diagnosis_trigger(run: RunRow) -> DiagnosisTrigger | None:
+    try:
+        return (
+            DiagnosisTrigger.model_validate_json(run.diagnosis_trigger_json)
+            if run.diagnosis_trigger_json is not None
+            else None
+        )
+    except ValidationError:
+        raise RecoveryConsistencyError from None
+
+
+async def _associate_episode_signals(
+    session: AsyncSession,
+    target_key: tuple[str, str | None, str, str, str],
+    catalog: AlertCatalog,
+    observation: CurrentAlertObservation,
+    summary: CurrentAlertSummary,
+    at: datetime,
+    events: list[RunEvent],
+) -> tuple[dict[str, IncidentRow], dict[str, dict[str, AlertSignalRow]]]:
+    target_values = dict(zip(_TARGET_COLUMNS, target_key, strict=True))
+    signals = list(
+        await session.scalars(
+            select(AlertSignalRow)
+            .where(
+                *(
+                    getattr(AlertSignalRow, name) == value
+                    for name, value in target_values.items()
+                )
+            )
+            .order_by(
+                AlertSignalRow.first_received_at,
+                AlertSignalRow.starts_at,
+                AlertSignalRow.fingerprint,
+            )
+        )
+    )
+    incidents = {
+        incident.id: incident
+        for incident in await session.scalars(
+            select(IncidentRow).where(
+                *(
+                    getattr(IncidentRow, name) == value
+                    for name, value in target_values.items()
+                ),
+                IncidentRow.lifecycle_status == IncidentLifecycleStatus.OPEN,
+                IncidentRow.target_uid.is_not(None),
+                IncidentRow.pending_diagnosis_json.is_not(None),
+            )
+        )
+    }
+    current: dict[str, dict[str, AlertSignalRow]] = {}
+    facts = observation.facts
+    for signal in signals:
+        entry = catalog.find(signal.trigger_ref)
+        if (
+            entry is None
+            or signal.trigger_revision != catalog.version
+            or observation.catalog_version != catalog.version
+        ):
+            signal.association_reason = "rule_mismatch"
+            continue
+        rule = next(
+            (item for item in summary.rules if item.alert_id == signal.trigger_ref),
+            None,
+        )
+        if rule is None or not rule.complete or rule.state is CurrentAlertState.UNKNOWN:
+            signal.association_reason = "awaiting_observation"
+            continue
+        if rule.state is not CurrentAlertState.FIRING:
+            signal.association_reason = "not_firing"
+            continue
+        if (
+            facts is None
+            or facts.created_at is None
+            or (
+                facts.target_ref.namespace,
+                facts.target_ref.api_version,
+                facts.target_ref.kind,
+                facts.target_ref.name,
+            )
+            != target_key[1:]
+            or _canonical_alert_datetime(facts.created_at) > signal.starts_at
+        ):
+            signal.association_reason = "identity_unverified"
+            continue
+        group = entry.correlation_group or entry.alert_id
+        incident = (
+            await session.get(IncidentRow, signal.incident_id)
+            if signal.incident_id
+            else None
+        )
+        if incident is not None:
+            if incident.lifecycle_status is IncidentLifecycleStatus.CLOSED:
+                signal.association_reason = "closed_conflict"
+                continue
+            if incident.lifecycle_status is None or incident.target_uid is None:
+                continue
+            if (
+                incident.target_uid != facts.target_ref.uid
+                or incident.correlation_group != group
+            ):
+                signal.association_reason = "identity_unverified"
+                continue
+        else:
+            candidates = list(
+                await session.scalars(
+                    select(IncidentRow)
+                    .where(
+                        *(
+                            getattr(IncidentRow, name) == value
+                            for name, value in target_values.items()
+                        ),
+                        IncidentRow.target_uid == facts.target_ref.uid,
+                        IncidentRow.correlation_group == group,
+                        IncidentRow.lifecycle_status == IncidentLifecycleStatus.OPEN,
+                    )
+                    .limit(2)
+                )
+            )
+            if len(candidates) > 1:
+                signal.association_reason = "ambiguous_incident"
+                continue
+            trigger = _signal_trigger(signal)
+            incident = candidates[0] if candidates else _new_incident_row(trigger, at)
+            if not candidates:
+                incident.target_uid = facts.target_ref.uid
+                incident.correlation_group = group
+                session.add(incident)
+                await session.flush()
+            signal.incident_id = incident.id
+            incident.updated_at = at
+            event = _new_incident_event(
+                incident,
+                "alert.associated",
+                at,
+                {
+                    "source": trigger.source.model_dump(mode="json"),
+                    "fingerprint": signal.fingerprint,
+                    "startsAt": signal.starts_at,
+                    "targetUid": facts.target_ref.uid,
+                },
+            )
+            session.add(event)
+            await session.flush()
+            events.append(
+                _event_from_row(event, expected_incident_id=UUID(incident.id))
+            )
+        signal.association_reason = None
+        incidents[incident.id] = incident
+        chosen = current.setdefault(incident.id, {}).get(signal.trigger_ref)
+        if chosen is None or (signal.starts_at, signal.fingerprint) > (
+            chosen.starts_at,
+            chosen.fingerprint,
+        ):
+            current[incident.id][signal.trigger_ref] = signal
+    return incidents, current
+
+
+async def _consumed_diagnosis_changes(
+    session: AsyncSession,
+    incident: IncidentRow,
+    triggered_runs: list[tuple[RunRow, DiagnosisTrigger | None]],
+) -> dict[str, RecordedDiagnosisChange]:
+    """Read newest-first runs so each source retains its latest consuming run's facts."""
+    consumed: dict[str, RecordedDiagnosisChange] = {}
+    for run, trigger in triggered_runs:
+        if trigger is None:
+            continue
+        for reference in trigger.changes:
+            if reference.source.ref in consumed:
+                continue
+            baseline = await _load_diagnosis_change(
+                session, incident.id, int(reference.event_id)
+            )
+            if baseline.source == trigger.source:
+                refined = await _cited_fact_baseline(
+                    session, incident, run, baseline.facts
+                )
+                baseline = baseline.model_copy(update={"facts": refined})
+            consumed[reference.source.ref] = baseline
+    return consumed
+
+
+async def _merge_pending_diagnosis_changes(
+    session: AsyncSession,
+    incident: IncidentRow,
+    current: dict[str, AlertSignalRow],
+    consumed: dict[str, RecordedDiagnosisChange],
+    summary: CurrentAlertSummary,
+    projected: DiagnosisFacts | None,
+    at: datetime,
+    events: list[RunEvent],
+    *,
+    has_runs: bool,
+) -> tuple[PendingDiagnosis, dict[str, PendingDiagnosisChange]]:
+    pending = _pending_diagnosis(incident)
+    changes = dict(pending.changes)
+    eligible: set[str] = set()
+    for alert_id, signal in sorted(
+        current.items(),
+        key=lambda item: (
+            _database_datetime(item[1].first_received_at)
+            if item[1].first_received_at is not None
+            else datetime.min.replace(tzinfo=UTC),
+            item[1].starts_at,
+            item[1].fingerprint,
+        ),
+    ):
+        if projected is None:
+            raise RecoveryConsistencyError
+        baseline = consumed.get(alert_id)
+        if baseline is not None and not has_new_diagnosis_facts(
+            baseline.facts, projected
+        ):
+            if projected.complete and baseline.facts.complete:
+                changes.pop(alert_id, None)
+            continue
+        eligible.add(alert_id)
+        latest, recorded_event = await _capture_diagnosis_change(
+            session, incident, signal, projected, at, has_runs=has_runs
+        )
+        if recorded_event is not None:
+            events.append(recorded_event)
+        existing = changes.get(alert_id)
+        changes[alert_id] = PendingDiagnosisChange(
+            first_event_id=existing.first_event_id if existing else latest.id,
+            event_id=latest.id,
+        )
+    for alert_id in tuple(changes):
+        rule = next(
+            (item for item in summary.rules if item.alert_id == alert_id),
+            None,
+        )
+        if (
+            projected is not None
+            and projected.target_uid == incident.target_uid
+            and rule is not None
+            and rule.complete
+            and rule.state is CurrentAlertState.CLEAR
+        ):
+            changes.pop(alert_id)
+    pending = pending.model_copy(update={"changes": changes})
+    incident.pending_diagnosis_json = pending.model_dump_json() if changes else None
+    available = {key: value for key, value in changes.items() if key in eligible}
+    return pending, available
+
+
+async def _admit_automatic_diagnosis(
+    session: AsyncSession,
+    incident: IncidentRow,
+    pending: PendingDiagnosis,
+    available: dict[str, PendingDiagnosisChange],
+    triggered_runs: list[tuple[RunRow, DiagnosisTrigger | None]],
+    model: ModelSnapshot | None,
+    budget: RunBudget,
+    at: datetime,
+    events: list[RunEvent],
+) -> UUID | None:
+    automatic = [
+        run
+        for run, trigger in triggered_runs
+        if run.request_source != "operator"
+        and (trigger is None or trigger.source.type == "alertmanager")
+    ]
+    review_after = max(
+        (
+            _database_datetime(run.created_at) + timedelta(minutes=10)
+            for run in automatic
+        ),
+        default=at,
+    )
+    reason = (
+        "budget_exhausted"
+        if len(automatic) >= 3
+        else "awaiting_observation"
+        if not available
+        else "unavailable"
+        if model is None
+        else "cooldown"
+        if review_after > at
+        else None
+    )
+    if reason is None:
+        if model is None:
+            raise RecoveryConsistencyError
+        trigger = await _trigger_from_changes(session, incident, available)
+        try:
+            run, queued = await _queue_diagnosis_run(
+                session, incident, model, budget, at, trigger, allow_initial=True
+            )
+        except ActiveRunExistsError:
+            reason = "busy"
+        else:
+            remaining = {
+                key: value
+                for key, value in pending.changes.items()
+                if key not in available
+            }
+            incident.pending_diagnosis_json = (
+                PendingDiagnosis(changes=remaining).model_dump_json()
+                if remaining
+                else None
+            )
+            run_id = UUID(run.id)
+            events.append(queued)
+            return run_id
+    deferral = DiagnosisDeferral(
+        reason=reason,
+        review_after=review_after if reason == "cooldown" else None,
+    )
+    if pending.deferral is None or pending.deferral.reason != deferral.reason:
+        event = _new_incident_event(
+            incident,
+            "diagnosis.deferred",
+            at,
+            {"deferral": deferral.model_dump(mode="json")},
+        )
+        session.add(event)
+        await session.flush()
+        events.append(_event_from_row(event, expected_incident_id=UUID(incident.id)))
+    incident.pending_diagnosis_json = PendingDiagnosis(
+        changes=pending.changes, deferral=deferral
+    ).model_dump_json()
+    return None
+
+
+async def _capture_diagnosis_change(
+    session: AsyncSession,
+    incident: IncidentRow,
+    signal: AlertSignalRow,
+    projected: DiagnosisFacts,
+    at: datetime,
+    *,
+    has_runs: bool,
+) -> tuple[RunEventRow, RunEvent | None]:
+    latest = await session.scalar(
+        select(RunEventRow)
+        .where(
+            RunEventRow.incident_id == incident.id,
+            RunEventRow.event_type == "diagnosis.change_recorded",
+            func.json_extract(RunEventRow.payload_json, "$.change.source.ref")
+            == signal.trigger_ref,
+        )
+        .order_by(RunEventRow.id.desc())
+        .limit(1)
+    )
+    previous = _recorded_diagnosis_change(latest) if latest is not None else None
+    if previous is not None and not has_new_diagnosis_facts(previous.facts, projected):
+        assert latest is not None
+        return latest, None
+    change = RecordedDiagnosisChange(
+        source=_signal_trigger(signal).source,
+        summary=signal.trigger_summary,
+        fingerprint=signal.fingerprint,
+        starts_at=signal.starts_at,
+        reason="facts_changed"
+        if previous is not None
+        else "new_symptom"
+        if has_runs
+        else "first_observation",
+        facts=projected,
+    )
+    latest = _new_incident_event(
+        incident,
+        "diagnosis.change_recorded",
+        at,
+        {"change": change.model_dump(mode="json")},
+    )
+    session.add(latest)
+    incident.updated_at = at
+    await session.flush()
+    return latest, _event_from_row(latest, expected_incident_id=UUID(incident.id))
+
+
+def _recorded_diagnosis_change(event: RunEventRow) -> RecordedDiagnosisChange:
+    try:
+        return RecordedDiagnosisChange.model_validate_json(
+            canonical_json(_event_payload(event)["change"])
+        )
+    except (KeyError, ValidationError):
+        raise RecoveryConsistencyError from None
+
+
+async def _load_diagnosis_change(
+    session: AsyncSession, incident_id: str, event_id: int
+) -> RecordedDiagnosisChange:
+    event = await session.get(RunEventRow, event_id)
+    if (
+        event is None
+        or event.incident_id != incident_id
+        or event.run_id is not None
+        or event.event_type != "diagnosis.change_recorded"
+    ):
+        raise RecoveryConsistencyError
+    return _recorded_diagnosis_change(event)
+
+
+def _new_incident_event(
+    incident: IncidentRow, event_type: str, at: datetime, data: dict[str, JsonValue]
+) -> RunEventRow:
+    return RunEventRow(
+        incident_id=incident.id,
+        run_id=None,
+        event_key=event_type,
+        event_type=event_type,
+        schema_version=6,
+        occurred_at=at,
+        payload_json=canonical_json(
+            {
+                "schemaVersion": 6,
+                "incidentId": incident.id,
+                "runId": None,
+                "runKind": None,
+                "occurredAt": _rfc3339(at),
+                **data,
+            }
+        ),
+    )
+
+
+async def _fresh_pending_changes(
+    session: AsyncSession,
+    incident: IncidentRow,
+    pending: PendingDiagnosis,
+    at: datetime,
+) -> dict[str, PendingDiagnosisChange]:
+    if not pending.changes:
+        return {}
+    row = await session.get(
+        CurrentAlertObservationRow,
+        tuple(getattr(incident, name) for name in _TARGET_COLUMNS),
+    )
+    if row is None:
+        return {}
+    observation = _alert_observation(row.observation_json)
+    if (
+        observation.facts is None
+        or observation.facts.target_ref.uid != incident.target_uid
+    ):
+        return {}
+    summary = _fresh_alert_summary(observation.summary, at)
+    return {
+        key: value
+        for key, value in pending.changes.items()
+        if any(
+            rule.alert_id == key
+            and rule.complete
+            and rule.state is CurrentAlertState.FIRING
+            for rule in summary.rules
+        )
+    }
+
+
+async def _trigger_from_changes(
+    session: AsyncSession,
+    incident: IncidentRow,
+    changes: dict[str, PendingDiagnosisChange],
+    *,
+    manual: bool = False,
+) -> DiagnosisTrigger:
+    ordered = sorted(
+        changes.values(), key=lambda change: (change.first_event_id, change.event_id)
+    )
+    recorded = [
+        await _load_diagnosis_change(session, incident.id, change.event_id)
+        for change in ordered
+    ]
+    first = recorded[0]
+    return DiagnosisTrigger(
+        source=first.source,
+        summary=first.summary,
+        occurred_at=datetime.fromisoformat(first.starts_at.replace("Z", "+00:00")),
+        reason="manual" if manual else first.reason,
+        changes=tuple(
+            DiagnosisChangeReference(
+                source=change.source,
+                fingerprint=change.fingerprint,
+                starts_at=change.starts_at,
+                event_id=str(reference.event_id),
+            )
+            for change, reference in zip(recorded, ordered, strict=True)
+        ),
+    )
+
+
+async def _cited_fact_baseline(
+    session: AsyncSession,
+    incident: IncidentRow,
+    run: RunRow,
+    baseline: DiagnosisFacts,
+) -> DiagnosisFacts:
+    if (
+        not baseline.complete
+        or run.status is not RunStatus.COMPLETED
+        or run.started_at is None
+        or run.completed_at is None
+    ):
+        return baseline
+    diagnosis = await _diagnosis_by_run(session, UUID(run.id))
+    if diagnosis is None or diagnosis.outcome is not DiagnosisOutcome.DIAGNOSED:
+        return baseline
+    validated = _validated_diagnosis_from_row(diagnosis)
+    if validated.missing_information:
+        return baseline
+    cited = {
+        str(evidence_id)
+        for cause in validated.root_causes
+        for evidence_id in cause.evidence_ids
+    }
+    values = dict(baseline.values)
+    for evidence in await session.scalars(
+        select(EvidenceRow)
+        .where(
+            EvidenceRow.run_id == run.id,
+            EvidenceRow.id.in_(cited),
+            EvidenceRow.truncated.is_(False),
+            EvidenceRow.observed_at >= run.started_at,
+            EvidenceRow.observed_at <= run.completed_at,
+        )
+        .order_by(EvidenceRow.observed_at, EvidenceRow.id)
+    ):
+        try:
+            reference = TargetRef.model_validate_json(evidence.target_ref_json)
+        except ValidationError:
+            continue
+        if (
+            reference.uid,
+            reference.namespace,
+            reference.api_version,
+            reference.kind,
+            reference.name,
+        ) != (
+            baseline.target_uid,
+            incident.namespace,
+            incident.api_version,
+            incident.kind,
+            incident.resource_name,
+        ):
+            continue
+        values.update(
+            cited_diagnosis_values(
+                evidence.evidence_kind, evidence.payload_json, values
+            )
+        )
+    return baseline.model_copy(update={"values": values})
+
+
+async def _queue_diagnosis_run(
+    session: AsyncSession,
+    incident: IncidentRow,
+    model: ModelSnapshot,
+    budget: RunBudget,
+    at: datetime,
+    trigger: DiagnosisTrigger,
+    *,
+    allow_initial: bool,
+    operator_ref: str | None = None,
+) -> tuple[RunRow, RunEvent]:
+    await _require_no_incident_execution(session, incident.id)
+    active = await session.scalar(
+        select(
+            exists().where(
+                RunRow.incident_id == incident.id,
+                RunRow.status.in_(_ACTIVE_RUN_STATUSES),
+            )
+        )
+    )
+    if active is not False:
+        raise ActiveRunExistsError
+    max_attempt = await session.scalar(
+        select(func.max(RunRow.attempt)).where(RunRow.incident_id == incident.id)
+    )
+    if max_attempt is None and not allow_initial:
+        raise RunNotApplicableError
+    attempt = (max_attempt or 0) + 1
+    incident_id, run_id = UUID(incident.id), uuid4()
+    run = _new_run_row(
+        run_id=run_id,
+        incident_id=incident_id,
+        attempt=attempt,
+        model=model,
+        budget=budget,
+        occurred_at=at,
+    )
+    run.request_source = "operator" if operator_ref else "system"
+    run.operator_ref = operator_ref
+    run.diagnosis_trigger_json = trigger.model_dump_json()
+    session.add(run)
+    await session.flush()
+    payload = _base_payload(incident_id, run_id, at)
+    payload.update({"attempt": attempt, "runStatus": RunStatus.QUEUED.value})
+    event = _new_event_row(
+        run_id=run_id,
+        event_key="run.queued",
+        event_type="run.queued",
+        occurred_at=at,
+        payload=payload,
+    )
+    session.add(event)
+    incident.updated_at = at
+    await session.flush()
+    return run, _event_from_row(event, expected_incident_id=incident_id)
+
+
+async def _create_initial_incident(
+    session: AsyncSession,
+    trigger: NormalizedIncidentTrigger,
+    *,
+    model: ModelSnapshot,
+    budget: RunBudget,
+    occurred_at: datetime,
+) -> CreatedIncident:
+    run_id = uuid4()
+    incident = _new_incident_row(trigger, occurred_at)
+    incident_id = UUID(incident.id)
     session.add(incident)
     await session.flush()
 
@@ -3335,6 +4165,13 @@ async def _create_initial_incident(
         budget=budget,
         occurred_at=occurred_at,
     )
+    run.diagnosis_trigger_json = DiagnosisTrigger(
+        source=trigger.source,
+        summary=trigger.trigger_summary,
+        occurred_at=occurred_at,
+        reason="first_observation",
+        changes=(),
+    ).model_dump_json()
     session.add(run)
     await session.flush()
 
@@ -4082,7 +4919,7 @@ async def _load_workflow_rows(
     return _WorkflowRows(
         run=run,
         incident=incident,
-        alert_signal=await _primary_alert_signal(session, incident),
+        alert_signal=await _primary_alert_signal(session, incident, run),
         diagnosis=diagnosis,
         repair_proposal=repair_proposal,
         repair=repair,
@@ -4302,16 +5139,38 @@ def _incident_list_record(row: IncidentRow) -> IncidentListRecord:
 
 
 async def _primary_alert_signal(
-    session: AsyncSession, incident: IncidentRow
+    session: AsyncSession,
+    incident: IncidentRow,
+    run: RunRow | None = None,
+    *,
+    trigger: DiagnosisTrigger | None = None,
 ) -> AlertSignalRow | None:
+    trigger = trigger or (
+        _diagnosis_trigger(await _diagnosis_source_row(session, run))
+        if run is not None
+        else None
+    )
+    if trigger is not None:
+        reference = next(
+            (item for item in trigger.changes if item.source == trigger.source), None
+        )
+        if reference is not None:
+            signal = await session.get(
+                AlertSignalRow, (reference.fingerprint, reference.starts_at)
+            )
+            if signal is None or signal.incident_id != incident.id:
+                raise RecoveryConsistencyError
+            return signal
     # Migrated receipts have unknown times. Keep their original source stable
     # when later occurrences are associated with the same Incident.
     return await session.scalar(
         select(AlertSignalRow)
         .where(
             AlertSignalRow.incident_id == incident.id,
-            AlertSignalRow.trigger_ref == incident.trigger_ref,
-            AlertSignalRow.trigger_revision == incident.trigger_revision,
+            AlertSignalRow.trigger_ref
+            == (trigger.source.ref if trigger else incident.trigger_ref),
+            AlertSignalRow.trigger_revision
+            == (trigger.source.revision if trigger else incident.trigger_revision),
         )
         .order_by(
             AlertSignalRow.first_received_at,
@@ -4320,6 +5179,23 @@ async def _primary_alert_signal(
         )
         .limit(1)
     )
+
+
+async def _diagnosis_source_row(session: AsyncSession, run: RunRow) -> RunRow:
+    while run.kind is RunKind.REPAIR:
+        source = (
+            await session.get(RunRow, run.source_run_id)
+            if run.source_run_id is not None
+            else None
+        )
+        if (
+            source is None
+            or source.incident_id != run.incident_id
+            or source.attempt >= run.attempt
+        ):
+            raise RecoveryConsistencyError
+        run = source
+    return run
 
 
 def _alert_signal_record(
@@ -4347,6 +5223,9 @@ def _alert_signal_record(
             status=row.status,
             starts_at=starts_at,
             ends_at=ends_at,
+            last_received_at=_database_datetime(row.last_received_at)
+            if row.last_received_at is not None
+            else None,
         )
     except (AttributeError, TypeError, ValueError):
         raise RecoveryConsistencyError from None
@@ -4491,6 +5370,9 @@ def _incident_run_detail(
             else None
         ),
         request_source=run.request_source,
+        diagnosis_trigger=workflow.diagnosis_trigger
+        if isinstance(workflow, DiagnosisWorkflowRunSnapshot)
+        else None,
         source_run_id=workflow.source_run_id
         if isinstance(workflow, RepairWorkflowRunSnapshot)
         else None,
@@ -4849,16 +5731,21 @@ def _workflow_run_projection(
         if run.status is RunStatus.COMPLETED and started_at is None:
             raise RecoveryConsistencyError
 
+    trigger = _diagnosis_trigger(run)
     snapshot = DiagnosisWorkflowRunSnapshot(
         id=run_id,
         incident_id=incident_id,
-        source=IncidentSource(
+        source=trigger.source
+        if trigger is not None
+        else IncidentSource(
             type=cast(Literal["scenario", "alertmanager"], incident.trigger_source),
             ref=incident.trigger_ref,
             revision=incident.trigger_revision,
         ),
         run_status=run.status,
-        trigger_summary=incident.trigger_summary,
+        trigger_summary=trigger.summary
+        if trigger is not None
+        else incident.trigger_summary,
         target=target,
         model=ModelSnapshot(
             provider=cast(str, run.model_provider),
@@ -4872,7 +5759,10 @@ def _workflow_run_projection(
             timeout_seconds=run.timeout_seconds,
         ),
         started_at=started_at,
-        occurred_at=_incident_onset(incident, alert_signal),
+        occurred_at=trigger.occurred_at
+        if trigger is not None
+        else _incident_onset(incident, alert_signal),
+        diagnosis_trigger=trigger,
     )
     return snapshot, terminal
 
@@ -6892,6 +7782,13 @@ async def _incident_alert_summary(
         return CurrentAlertSummary()
     observation = _alert_observation(row.observation_json)
     summary = _fresh_alert_summary(observation.summary, at)
+    if incident.target_uid is not None:
+        return (
+            summary
+            if observation.facts is not None
+            and observation.facts.target_ref.uid == incident.target_uid
+            else CurrentAlertSummary(reason=ObservationReason.IDENTITY_UNVERIFIED)
+        )
     # Historical names do not establish identity. Check all saved target Evidence,
     # not only the selected Run, so contradictory UIDs cannot be hidden by a tab.
     references = await session.scalars(

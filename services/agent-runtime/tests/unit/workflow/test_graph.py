@@ -24,7 +24,7 @@ from tests.factories import prometheus_query_service_stub
 from k8s_incident_agent.diagnosis.context import DiagnosticToolContext
 from k8s_incident_agent.diagnosis.policy import DiagnosticPolicy
 from k8s_incident_agent.diagnosis.policy_contracts import DiagnosticPanel
-from k8s_incident_agent.domain.contracts import IncidentSource
+from k8s_incident_agent.domain.contracts import DiagnosisTrigger, IncidentSource
 from k8s_incident_agent.domain.models import (
     AgentRunSnapshot,
     DiagnosisValidationSnapshot,
@@ -354,10 +354,21 @@ async def test_graph_input_drops_internal_state_injection(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fixed_trigger", [False, True])
 async def test_triage_validates_target_without_model_or_kubernetes_call(
     tmp_path: Path,
+    fixed_trigger: bool,
 ) -> None:
     run = _snapshot()
+    if fixed_trigger:
+        trigger = DiagnosisTrigger(
+            source=run.source,
+            summary="New observed symptom",
+            occurred_at=_OCCURRED_AT,
+            reason="new_symptom",
+            changes=(),
+        )
+        run = replace(run, trigger_summary=trigger.summary, diagnosis_trigger=trigger)
     repository = _WorkflowRepository(run)
     model = _ToolCallingFakeModel(responses=[AIMessage(content="unused")])
     config: RunnableConfig = {"configurable": {"thread_id": str(run.id)}}
@@ -378,6 +389,13 @@ async def test_triage_validates_target_without_model_or_kubernetes_call(
     assert len(result["messages"]) == 1
     assert '"occurredAt":"2026-09-02T08:30:00Z"' in result["messages"][0].content
     assert '"runStartedAt":"' in result["messages"][0].content
+    if fixed_trigger:
+        assert run.diagnosis_trigger is not None
+        assert result["diagnosis_trigger"] == run.diagnosis_trigger.model_dump(
+            mode="json"
+        )
+        assert '"reason":"new_symptom"' in result["messages"][0].content
+        assert '"summary":"New observed symptom"' in result["messages"][0].content
 
 
 @pytest.mark.asyncio

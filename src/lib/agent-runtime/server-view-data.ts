@@ -117,7 +117,7 @@ export async function loadIncidentPage(
     await Promise.all([
       fetchIncident(incidentId, runId, incoming),
       fetchRuns(incidentId, new URLSearchParams({ limit: "20" }), incoming),
-      fetchMonitoringPanels(incidentId, incoming),
+      fetchMonitoringPanels(incidentId, incoming, runId),
     ]);
   if ([detailResult, runsResult, monitoringPanelsResult].some(result => result.response.status === 401)) redirect("/login");
   if (

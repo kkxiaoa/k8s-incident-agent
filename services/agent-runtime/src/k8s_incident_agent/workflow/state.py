@@ -16,6 +16,7 @@ class IncidentGraphInput(TypedDict):
 class IncidentGraphState(IncidentGraphInput, total=False):
     incident_id: str
     trigger_summary: str
+    diagnosis_trigger: dict[str, JsonValue] | None
     target: dict[str, str]
     messages: Annotated[list[AnyMessage], add_messages]
     structured_response: dict[str, JsonValue]

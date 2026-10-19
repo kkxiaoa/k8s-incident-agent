@@ -20,7 +20,7 @@ spec:
         app.kubernetes.io/name: prometheus
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:75f3047d6b662c441bf4be02c3d84d5880a4fb9822c772290e6930c1ed1b3e1e"
+        k8s-incident-agent.io/config-digest: "sha256:9e4cb77d9106adfe7ad6ebf31a101f21a4b7555fdab0b28394600de5f8cd4511"
     spec:
       serviceAccountName: prometheus
       automountServiceAccountToken: false

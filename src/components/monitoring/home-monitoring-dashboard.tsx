@@ -28,7 +28,15 @@ const COUNT_CARDS = [
   { key: "waitingApprovalIncidents", label: "待审批", tone: "waiting", info: null },
 ] as const;
 
-const PENDING_REASON_LABELS = { awaiting_association: "待归属" } as const;
+const PENDING_REASON_LABELS = {
+  awaiting_association: "待归属",
+  awaiting_observation: "等待新鲜观察",
+  rule_mismatch: "规则契约待核对",
+  not_firing: "未确认当前触发",
+  identity_unverified: "目标身份待核对",
+  closed_conflict: "已关闭事件冲突",
+  ambiguous_incident: "事件归属不明确",
+} as const;
 
 export function HomeMonitoringDashboard({
   initialHealth,

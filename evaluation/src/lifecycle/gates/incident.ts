@@ -5,9 +5,13 @@ import { isPlainObject } from "../../shared/guards.ts";
 import { sameTarget } from "./repair.ts";
 import { TERMINAL_RUN_STATUSES } from "./terminal.ts";
 
-export function matchesScenarioIncident(incident: unknown, scenario: EvaluationScenario): boolean {
-  if (!isPlainObject(incident)) return false;
-  const source = incident.source;
+export function matchesScenarioIncident(detail: unknown, scenario: EvaluationScenario): boolean {
+  if (!isPlainObject(detail) || !isPlainObject(detail.incident)) return false;
+  const incident = detail.incident;
+  const run = isPlainObject(detail.selectedRun) ? detail.selectedRun : null;
+  if (run !== null && run.kind !== "diagnosis") return false;
+  const trigger = isPlainObject(run?.diagnosisTrigger) ? run.diagnosisTrigger : null;
+  const source = trigger?.source ?? incident.source;
   return (
     sameTarget(incident.target, scenario.target) &&
     isPlainObject(source) &&

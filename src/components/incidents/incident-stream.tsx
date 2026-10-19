@@ -68,13 +68,22 @@ function mergeRuns(
   ).sort((left, right) => right.attempt - left.attempt);
 }
 
-function sourceLabel(detail: IncidentDetailResponse): string {
-  const source = detail.incident.source;
+function sourceLabel(detail: IncidentDetailResponse | null): string {
+  if (detail === null) return "来源诊断记录暂不可用";
+  const source = detail.selectedRun?.diagnosisTrigger?.source ?? detail.incident.source;
   if (source.type === "alertmanager") {
     return `Alertmanager · ${source.ref} · catalog ${source.revision}`;
   }
   return `Scenario · ${source.ref} · v${source.revision}`;
 }
+
+const DIAGNOSIS_DEFERRAL_LABELS = {
+  busy: "已有运行或执行正在处理，新的诊断变化已保留。",
+  cooldown: "自动诊断处于冷却期，届时仍需核对新鲜观察。",
+  unavailable: "模型诊断暂不可用，已保留待诊断变化。",
+  budget_exhausted: "本次故障的自动诊断次数已用完，可人工复核后重新诊断。",
+  awaiting_observation: "等待新鲜、完整的告警与目标观察。",
+} as const;
 
 const OBSERVATION_REASON_LABELS = {
   not_observed: "尚未观察",
@@ -589,6 +598,7 @@ export function IncidentStream({
             : detail.incident.lifecycleStatus}
         </p>
         <p role="status">尚无诊断运行。没有诊断证据、结论或可执行操作。</p>
+        {detail.diagnosisDeferral ? <p role="status">{DIAGNOSIS_DEFERRAL_LABELS[detail.diagnosisDeferral.reason]}</p> : null}
         <CurrentAlertStatus summary={detail.alertSummary} />
         {detail.alertSignal === null ? null : (
           <p>
@@ -671,7 +681,8 @@ export function IncidentStream({
               <RunStatusBadge status={selectedRun.status} />
             </div>
           </div>
-          <p>{detail.incident.triggerSummary}</p>
+          <p>{diagnosisDetail?.selectedRun?.diagnosisTrigger?.summary ?? diagnosisDetail?.incident.triggerSummary ?? "来源诊断记录暂不可用"}</p>
+          {detail.diagnosisDeferral ? <p role="status">{DIAGNOSIS_DEFERRAL_LABELS[detail.diagnosisDeferral.reason]}</p> : null}
         </div>
         <div className="incident-facts">
           <CurrentAlertStatus summary={detail.alertSummary} />
@@ -682,7 +693,7 @@ export function IncidentStream({
             </div>
             <div>
               <dt>来源</dt>
-              <dd>{sourceLabel(detail)}</dd>
+              <dd>{sourceLabel(diagnosisDetail)}</dd>
             </div>
             <div>
               <dt>创建时间</dt>

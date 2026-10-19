@@ -319,6 +319,51 @@ export interface components {
     schemas: {
         /** @enum {string} */
         ActionUnavailableReason: "not_applicable" | "active_run" | "execution_held" | "target_occupied" | "execution_disabled" | "outside_scope" | "proposal_expired" | "no_history_candidates" | "diagnosis_unavailable" | "authentication_required" | "not_owner";
+        /** AlertAssociatedEventPayload */
+        AlertAssociatedEventPayload: {
+            /** Fingerprint */
+            fingerprint: string;
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Runid */
+            runId: null;
+            /** Runkind */
+            runKind: null;
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 6;
+            source: components["schemas"]["IncidentSource"];
+            /** Startsat */
+            startsAt: string;
+            /** Targetuid */
+            targetUid: string;
+        };
+        /** AlertAssociatedStreamEvent */
+        AlertAssociatedStreamEvent: {
+            data: components["schemas"]["AlertAssociatedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "alert.associated";
+            /** Id */
+            id: string;
+        };
+        /**
+         * AlertAssociationReason
+         * @enum {string}
+         */
+        AlertAssociationReason: "awaiting_association" | "awaiting_observation" | "rule_mismatch" | "not_firing" | "identity_unverified" | "closed_conflict" | "ambiguous_incident";
         /** AlertNotificationEventPayload */
         AlertNotificationEventPayload: {
             alertStatus: components["schemas"]["AlertSignalStatus"];
@@ -405,6 +450,8 @@ export interface components {
         AlertSignalResponse: {
             /** Endsat */
             endsAt: string | null;
+            /** Lastreceivedat */
+            lastReceivedAt?: string | null;
             /** Startsat */
             startsAt: string;
             status: components["schemas"]["AlertSignalStatus"];
@@ -703,6 +750,50 @@ export interface components {
             /** Targethealthy */
             targetHealthy: boolean | null;
         };
+        /** DiagnosisChangeRecordedEventPayload */
+        DiagnosisChangeRecordedEventPayload: {
+            change: components["schemas"]["DiagnosisChangeReference"];
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Runid */
+            runId: null;
+            /** Runkind */
+            runKind: null;
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 6;
+        };
+        /** DiagnosisChangeRecordedStreamEvent */
+        DiagnosisChangeRecordedStreamEvent: {
+            data: components["schemas"]["DiagnosisChangeRecordedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "diagnosis.change_recorded";
+            /** Id */
+            id: string;
+        };
+        /** DiagnosisChangeReference */
+        DiagnosisChangeReference: {
+            /** Eventid */
+            eventId: string;
+            /** Fingerprint */
+            fingerprint: string;
+            source: components["schemas"]["IncidentSource"];
+            /** Startsat */
+            startsAt: string;
+        };
         /** DiagnosisCompletedEventPayload */
         DiagnosisCompletedEventPayload: {
             /**
@@ -759,6 +850,50 @@ export interface components {
              * @enum {string}
              */
             event: "diagnosis.completed";
+            /** Id */
+            id: string;
+        };
+        /** DiagnosisDeferral */
+        DiagnosisDeferral: {
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "busy" | "cooldown" | "unavailable" | "budget_exhausted" | "awaiting_observation";
+            /** Reviewafter */
+            reviewAfter: string | null;
+        };
+        /** DiagnosisDeferredEventPayload */
+        DiagnosisDeferredEventPayload: {
+            deferral: components["schemas"]["DiagnosisDeferral"];
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Runid */
+            runId: null;
+            /** Runkind */
+            runKind: null;
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 6;
+        };
+        /** DiagnosisDeferredStreamEvent */
+        DiagnosisDeferredStreamEvent: {
+            data: components["schemas"]["DiagnosisDeferredEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "diagnosis.deferred";
             /** Id */
             id: string;
         };
@@ -847,6 +982,24 @@ export interface components {
             redacted: boolean;
             /** Rootcauses */
             rootCauses: components["schemas"]["RootCauseResponse"][];
+            /** Summary */
+            summary: string;
+        };
+        /** DiagnosisTrigger */
+        DiagnosisTrigger: {
+            /** Changes */
+            changes: components["schemas"]["DiagnosisChangeReference"][];
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "first_observation" | "new_symptom" | "facts_changed" | "manual";
+            source: components["schemas"]["IncidentSource"];
             /** Summary */
             summary: string;
         };
@@ -1140,6 +1293,7 @@ export interface components {
             alertSummary: components["schemas"]["CurrentAlertSummary"];
             approval?: components["schemas"]["ApprovalResponse"] | null;
             diagnosis: components["schemas"]["DiagnosisResponse"] | null;
+            diagnosisDeferral?: components["schemas"]["DiagnosisDeferral"] | null;
             /** Eventcursor */
             eventCursor: string;
             eventPage: components["schemas"]["EventPageResponse"];
@@ -1237,6 +1391,18 @@ export interface components {
             target: components["schemas"]["IncidentTargetResponse"];
             /** Triggersummary */
             triggerSummary: string;
+        };
+        /** IncidentSource */
+        IncidentSource: {
+            /** Ref */
+            ref: string;
+            /** Revision */
+            revision: string;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "scenario" | "alertmanager";
         };
         /** IncidentSourceResponse */
         IncidentSourceResponse: {
@@ -1950,7 +2116,7 @@ export interface components {
             schemaVersion: 6;
         };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["VerificationUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"] | components["schemas"]["AlertNotificationStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["VerificationUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"] | components["schemas"]["AlertNotificationStreamEvent"] | components["schemas"]["AlertAssociatedStreamEvent"] | components["schemas"]["DiagnosisChangeRecordedStreamEvent"] | components["schemas"]["DiagnosisDeferredStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */
@@ -2123,6 +2289,7 @@ export interface components {
              * Format: date-time
              */
             createdAt: string;
+            diagnosisTrigger?: components["schemas"]["DiagnosisTrigger"] | null;
             /**
              * Id
              * Format: uuid
@@ -2211,6 +2378,7 @@ export interface components {
              * Format: date-time
              */
             createdAt: string;
+            diagnosisTrigger?: components["schemas"]["DiagnosisTrigger"] | null;
             /** Endreason */
             endReason?: ("expired" | "superseded" | "rejected" | "execution_expired" | "withdrawn") | null;
             error: components["schemas"]["RunErrorResponse"] | null;
@@ -2330,12 +2498,8 @@ export interface components {
             fingerprint: string;
             /** Lastreceivedat */
             lastReceivedAt: string | null;
-            /**
-             * Reason
-             * @default awaiting_association
-             * @constant
-             */
-            reason: "awaiting_association";
+            /** @default awaiting_association */
+            reason: components["schemas"]["AlertAssociationReason"];
             /** Startsat */
             startsAt: string;
             /**
@@ -2957,7 +3121,9 @@ export interface operations {
     };
     list_incident_monitoring_panels_api_v1_incidents__incident_id__monitoring_panels_get: {
         parameters: {
-            query?: never;
+            query?: {
+                runId?: string | null;
+            };
             header?: never;
             path: {
                 incident_id: string;

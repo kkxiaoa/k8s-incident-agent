@@ -17,7 +17,13 @@ from pydantic.alias_generators import to_camel
 from k8s_incident_agent.diagnosis.tool_execution import (
     normalize_diagnostic_tool_call_identity,
 )
-from k8s_incident_agent.domain.contracts import RepairHistorySelection
+from k8s_incident_agent.domain.contracts import (
+    DiagnosisChangeReference,
+    DiagnosisDeferral,
+    DiagnosisTrigger,
+    IncidentSource,
+    RepairHistorySelection,
+)
 from k8s_incident_agent.domain.models import (
     CANONICAL_ALERT_TIMESTAMP_PATTERN,
     AlertSignalStatus,
@@ -275,6 +281,7 @@ class RunSummaryResponse(_ApiContract):
     request_source: Literal["system", "operator"] | None = None
     initiated_by_you: bool = False
     source_run_id: UUID | None = None
+    diagnosis_trigger: DiagnosisTrigger | None = None
 
     @model_validator(mode="after")
     def require_run_kind_fields(self) -> "RunSummaryResponse":
@@ -282,6 +289,8 @@ class RunSummaryResponse(_ApiContract):
             raise ValueError("Run operation must match its kind")
         if self.kind is RunKind.DIAGNOSIS and self.status is RunStatus.WAITING_APPROVAL:
             raise ValueError("Diagnosis cannot wait for approval")
+        if self.kind is RunKind.REPAIR and self.diagnosis_trigger is not None:
+            raise ValueError("Repair cannot carry a diagnosis trigger")
         return self
 
 
@@ -395,6 +404,7 @@ class AlertSignalResponse(_ApiContract):
     status: AlertSignalStatus
     starts_at: _CanonicalAlertTimestamp
     ends_at: _CanonicalAlertTimestamp | None
+    last_received_at: datetime | None = None
 
 
 class _EventPayload(_ApiContract):
@@ -427,7 +437,7 @@ class IncidentCreatedEventPayload(_DiagnosisRunEventPayload):
 
 
 class RunQueuedEventPayload(_TypedRunEventPayload):
-    attempt: int = Field(ge=2)
+    attempt: int = Field(ge=1)
     run_status: Literal["QUEUED"]
 
 
@@ -616,9 +626,27 @@ class AlertResolvedEventPayload(_TypedRunEventPayload):
     ends_at: _CanonicalAlertTimestamp
 
 
-class AlertNotificationEventPayload(_EventPayload):
+class IncidentEventPayload(_EventPayload):
     run_id: None
     run_kind: None
+
+
+class AlertAssociatedEventPayload(IncidentEventPayload):
+    source: IncidentSource
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
+    starts_at: _CanonicalAlertTimestamp
+    target_uid: str = Field(min_length=1)
+
+
+class DiagnosisChangeRecordedEventPayload(IncidentEventPayload):
+    change: DiagnosisChangeReference
+
+
+class DiagnosisDeferredEventPayload(IncidentEventPayload):
+    deferral: DiagnosisDeferral
+
+
+class AlertNotificationEventPayload(IncidentEventPayload):
     fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
     starts_at: _CanonicalAlertTimestamp
     alert_status: AlertSignalStatus
@@ -750,6 +778,24 @@ class AlertNotificationStreamEvent(_ApiContract):
     data: AlertNotificationEventPayload
 
 
+class AlertAssociatedStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["alert.associated"]
+    data: AlertAssociatedEventPayload
+
+
+class DiagnosisChangeRecordedStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["diagnosis.change_recorded"]
+    data: DiagnosisChangeRecordedEventPayload
+
+
+class DiagnosisDeferredStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["diagnosis.deferred"]
+    data: DiagnosisDeferredEventPayload
+
+
 class ApprovalDecidedStreamEvent(_ApiContract):
     id: str = Field(pattern=r"^[1-9][0-9]*$")
     event: Literal["repair.approval_decided"]
@@ -788,7 +834,10 @@ class RunEventStreamItem(
             | ExecutionUpdatedStreamEvent
             | VerificationUpdatedStreamEvent
             | AlertResolvedStreamEvent
-            | AlertNotificationStreamEvent,
+            | AlertNotificationStreamEvent
+            | AlertAssociatedStreamEvent
+            | DiagnosisChangeRecordedStreamEvent
+            | DiagnosisDeferredStreamEvent,
             Field(discriminator="event"),
         ]
     ]
@@ -820,6 +869,7 @@ class IncidentDetailResponse(_ApiContract):
     actions: IncidentActions
     alert_signal: AlertSignalResponse | None
     alert_summary: CurrentAlertSummary
+    diagnosis_deferral: DiagnosisDeferral | None = None
     event_cursor: str = Field(pattern=r"^(0|[1-9][0-9]*)$")
 
 

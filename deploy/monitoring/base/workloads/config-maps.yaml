@@ -91,12 +91,12 @@ data:
                 )
                 * on (namespace, pod) group_left(replicaset)
                   label_replace(
-                    kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"},
+                    kube_pod_owner{owner_is_controller="true",owner_kind="ReplicaSet"},
                     "replicaset", "$1", "owner_name", "(.+)"
                   )
                 * on (namespace, replicaset) group_left(deployment)
                   label_replace(
-                    kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"},
+                    kube_replicaset_owner{owner_is_controller="true",owner_kind="Deployment"},
                     "deployment", "$1", "owner_name", "(.+)"
                   )
               ) > 0
@@ -113,12 +113,12 @@ data:
                 )
                 * on (namespace, pod) group_left(replicaset)
                   label_replace(
-                    kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"},
+                    kube_pod_owner{owner_is_controller="true",owner_kind="ReplicaSet"},
                     "replicaset", "$1", "owner_name", "(.+)"
                   )
                 * on (namespace, replicaset) group_left(deployment)
                   label_replace(
-                    kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"},
+                    kube_replicaset_owner{owner_is_controller="true",owner_kind="Deployment"},
                     "deployment", "$1", "owner_name", "(.+)"
                   )
               ) > 0
@@ -159,12 +159,12 @@ data:
                 )
                 * on (namespace, pod) group_left(replicaset)
                   label_replace(
-                    kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"},
+                    kube_pod_owner{owner_is_controller="true",owner_kind="ReplicaSet"},
                     "replicaset", "$1", "owner_name", "(.+)"
                   )
                 * on (namespace, replicaset) group_left(deployment)
                   label_replace(
-                    kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"},
+                    kube_replicaset_owner{owner_is_controller="true",owner_kind="Deployment"},
                     "deployment", "$1", "owner_name", "(.+)"
                   )
               ) > 0
@@ -184,12 +184,12 @@ data:
                 )
                 * on (namespace, pod) group_left(replicaset)
                   label_replace(
-                    kube_pod_owner{owner_kind="ReplicaSet",owner_is_controller="true"},
+                    kube_pod_owner{owner_is_controller="true",owner_kind="ReplicaSet"},
                     "replicaset", "$1", "owner_name", "(.+)"
                   )
                 * on (namespace, replicaset) group_left(deployment)
                   label_replace(
-                    kube_replicaset_owner{owner_kind="Deployment",owner_is_controller="true"},
+                    kube_replicaset_owner{owner_is_controller="true",owner_kind="Deployment"},
                     "deployment", "$1", "owner_name", "(.+)"
                   )
               ) > 0

@@ -357,6 +357,9 @@ def _start_run_node(
             return {
                 "incident_id": str(current.incident_id),
                 "trigger_summary": current.trigger_summary,
+                "diagnosis_trigger": current.diagnosis_trigger.model_dump(mode="json")
+                if current.diagnosis_trigger is not None
+                else None,
                 "target": cast(
                     dict[str, str],
                     current.target.model_dump(mode="json"),
@@ -394,6 +397,12 @@ def _triage_target_node(
                 or incident_id != scheduled.incident_id
                 or trigger_summary != scheduled.trigger_summary
                 or target != scheduled.target
+                or state_values.get("diagnosis_trigger")
+                != (
+                    scheduled.diagnosis_trigger.model_dump(mode="json")
+                    if scheduled.diagnosis_trigger is not None
+                    else None
+                )
             ):
                 raise RecoveryConsistencyError
             validate_supported_target(target)
@@ -411,6 +420,10 @@ def _triage_target_node(
             "occurredAt": _rfc3339(scheduled.occurred_at),
             "runStartedAt": _rfc3339(runtime.context.run.started_at),
         }
+        if scheduled.diagnosis_trigger is not None:
+            document["diagnosisTrigger"] = scheduled.diagnosis_trigger.model_dump(
+                mode="json"
+            )
         return {
             "messages": [
                 HumanMessage(
@@ -811,6 +824,8 @@ def _require_same_run_identity(
         or current.target != scheduled.target
         or current.model != scheduled.model
         or current.budget != scheduled.budget
+        or current.occurred_at != scheduled.occurred_at
+        or current.diagnosis_trigger != scheduled.diagnosis_trigger
     ):
         raise RecoveryConsistencyError
 

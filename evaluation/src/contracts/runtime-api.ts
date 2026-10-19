@@ -143,8 +143,8 @@ export async function readRunEvents(
   return { events, truncated };
 }
 
-export async function readPanelCatalog(read: ReadJson, incidentId: string): Promise<PanelReference[]> {
-  const catalog = await read(`/api/v1/incidents/${incidentId}/monitoring/panels`);
+export async function readPanelCatalog(read: ReadJson, incidentId: string, runId?: string): Promise<PanelReference[]> {
+  const catalog = await read(`/api/v1/incidents/${incidentId}/monitoring/panels${runId === undefined ? "" : `?runId=${runId}`}`);
   if (
     !isPlainObject(catalog) ||
     catalog.schemaVersion !== 4 ||
@@ -162,9 +162,10 @@ export async function readPanel(
   incidentId: string,
   panelId: string,
   window: string,
+  runId?: string,
 ): Promise<MetricPanel> {
   const document = await read(
-    `/api/v1/incidents/${incidentId}/monitoring/panels/${panelId}?window=${window}`,
+    `/api/v1/incidents/${incidentId}/monitoring/panels/${panelId}?window=${window}${runId === undefined ? "" : `&runId=${runId}`}`,
     { transientStatuses: TRANSIENT_GATEWAY_STATUSES },
   );
   if (
@@ -246,20 +247,21 @@ export function decodeSseFrame(
   const id = idLine.slice(4);
   const event = eventLine.slice(7);
   const data = parseJson(dataLines.join("\n"));
+  const incidentOwned = ["alert.notification", "alert.associated", "diagnosis.change_recorded", "diagnosis.deferred"].includes(event);
   if (
     !/^[1-9][0-9]*$/.test(id) ||
     !isNormalizedString(event) ||
     !isPlainObject(data) ||
     data.schemaVersion !== RUNTIME_SCHEMA_VERSION ||
     data.incidentId !== expected.incidentId ||
-    (event === "alert.notification"
-      ? data.runId !== null || data.runKind !== null ||
+    (incidentOwned ? data.runId !== null || data.runKind !== null
+      : data.runKind !== "diagnosis" || data.runId !== expected.runId) ||
+    (event === "alert.notification" && (
         (data.alertStatus !== "FIRING" && data.alertStatus !== "RESOLVED") ||
         typeof data.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(data.fingerprint) ||
         typeof data.startsAt !== "string" || !Number.isFinite(Date.parse(data.startsAt)) ||
         (data.endsAt !== null && (typeof data.endsAt !== "string" || !Number.isFinite(Date.parse(data.endsAt)))) ||
-        (data.alertStatus === "RESOLVED" && data.endsAt === null)
-      : data.runKind !== "diagnosis" || data.runId !== expected.runId) ||
+        (data.alertStatus === "RESOLVED" && data.endsAt === null))) ||
     (previousId !== undefined && BigInt(id) <= BigInt(previousId))
   ) {
     throw contractError("sse_replay_invalid", "SSE replay did not preserve the persisted event contract");

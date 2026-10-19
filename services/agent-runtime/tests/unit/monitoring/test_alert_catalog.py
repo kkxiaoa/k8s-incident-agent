@@ -45,6 +45,15 @@ def test_production_catalog_has_supported_alert_entries() -> None:
         for entry in catalog.entries
     )
     assert catalog.entries[0].repair_action == "set_container_image"
+    assert {
+        entry.alert_id
+        for entry in catalog.entries
+        if entry.correlation_group is not None
+    } == {
+        "K8sIncidentCrashLoopBackOff",
+        "K8sIncidentDeploymentReplicasUnavailable",
+        "K8sIncidentLivenessProbeRestart",
+    }
     assert all(entry.repair_action is None for entry in catalog.entries[1:])
     assert "kube_pod_container_status_waiting_reason" in (
         catalog.entries[0].rule.expression
@@ -192,9 +201,9 @@ def test_production_catalog_has_supported_alert_entries() -> None:
 @pytest.mark.parametrize(
     "document",
     [
-        '{"schemaVersion":11,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],"alerts":[]}',
+        '{"schemaVersion":12,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],"alerts":[]}',
         (
-            '{"schemaVersion":11,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],"alerts":['
+            '{"schemaVersion":12,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],"alerts":['
             '{"alertId":"A","displayName":"A","triggerSummary":"A",'
             '"rule":{"expression":"vector(1)","for":"1s"},'
             '"target":{"apiVersion":"v1","kind":"Pod",'
@@ -208,7 +217,7 @@ def test_production_catalog_has_supported_alert_entries() -> None:
             'name="{{name}}"}"}]}]}'
         ),
         (
-            '{"schemaVersion":11,"schemaVersion":11,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],'
+            '{"schemaVersion":12,"schemaVersion":12,"catalogVersion":"v1","contextPanels":[],"healthAlerts":[],'
             '"alerts":[{"alertId":"A","displayName":"A",'
             '"triggerSummary":"A","rule":{"expression":"vector(1)",'
             '"for":"1s"},"target":{"apiVersion":"v1",'
@@ -252,7 +261,7 @@ def test_catalog_rejects_empty_ambiguous_or_duplicate_key_contracts(
 
 def test_catalog_accepts_a_static_lower_bound_threshold(tmp_path: Path) -> None:
     document = {
-        "schemaVersion": 11,
+        "schemaVersion": 12,
         "catalogVersion": "v1",
         "contextPanels": [],
         "healthAlerts": [],
@@ -362,7 +371,7 @@ def test_catalog_rejects_mapping_label_outside_webhook_key_budget(
     catalog_dir = tmp_path / "catalog"
     catalog_dir.mkdir()
     document = {
-        "schemaVersion": 11,
+        "schemaVersion": 12,
         "catalogVersion": "v1",
         "contextPanels": [],
         "healthAlerts": [],

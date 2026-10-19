@@ -8,7 +8,7 @@ import {
   decodeSseFrame,
   readIncident,
   readIncidentIds,
-  readIncidentSummaries,
+  readIncidentForRun,
   readPanel,
   readPanelCatalog,
   readRunHistory,
@@ -138,7 +138,7 @@ async function waitForNewIncident(scenario: EvaluationCase, incidentsBefore: Set
       for (const incidentId of current) {
         if (incidentsBefore.has(incidentId)) continue;
         const detail = await readIncident(runtime, incidentId);
-        if (matchesScenarioIncident(detail.incident, scenario)) candidates.push(detail);
+        if (matchesScenarioIncident(detail, scenario)) candidates.push(detail);
       }
       return selectNewTargetIncident(candidates);
     },
@@ -159,10 +159,12 @@ async function waitForTerminalIncident(incidentId: string, runtime: ReadJson, sl
   );
 }
 
-async function validateFiringPanels(incidentId: string, runtime: ReadJson): Promise<PanelCheck[]> {
+async function validateFiringPanels(detail: IncidentWithRun, runtime: ReadJson): Promise<PanelCheck[]> {
+  const incidentId = detail.incident.id;
+  const runId = detail.selectedRun.id;
   const results: PanelCheck[] = [];
-  for (const reference of await readPanelCatalog(runtime, incidentId)) {
-    const panel = await readPanel(runtime, incidentId, reference.panelId, reference.recommendedWindow);
+  for (const reference of await readPanelCatalog(runtime, incidentId, runId)) {
+    const panel = await readPanel(runtime, incidentId, reference.panelId, reference.recommendedWindow, runId);
     results.push(assessFiringPanel(reference, panel));
   }
   requireTriggerPanel(results);
@@ -200,9 +202,9 @@ export async function requireConsoleIncident(detail: IncidentDetail, fetchImpl: 
   requireConsoleIncidentPage(document, identity);
 }
 
-async function requireIncidentUpdatedAt(incidentId: string, runtime: ReadJson): Promise<number> {
-  const incident = (await readIncidentSummaries(runtime)).get(incidentId);
-  const timestamp = parseInstant(incident?.updatedAt);
+async function requireAlertReceipt(incidentId: string, runId: string, runtime: ReadJson): Promise<number> {
+  const detail = await readIncidentForRun(runtime, incidentId, runId);
+  const timestamp = parseInstant(detail.alertSignal?.lastReceivedAt);
   if (timestamp === undefined) throw upstreamContractError();
   return timestamp;
 }
@@ -210,7 +212,8 @@ async function requireIncidentUpdatedAt(incidentId: string, runtime: ReadJson): 
 async function waitForAlertmanagerRepeat(
   scenario: EvaluationCase,
   incidentId: string,
-  baselineUpdatedAt: number,
+  runId: string,
+  baselineReceivedAt: number,
   readers: RuntimeReaders,
   sleep: Sleep,
 ): Promise<void> {
@@ -219,8 +222,8 @@ async function waitForAlertmanagerRepeat(
     async () => {
       const stillFiring = await requireAlertState(scenario, true, readers);
       if (!stillFiring) return undefined;
-      const current = await requireIncidentUpdatedAt(incidentId, readers.runtime);
-      return current > baselineUpdatedAt ? current : undefined;
+      const current = await requireAlertReceipt(incidentId, runId, readers.runtime);
+      return current > baselineReceivedAt ? current : undefined;
     },
     ALERT_REPEAT_WAIT_MILLISECONDS,
     sleep,
@@ -238,7 +241,7 @@ async function requireSingleIncidentAndRun(
   for (const candidateId of current) {
     if (incidentsBefore.has(candidateId)) continue;
     const detail = await readIncident(runtime, candidateId);
-    if (matchesScenarioIncident(detail.incident, scenario)) targetIncidents.push(candidateId);
+    if (matchesScenarioIncident(detail, scenario)) targetIncidents.push(candidateId);
   }
   const runs = await readRunHistory(runtime, incidentId);
   requireSingleTargetRun(targetIncidents, incidentId, runs);
@@ -258,6 +261,7 @@ async function waitForResolvedIncident(incidentId: string, runtime: ReadJson, sl
 
 async function waitForPostResolutionPanels(
   incidentId: string,
+  runId: string,
   panels: readonly PanelCheck[],
   runtime: ReadJson,
   sleep: Sleep,
@@ -267,7 +271,7 @@ async function waitForPostResolutionPanels(
     const panel = await waitUntil(
       "post_resolution_panel_not_settled",
       async () => {
-        const document = await readPanel(runtime, incidentId, reference.panelId, reference.window);
+        const document = await readPanel(runtime, incidentId, reference.panelId, reference.window, runId);
         return isPostResolutionSettled(reference, document.result) ? document : undefined;
       },
       POST_RESOLUTION_TIMEOUT_MILLISECONDS,
@@ -329,7 +333,7 @@ export async function runTrial(scenario: EvaluationCase, environment: TrialEnvir
     result.checks.diagnosisCodes = summary.diagnosisCodes;
     result.checks.repair = summary.repair;
 
-    const panels = await validateFiringPanels(incidentId, runtime);
+    const panels = await validateFiringPanels(terminal, runtime);
     result.checks.panels = panels;
     result.checks.sseReplay = await validateSseReplay(
       incidentId,
@@ -342,8 +346,8 @@ export async function runTrial(scenario: EvaluationCase, environment: TrialEnvir
     await requireConsoleIncident(terminal, environment.fetchImpl);
     result.checks.consoleDetail = true;
 
-    const repeatBaseline = await requireIncidentUpdatedAt(incidentId, runtime);
-    await waitForAlertmanagerRepeat(scenario, incidentId, repeatBaseline, readers, environment.sleep);
+    const repeatBaseline = await requireAlertReceipt(incidentId, terminal.selectedRun.id, runtime);
+    await waitForAlertmanagerRepeat(scenario, incidentId, terminal.selectedRun.id, repeatBaseline, readers, environment.sleep);
     await requireSingleIncidentAndRun(scenario, incidentsBefore, incidentId, runtime);
     result.checks.repeatDeliveryDeduplicated = true;
     await requireControlAlertsAbsent(scenario, readers);
@@ -355,7 +359,7 @@ export async function runTrial(scenario: EvaluationCase, environment: TrialEnvir
     await waitForAlertState(scenario, false, readers, environment.sleep);
     const resolved = await waitForResolvedIncident(incidentId, runtime, environment.sleep);
     result.checks.alertResolved = true;
-    result.checks.postResolutionPanelStates = await waitForPostResolutionPanels(incidentId, panels, runtime, environment.sleep);
+    result.checks.postResolutionPanelStates = await waitForPostResolutionPanels(incidentId, terminal.selectedRun.id, panels, runtime, environment.sleep);
     requireIncidentNotResolved(resolved);
     result.status = "pending_manual_review";
     outcomeClass = "pending_manual_review";

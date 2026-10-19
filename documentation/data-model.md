@@ -1,6 +1,6 @@
 # Data model
 
-The business schema targets migration `20261006_0015`: 14 business tables plus Alembic metadata. The diagram describes the workflow ledger; the independent current-observation table is described below. Neither describes the migration state or contents of an installation.
+The business schema targets migration `20261018_0016`: 14 business tables plus Alembic metadata. The diagram describes the workflow ledger; the independent current-observation table is described below. Neither describes the migration state or contents of an installation.
 
 Authority: [ORM models](../services/agent-runtime/src/k8s_incident_agent/persistence/models.py), [migration history](../services/agent-runtime/migrations/versions), and [repository invariants](../services/agent-runtime/src/k8s_incident_agent/persistence/repositories.py). The diagram shows workflow ledger tables with selected columns and **actual database foreign keys**, not every field or application-level association. `PK`, `FK` and `UK` mean primary key, foreign key and individually unique key; compound uniqueness is listed separately.
 
@@ -46,6 +46,9 @@ erDiagram
         string id PK
         string status
         string lifecycle_status "OPEN / CLOSED; nullable historical state"
+        string target_uid "reliably observed UID; nullable"
+        string correlation_group "catalog compatibility group; nullable"
+        text pending_diagnosis_json "bounded coalesced change references; nullable"
     }
     alert_signals {
         string incident_id FK "nullable"
@@ -57,6 +60,7 @@ erDiagram
         datetime first_received_at "nullable for historical rows"
         datetime last_received_at "nullable for historical rows"
         datetime resolved_received_at "nullable"
+        string association_reason "typed attribution failure; nullable"
     }
     agent_runs {
         string id PK
@@ -67,6 +71,7 @@ erDiagram
         string operation "apply or rollback; nullable"
         string status
         string operator_ref "audit reference; not FK"
+        text diagnosis_trigger_json "immutable source and consumed changes; nullable"
     }
     run_events {
         int id PK
@@ -152,7 +157,7 @@ The dashed legend box explains notation; it is not a business table. Read the ma
 
 `current_alert_observations` is independent of Run and Incident foreign keys. Its compound primary key is `(cluster, namespace, api_version, kind, resource_name)`, so many historical references to the same target share one latest observation. `observation_json` holds a bounded typed SDK projection, catalog version, per-rule source state and completeness, observation/receipt times, target health and a last-known complete state/time. It contains no raw Prometheus responses, EndpointSlice addresses, log stream or polling history. A changed target UID cannot inherit the previous UID's last-known state.
 
-The indexed `checked_order` is a durable work-order ordinal, not a business timestamp. Failed attempts also advance it, while targets not attempted within the pass budget retain their place. Updates to this table do not change Incident, Run, notification, approval, event or checkpoint records. Reads older than 60 seconds or with inconsistent/future times project as `UNKNOWN`; historical Incident detail additionally requires matching existing Kubernetes Evidence identity. Nonempty observation data cannot be discarded by downgrade; restore a consistent pre-upgrade backup instead.
+The indexed `checked_order` is a durable work-order ordinal, not a business timestamp. Failed attempts also advance it, while targets not attempted within the pass budget retain their place. Saving the observation alone does not change Incident, Run, notification, approval, event or checkpoint records; association and diagnosis admission use a separate transaction that rechecks it. Reads older than 60 seconds or with inconsistent/future times project as `UNKNOWN`; Incident detail additionally requires a matching recorded target UID or unambiguous historical Kubernetes Evidence identity. Nonempty observation data cannot be discarded by downgrade; restore a consistent pre-upgrade backup instead.
 
 ## Incidents, runs and evidence
 
@@ -162,6 +167,7 @@ An alert occurrence may be unassigned or belong to one Incident; an Incident may
 | --- | --- |
 | Unique `(incident_id, attempt)`; `attempt >= 1` | Stable per-Incident attempt numbering |
 | Partial unique `incident_id` for `QUEUED`, `RUNNING`, `WAITING_APPROVAL` | At most one active Run per Incident |
+| Partial unique `(cluster, namespace, api_version, kind, resource_name, target_uid, correlation_group)` when lifecycle is `OPEN` and UID/group are non-null | One attributed open episode for an exact target and compatible alert group; undetermined historical rows are excluded |
 | Compound PK `(fingerprint, starts_at)` | One stored alert occurrence despite repeated delivery; nanosecond precision is preserved |
 | Unique `(run_id, event_key)` | Idempotent Run-owned event recording |
 | Event-owner CHECK | Exactly one of `run_id` and `incident_id` is non-null |
@@ -171,7 +177,9 @@ An alert occurrence may be unassigned or belong to one Incident; an Incident may
 
 Occurrences own their source, display, target and receipt facts independently of Incident association. Historical receipt timestamps stay null because business `updated_at` is not a notification clock. `lifecycle_status = NULL` means historical lifecycle is undetermined; existing manual creation initializes `OPEN`. Business diagnostic/repair status is separate from lifecycle. Retention protects both `OPEN` and undetermined lifecycle and rechecks eligibility before deletion.
 
-Incident-owned `alert.notification` events and Run-owned events share the globally increasing event ID. Incident replay includes both ownership kinds, while Run event history excludes Incident-owned events. Migration preserves existing event payloads and the ID high-water mark, including IDs removed by retention. Downgrade refuses to discard notification, association or lifecycle facts; restore a consistent pre-upgrade business/checkpoint backup with Runtime stopped when downgrade cannot preserve them.
+Incident-owned notification, association, diagnosis-change and deferral events share the globally increasing event ID with Run-owned events. Incident replay includes both ownership kinds, while Run event history excludes Incident-owned events. Migration preserves existing event payloads and the ID high-water mark, including IDs removed by retention. Downgrade refuses to discard notification, association, lifecycle or diagnosis-trigger facts; restore a consistent pre-upgrade business/checkpoint backup with Runtime stopped when downgrade cannot preserve them.
+
+`pending_diagnosis_json` merges at most one pending change per compatible alert type, with immutable Incident-event references and a deferral reason. `diagnosis_trigger_json` fixes a diagnosis Run's source, catalog revision, occurrence time, reason and consumed references; null means an older diagnosis without a snapshot or a repair Run with its own source chain. Public event projections omit internal comparison facts. Automatic Run totals and cooldown come from committed diagnosis Run rows, not a separate credit balance; automatic and manual admission share the existing active-Run and execution exclusions.
 
 Repositories add rules beyond those FKs: source and child belong to the same Incident, the source attempt is earlier, and rollback must reference an eligible executed apply Run. Do not infer these guarantees from the self-reference alone.
 
@@ -200,6 +208,7 @@ There is no guest account, guest session, guest ownership or anonymous business-
 ## References that are not foreign keys
 
 - Evidence IDs inside diagnosis, recommendation and proposal JSON are checked by application contracts; there is no diagnosis–Evidence join table.
+- Occurrence and event references in pending diagnosis and Run-trigger JSON are application-validated references, not extra foreign keys. Catalog compatibility groups also have no database-table relationship.
 - `proposal_json.change.source_execution_id` links a rollback to its source execution through repository validation, not a database column/FK.
 - Proposal and validation JSON include Run references and digests; these do not create extra relational edges.
 - The schema declares no FK delete cascade. Cleanup requires explicit lifecycle logic; do not infer safe cascading deletion from an ER line.

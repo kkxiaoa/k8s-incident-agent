@@ -30,6 +30,26 @@ it("accepts a persisted Incident without a Run only with empty Run-owned data an
   ]) expect(parseIncidentDetailResponse({ ...detail, ...changes })).toBeNull();
 });
 
+it("retains a Run's fixed trigger and typed automatic deferral without rewriting the Incident source", () => {
+  const detail = makeIncidentDetail();
+  const trigger = {
+    source: { type: "alertmanager", ref: "K8sIncidentLivenessProbeRestart", revision: "catalog-revision" },
+    summary: "New liveness symptom", occurredAt: "2026-09-03T00:00:00Z", reason: "new_symptom",
+    changes: [{ source: { type: "alertmanager", ref: "K8sIncidentLivenessProbeRestart", revision: "catalog-revision" },
+      fingerprint: "0123456789abcdef", startsAt: "2026-09-03T00:00:00.000000000Z", eventId: "9007199254740993" }],
+  };
+  const wire = { ...detail, selectedRun: { ...detail.selectedRun, diagnosisTrigger: trigger },
+    diagnosisDeferral: { reason: "cooldown", reviewAfter: "2026-09-03T00:10:00Z" } };
+  const parsed = parseIncidentDetailResponse(wire);
+  expect(parsed?.selectedRun?.diagnosisTrigger).toEqual(trigger);
+  expect(parsed?.incident.source).toEqual(detail.incident.source);
+  expect(parsed?.diagnosisDeferral).toEqual(wire.diagnosisDeferral);
+  for (const changed of [{ reason: "unknown" }, { changes: [{ ...trigger.changes[0], eventId: 9007199254740993 }] }]) {
+    expect(parseIncidentDetailResponse({ ...wire, selectedRun: { ...wire.selectedRun, diagnosisTrigger: { ...trigger, ...changed } } })).toBeNull();
+  }
+  expect(parseIncidentDetailResponse({ ...wire, diagnosisDeferral: { reason: "unknown", reviewAfter: null } })).toBeNull();
+});
+
 it("requires authoritative action availability and preserves int64 candidate identities", () => {
   const detail = makeWaitingApprovalIncidentDetail();
   detail.actions.historyCandidates[0].revision = "9223372036854775806";

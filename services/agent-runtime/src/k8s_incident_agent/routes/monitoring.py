@@ -57,8 +57,9 @@ async def get_monitoring_overview(
 async def list_incident_monitoring_panels(
     incident_id: UUID,
     service: _MonitoringService,
+    run_id: Annotated[UUID | None, Query(alias="runId")] = None,
 ) -> IncidentMonitoringPanels:
-    return await service.list_panels(incident_id)
+    return await service.list_panels(incident_id, run_id=run_id)
 
 
 @router.get(

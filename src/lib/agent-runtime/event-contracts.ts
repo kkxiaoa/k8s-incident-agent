@@ -22,6 +22,9 @@ export const RUN_EVENT_NAMES = [
   "run.failed",
   "alert.resolved",
   "alert.notification",
+  "alert.associated",
+  "diagnosis.change_recorded",
+  "diagnosis.deferred",
 ] as const satisfies readonly RunEventStreamItem["event"][];
 
 type JsonObject = Record<string, unknown>;
@@ -41,6 +44,21 @@ function invalidEvent(): never {
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function parseIncidentSource(value: unknown): components["schemas"]["IncidentSource"] | null {
+  if (!isObject(value) || (value.type !== "scenario" && value.type !== "alertmanager") ||
+    typeof value.ref !== "string" || value.ref.length === 0 ||
+    typeof value.revision !== "string" || value.revision.length === 0) return null;
+  return { type: value.type, ref: value.ref, revision: value.revision };
+}
+
+export function parseDiagnosisDeferral(value: unknown): components["schemas"]["DiagnosisDeferral"] | null {
+  if (!isObject(value) || (value.reason !== "busy" && value.reason !== "cooldown" &&
+    value.reason !== "unavailable" && value.reason !== "budget_exhausted" && value.reason !== "awaiting_observation") ||
+    (value.reviewAfter !== null && (typeof value.reviewAfter !== "string" ||
+      !UTC_TIMESTAMP_PATTERN.test(value.reviewAfter) || !Number.isFinite(Date.parse(value.reviewAfter))))) return null;
+  return { reason: value.reason, reviewAfter: value.reviewAfter };
 }
 
 export function isValidEventId(value: unknown): value is string {
@@ -141,6 +159,22 @@ function parseEventData(
   name: RunEventStreamItem["event"],
   value: JsonObject,
 ): RunEventStreamItem["data"] {
+  if (name === "alert.associated" || name === "diagnosis.change_recorded" || name === "diagnosis.deferred") {
+    if (value.schemaVersion !== 6 || value.runId !== null || value.runKind !== null) return invalidEvent();
+    const common = { schemaVersion: 6 as const, incidentId: uuidField(value, "incidentId"),
+      runId: null, runKind: null, occurredAt: timestampField(value, "occurredAt") };
+    if (name === "diagnosis.deferred") {
+      const deferral = parseDiagnosisDeferral(value.deferral);
+      return deferral === null ? invalidEvent() : { ...common, deferral };
+    }
+    const change = name === "alert.associated" ? value : value.change;
+    if (!isObject(change)) return invalidEvent();
+    const source = parseIncidentSource(change.source);
+    if (source === null || typeof change.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(change.fingerprint)) return invalidEvent();
+    const occurrence = { source, fingerprint: change.fingerprint, startsAt: canonicalAlertTimestampField(change, "startsAt") };
+    if (name === "alert.associated") return { ...common, ...occurrence, targetUid: textField(value, "targetUid") };
+    return { ...common, change: { ...occurrence, eventId: eventId(change.eventId) } };
+  }
   if (name === "alert.notification") {
     if (value.schemaVersion !== 6 || value.runId !== null || value.runKind !== null ||
         typeof value.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(value.fingerprint) ||
@@ -169,7 +203,7 @@ function parseEventData(
     case "run.queued":
       return {
         ...common,
-        attempt: positiveIntegerField(value, "attempt", 2),
+        attempt: positiveIntegerField(value, "attempt"),
         runStatus: literalField(value, "runStatus", "QUEUED"),
       };
     case "run.started":

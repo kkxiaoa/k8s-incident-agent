@@ -85,6 +85,20 @@ class IncidentRow(Base):
             name="status",
         ),
         Index("ix_incidents_created_at_id", "created_at", "id"),
+        Index(
+            "uq_incidents_open_target_group",
+            "cluster",
+            "namespace",
+            "api_version",
+            "kind",
+            "resource_name",
+            "target_uid",
+            "correlation_group",
+            unique=True,
+            sqlite_where=text(
+                "lifecycle_status = 'OPEN' AND target_uid IS NOT NULL AND correlation_group IS NOT NULL"
+            ),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -93,6 +107,9 @@ class IncidentRow(Base):
     trigger_revision: Mapped[str] = mapped_column(String, nullable=False)
     display_name: Mapped[str] = mapped_column(String, nullable=False)
     trigger_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    target_uid: Mapped[str | None] = mapped_column(String)
+    correlation_group: Mapped[str | None] = mapped_column(String)
+    pending_diagnosis_json: Mapped[str | None] = mapped_column(Text)
     cluster: Mapped[str] = mapped_column(String, nullable=False)
     namespace: Mapped[str | None] = mapped_column(String)
     api_version: Mapped[str] = mapped_column(String, nullable=False)
@@ -176,6 +193,7 @@ class AlertSignalRow(Base):
     resolved_received_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    association_reason: Mapped[str | None] = mapped_column(String)
 
 
 class MonitoringSourceStateRow(Base):
@@ -276,6 +294,7 @@ class RunRow(Base):
     )
     source_run_id: Mapped[str | None] = mapped_column(ForeignKey("agent_runs.id"))
     request_source: Mapped[str | None] = mapped_column(String)
+    diagnosis_trigger_json: Mapped[str | None] = mapped_column(Text)
     operator_ref: Mapped[str | None] = mapped_column(String)
     selection_revision: Mapped[int | None] = mapped_column(Integer)
     selection_replica_set_uid: Mapped[str | None] = mapped_column(String)

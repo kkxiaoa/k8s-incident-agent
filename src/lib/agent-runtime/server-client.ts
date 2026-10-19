@@ -604,9 +604,10 @@ export function fetchMonitoringOverview(
 export function fetchMonitoringPanels(
   incidentId: string,
   incoming?: Headers,
+  runId?: string,
 ): Promise<RuntimeJsonResult> {
   const path = incidentPath(MONITORING_PANELS_PATH, incidentId);
-  if (path === null) {
+  if (path === null || (runId !== undefined && !UUID_PATTERN.test(runId))) {
     return Promise.resolve({
       response: errorResponse(422, INVALID_REQUEST),
       value: null,
@@ -619,7 +620,7 @@ export function fetchMonitoringPanels(
     {
       method: "GET",
     },
-    undefined,
+    runId === undefined ? undefined : new URLSearchParams({ runId }),
     incoming,
   );
 }
@@ -644,9 +645,9 @@ export function fetchMonitoringPanel(
       windows[0] !== "7d" &&
       windows[0] !== "15d") ||
     anchors.length > 1 ||
-    (anchor !== "current" && anchor !== "run") ||
-    runIds.length !== (anchor === "run" ? 1 : 0) ||
-    (anchor === "run" && !UUID_PATTERN.test(runIds[0] ?? ""))
+    (anchor !== "current" && anchor !== "run" && anchor !== "occurrence") ||
+    runIds.length > 1 || (anchor === "run" && runIds.length !== 1) ||
+    (runIds.length === 1 && !UUID_PATTERN.test(runIds[0]))
   ) {
     return Promise.resolve({
       response: errorResponse(422, INVALID_REQUEST),
@@ -661,7 +662,7 @@ export function fetchMonitoringPanel(
     new URLSearchParams({
       window: windows[0],
       anchor,
-      ...(anchor === "run" ? { runId: runIds[0] } : {}),
+      ...(runIds.length === 1 ? { runId: runIds[0] } : {}),
     }),
     incoming,
   );

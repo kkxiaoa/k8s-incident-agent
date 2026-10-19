@@ -565,6 +565,12 @@ def _require_checkpoint_identity(
         values.get("incident_id") != str(run.incident_id)
         or values.get("trigger_summary") != run.trigger_summary
         or target != run.target
+        or values.get("diagnosis_trigger")
+        != (
+            run.diagnosis_trigger.model_dump(mode="json")
+            if run.diagnosis_trigger is not None
+            else None
+        )
     ):
         raise RuntimeError("Running run checkpoint identity does not match")
 

@@ -140,7 +140,9 @@ class _MonitoringService:
             ),
         )
 
-    async def list_panels(self, _incident_id: object) -> IncidentMonitoringPanels:
+    async def list_panels(
+        self, _incident_id: object, *, run_id: UUID | None = None
+    ) -> IncidentMonitoringPanels:
         return IncidentMonitoringPanels(
             panels=(
                 MonitoringPanelReference(

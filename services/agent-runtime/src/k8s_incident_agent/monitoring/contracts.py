@@ -508,6 +508,16 @@ class MonitoringOverviewSample(_MonitoringContract):
         return normalized
 
 
+class AlertAssociationReason(StrEnum):
+    AWAITING_ASSOCIATION = "awaiting_association"
+    AWAITING_OBSERVATION = "awaiting_observation"
+    RULE_MISMATCH = "rule_mismatch"
+    NOT_FIRING = "not_firing"
+    IDENTITY_UNVERIFIED = "identity_unverified"
+    CLOSED_CONFLICT = "closed_conflict"
+    AMBIGUOUS_INCIDENT = "ambiguous_incident"
+
+
 class UnassignedAlertSignal(_MonitoringContract):
     fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
     display_name: str
@@ -516,7 +526,7 @@ class UnassignedAlertSignal(_MonitoringContract):
     starts_at: str
     ends_at: str | None
     last_received_at: datetime | None
-    reason: Literal["awaiting_association"] = "awaiting_association"
+    reason: AlertAssociationReason = AlertAssociationReason.AWAITING_ASSOCIATION
 
 
 class MonitoringOverviewSnapshot(_MonitoringContract):
