@@ -247,7 +247,7 @@ export function decodeSseFrame(
   const id = idLine.slice(4);
   const event = eventLine.slice(7);
   const data = parseJson(dataLines.join("\n"));
-  const incidentOwned = ["alert.notification", "alert.associated", "diagnosis.change_recorded", "diagnosis.deferred"].includes(event);
+  const incidentOwned = ["alert.notification", "alert.associated", "diagnosis.change_recorded", "diagnosis.deferred", "incident.closed", "incident.reopened"].includes(event);
   if (
     !/^[1-9][0-9]*$/.test(id) ||
     !isNormalizedString(event) ||

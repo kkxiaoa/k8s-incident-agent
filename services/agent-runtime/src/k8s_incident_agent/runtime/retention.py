@@ -16,6 +16,7 @@ from k8s_incident_agent.persistence.database import (
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     PruneTarget,
+    ResolvedAlertPruneTarget,
 )
 from k8s_incident_agent.runtime.artifacts import (
     ArtifactTreeEntry,
@@ -36,13 +37,13 @@ from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
 
 @dataclass(frozen=True, slots=True)
 class PruneResult:
-    deleted_targets: tuple[PruneTarget, ...]
+    deleted_targets: tuple[PruneTarget | ResolvedAlertPruneTarget, ...]
 
 
 async def preview_prune(
     settings: Settings,
     now: datetime,
-) -> tuple[PruneTarget, ...]:
+) -> tuple[PruneTarget | ResolvedAlertPruneTarget, ...]:
     cutoff = _retention_cutoff(now, settings.runtime_retention_days)
     with _locked_runtime_paths(settings) as paths:
         async with _repository(paths) as repository:
@@ -51,7 +52,8 @@ async def preview_prune(
                 paths.run_artifacts,
             )
             for target in targets:
-                _require_safe_artifact_directories(paths, target)
+                if isinstance(target, PruneTarget):
+                    _require_safe_artifact_directories(paths, target)
             return targets
 
 
@@ -66,9 +68,15 @@ async def confirm_prune(settings: Settings, now: datetime) -> PruneResult:
             if not targets:
                 return PruneResult(deleted_targets=())
 
-            deleted_targets: list[PruneTarget] = []
+            deleted_targets: list[PruneTarget | ResolvedAlertPruneTarget] = []
             async with open_checkpoint_store(paths.checkpoint_database) as saver:
                 for target in targets:
+                    if isinstance(target, ResolvedAlertPruneTarget):
+                        if await repository.delete_prune_target(
+                            target, cutoff, paths.run_artifacts
+                        ):
+                            deleted_targets.append(target)
+                        continue
                     _require_safe_artifact_directories(paths, target)
                     for run_id, artifact_directory in zip(
                         target.run_ids,

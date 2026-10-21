@@ -318,7 +318,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        ActionUnavailableReason: "not_applicable" | "active_run" | "execution_held" | "target_occupied" | "execution_disabled" | "outside_scope" | "proposal_expired" | "no_history_candidates" | "diagnosis_unavailable" | "authentication_required" | "not_owner";
+        ActionUnavailableReason: "not_applicable" | "active_run" | "execution_held" | "target_occupied" | "execution_disabled" | "outside_scope" | "proposal_expired" | "no_history_candidates" | "diagnosis_unavailable" | "authentication_required" | "not_owner" | "incident_reopen_conflict";
         /** AlertAssociatedEventPayload */
         AlertAssociatedEventPayload: {
             /** Fingerprint */
@@ -1235,6 +1235,58 @@ export interface components {
             /** @default not_applicable */
             withdraw: components["schemas"]["ActionUnavailableReason"] | null;
         };
+        /** IncidentClosedEventPayload */
+        IncidentClosedEventPayload: {
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "observed_stable" | "recovery_verified";
+            /**
+             * Healthysince
+             * Format: date-time
+             */
+            healthySince: string;
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Lasthealthyat
+             * Format: date-time
+             */
+            lastHealthyAt: string;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /** Runid */
+            runId: null;
+            /** Runkind */
+            runKind: null;
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 6;
+            /** Targetuid */
+            targetUid: string;
+            /** Verificationrunid */
+            verificationRunId: string | null;
+        };
+        /** IncidentClosedStreamEvent */
+        IncidentClosedStreamEvent: {
+            data: components["schemas"]["IncidentClosedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "incident.closed";
+            /** Id */
+            id: string;
+        };
         /** IncidentCreatedEventPayload */
         IncidentCreatedEventPayload: {
             /** Attempt */
@@ -1370,6 +1422,49 @@ export interface components {
              * @constant
              */
             schemaVersion: 4;
+        };
+        /** IncidentReopenedEventPayload */
+        IncidentReopenedEventPayload: {
+            /**
+             * Incidentid
+             * Format: uuid
+             */
+            incidentId: string;
+            /**
+             * Occurredat
+             * Format: date-time
+             */
+            occurredAt: string;
+            /**
+             * Previousclosedat
+             * Format: date-time
+             */
+            previousClosedAt: string;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "manual_rerun" | "rollback";
+            /** Runid */
+            runId: null;
+            /** Runkind */
+            runKind: null;
+            /**
+             * Schemaversion
+             * @constant
+             */
+            schemaVersion: 6;
+        };
+        /** IncidentReopenedStreamEvent */
+        IncidentReopenedStreamEvent: {
+            data: components["schemas"]["IncidentReopenedEventPayload"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            event: "incident.reopened";
+            /** Id */
+            id: string;
         };
         /** IncidentResponse */
         IncidentResponse: {
@@ -2116,7 +2211,7 @@ export interface components {
             schemaVersion: 6;
         };
         /** RunEventStreamItem */
-        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["VerificationUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"] | components["schemas"]["AlertNotificationStreamEvent"] | components["schemas"]["AlertAssociatedStreamEvent"] | components["schemas"]["DiagnosisChangeRecordedStreamEvent"] | components["schemas"]["DiagnosisDeferredStreamEvent"];
+        RunEventStreamItem: components["schemas"]["IncidentCreatedStreamEvent"] | components["schemas"]["RunQueuedStreamEvent"] | components["schemas"]["RunStartedStreamEvent"] | components["schemas"]["ToolStartedStreamEvent"] | components["schemas"]["EvidenceRecordedStreamEvent"] | components["schemas"]["ToolFailedStreamEvent"] | components["schemas"]["DiagnosisCompletedStreamEvent"] | components["schemas"]["DiagnosisInsufficientStreamEvent"] | components["schemas"]["RunFailedStreamEvent"] | components["schemas"]["RepairPatchReadyStreamEvent"] | components["schemas"]["RepairDryRunPassedStreamEvent"] | components["schemas"]["RepairWaitingApprovalStreamEvent"] | components["schemas"]["RepairWaitEndedStreamEvent"] | components["schemas"]["ApprovalDecidedStreamEvent"] | components["schemas"]["ExecutionUpdatedStreamEvent"] | components["schemas"]["VerificationUpdatedStreamEvent"] | components["schemas"]["AlertResolvedStreamEvent"] | components["schemas"]["AlertNotificationStreamEvent"] | components["schemas"]["AlertAssociatedStreamEvent"] | components["schemas"]["DiagnosisChangeRecordedStreamEvent"] | components["schemas"]["DiagnosisDeferredStreamEvent"] | components["schemas"]["IncidentClosedStreamEvent"] | components["schemas"]["IncidentReopenedStreamEvent"];
         /** RunFailedEventPayload */
         RunFailedEventPayload: {
             /** Errorcode */

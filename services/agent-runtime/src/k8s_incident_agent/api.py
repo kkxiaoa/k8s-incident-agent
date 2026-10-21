@@ -419,8 +419,10 @@ async def build_runtime_container(
             adapter=adapter,
             prometheus=prometheus,
             now=now,
-            diagnose=lambda target: incidents.reconcile_alert_target(
-                target, alert_catalog
+            diagnose=lambda target, started_at, revision: (
+                incidents.reconcile_alert_target(
+                    target, alert_catalog, started_at, revision
+                )
             ),
         )
         resources.push_async_callback(reconciliation.close)

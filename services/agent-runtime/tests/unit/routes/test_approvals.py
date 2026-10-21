@@ -60,6 +60,7 @@ from k8s_incident_agent.persistence.models import (
 from k8s_incident_agent.persistence.repositories import (
     ExecutionReportConflictError,
     IncidentRepository,
+    PruneTarget,
 )
 from k8s_incident_agent.runtime.paths import RuntimePaths
 from k8s_incident_agent.runtime.retention import confirm_prune
@@ -489,10 +490,12 @@ async def test_unclaimed_expiry_releases_target_and_expired_wait_cannot_authoriz
             incident = await session.get(IncidentRow, str(harness.incident_id))
             assert incident
             incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
+            incident.closed_at = harness.now()
         targets = await harness.repository.list_prune_targets(
             FRESH_NOW + timedelta(days=8), tmp_path / "artifacts"
         )
         assert len(targets) == 1
+        assert isinstance(targets[0], PruneTarget)
         assert targets[0].approval_rows == targets[0].execution_rows == 1
         assert await harness.repository.delete_prune_target(
             targets[0], FRESH_NOW + timedelta(days=8), tmp_path / "artifacts"

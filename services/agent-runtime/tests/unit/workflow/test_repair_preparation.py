@@ -40,6 +40,7 @@ from k8s_incident_agent.persistence.models import IncidentRow, RunRow
 from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
     IncidentRepository,
+    PruneTarget,
     RepairSourceInvalidError,
 )
 from k8s_incident_agent.repair.client import PatchValidator
@@ -189,8 +190,10 @@ async def test_superseded_thread_cannot_change_successor_and_source_fk_allows_ag
             incident = await session.get(IncidentRow, str(incident_id))
             assert incident
             incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
+            incident.closed_at = FRESH_NOW
         targets = await repository.list_prune_targets(cutoff, tmp_path / "artifacts")
-        assert len(targets) == 1 and set(targets[0].run_ids) == {
+        assert len(targets) == 1 and isinstance(targets[0], PruneTarget)
+        assert set(targets[0].run_ids) == {
             source_id,
             run.id,
             successor.run_id,

@@ -67,6 +67,7 @@ from k8s_incident_agent.model.availability import DiagnosisUnavailableError
 from k8s_incident_agent.monitoring.catalog import AlertCatalog
 from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
+    AlertObservationRevision,
     IncidentDetailRecord,
     IncidentListRecord,
     IncidentRepairDetail,
@@ -133,14 +134,23 @@ class IncidentApplicationService:
         )
 
     async def reconcile_alert_target(
-        self, target: KubernetesTarget, catalog: AlertCatalog
+        self,
+        target: KubernetesTarget,
+        catalog: AlertCatalog,
+        sample_started_at: datetime,
+        observation_revision: AlertObservationRevision,
     ) -> None:
         try:
             model = self._require_diagnostic_readiness()
         except (RuntimeNotReadyError, DiagnosisUnavailableError):
             model = None
         for run_id in await self._repository.reconcile_episode_diagnosis(
-            target, catalog, model, self._budget
+            target,
+            catalog,
+            model,
+            self._budget,
+            sample_started_at=sample_started_at,
+            observation_revision=observation_revision,
         ):
             await schedule_committed_run(self._supervisor, run_id)
 

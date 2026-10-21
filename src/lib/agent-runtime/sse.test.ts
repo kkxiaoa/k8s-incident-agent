@@ -26,6 +26,33 @@ import {
 const OTHER_RUN_ID = "55555555-5555-4555-8555-555555555555";
 const OTHER_INCIDENT_ID = "66666666-6666-4666-8666-666666666666";
 
+it.each([false, true])("replays closure and reopen without rewriting Run history, no Run=%s", (noRun) => {
+  const detail = noRun ? makeIncidentWithoutRuns() : makeIncidentDetail();
+  const common = { schemaVersion: 6, incidentId: INCIDENT_ID, runId: null, runKind: null, occurredAt: "2026-09-03T00:10:00Z" };
+  const closed = { ...common, basis: "observed_stable", healthySince: "2026-09-03T00:05:00Z", lastHealthyAt: common.occurredAt, targetUid: "workload-uid", verificationRunId: null };
+  const closeEvent = parseRunEvent("incident.closed", "10", JSON.stringify(closed), INCIDENT_ID)!;
+  expect(requiresIncidentDetailRefresh(closeEvent, detail.selectedRun?.id ?? null)).toBe(true);
+  expect(isTerminalRunEvent(closeEvent)).toBe(false);
+  const state = reduceIncidentStream(createIncidentStreamState(detail), { type: "event", event: closeEvent });
+  expect(state.detail.incident.lifecycleStatus).toBe("CLOSED");
+  expect(state.detail.incident.status).toBe(detail.incident.status);
+  expect(state.detail.selectedRun).toEqual(detail.selectedRun);
+  expect(state.events).toEqual(detail.eventPage.items);
+  expect(reduceIncidentStream(state, { type: "event", event: closeEvent })).toEqual(state);
+  const behind = reduceIncidentStream(state, { type: "snapshot", afterEventId: "10", detail: { ...detail, eventCursor: "9" } });
+  expect(behind.detail.incident.lifecycleStatus).toBe("CLOSED");
+  const reopened = { ...common, reason: "manual_rerun", previousClosedAt: common.occurredAt };
+  const reopenEvent = parseRunEvent("incident.reopened", "11", JSON.stringify(reopened), INCIDENT_ID)!;
+  const next = reduceIncidentStream(behind, { type: "event", event: reopenEvent });
+  expect(next.detail.incident.lifecycleStatus).toBe("OPEN");
+  expect(next.detail.selectedRun).toEqual(detail.selectedRun);
+  expect(next.detail.incident.status).toBe(detail.incident.status);
+  for (const invalid of [{ runId: RUN_ID }, { runKind: "repair" }, { basis: "unknown" }, { verificationRunId: RUN_ID }, { basis: "recovery_verified" }]) {
+    expect(() => parseRunEvent("incident.closed", "12", JSON.stringify({ ...closed, ...invalid }), INCIDENT_ID)).toThrow();
+  }
+  expect(() => parseRunEvent("incident.reopened", "12", JSON.stringify({ ...reopened, reason: "automatic" }), INCIDENT_ID)).toThrow();
+});
+
 it.each([
   ["alert.associated", { source: { type: "alertmanager", ref: "K8sIncidentCrashLoopBackOff", revision: "v1" }, fingerprint: "0123456789abcdef", startsAt: "2026-09-03T00:00:00.000000000Z", targetUid: "workload-uid" }],
   ["diagnosis.change_recorded", { change: { source: { type: "alertmanager", ref: "K8sIncidentCrashLoopBackOff", revision: "v1" }, fingerprint: "0123456789abcdef", startsAt: "2026-09-03T00:00:00.000000000Z", eventId: "10" } }],

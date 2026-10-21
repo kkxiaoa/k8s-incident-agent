@@ -16,6 +16,7 @@ type ActionUnavailableReason = Literal[
     "diagnosis_unavailable",
     "authentication_required",
     "not_owner",
+    "incident_reopen_conflict",
 ]
 
 

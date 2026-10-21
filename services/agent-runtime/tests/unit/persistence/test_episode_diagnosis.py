@@ -59,6 +59,7 @@ from k8s_incident_agent.persistence.models import (
 )
 from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
+    AlertObservationRevision,
     IncidentRepository,
     PersistenceOperationError,
 )
@@ -162,6 +163,16 @@ async def observation(
     )
 
 
+async def save_sample(
+    repository: IncidentRepository, observed: CurrentAlertObservation
+) -> tuple[datetime, AlertObservationRevision]:
+    assert observed.summary.observed_at is not None
+    return (
+        observed.summary.observed_at,
+        await repository.save_current_alert_observation(observed),
+    )
+
+
 async def test_concurrent_reconciliation_associates_three_symptoms_and_creates_one_fixed_run(
     tmp_path: Path,
 ) -> None:
@@ -172,10 +183,17 @@ async def test_concurrent_reconciliation_associates_three_symptoms_and_creates_o
             for index, alert in enumerate((CRASH, LIVENESS, REPLICAS))
         )
         await repository.apply_alert_occurrences(signals)
-        await repository.save_current_alert_observation(await observation())
+        sample_at, revision = await save_sample(repository, await observation())
         results = await asyncio.gather(
             *(
-                repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+                repository.reconcile_episode_diagnosis(
+                    TARGET,
+                    CATALOG,
+                    MODEL,
+                    BUDGET,
+                    sample_started_at=sample_at,
+                    observation_revision=revision,
+                )
                 for _ in range(2)
             )
         )
@@ -211,7 +229,14 @@ async def test_concurrent_reconciliation_associates_three_symptoms_and_creates_o
             signals, received_at=FRESH_NOW + timedelta(seconds=1)
         )
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         assert (
@@ -228,9 +253,16 @@ async def test_model_unavailable_keeps_real_incident_without_placeholder_run(
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory, now=lambda: FRESH_NOW)
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
-        await repository.save_current_alert_observation(await observation())
+        sample_at, revision = await save_sample(repository, await observation())
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, None, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                None,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         async with database.session_factory() as session:
@@ -243,7 +275,12 @@ async def test_model_unavailable_keeps_real_incident_without_placeholder_run(
         assert detail is not None and detail.run is None
         assert detail.alert_summary.state is CurrentAlertState.FIRING
         created = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         assert len(created) == 1
 
@@ -347,27 +384,46 @@ async def test_failures_consume_three_automatic_runs_and_manual_does_not_refund(
         await repository.apply_alert_occurrences((signal,))
         for index in range(3):
             clock[0] = FRESH_NOW + timedelta(minutes=10 * index)
-            await repository.save_current_alert_observation(
-                with_image(await observation(clock[0]), f"containerd://image-{index}")
+            sample_at, revision = await save_sample(
+                repository,
+                with_image(await observation(clock[0]), f"containerd://image-{index}"),
             )
             created = await repository.reconcile_episode_diagnosis(
-                TARGET, CATALOG, MODEL, BUDGET
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
             )
             assert len(created) == 1
             await fail_run(repository, created[0], clock[0])
             await repository.apply_alert_occurrences((signal,))
             assert (
                 await repository.reconcile_episode_diagnosis(
-                    TARGET, CATALOG, MODEL, BUDGET
+                    TARGET,
+                    CATALOG,
+                    MODEL,
+                    BUDGET,
+                    sample_started_at=sample_at,
+                    observation_revision=revision,
                 )
                 == ()
             )
         clock[0] += timedelta(minutes=10)
-        await repository.save_current_alert_observation(
-            with_image(await observation(clock[0]), "containerd://image-new")
+        sample_at, revision = await save_sample(
+            repository,
+            with_image(await observation(clock[0]), "containerd://image-new"),
         )
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         async with database.session_factory() as session:
@@ -382,14 +438,29 @@ async def test_failures_consume_three_automatic_runs_and_manual_does_not_refund(
         assert manual is not None
         await fail_run(repository, manual.run_id, clock[0])
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
-        await repository.save_current_alert_observation(
-            with_image(await observation(clock[0]), "containerd://another-image")
+        sample_at, revision = await save_sample(
+            repository,
+            with_image(await observation(clock[0]), "containerd://another-image"),
         )
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         async with database.session_factory() as session:
@@ -409,17 +480,29 @@ async def test_new_occurrence_keeps_its_anchor_and_cooldown_survives_repository_
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
-        await repository.save_current_alert_observation(await observation())
+        sample_at, revision = await save_sample(repository, await observation())
         (first,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         frozen = await repository.get_workflow_run_snapshot(first)
         clock[0] += timedelta(minutes=1)
         latest = occurrence(LIVENESS, 2, clock[0])
         await repository.apply_alert_occurrences((latest,))
-        await repository.save_current_alert_observation(await observation(clock[0]))
+        sample_at, revision = await save_sample(repository, await observation(clock[0]))
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         assert await repository.get_workflow_run_snapshot(first) == frozen
@@ -428,12 +511,24 @@ async def test_new_occurrence_keeps_its_anchor_and_cooldown_survives_repository_
         clock[0] = FRESH_NOW + timedelta(minutes=10)
         # A persisted deadline alone never authorizes a Run from an old sample.
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
-        await repository.save_current_alert_observation(await observation(clock[0]))
+        sample_at, revision = await save_sample(repository, await observation(clock[0]))
         (second,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         snapshot = await repository.get_workflow_run_snapshot(second)
         assert isinstance(snapshot, DiagnosisWorkflowRunSnapshot)
@@ -477,37 +572,64 @@ async def test_older_primary_evidence_cannot_replace_a_later_consumed_change(
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
-        await repository.save_current_alert_observation(
-            await observation(alerts=(CRASH,), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(alerts=(CRASH,), fixture=fixture)
         )
         (first,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         await diagnose_run(repository, first, fixture, clock[0])
         clock[0] += timedelta(minutes=1)
         await repository.apply_alert_occurrences((occurrence(LIVENESS, 2, clock[0]),))
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository,
+            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture),
         )
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         clock[0] += timedelta(minutes=1)
         status.image_id = "containerd://image-b"
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository,
+            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture),
         )
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         clock[0] = FRESH_NOW + timedelta(minutes=10)
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository,
+            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture),
         )
         (second,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         snapshot = await repository.get_workflow_run_snapshot(second)
         assert isinstance(snapshot, DiagnosisWorkflowRunSnapshot)
@@ -519,22 +641,36 @@ async def test_older_primary_evidence_cannot_replace_a_later_consumed_change(
         }
         await diagnose_run(repository, second, fixture, clock[0])
         clock[0] += timedelta(minutes=10)
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository,
+            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture),
         )
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         async with database.session_factory() as session:
             assert len(list(await session.scalars(select(RunRow)))) == 2
         clock[0] += timedelta(minutes=1)
         status.image_id = "containerd://image-c"
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository,
+            await observation(clock[0], alerts=(CRASH, LIVENESS), fixture=fixture),
         )
         (third,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         assert third not in (first, second)
         async with database.session_factory() as session:
@@ -578,11 +714,16 @@ async def test_only_known_safe_semantic_changes_create_another_run(
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
-        await repository.save_current_alert_observation(
-            await observation(fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(fixture=fixture)
         )
         (first,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         await fail_run(repository, first, clock[0])
         clock[0] += timedelta(minutes=10)
@@ -619,11 +760,16 @@ async def test_only_known_safe_semantic_changes_create_another_run(
             )
         elif change == "last_state":
             status.last_state = terminated
-        await repository.save_current_alert_observation(
-            await observation(clock[0], fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(clock[0], fixture=fixture)
         )
         created = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         assert len(created) == int(expected)
         if created:
@@ -680,9 +826,14 @@ async def test_pod_semantics_keep_configuration_and_state_associated_without_chu
             "rs-old",
             "rs-new",
         }
-        await repository.save_current_alert_observation(observed)
+        sample_at, revision = await save_sample(repository, observed)
         (first,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         await fail_run(repository, first, clock[0])
         clock[0] += timedelta(minutes=10)
@@ -737,21 +888,33 @@ async def test_pod_semantics_keep_configuration_and_state_associated_without_chu
             old_spec.readiness_probe = V1Probe(
                 _exec=V1ExecAction(command=["/bin/false"])
             )
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH,), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(clock[0], alerts=(CRASH,), fixture=fixture)
         )
         created = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         assert len(created) == int(expected)
         if created:
             await fail_run(repository, created[0], clock[0])
         clock[0] += timedelta(minutes=10)
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH,), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(clock[0], alerts=(CRASH,), fixture=fixture)
         )
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         async with database.session_factory() as session:
@@ -763,12 +926,18 @@ async def test_pod_semantics_keep_configuration_and_state_associated_without_chu
             ):
                 clock[0] += timedelta(minutes=10)
                 old_status.image_id = image_id
-                await repository.save_current_alert_observation(
-                    await observation(clock[0], alerts=(CRASH,), fixture=fixture)
+                sample_at, revision = await save_sample(
+                    repository,
+                    await observation(clock[0], alerts=(CRASH,), fixture=fixture),
                 )
                 assert len(
                     await repository.reconcile_episode_diagnosis(
-                        TARGET, CATALOG, MODEL, BUDGET
+                        TARGET,
+                        CATALOG,
+                        MODEL,
+                        BUDGET,
+                        sample_started_at=sample_at,
+                        observation_revision=revision,
                     )
                 ) == int(creates_run)
 
@@ -779,7 +948,7 @@ async def test_run_creation_failure_rolls_back_association_and_change_consumptio
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory, now=lambda: FRESH_NOW)
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
-        await repository.save_current_alert_observation(await observation())
+        sample_at, revision = await save_sample(repository, await observation())
         async with database.session_factory() as session, session.begin():
             await session.execute(
                 text(
@@ -787,7 +956,14 @@ async def test_run_creation_failure_rolls_back_association_and_change_consumptio
                 )
             )
         with pytest.raises(PersistenceOperationError):
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
         async with database.session_factory() as session, session.begin():
             for model in (IncidentRow, RunRow, RunEventRow):
                 assert list(await session.scalars(select(model))) == []
@@ -796,7 +972,12 @@ async def test_run_creation_failure_rolls_back_association_and_change_consumptio
             ).one().incident_id is None
             await session.execute(text("DROP TRIGGER fail_run"))
         (run_id,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         assert await repository.list_recoverable_run_ids() == (run_id,)
 
@@ -830,11 +1011,16 @@ async def test_only_sufficient_cited_same_uid_evidence_can_refine_attempted_fact
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
-        await repository.save_current_alert_observation(
-            await observation(fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(fixture=fixture)
         )
         (first,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         await repository.start_run(first, clock[0])
         status.image_id = (
@@ -916,22 +1102,32 @@ async def test_only_sufficient_cited_same_uid_evidence_can_refine_attempted_fact
             )
         )
         clock[0] += timedelta(minutes=10)
-        await repository.save_current_alert_observation(
-            await observation(clock[0], fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(clock[0], fixture=fixture)
         )
         created = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         assert len(created) == int(baseline != "diagnosed")
         if created:
             await fail_run(repository, created[0], clock[0])
             clock[0] += timedelta(minutes=10)
-            await repository.save_current_alert_observation(
-                await observation(clock[0], fixture=fixture)
+            sample_at, revision = await save_sample(
+                repository, await observation(clock[0], fixture=fixture)
             )
             assert (
                 await repository.reconcile_episode_diagnosis(
-                    TARGET, CATALOG, MODEL, BUDGET
+                    TARGET,
+                    CATALOG,
+                    MODEL,
+                    BUDGET,
+                    sample_started_at=sample_at,
+                    observation_revision=revision,
                 )
                 == ()
             )
@@ -955,29 +1151,46 @@ async def test_cited_pod_state_cannot_cover_unobserved_container_readiness(
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
-        await repository.save_current_alert_observation(
-            await observation(alerts=(CRASH,), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(alerts=(CRASH,), fixture=fixture)
         )
         (first,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         old_status.state, new_status.state = new_status.state, old_status.state
         old_status.ready, new_status.ready = new_status.ready, old_status.ready
         await diagnose_run(repository, first, fixture, clock[0])
         clock[0] += timedelta(minutes=10)
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH,), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(clock[0], alerts=(CRASH,), fixture=fixture)
         )
         (second,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         await fail_run(repository, second, clock[0])
         clock[0] += timedelta(minutes=10)
-        await repository.save_current_alert_observation(
-            await observation(clock[0], alerts=(CRASH,), fixture=fixture)
+        sample_at, revision = await save_sample(
+            repository, await observation(clock[0], alerts=(CRASH,), fixture=fixture)
         )
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
 
@@ -989,9 +1202,17 @@ async def test_failed_current_read_retains_history_but_never_authorizes_pending_
         repository = IncidentRepository(database.session_factory, now=lambda: FRESH_NOW)
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
         observed = await observation()
-        await repository.save_current_alert_observation(observed)
-        await repository.reconcile_episode_diagnosis(TARGET, CATALOG, None, BUDGET)
-        await repository.save_current_alert_observation(
+        sample_at, revision = await save_sample(repository, observed)
+        await repository.reconcile_episode_diagnosis(
+            TARGET,
+            CATALOG,
+            None,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
+        )
+        sample_at, revision = await save_sample(
+            repository,
             observed.model_copy(
                 update={
                     "facts": None,
@@ -1001,12 +1222,19 @@ async def test_failed_current_read_retains_history_but_never_authorizes_pending_
                         reason=ObservationReason.UNAVAILABLE,
                     ),
                 }
-            )
+            ),
         )
         retained = await repository.get_current_alert_observation(TARGET)
         assert retained is not None and retained.facts is not None
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         async with database.session_factory() as session:
@@ -1026,9 +1254,14 @@ async def test_recreated_uid_never_inherits_old_occurrence_or_automatic_budget(
         repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
         old = occurrence(CRASH, 1)
         await repository.apply_alert_occurrences((old,))
-        await repository.save_current_alert_observation(await observation())
+        sample_at, revision = await save_sample(repository, await observation())
         (first,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         old_snapshot = await repository.get_workflow_run_snapshot(first)
         clock[0] += timedelta(minutes=1)
@@ -1043,15 +1276,27 @@ async def test_recreated_uid_never_inherits_old_occurrence_or_automatic_budget(
         observed = observed.model_copy(
             update={"facts": await replacement.adapter().read_current_target(TARGET)}
         )
-        await repository.save_current_alert_observation(observed)
+        sample_at, revision = await save_sample(repository, observed)
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         new = occurrence(CRASH, 2, clock[0])
         await repository.apply_alert_occurrences((new,))
         (second,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         current = await repository.get_workflow_run_snapshot(second)
         assert current.incident_id != old_snapshot.incident_id
@@ -1080,20 +1325,32 @@ async def test_manual_and_automatic_creation_share_one_atomic_slot_and_keep_late
     async with _database(tmp_path) as database:
         repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
-        await repository.save_current_alert_observation(await observation())
+        sample_at, revision = await save_sample(repository, await observation())
         (first,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         await fail_run(repository, first, clock[0])
         initial = await repository.get_workflow_run_snapshot(first)
         clock[0] += timedelta(minutes=10)
         await repository.apply_alert_occurrences((occurrence(LIVENESS, 2, clock[0]),))
-        await repository.save_current_alert_observation(await observation(clock[0]))
+        sample_at, revision = await save_sample(repository, await observation(clock[0]))
         await asyncio.gather(
             repository.create_run(
                 initial.incident_id, MODEL, BUDGET, operator_ref="operator"
             ),
-            repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET),
+            repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            ),
             return_exceptions=True,
         )
         async with database.session_factory() as session:
@@ -1105,7 +1362,14 @@ async def test_manual_and_automatic_creation_share_one_atomic_slot_and_keep_late
             )
         await repository.apply_alert_occurrences((occurrence(REPLICAS, 3, clock[0]),))
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         async with database.session_factory() as session:
@@ -1114,9 +1378,14 @@ async def test_manual_and_automatic_creation_share_one_atomic_slot_and_keep_late
             assert REPLICAS in incident.pending_diagnosis_json
         await fail_run(repository, UUID(runs[1].id), clock[0])
         clock[0] += timedelta(minutes=10)
-        await repository.save_current_alert_observation(await observation(clock[0]))
+        sample_at, revision = await save_sample(repository, await observation(clock[0]))
         (third,) = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         snapshot = await repository.get_workflow_run_snapshot(third)
         assert (
@@ -1136,8 +1405,15 @@ async def test_pending_change_is_rechecked_when_no_rule_is_firing(
         repository = IncidentRepository(database.session_factory, now=lambda: FRESH_NOW)
         await repository.apply_alert_occurrences((occurrence(CRASH, 1),))
         observed = await observation()
-        await repository.save_current_alert_observation(observed)
-        await repository.reconcile_episode_diagnosis(TARGET, CATALOG, None, BUDGET)
+        sample_at, revision = await save_sample(repository, observed)
+        await repository.reconcile_episode_diagnosis(
+            TARGET,
+            CATALOG,
+            None,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
+        )
         observed = observed.model_copy(
             update={
                 "summary": observed.summary.model_copy(
@@ -1157,9 +1433,16 @@ async def test_pending_change_is_rechecked_when_no_rule_is_firing(
                 )
             }
         )
-        await repository.save_current_alert_observation(observed)
+        sample_at, revision = await save_sample(repository, observed)
         assert (
-            await repository.reconcile_episode_diagnosis(TARGET, CATALOG, MODEL, BUDGET)
+            await repository.reconcile_episode_diagnosis(
+                TARGET,
+                CATALOG,
+                MODEL,
+                BUDGET,
+                sample_started_at=sample_at,
+                observation_revision=revision,
+            )
             == ()
         )
         async with database.session_factory() as session:
@@ -1206,9 +1489,14 @@ async def test_old_signal_never_binds_to_new_uid_but_an_independent_firing_rule_
                 )
             }
         )
-        await repository.save_current_alert_observation(observed)
+        sample_at, revision = await save_sample(repository, observed)
         created = await repository.reconcile_episode_diagnosis(
-            TARGET, CATALOG, MODEL, BUDGET
+            TARGET,
+            CATALOG,
+            MODEL,
+            BUDGET,
+            sample_started_at=sample_at,
+            observation_revision=revision,
         )
         assert len(created) == 1
         snapshot = await repository.get_workflow_run_snapshot(created[0])

@@ -13,7 +13,8 @@
           "no_history_candidates",
           "diagnosis_unavailable",
           "authentication_required",
-          "not_owner"
+          "not_owner",
+          "incident_reopen_conflict"
         ],
         "type": "string"
       },
@@ -2160,6 +2161,108 @@
         "title": "IncidentActions",
         "type": "object"
       },
+      "IncidentClosedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "enum": [
+              "observed_stable",
+              "recovery_verified"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "healthySince": {
+            "format": "date-time",
+            "title": "Healthysince",
+            "type": "string"
+          },
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "lastHealthyAt": {
+            "format": "date-time",
+            "title": "Lasthealthyat",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "null"
+          },
+          "runKind": {
+            "title": "Runkind",
+            "type": "null"
+          },
+          "schemaVersion": {
+            "const": 6,
+            "title": "Schemaversion",
+            "type": "integer"
+          },
+          "targetUid": {
+            "minLength": 1,
+            "title": "Targetuid",
+            "type": "string"
+          },
+          "verificationRunId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verificationrunid"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "occurredAt",
+          "runId",
+          "runKind",
+          "basis",
+          "healthySince",
+          "lastHealthyAt",
+          "targetUid",
+          "verificationRunId"
+        ],
+        "title": "IncidentClosedEventPayload",
+        "type": "object"
+      },
+      "IncidentClosedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/IncidentClosedEventPayload"
+          },
+          "event": {
+            "const": "incident.closed",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "IncidentClosedStreamEvent",
+        "type": "object"
+      },
       "IncidentCreatedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -2503,6 +2606,83 @@
           "panels"
         ],
         "title": "IncidentMonitoringPanels",
+        "type": "object"
+      },
+      "IncidentReopenedEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "incidentId": {
+            "format": "uuid",
+            "title": "Incidentid",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "previousClosedAt": {
+            "format": "date-time",
+            "title": "Previousclosedat",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "manual_rerun",
+              "rollback"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "runId": {
+            "title": "Runid",
+            "type": "null"
+          },
+          "runKind": {
+            "title": "Runkind",
+            "type": "null"
+          },
+          "schemaVersion": {
+            "const": 6,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "incidentId",
+          "occurredAt",
+          "runId",
+          "runKind",
+          "reason",
+          "previousClosedAt"
+        ],
+        "title": "IncidentReopenedEventPayload",
+        "type": "object"
+      },
+      "IncidentReopenedStreamEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/IncidentReopenedEventPayload"
+          },
+          "event": {
+            "const": "incident.reopened",
+            "title": "Event",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[1-9][0-9]*$",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event",
+          "data"
+        ],
+        "title": "IncidentReopenedStreamEvent",
         "type": "object"
       },
       "IncidentResponse": {
@@ -4309,7 +4489,9 @@
             "diagnosis.deferred": "#/components/schemas/DiagnosisDeferredStreamEvent",
             "diagnosis.insufficient": "#/components/schemas/DiagnosisInsufficientStreamEvent",
             "evidence.recorded": "#/components/schemas/EvidenceRecordedStreamEvent",
+            "incident.closed": "#/components/schemas/IncidentClosedStreamEvent",
             "incident.created": "#/components/schemas/IncidentCreatedStreamEvent",
+            "incident.reopened": "#/components/schemas/IncidentReopenedStreamEvent",
             "repair.approval_decided": "#/components/schemas/ApprovalDecidedStreamEvent",
             "repair.dry_run_passed": "#/components/schemas/RepairDryRunPassedStreamEvent",
             "repair.execution_updated": "#/components/schemas/ExecutionUpdatedStreamEvent",
@@ -4388,6 +4570,12 @@
           },
           {
             "$ref": "#/components/schemas/DiagnosisDeferredStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/IncidentClosedStreamEvent"
+          },
+          {
+            "$ref": "#/components/schemas/IncidentReopenedStreamEvent"
           }
         ],
         "title": "RunEventStreamItem"

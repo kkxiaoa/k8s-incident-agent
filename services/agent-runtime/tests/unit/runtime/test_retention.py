@@ -43,6 +43,7 @@ from k8s_incident_agent.persistence.models import (
 from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     PersistenceOperationError,
+    PruneTarget,
     RecoveryConsistencyError,
 )
 from k8s_incident_agent.runtime.lock import (
@@ -124,6 +125,7 @@ async def _create_failed_run(
         incident = await session.get(IncidentRow, str(created.incident_id))
         assert incident
         incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
+        incident.closed_at = completed_at
     return created.incident_id, created.run_id
 
 
@@ -179,6 +181,7 @@ async def _create_diagnosed_run(
         incident = await session.get(IncidentRow, str(created.incident_id))
         assert incident
         incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
+        incident.closed_at = completed_at
     return created.incident_id, created.run_id
 
 
@@ -243,6 +246,85 @@ async def _has_checkpoint(paths: RuntimePaths, run_id: UUID) -> bool:
         return await saver.aget_tuple(config) is not None
 
 
+@pytest.mark.parametrize("shared_target", [False, True])
+async def test_explicit_prune_handles_zero_run_and_resolved_only_targets_without_losing_shared_observation(
+    tmp_path: Path, shared_target: bool
+) -> None:
+    from tests.unit.persistence.test_episode_diagnosis import CRASH, occurrence
+    from tests.unit.persistence.test_incident_lifecycle import (
+        advance_window,
+        open_episode,
+        sample,
+    )
+    from tests.unit.persistence.test_repair_persistence import (
+        _database,  # pyright: ignore[reportPrivateUsage]
+    )
+    from tests.unit.repair.test_repair_preparation import FRESH_NOW
+
+    from k8s_incident_agent.domain.models import (
+        AlertSignalStatus,
+        CanonicalAlertTimestamp,
+    )
+    from k8s_incident_agent.persistence.models import (
+        AlertSignalRow,
+        CurrentAlertObservationRow,
+    )
+    from k8s_incident_agent.persistence.repositories import ResolvedAlertPruneTarget
+
+    clock = [FRESH_NOW]
+    paths = RuntimePaths.prepare(tmp_path / "runtime")
+    remaining = None
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
+        incident_id = await open_episode(repository)
+        await advance_window(repository, clock, 11)
+        await repository.apply_alert_occurrences(
+            (
+                replace(
+                    occurrence(CRASH, 2),
+                    status=AlertSignalStatus.RESOLVED,
+                    ends_at=CanonicalAlertTimestamp(
+                        clock[0].strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
+                    ),
+                ),
+            )
+        )
+        await sample(repository, clock[0])
+        if shared_target:
+            remaining = await repository.create_incident_and_run(
+                _scenario(), _model(), _budget()
+            )
+    if remaining:
+        await _seed_checkpoint(paths, remaining.run_id)
+    now = clock[0] + timedelta(days=8)
+    before = await preview_prune(_settings(paths), now)
+    assert len(before) == 2
+    assert any(
+        isinstance(target, PruneTarget)
+        and target.incident_id == incident_id
+        and target.run_ids == ()
+        for target in before
+    )
+    assert any(isinstance(target, ResolvedAlertPruneTarget) for target in before)
+    confirmed = await confirm_prune(_settings(paths), now)
+    assert confirmed.deleted_targets == before
+    assert (await confirm_prune(_settings(paths), now)).deleted_targets == ()
+    database = await _open_database(paths)
+    try:
+        async with database.session_factory() as session:
+            assert len(list(await session.scalars(select(IncidentRow)))) == int(
+                shared_target
+            )
+            assert not list(await session.scalars(select(AlertSignalRow)))
+            assert len(
+                list(await session.scalars(select(CurrentAlertObservationRow)))
+            ) == int(shared_target)
+        if remaining:
+            assert await _has_checkpoint(paths, remaining.run_id)
+    finally:
+        await database.dispose()
+
+
 def _write_artifact(paths: RuntimePaths, run_id: UUID) -> Path:
     paths.run_artifacts.mkdir(mode=0o700, exist_ok=True)
     directory = paths.run_artifacts / str(run_id)
@@ -279,7 +361,8 @@ async def test_preview_selects_only_terminal_incidents_before_cutoff(
 
     targets = await preview_prune(_settings(paths), NOW)
 
-    assert [target.run_ids for target in targets] == [(eligible_run_id,)]
+    assert len(targets) == 1 and isinstance(targets[0], PruneTarget)
+    assert targets[0].run_ids == (eligible_run_id,)
     assert targets[0].event_rows == 2
     assert targets[0].evidence_rows == 0
     assert targets[0].diagnosis_rows == 0
@@ -335,6 +418,7 @@ async def test_preview_does_not_modify_business_checkpoint_or_artifact_data(
     targets = await preview_prune(_settings(paths), NOW)
 
     assert len(targets) == 1
+    assert isinstance(targets[0], PruneTarget)
     assert targets[0].event_rows == 5
     assert targets[0].evidence_rows == 1
     assert targets[0].diagnosis_rows == 1
@@ -368,7 +452,10 @@ async def test_confirm_deletes_artifact_checkpoint_and_business_rows_idempotentl
     first = await confirm_prune(_settings(paths), NOW)
     second = await confirm_prune(_settings(paths), NOW)
 
-    assert [target.run_ids for target in first.deleted_targets] == [(run_id,)]
+    assert len(first.deleted_targets) == 1 and isinstance(
+        first.deleted_targets[0], PruneTarget
+    )
+    assert first.deleted_targets[0].run_ids == (run_id,)
     assert second.deleted_targets == ()
     assert not artifact_directory.exists()
     assert not await _has_checkpoint(paths, run_id)
@@ -392,6 +479,10 @@ async def test_confirm_prunes_all_runs_only_as_one_incident_aggregate(
             repository,
             CUTOFF - timedelta(days=2),
         )
+        async with database.session_factory.begin() as session:
+            incident = await session.get(IncidentRow, str(incident_id))
+            assert incident is not None
+            incident.lifecycle_status = IncidentLifecycleStatus.OPEN
         second = await repository.create_run(incident_id, _model(), _budget())
         assert second is not None
         await repository.persist_terminal(
@@ -411,6 +502,11 @@ async def test_confirm_prunes_all_runs_only_as_one_incident_aggregate(
                 output_tokens=None,
             )
         )
+        async with database.session_factory.begin() as session:
+            incident = await session.get(IncidentRow, str(incident_id))
+            assert incident is not None
+            incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
+            incident.closed_at = CUTOFF - timedelta(days=1)
     finally:
         await database.dispose()
 
@@ -421,6 +517,7 @@ async def test_confirm_prunes_all_runs_only_as_one_incident_aggregate(
 
     preview = await preview_prune(_settings(paths), NOW)
     assert len(preview) == 1
+    assert isinstance(preview[0], PruneTarget)
     assert preview[0].incident_id == incident_id
     assert preview[0].run_ids == run_ids
     assert preview[0].run_rows == 2
@@ -709,7 +806,10 @@ async def test_parent_swap_cannot_redirect_artifact_deletion(
 
     result = await confirm_prune(_settings(paths), NOW)
 
-    assert [target.run_ids for target in result.deleted_targets] == [(run_id,)]
+    assert len(result.deleted_targets) == 1 and isinstance(
+        result.deleted_targets[0], PruneTarget
+    )
+    assert result.deleted_targets[0].run_ids == (run_id,)
     assert not (original_artifact_root / artifact_directory.name).exists()
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert await _row_count(paths, RunRow) == 0

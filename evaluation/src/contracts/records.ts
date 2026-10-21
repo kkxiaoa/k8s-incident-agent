@@ -183,7 +183,7 @@ export interface OnlineChecks {
   manualCreationAbsent: true;
   manualConsoleCreationAbsent: true;
   anonymousRerunDenied: true;
-  authenticatedRerun: "accepted" | "active_run_exists" | "diagnosis_unavailable";
+  authenticatedRerun: "accepted" | "active_run_exists" | "diagnosis_unavailable" | "incident_reopen_conflict";
 }
 
 export interface OnlineArtifact {

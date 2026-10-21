@@ -154,6 +154,31 @@ test("deployment checks receive expected nonzero command results", async () => {
   assert.equal((await run(harness)).artifact.status, "passed");
 });
 
+test("reopen conflict is accepted only with the matching CLOSED Incident action", async (t) => {
+  for (const [lifecycleStatus, rerun, passes] of [["CLOSED", "incident_reopen_conflict", true], ["OPEN", "incident_reopen_conflict", false], ["CLOSED", "allowed", false]] as const) {
+    await t.test(`${lifecycleStatus}/${rerun}`, async () => {
+      const harness = online();
+      const fetch = harness.dependencies.fetch;
+      harness.dependencies.fetch = async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/runs") && init?.method === "POST" && new Headers(init.headers).has("cookie")) {
+          return jsonResponse({ error: { code: "incident_reopen_conflict" } }, 409);
+        }
+        const response = await fetch(input, init);
+        if (/^\/api\/v1\/incidents\/[^/]+$/.test(url.pathname) && (init?.method ?? "GET") === "GET") {
+          const detail = await response.json() as { incident: Record<string, unknown>; actions: Record<string, unknown> };
+          return jsonResponse({ ...detail, incident: { ...detail.incident, lifecycleStatus }, actions: { ...detail.actions, rerun } });
+        }
+        return response;
+      };
+      const { artifact } = await run(harness);
+      assert.equal(artifact.status, passes ? "passed" : "failed");
+      if (passes) assert.equal(artifact.checks?.authenticatedRerun, "incident_reopen_conflict");
+      else assert.equal(artifact.failure?.code, "online_rerun_boundary_invalid");
+    });
+  }
+});
+
 test("the online command only serves the public profile with a context, a release and no campaign selection", async (t) => {
   for (const request of [
     { profile: "k3s-evaluation", context: "k3s" },

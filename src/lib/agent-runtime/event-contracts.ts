@@ -25,6 +25,8 @@ export const RUN_EVENT_NAMES = [
   "alert.associated",
   "diagnosis.change_recorded",
   "diagnosis.deferred",
+  "incident.closed",
+  "incident.reopened",
 ] as const satisfies readonly RunEventStreamItem["event"][];
 
 type JsonObject = Record<string, unknown>;
@@ -159,10 +161,21 @@ function parseEventData(
   name: RunEventStreamItem["event"],
   value: JsonObject,
 ): RunEventStreamItem["data"] {
-  if (name === "alert.associated" || name === "diagnosis.change_recorded" || name === "diagnosis.deferred") {
+  if (name === "alert.associated" || name === "diagnosis.change_recorded" || name === "diagnosis.deferred" || name === "incident.closed" || name === "incident.reopened") {
     if (value.schemaVersion !== 6 || value.runId !== null || value.runKind !== null) return invalidEvent();
     const common = { schemaVersion: 6 as const, incidentId: uuidField(value, "incidentId"),
       runId: null, runKind: null, occurredAt: timestampField(value, "occurredAt") };
+    if (name === "incident.closed") {
+      if (value.basis !== "observed_stable" && value.basis !== "recovery_verified") return invalidEvent();
+      const verificationRunId = value.verificationRunId === null ? null : uuidField(value, "verificationRunId");
+      if ((value.basis === "recovery_verified") !== (verificationRunId !== null)) return invalidEvent();
+      return { ...common, basis: value.basis, targetUid: textField(value, "targetUid"),
+        healthySince: timestampField(value, "healthySince"), lastHealthyAt: timestampField(value, "lastHealthyAt"), verificationRunId };
+    }
+    if (name === "incident.reopened") {
+      if (value.reason !== "manual_rerun" && value.reason !== "rollback") return invalidEvent();
+      return { ...common, reason: value.reason, previousClosedAt: timestampField(value, "previousClosedAt") };
+    }
     if (name === "diagnosis.deferred") {
       const deferral = parseDiagnosisDeferral(value.deferral);
       return deferral === null ? invalidEvent() : { ...common, deferral };

@@ -75,6 +75,11 @@ async function evaluateOnlineBoundary(options: OnlineOptions): Promise<OnlineArt
     ACTIVE_RUN_STATUSES.has(before.selectedRun.status)
   ) {
     authenticatedRerun = "active_run_exists";
+  } else if (
+    response.status === 409 && errorCode(document) === "incident_reopen_conflict" &&
+    before.incident.lifecycleStatus === "CLOSED" && before.actions.rerun === "incident_reopen_conflict"
+  ) {
+    authenticatedRerun = "incident_reopen_conflict";
   } else if (response.status === 503 && errorCode(document) === "diagnosis_unavailable") {
     const health = await requestJson(options.fetchImpl, runtime, "/healthz");
     if (!isDiagnosisUnavailable(health)) throw upstreamContractError();

@@ -110,6 +110,12 @@ class IncidentRow(Base):
     target_uid: Mapped[str | None] = mapped_column(String)
     correlation_group: Mapped[str | None] = mapped_column(String)
     pending_diagnosis_json: Mapped[str | None] = mapped_column(Text)
+    healthy_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_healthy_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    health_interrupted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cluster: Mapped[str] = mapped_column(String, nullable=False)
     namespace: Mapped[str | None] = mapped_column(String)
     api_version: Mapped[str] = mapped_column(String, nullable=False)
@@ -219,6 +225,10 @@ class CurrentAlertObservationRow(Base):
     kind: Mapped[str] = mapped_column(String, primary_key=True)
     resource_name: Mapped[str] = mapped_column(String, primary_key=True)
     checked_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    signal_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    reconciled_signal_revision: Mapped[int | None] = mapped_column(Integer)
     observation_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 

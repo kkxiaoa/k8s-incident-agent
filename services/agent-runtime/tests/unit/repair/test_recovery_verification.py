@@ -26,6 +26,7 @@ from k8s_incident_agent.domain.models import (
 from k8s_incident_agent.kubernetes.contracts import RecoveryLogs
 from k8s_incident_agent.kubernetes.errors import KubernetesErrorCode
 from k8s_incident_agent.persistence.models import IncidentRow
+from k8s_incident_agent.persistence.repositories import PruneTarget
 from k8s_incident_agent.repair.verification import verify_recovery
 
 
@@ -150,10 +151,12 @@ async def test_exact_applied_recovery_through_sdk_http_sqlite_and_public_api(
                 incident = await session.get(IncidentRow, str(harness.incident_id))
                 assert incident
                 incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
+                incident.closed_at = harness.now()
             cutoff = harness.now() + timedelta(days=8)
             artifacts = tmp_path / "runtime" / "runs"
             targets = await harness.repository.list_prune_targets(cutoff, artifacts)
-            assert len(targets) == 1 and targets[0].verification_rows == 1
+            assert len(targets) == 1 and isinstance(targets[0], PruneTarget)
+            assert targets[0].verification_rows == 1
             assert await harness.repository.delete_prune_target(
                 targets[0], cutoff, artifacts
             )

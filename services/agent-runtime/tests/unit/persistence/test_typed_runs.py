@@ -141,7 +141,15 @@ async def test_nonempty_upgrade_retains_owners_proposal_evidence_and_legacy_term
     after = _rows(paths)
     for row in after["incidents"]:
         assert row.pop("lifecycle_status") is None
-        for column in ("target_uid", "correlation_group", "pending_diagnosis_json"):
+        for column in (
+            "target_uid",
+            "correlation_group",
+            "pending_diagnosis_json",
+            "healthy_since",
+            "last_healthy_at",
+            "health_interrupted_at",
+            "closed_at",
+        ):
             assert row.pop(column) is None
     for row in after["agent_runs"]:
         assert row.pop("kind") == "diagnosis"

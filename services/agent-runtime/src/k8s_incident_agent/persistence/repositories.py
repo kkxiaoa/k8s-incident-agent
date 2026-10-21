@@ -162,9 +162,17 @@ _OVERVIEW_HOUR = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
 
 
 @dataclass(frozen=True, slots=True)
+class AlertObservationRevision:
+    checked_order: int
+    signal_revision: int
+    verification_interruption_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class PruneTarget:
     incident_id: UUID
     updated_at: datetime
+    closed_at: datetime
     run_ids: tuple[UUID, ...]
     artifact_directories: tuple[Path, ...]
     event_rows: int
@@ -176,6 +184,15 @@ class PruneTarget:
     approval_rows: int = 0
     execution_rows: int = 0
     verification_rows: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedAlertPruneTarget:
+    fingerprint: str
+    starts_at: str
+    ends_at: str
+    last_received_at: datetime
+    signal_revision: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +402,15 @@ class RunNotApplicableError(RepositoryError):
         super().__init__("Incident has no Run to diagnose again")
 
 
+class IncidentReopenConflictError(RepositoryError):
+    code = "incident_reopen_conflict"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Another open Incident already owns this target and alert group"
+        )
+
+
 class RepairSourceInvalidError(RepositoryError):
     code = "repair_source_invalid"
 
@@ -532,8 +558,8 @@ class IncidentRepository:
             raise PersistenceOperationError from None
 
     async def save_current_alert_observation(
-        self, observation: CurrentAlertObservation
-    ) -> None:
+        self, observation: CurrentAlertObservation, *, sampling: bool = False
+    ) -> AlertObservationRevision:
         """Advance fair work order without changing any Incident business time."""
         try:
             async with self._session_factory() as session:
@@ -595,7 +621,42 @@ class IncidentRepository:
                     session.add(row)
                 row.checked_order = order
                 row.observation_json = observation.model_dump_json()
+                row.reconciled_signal_revision = None
+                if not sampling and (
+                    not summary.complete
+                    or summary.state is not CurrentAlertState.CLEAR
+                    or summary.target_healthy is not True
+                ):
+                    await _interrupt_target_health(
+                        session,
+                        _observation_key(observation.target),
+                        _require_aware_datetime(self._now()),
+                    )
+                await session.flush()
+                revision = AlertObservationRevision(
+                    row.checked_order,
+                    row.signal_revision,
+                    await _latest_verification_interruption_id(
+                        session, _observation_key(observation.target)
+                    ),
+                )
                 await session.commit()
+                return revision
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def interrupt_stable_health(
+        self, target: KubernetesTarget | None = None
+    ) -> None:
+        """Discard sampling continuity after a failed pass or Runtime restart."""
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                await _interrupt_target_health(
+                    session,
+                    _observation_key(target) if target else None,
+                    _require_aware_datetime(self._now()),
+                )
         except SQLAlchemyError:
             raise PersistenceOperationError from None
 
@@ -664,15 +725,18 @@ class IncidentRepository:
         catalog: AlertCatalog,
         model: ModelSnapshot | None,
         budget: RunBudget,
+        *,
+        sample_started_at: datetime,
+        observation_revision: AlertObservationRevision,
     ) -> tuple[UUID, ...]:
         """Bind fresh signals and consume exactly the facts queued in this transaction."""
         events: list[RunEvent] = []
         created: list[UUID] = []
-        at = _require_aware_datetime(self._now())
         target_key = _observation_key(target)
         try:
             async with self._session_factory() as session, session.begin():
                 await session.execute(text("BEGIN IMMEDIATE"))
+                at = _require_aware_datetime(self._now())
                 observation_row = await session.get(
                     CurrentAlertObservationRow, target_key
                 )
@@ -729,6 +793,17 @@ class IncidentRepository:
                     )
                     if run_id is not None:
                         created.append(run_id)
+                await _reconcile_stable_incidents(
+                    session,
+                    observation_row,
+                    observation,
+                    summary,
+                    catalog,
+                    sample_started_at,
+                    observation_revision,
+                    at,
+                    events,
+                )
         except ValidationError:
             raise RecoveryConsistencyError from None
         except SQLAlchemyError:
@@ -1327,6 +1402,7 @@ class IncidentRepository:
                         target_occupied=bool(target_occupied),
                         execution_enabled=self._execution_enabled,
                         in_scope=in_scope,
+                        reopen_conflict=await _has_reopen_conflict(session, incident),
                         now=_require_aware_datetime(now or datetime.now(UTC)),
                     ),
                 )
@@ -1501,7 +1577,7 @@ class IncidentRepository:
         self,
         cutoff: datetime,
         artifact_root: Path,
-    ) -> tuple[PruneTarget, ...]:
+    ) -> tuple[PruneTarget | ResolvedAlertPruneTarget, ...]:
         cutoff = _require_aware_datetime(cutoff)
         try:
             async with self._session_factory() as session:
@@ -1520,23 +1596,39 @@ class IncidentRepository:
                         .where(
                             IncidentRow.lifecycle_status
                             == IncidentLifecycleStatus.CLOSED,
-                            IncidentRow.updated_at < cutoff,
+                            IncidentRow.closed_at < cutoff,
                             ~active_run,
                             ~occupied,
                         )
-                        .order_by(IncidentRow.updated_at, IncidentRow.id)
+                        .order_by(IncidentRow.closed_at, IncidentRow.id)
                     )
                 )
-                return tuple(
-                    [
-                        await _prune_target_from_incident(
-                            session,
-                            incident,
-                            artifact_root,
+                targets: list[PruneTarget | ResolvedAlertPruneTarget] = []
+                for incident in incidents:
+                    if await _incident_prune_eligible(session, incident, cutoff):
+                        targets.append(
+                            await _prune_target_from_incident(
+                                session, incident, artifact_root
+                            )
                         )
-                        for incident in incidents
-                    ]
+                signals = await session.scalars(
+                    select(AlertSignalRow)
+                    .where(
+                        AlertSignalRow.incident_id.is_(None),
+                        AlertSignalRow.status == AlertSignalStatus.RESOLVED,
+                        AlertSignalRow.last_received_at < cutoff,
+                    )
+                    .order_by(
+                        AlertSignalRow.last_received_at,
+                        AlertSignalRow.fingerprint,
+                        AlertSignalRow.starts_at,
+                    )
                 )
+                for signal in signals:
+                    target = await _resolved_alert_prune_target(session, signal, cutoff)
+                    if target is not None:
+                        targets.append(target)
+                return tuple(targets)
         except RepositoryError:
             raise
         except SQLAlchemyError:
@@ -1544,20 +1636,34 @@ class IncidentRepository:
 
     async def delete_prune_target(
         self,
-        target: PruneTarget,
+        target: PruneTarget | ResolvedAlertPruneTarget,
         cutoff: datetime,
         artifact_root: Path,
     ) -> bool:
         cutoff = _require_aware_datetime(cutoff)
         try:
             async with self._session_factory() as session, session.begin():
+                await session.execute(text("BEGIN IMMEDIATE"))
+                if isinstance(target, ResolvedAlertPruneTarget):
+                    signal = await session.get(
+                        AlertSignalRow, (target.fingerprint, target.starts_at)
+                    )
+                    if signal is None:
+                        return False
+                    if (
+                        await _resolved_alert_prune_target(session, signal, cutoff)
+                        != target
+                    ):
+                        raise RecoveryConsistencyError
+                    key = tuple(getattr(signal, name) for name in _TARGET_COLUMNS)
+                    await session.delete(signal)
+                    await session.flush()
+                    await _delete_unused_observation(session, key)
+                    return True
                 incident = await session.get(IncidentRow, str(target.incident_id))
                 if incident is None:
                     return False
-                if (
-                    incident.lifecycle_status is not IncidentLifecycleStatus.CLOSED
-                    or _database_datetime(incident.updated_at) >= cutoff
-                ):
+                if not await _incident_prune_eligible(session, incident, cutoff):
                     raise RecoveryConsistencyError
                 current = await _prune_target_from_incident(
                     session,
@@ -1636,6 +1742,9 @@ class IncidentRepository:
                         IncidentRow.id == str(target.incident_id)
                     ),
                     1,
+                )
+                await _delete_unused_observation(
+                    session, tuple(getattr(incident, name) for name in _TARGET_COLUMNS)
                 )
                 return True
         except RepositoryError:
@@ -1847,14 +1956,23 @@ class IncidentRepository:
                     )
                     session.add(signal)
                     await session.flush()
+                    await _record_signal_change(
+                        session, occurrence, _require_aware_datetime(self._now())
+                    )
                     continue
 
+                previous_fact = (signal.status, signal.ends_at)
                 notification_event = await _apply_existing_alert_occurrence(
                     session,
                     signal,
                     occurrence,
                     received_at,
                 )
+                if previous_fact != (signal.status, signal.ends_at):
+                    signal.association_reason = "awaiting_observation"
+                    await _record_signal_change(
+                        session, occurrence, _require_aware_datetime(self._now())
+                    )
                 if notification_event is not None:
                     committed_events.append(notification_event)
 
@@ -1882,11 +2000,12 @@ class IncidentRepository:
         operator_ref: str | None = None,
         requester: OperatorSession | None = None,
     ) -> CreatedRun | None:
-        occurred_at = _require_aware_datetime(self._now())
         additional_event: RunEvent | None = None
+        reopened_event: RunEvent | None = None
         try:
             async with self._session_factory() as session, session.begin():
                 await session.execute(text("BEGIN IMMEDIATE"))
+                occurred_at = _require_aware_datetime(self._now())
                 incident = await session.get(IncidentRow, str(incident_id))
                 if incident is None:
                     return None
@@ -1894,6 +2013,11 @@ class IncidentRepository:
                     await require_operator_current(
                         session, requester, int(self._now().timestamp())
                     )
+                if (
+                    incident.lifecycle_status is IncidentLifecycleStatus.CLOSED
+                    and requester is None
+                ):
+                    raise OperatorAuthenticationError
                 if replaces_run_id is not None:
                     await _replace_waiting_run(
                         session, incident, replaces_run_id, occurred_at
@@ -1990,6 +2114,9 @@ class IncidentRepository:
                                 },
                                 manual=True,
                             )
+                reopened_event = await _reopen_incident(
+                    session, incident, occurred_at, "manual_rerun"
+                )
                 run_row, event = await _queue_diagnosis_run(
                     session,
                     incident,
@@ -2037,6 +2164,8 @@ class IncidentRepository:
         created = CreatedRun(run_id=run_id)
         if additional_event is not None:
             await self._notify_committed_event(additional_event)
+        if reopened_event is not None:
+            await self._notify_committed_event(reopened_event)
         await self._notify_committed_event(event)
         return created
 
@@ -2054,6 +2183,7 @@ class IncidentRepository:
     ) -> CreatedRun | None:
         now = _require_aware_datetime(now)
         run_id = uuid4()
+        reopened_event: RunEvent | None = None
         try:
             async with self._session_factory() as session, session.begin():
                 await session.execute(text("BEGIN IMMEDIATE"))
@@ -2064,6 +2194,12 @@ class IncidentRepository:
                     await require_operator_current(
                         session, requester, int(self._now().timestamp())
                     )
+                if incident.lifecycle_status is IncidentLifecycleStatus.CLOSED:
+                    now = _require_aware_datetime(self._now())
+                    if source_execution_id is None:
+                        raise RepairSourceInvalidError
+                    if requester is None:
+                        raise OperatorAuthenticationError
                 source = await session.get(RunRow, str(source_run_id))
                 source_row = await _repair_proposal_by_run(session, source_run_id)
                 if (
@@ -2122,6 +2258,10 @@ class IncidentRepository:
                     or source.attempt > previous_attempt
                 ):
                     raise RecoveryConsistencyError
+                if source_execution_id is not None:
+                    reopened_event = await _reopen_incident(
+                        session, incident, now, "rollback"
+                    )
                 run = RunRow(
                     id=str(run_id),
                     incident_id=incident.id,
@@ -2162,6 +2302,8 @@ class IncidentRepository:
         except SQLAlchemyError:
             raise PersistenceOperationError from None
         await self._notify_committed_event(event)
+        if reopened_event is not None:
+            await self._notify_committed_event(reopened_event)
         return CreatedRun(run_id=run_id)
 
     async def withdraw_run(
@@ -2821,6 +2963,14 @@ class IncidentRepository:
                     )
                     execution.target_released_at = updated.completed_at
                 rows.run.updated_at = rows.incident.updated_at = at
+                if updated.reason is not None:
+                    key = _observation_key(rows.repair.proposal.target)
+                    await _interrupt_target_health(session, key, at)
+                    current_observation = await session.get(
+                        CurrentAlertObservationRow, key
+                    )
+                    if current_observation is not None:
+                        current_observation.reconciled_signal_revision = None
                 payload = _base_payload(
                     UUID(rows.incident.id), run_id, at, RunKind.REPAIR
                 )
@@ -3488,6 +3638,370 @@ class IncidentRepository:
             await self._on_event_committed(event.incident_id)
 
 
+async def _interrupt_target_health(
+    session: AsyncSession,
+    target_key: tuple[str, str | None, str, str, str] | None,
+    at: datetime,
+) -> None:
+    query = select(IncidentRow).where(
+        IncidentRow.lifecycle_status == IncidentLifecycleStatus.OPEN
+    )
+    if target_key is not None:
+        query = query.where(
+            *(
+                getattr(IncidentRow, name) == value
+                for name, value in zip(_TARGET_COLUMNS, target_key, strict=True)
+            )
+        )
+    for incident in await session.scalars(query):
+        await _interrupt_incident_health(session, incident, at)
+
+
+async def _interrupt_incident_health(
+    session: AsyncSession, incident: IncidentRow, at: datetime
+) -> None:
+    completed = await session.scalar(
+        select(func.max(RunRow.completed_at)).where(RunRow.incident_id == incident.id)
+    )
+    # A wall-clock rollback must not make an already committed verification
+    # appear newer than the interruption that invalidated it.
+    if completed is not None:
+        at = max(at, _database_datetime(completed))
+    incident.healthy_since = None
+    incident.last_healthy_at = None
+    incident.health_interrupted_at = (
+        max(at, _database_datetime(incident.health_interrupted_at))
+        if incident.health_interrupted_at
+        else at
+    )
+
+
+async def _record_signal_change(
+    session: AsyncSession, occurrence: NormalizedAlertOccurrence, at: datetime
+) -> None:
+    target = occurrence.trigger.target
+    key = _observation_key(target)
+    row = await session.get(CurrentAlertObservationRow, key)
+    if row is None:
+        row = CurrentAlertObservationRow(
+            **dict(zip(_TARGET_COLUMNS, key, strict=True)),
+            checked_order=0,
+            signal_revision=0,
+            observation_json=CurrentAlertObservation(
+                target=target,
+                catalog_version=occurrence.trigger.source.revision,
+                facts=None,
+                summary=CurrentAlertSummary(),
+            ).model_dump_json(),
+        )
+        session.add(row)
+    row.signal_revision += 1
+    await _interrupt_target_health(session, key, at)
+
+
+def _complete_target_observation(
+    observation: CurrentAlertObservation,
+    summary: CurrentAlertSummary,
+    catalog: AlertCatalog,
+    sample_started_at: datetime,
+    at: datetime,
+) -> bool:
+    facts = observation.facts
+    expected = {
+        entry.alert_id
+        for entry in catalog.entries
+        if (entry.target.api_version, entry.target.kind)
+        == (observation.target.api_version, observation.target.kind)
+    }
+    return bool(
+        facts is not None
+        and facts.created_at is not None
+        and observation.catalog_version == catalog.version
+        and (
+            facts.target_ref.namespace,
+            facts.target_ref.api_version,
+            facts.target_ref.kind,
+            facts.target_ref.name,
+        )
+        == _observation_key(observation.target)[1:]
+        and summary.complete
+        and summary.state is not CurrentAlertState.UNKNOWN
+        and summary.reason is None
+        and summary.observed_at is not None
+        and summary.received_at is not None
+        and facts.created_at <= facts.observed_at <= summary.received_at <= at
+        and sample_started_at <= summary.observed_at <= facts.observed_at
+        and at - sample_started_at <= timedelta(seconds=60)
+        and expected
+        and {rule.alert_id for rule in summary.rules} == expected
+        and len(summary.rules) == len(expected)
+        and all(
+            rule.complete
+            and rule.reason is None
+            and rule.state is not CurrentAlertState.UNKNOWN
+            and rule.evaluated_at is not None
+            and timedelta(0)
+            <= summary.observed_at - rule.evaluated_at
+            <= timedelta(seconds=60)
+            for rule in summary.rules
+        )
+    )
+
+
+async def _target_execution_held(session: AsyncSession, incident: IncidentRow) -> bool:
+    return bool(
+        await session.scalar(
+            select(
+                exists().where(
+                    ExecutionRow.cluster == incident.cluster,
+                    ExecutionRow.namespace == incident.namespace,
+                    ExecutionRow.kind == incident.kind,
+                    ExecutionRow.resource_name == incident.resource_name,
+                    ExecutionRow.target_released_at.is_(None),
+                )
+            )
+        )
+    )
+
+
+async def _latest_verification_interruption_id(
+    session: AsyncSession, key: tuple[str, str | None, str, str, str]
+) -> int:
+    return int(
+        await session.scalar(
+            select(func.max(RunEventRow.id))
+            .join(RunRow, RunRow.id == RunEventRow.run_id)
+            .join(IncidentRow, IncidentRow.id == RunRow.incident_id)
+            .where(
+                RunEventRow.event_type == "repair.verification_updated",
+                func.json_extract(RunEventRow.payload_json, "$.reason").is_not(None),
+                *(
+                    getattr(IncidentRow, name) == value
+                    for name, value in zip(_TARGET_COLUMNS, key, strict=True)
+                ),
+            )
+        )
+        or 0
+    )
+
+
+async def _reconcile_stable_incidents(
+    session: AsyncSession,
+    row: CurrentAlertObservationRow,
+    observation: CurrentAlertObservation,
+    summary: CurrentAlertSummary,
+    catalog: AlertCatalog,
+    sample_started_at: datetime,
+    revision: AlertObservationRevision,
+    at: datetime,
+    events: list[RunEvent],
+) -> None:
+    key = _observation_key(observation.target)
+    valid = revision == AlertObservationRevision(
+        row.checked_order,
+        row.signal_revision,
+        await _latest_verification_interruption_id(session, key),
+    ) and _complete_target_observation(
+        observation, summary, catalog, sample_started_at, at
+    )
+    if valid:
+        row.reconciled_signal_revision = row.signal_revision
+    incidents = await session.scalars(
+        select(IncidentRow).where(
+            *(
+                getattr(IncidentRow, name) == value
+                for name, value in zip(_TARGET_COLUMNS, key, strict=True)
+            ),
+            IncidentRow.lifecycle_status == IncidentLifecycleStatus.OPEN,
+        )
+    )
+    for incident in incidents:
+        if not valid or not (
+            observation.facts is not None
+            and observation.facts.healthy is True
+            and summary.target_healthy is True
+            and summary.state is CurrentAlertState.CLEAR
+            and all(rule.state is CurrentAlertState.CLEAR for rule in summary.rules)
+            and await _incident_target_uid(session, incident)
+            == observation.facts.target_ref.uid
+        ):
+            await _interrupt_incident_health(session, incident, at)
+            continue
+        previous = (
+            _database_datetime(incident.last_healthy_at)
+            if incident.last_healthy_at
+            else None
+        )
+        if previous is not None and not (
+            previous <= sample_started_at and at - previous <= timedelta(seconds=60)
+        ):
+            await _interrupt_incident_health(session, incident, at)
+        if incident.healthy_since is None:
+            incident.healthy_since = at
+        healthy_since = _database_datetime(incident.healthy_since)
+        incident.last_healthy_at = at
+        if at - healthy_since < timedelta(minutes=5):
+            continue
+        active = await session.scalar(
+            select(
+                exists().where(
+                    RunRow.incident_id == incident.id,
+                    RunRow.status.in_(_ACTIVE_RUN_STATUSES),
+                )
+            )
+        )
+        if (
+            active
+            or incident.status is IncidentStatus.WAITING_APPROVAL
+            or await _target_execution_held(session, incident)
+        ):
+            continue
+        verification = await _closure_verification(
+            session, incident, observation.facts.target_ref.uid, at
+        )
+        event = _new_incident_event(
+            incident,
+            "incident.closed",
+            at,
+            {
+                "basis": "recovery_verified" if verification else "observed_stable",
+                "healthySince": _rfc3339(healthy_since),
+                "lastHealthyAt": _rfc3339(at),
+                "targetUid": observation.facts.target_ref.uid,
+                "verificationRunId": str(verification) if verification else None,
+            },
+        )
+        incident.lifecycle_status = IncidentLifecycleStatus.CLOSED
+        incident.closed_at = at
+        incident.updated_at = at
+        incident.pending_diagnosis_json = None
+        session.add(event)
+        await session.flush()
+        events.append(_event_from_row(event, expected_incident_id=UUID(incident.id)))
+
+
+async def _closure_verification(
+    session: AsyncSession, incident: IncidentRow, uid: str, at: datetime
+) -> UUID | None:
+    reopened = await session.scalar(
+        select(RunEventRow)
+        .where(
+            RunEventRow.incident_id == incident.id,
+            RunEventRow.event_type == "incident.reopened",
+        )
+        .order_by(RunEventRow.id.desc())
+        .limit(1)
+    )
+    opened_at = _database_datetime(
+        reopened.occurred_at if reopened else incident.created_at
+    )
+    interrupted = (
+        _database_datetime(incident.health_interrupted_at)
+        if incident.health_interrupted_at
+        else opened_at
+    )
+    runs = await session.scalars(
+        select(RunRow)
+        .join(ExecutionRow, ExecutionRow.run_id == RunRow.id)
+        .join(VerificationRow, VerificationRow.execution_id == ExecutionRow.id)
+        .where(
+            RunRow.incident_id == incident.id,
+            RunRow.kind == RunKind.REPAIR,
+            RunRow.created_at >= opened_at,
+            RunRow.status == RunStatus.COMPLETED,
+        )
+        .order_by(RunRow.attempt.desc())
+    )
+    for run in runs:
+        if reopened is not None and not await session.scalar(
+            select(
+                exists().where(
+                    RunEventRow.run_id == run.id,
+                    RunEventRow.event_type == "run.queued",
+                    RunEventRow.id > reopened.id,
+                )
+            )
+        ):
+            continue
+        proposal_row = await _repair_proposal_by_run(session, UUID(run.id))
+        if proposal_row is None:
+            raise RecoveryConsistencyError
+        repair = await _load_repair_ledger(
+            session,
+            run,
+            _incident_repair_detail(proposal_row, UUID(run.id)),
+            proposal_row.validation_json,
+        )
+        verification = repair.verification
+        if (
+            repair.proposal.target_uid == uid
+            and _observation_key(repair.proposal.target)
+            == tuple(getattr(incident, name) for name in _TARGET_COLUMNS)
+            and verification is not None
+            and verification.outcome == "recovered"
+            and verification.completed_at is not None
+            and verification.started_at >= opened_at
+            and interrupted < verification.completed_at <= at
+        ):
+            return UUID(run.id)
+    return None
+
+
+async def _has_reopen_conflict(session: AsyncSession, incident: IncidentRow) -> bool:
+    if (
+        incident.lifecycle_status is not IncidentLifecycleStatus.CLOSED
+        or incident.target_uid is None
+        or incident.correlation_group is None
+    ):
+        return False
+    return bool(
+        await session.scalar(
+            select(
+                exists().where(
+                    IncidentRow.id != incident.id,
+                    IncidentRow.lifecycle_status == IncidentLifecycleStatus.OPEN,
+                    *(
+                        getattr(IncidentRow, name) == getattr(incident, name)
+                        for name in _TARGET_COLUMNS
+                    ),
+                    IncidentRow.target_uid == incident.target_uid,
+                    IncidentRow.correlation_group == incident.correlation_group,
+                )
+            )
+        )
+    )
+
+
+async def _reopen_incident(
+    session: AsyncSession,
+    incident: IncidentRow,
+    at: datetime,
+    reason: Literal["manual_rerun", "rollback"],
+) -> RunEvent | None:
+    if incident.lifecycle_status is not IncidentLifecycleStatus.CLOSED:
+        return None
+    if await _has_reopen_conflict(session, incident):
+        raise IncidentReopenConflictError
+    if incident.closed_at is None:
+        raise RecoveryConsistencyError
+    if at < _database_datetime(incident.closed_at):
+        raise RecoveryConsistencyError
+    event = _new_incident_event(
+        incident,
+        "incident.reopened",
+        at,
+        {
+            "reason": reason,
+            "previousClosedAt": _rfc3339(incident.closed_at),
+        },
+    )
+    incident.lifecycle_status = IncidentLifecycleStatus.OPEN
+    await _interrupt_incident_health(session, incident, at)
+    session.add(event)
+    await session.flush()
+    return _event_from_row(event, expected_incident_id=UUID(incident.id))
+
+
 def _new_incident_row(trigger: NormalizedIncidentTrigger, at: datetime) -> IncidentRow:
     return IncidentRow(
         id=str(uuid4()),
@@ -3503,6 +4017,7 @@ def _new_incident_row(trigger: NormalizedIncidentTrigger, at: datetime) -> Incid
         resource_name=trigger.target.name,
         status=IncidentStatus.RECEIVED,
         lifecycle_status=IncidentLifecycleStatus.OPEN,
+        health_interrupted_at=at,
         created_at=at,
         updated_at=at,
     )
@@ -3607,9 +4122,6 @@ async def _associate_episode_signals(
         if rule is None or not rule.complete or rule.state is CurrentAlertState.UNKNOWN:
             signal.association_reason = "awaiting_observation"
             continue
-        if rule.state is not CurrentAlertState.FIRING:
-            signal.association_reason = "not_firing"
-            continue
         if (
             facts is None
             or facts.created_at is None
@@ -3623,6 +4135,13 @@ async def _associate_episode_signals(
             or _canonical_alert_datetime(facts.created_at) > signal.starts_at
         ):
             signal.association_reason = "identity_unverified"
+            continue
+        if rule.state is not CurrentAlertState.FIRING:
+            signal.association_reason = (
+                "not_firing"
+                if rule.state is CurrentAlertState.CLEAR
+                else "awaiting_observation"
+            )
             continue
         group = entry.correlation_group or entry.alert_id
         incident = (
@@ -4930,12 +5449,164 @@ async def _load_workflow_rows(
     )
 
 
+def _reconciled_clear(
+    row: CurrentAlertObservationRow,
+) -> CurrentAlertObservation | None:
+    observation = _alert_observation(row.observation_json)
+    summary = observation.summary
+    if (
+        row.reconciled_signal_revision != row.signal_revision
+        or not summary.complete
+        or summary.state is not CurrentAlertState.CLEAR
+        or summary.target_healthy is not True
+        or observation.facts is None
+        or observation.facts.healthy is not True
+    ):
+        return None
+    return observation
+
+
+async def _incident_prune_eligible(
+    session: AsyncSession, incident: IncidentRow, cutoff: datetime
+) -> bool:
+    if (
+        incident.lifecycle_status is not IncidentLifecycleStatus.CLOSED
+        or incident.closed_at is None
+        or _database_datetime(incident.closed_at) >= cutoff
+        or incident.status is IncidentStatus.WAITING_APPROVAL
+        or incident.pending_diagnosis_json is not None
+        or await _target_execution_held(session, incident)
+    ):
+        return False
+    if await session.scalar(
+        select(
+            exists().where(
+                RunRow.incident_id == incident.id,
+                RunRow.status.in_(_ACTIVE_RUN_STATUSES),
+            )
+        )
+    ) or await session.scalar(
+        select(
+            exists().where(
+                ExecutionRow.run_id == RunRow.id,
+                RunRow.incident_id == incident.id,
+                ExecutionRow.status == "UNKNOWN",
+            )
+        )
+    ):
+        return False
+    key = tuple(getattr(incident, name) for name in _TARGET_COLUMNS)
+    pending = await session.scalar(
+        select(
+            exists().where(
+                *(
+                    getattr(AlertSignalRow, name) == value
+                    for name, value in zip(_TARGET_COLUMNS, key, strict=True)
+                ),
+                or_(
+                    and_(
+                        AlertSignalRow.incident_id == incident.id,
+                        or_(
+                            AlertSignalRow.association_reason.is_(None),
+                            AlertSignalRow.association_reason != "not_firing",
+                        ),
+                    ),
+                    and_(
+                        AlertSignalRow.incident_id.is_(None),
+                        or_(
+                            AlertSignalRow.status == AlertSignalStatus.FIRING,
+                            AlertSignalRow.association_reason.is_(None),
+                            AlertSignalRow.association_reason != "not_firing",
+                        ),
+                    ),
+                ),
+            )
+        )
+    )
+    if pending:
+        return False
+    row = await session.get(CurrentAlertObservationRow, key)
+    if row is not None:
+        observation = _reconciled_clear(row)
+        if (
+            observation is None
+            or observation.facts is None
+            or await _incident_target_uid(session, incident)
+            != observation.facts.target_ref.uid
+        ):
+            return False
+    return True
+
+
+async def _resolved_alert_prune_target(
+    session: AsyncSession,
+    signal: AlertSignalRow,
+    cutoff: datetime,
+) -> ResolvedAlertPruneTarget | None:
+    if (
+        signal.incident_id is not None
+        or signal.status is not AlertSignalStatus.RESOLVED
+        or signal.ends_at is None
+        or signal.last_received_at is None
+        or _database_datetime(signal.last_received_at) >= cutoff
+        or signal.association_reason != "not_firing"
+    ):
+        return None
+    row = await session.get(
+        CurrentAlertObservationRow,
+        tuple(getattr(signal, name) for name in _TARGET_COLUMNS),
+    )
+    observation = _reconciled_clear(row) if row is not None else None
+    if (
+        observation is None
+        or observation.facts is None
+        or observation.facts.created_at is None
+        or _canonical_alert_datetime(observation.facts.created_at) > signal.starts_at
+    ):
+        return None
+    assert row is not None
+    return ResolvedAlertPruneTarget(
+        fingerprint=signal.fingerprint,
+        starts_at=signal.starts_at,
+        ends_at=signal.ends_at,
+        last_received_at=_database_datetime(signal.last_received_at),
+        signal_revision=row.signal_revision,
+    )
+
+
+async def _delete_unused_observation(
+    session: AsyncSession, key: tuple[str, str | None, str, str, str]
+) -> None:
+    for model in (IncidentRow, AlertSignalRow):
+        if await session.scalar(
+            select(
+                exists().where(
+                    *(
+                        getattr(model, name) == value
+                        for name, value in zip(_TARGET_COLUMNS, key, strict=True)
+                    )
+                )
+            )
+        ):
+            return
+    await session.execute(
+        delete(CurrentAlertObservationRow).where(
+            *(
+                getattr(CurrentAlertObservationRow, name) == value
+                for name, value in zip(_TARGET_COLUMNS, key, strict=True)
+            )
+        )
+    )
+
+
 async def _prune_target_from_incident(
     session: AsyncSession,
     incident: IncidentRow,
     artifact_root: Path,
 ) -> PruneTarget:
     await _require_no_incident_execution(session, incident.id)
+    if incident.closed_at is None:
+        raise RecoveryConsistencyError
     try:
         incident_id = UUID(incident.id)
         updated_at = _database_datetime(incident.updated_at)
@@ -4948,7 +5619,7 @@ async def _prune_target_from_incident(
             .order_by(RunRow.attempt)
         )
     )
-    if not runs or [run.attempt for run in runs] != list(range(1, len(runs) + 1)):
+    if [run.attempt for run in runs] != list(range(1, len(runs) + 1)):
         raise RecoveryConsistencyError
     run_ids: list[UUID] = []
     for run in runs:
@@ -5047,6 +5718,7 @@ async def _prune_target_from_incident(
     return PruneTarget(
         incident_id=incident_id,
         updated_at=updated_at,
+        closed_at=_database_datetime(incident.closed_at),
         run_ids=tuple(run_ids),
         artifact_directories=tuple(artifact_root / str(run_id) for run_id in run_ids),
         event_rows=event_rows,
@@ -5396,6 +6068,7 @@ def _incident_actions(
     target_occupied: bool,
     execution_enabled: bool,
     in_scope: bool,
+    reopen_conflict: bool,
     now: datetime,
 ) -> IncidentActions:
     run, repair = detail.run, detail.repair
@@ -5495,13 +6168,24 @@ def _incident_actions(
         and repair.execution.result.receipt is not None
     ):
         rollback = busy
+    rerun = busy
+    if detail.incident.lifecycle_status is IncidentLifecycleStatus.CLOSED:
+        prepare = edit = "not_applicable"
+        if run.operation is not RepairOperation.ROLLBACK:
+            refresh = "not_applicable"
+        if reopen_conflict:
+            rerun = "incident_reopen_conflict"
+            if rollback != "not_applicable":
+                rollback = "incident_reopen_conflict"
+            if refresh != "not_applicable":
+                refresh = "incident_reopen_conflict"
     return IncidentActions(
         prepare=prepare,
         refresh=refresh,
         edit=edit,
         approve=decision or ("target_occupied" if target_occupied else None),
         reject=decision,
-        rerun=busy,
+        rerun=rerun,
         rollback=rollback,
         preparation_source=preparation_source,
         history_candidates=tuple(candidates),
@@ -7782,13 +8466,17 @@ async def _incident_alert_summary(
         return CurrentAlertSummary()
     observation = _alert_observation(row.observation_json)
     summary = _fresh_alert_summary(observation.summary, at)
+    uid = await _incident_target_uid(session, incident)
+    if observation.facts is None or uid != observation.facts.target_ref.uid:
+        return CurrentAlertSummary(reason=ObservationReason.IDENTITY_UNVERIFIED)
+    return summary
+
+
+async def _incident_target_uid(
+    session: AsyncSession, incident: IncidentRow
+) -> str | None:
     if incident.target_uid is not None:
-        return (
-            summary
-            if observation.facts is not None
-            and observation.facts.target_ref.uid == incident.target_uid
-            else CurrentAlertSummary(reason=ObservationReason.IDENTITY_UNVERIFIED)
-        )
+        return incident.target_uid
     # Historical names do not establish identity. Check all saved target Evidence,
     # not only the selected Run, so contradictory UIDs cannot be hidden by a tab.
     references = await session.scalars(
@@ -7820,9 +8508,7 @@ async def _incident_alert_summary(
             incident.resource_name,
         ):
             uids.add(reference.uid)
-    if observation.facts is None or uids != {observation.facts.target_ref.uid}:
-        return CurrentAlertSummary(reason=ObservationReason.IDENTITY_UNVERIFIED)
-    return summary
+    return next(iter(uids)) if len(uids) == 1 else None
 
 
 def _require_aware_datetime(value: datetime) -> datetime:

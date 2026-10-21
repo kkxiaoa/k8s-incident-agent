@@ -638,6 +638,19 @@ class AlertAssociatedEventPayload(IncidentEventPayload):
     target_uid: str = Field(min_length=1)
 
 
+class IncidentClosedEventPayload(IncidentEventPayload):
+    basis: Literal["observed_stable", "recovery_verified"]
+    healthy_since: datetime
+    last_healthy_at: datetime
+    target_uid: str = Field(min_length=1)
+    verification_run_id: UUID | None
+
+
+class IncidentReopenedEventPayload(IncidentEventPayload):
+    reason: Literal["manual_rerun", "rollback"]
+    previous_closed_at: datetime
+
+
 class DiagnosisChangeRecordedEventPayload(IncidentEventPayload):
     change: DiagnosisChangeReference
 
@@ -796,6 +809,18 @@ class DiagnosisDeferredStreamEvent(_ApiContract):
     data: DiagnosisDeferredEventPayload
 
 
+class IncidentClosedStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["incident.closed"]
+    data: IncidentClosedEventPayload
+
+
+class IncidentReopenedStreamEvent(_ApiContract):
+    id: str = Field(pattern=r"^[1-9][0-9]*$")
+    event: Literal["incident.reopened"]
+    data: IncidentReopenedEventPayload
+
+
 class ApprovalDecidedStreamEvent(_ApiContract):
     id: str = Field(pattern=r"^[1-9][0-9]*$")
     event: Literal["repair.approval_decided"]
@@ -837,7 +862,9 @@ class RunEventStreamItem(
             | AlertNotificationStreamEvent
             | AlertAssociatedStreamEvent
             | DiagnosisChangeRecordedStreamEvent
-            | DiagnosisDeferredStreamEvent,
+            | DiagnosisDeferredStreamEvent
+            | IncidentClosedStreamEvent
+            | IncidentReopenedStreamEvent,
             Field(discriminator="event"),
         ]
     ]

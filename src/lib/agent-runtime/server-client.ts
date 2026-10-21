@@ -110,6 +110,11 @@ const RUNTIME_ERROR_CONTRACTS = {
     message: "Incident has no Run to diagnose again.",
     retryable: false,
   },
+  incident_reopen_conflict: {
+    status: 409,
+    message: "Another open Incident owns this target and alert group.",
+    retryable: false,
+  },
   repair_source_invalid: {
     status: 409,
     message: "Repair source is not applicable.",
@@ -190,6 +195,7 @@ const RUN_CREATE_ERROR_CODES = [
   "incident_not_found",
   "active_run_exists",
   "run_not_applicable",
+  "incident_reopen_conflict",
   "invalid_request",
   "runtime_not_ready",
   "internal_error",

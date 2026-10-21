@@ -61,7 +61,7 @@ test("general reads accept no-Run Incidents but Run-specific evaluation cannot u
   }
 });
 
-test("SSE replay accepts Incident ownership only for alert notifications and keeps strict cursor ordering", () => {
+test("SSE replay accepts alert notification ownership and keeps strict cursor ordering", () => {
   const data = { schemaVersion: 6, incidentId: INCIDENT, runId: null, runKind: null,
     occurredAt: "2026-09-03T00:05:01Z", alertStatus: "RESOLVED", fingerprint: "0123456789abcdef",
     startsAt: "2026-09-03T00:00:00.000000001Z", endsAt: "2026-09-03T00:05:00Z" };
@@ -73,6 +73,19 @@ test("SSE replay accepts Incident ownership only for alert notifications and kee
   }
   assert.throws(() => decodeSseFrame(frame("run.failed"), expected, "7"), coded("sse_replay_invalid"));
   assert.throws(() => decodeSseFrame(frame("alert.notification"), expected, "8"), coded("sse_replay_invalid"));
+});
+
+test("SSE replay accepts Incident-owned lifecycle events without impersonating the selected Run", () => {
+  for (const event of ["incident.closed", "incident.reopened"]) {
+    const data = { schemaVersion: 6, incidentId: INCIDENT, runId: null, runKind: null, occurredAt: "2026-09-03T00:10:00Z" };
+    const frame = (changes = {}) => `id: 8\nevent: ${event}\ndata: ${JSON.stringify({ ...data, ...changes })}`;
+    const expected = { incidentId: INCIDENT, runId: RUN };
+    assert.equal(decodeSseFrame(frame(), expected, "7").data.runId, null);
+    for (const invalid of [{ incidentId: uuid(99) }, { runId: RUN }, { runKind: "repair" }]) {
+      assert.throws(() => decodeSseFrame(frame(invalid), expected, "7"), coded("sse_replay_invalid"));
+    }
+    assert.throws(() => decodeSseFrame(frame(), expected, "8"), coded("sse_replay_invalid"));
+  }
 });
 
 test("incident detail is read through the gateway-tolerant path and checked for identity", async () => {

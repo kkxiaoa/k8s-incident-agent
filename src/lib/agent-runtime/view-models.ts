@@ -22,6 +22,7 @@ export const ACTION_UNAVAILABLE_LABELS: Record<Exclude<components["schemas"]["In
   active_run: "此 Incident 仍有活跃运行，请等待或查看最新运行。",
   execution_held: "目标仍被本次执行占用；请核对执行与恢复记录，不要重复执行。",
   target_occupied: "另一次执行仍占用此目标，暂时不能批准。",
+  incident_reopen_conflict: "同一目标和告警组已有开放的 Incident，请先核对故障归属。",
   execution_disabled: "当前环境未启用审批执行，正式批准与拒绝均不可用。",
   outside_scope: "目标不在获准的固定执行沙箱内。",
   proposal_expired: "提案等待期限已失效，请重新准备；这不是登录会话过期。",

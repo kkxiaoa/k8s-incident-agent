@@ -112,6 +112,9 @@ function applyIncidentStatus(
   event: RunEventStreamItem,
 ): IncidentDetailResponse {
   switch (event.event) {
+    case "incident.closed":
+    case "incident.reopened":
+      return { ...detail, incident: { ...detail.incident, lifecycleStatus: event.event === "incident.closed" ? "CLOSED" : "OPEN" } };
     case "incident.created":
     case "run.started":
     case "diagnosis.completed":
@@ -178,6 +181,8 @@ function applySelectedRunStatus(
     case "alert.associated":
     case "diagnosis.change_recorded":
     case "diagnosis.deferred":
+    case "incident.closed":
+    case "incident.reopened":
       return detail;
   }
 }
@@ -212,7 +217,7 @@ export function reduceIncidentStream(
       const detail = snapshotBehind
         ? {
             ...action.detail,
-            incident: { ...action.detail.incident, status: state.detail.incident.status },
+            incident: { ...action.detail.incident, status: state.detail.incident.status, lifecycleStatus: state.detail.incident.lifecycleStatus },
             selectedRun: sameRun && action.detail.selectedRun !== null && state.detail.selectedRun !== null
               ? { ...action.detail.selectedRun, status: state.detail.selectedRun.status }
               : action.detail.selectedRun,

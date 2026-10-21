@@ -226,7 +226,13 @@ async def test_degraded_startup_keeps_persisted_history_sse_and_watchdog_availab
                 webhook_url, headers=headers, content=watchdog_payload()
             )
             assert watchdog.status_code == 204
-            assert (await client.get(detail_url)).json() == old_detail.json()
+            current_detail = (await client.get(detail_url)).json()
+            historical_detail = old_detail.json()
+            assert current_detail.pop("alertSummary") == {
+                **historical_detail.pop("alertSummary"),
+                "reason": "identity_unverified",
+            }
+            assert current_detail == historical_detail
             database = await create_business_database(paths)
             try:
                 repository = IncidentRepository(database.session_factory)

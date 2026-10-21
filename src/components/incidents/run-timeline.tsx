@@ -18,6 +18,8 @@ function eventCopy(event: RunEventStreamItem): {
   tone: string;
 } {
   switch (event.event) {
+    case "incident.closed":
+    case "incident.reopened":
     case "alert.associated":
     case "diagnosis.change_recorded":
     case "diagnosis.deferred":

@@ -34,6 +34,94 @@ SERVICE_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.mark.parametrize("fail_ddl", [False, True])
+async def test_stable_lifecycle_migration_preserves_existing_state_without_backfill(
+    tmp_path: Path,
+    credential: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_ddl: bool,
+) -> None:
+    async with approval_harness(
+        tmp_path, credential, occurrence=_occurrence()
+    ) as harness:
+        await harness.approve()
+        await applied_result(harness)
+        paths = RuntimePaths.prepare(tmp_path / "runtime")
+        config = _alembic_config(paths)
+        command.downgrade(config, "20261018_0016")
+        schema = _schema_snapshot(paths.business_database)
+        with sqlite3.connect(paths.business_database) as connection:
+            before = {
+                table: connection.execute(
+                    f'SELECT * FROM "{table}" ORDER BY rowid'
+                ).fetchall()
+                for table in (*schema["tables"], "sqlite_sequence")
+            }
+        with sqlite3.connect(paths.checkpoint_database) as connection:
+            checkpoint_before = tuple(connection.iterdump())
+        original = op.add_column
+
+        def interrupted(table: str, column: Any, *args: Any, **kwargs: Any) -> Any:
+            if column.name == "closed_at":
+                raise RuntimeError("injected lifecycle DDL failure")
+            return original(table, column, *args, **kwargs)
+
+        if fail_ddl:
+            monkeypatch.setattr(op, "add_column", interrupted)
+            with pytest.raises(RuntimeError, match="injected lifecycle DDL failure"):
+                command.upgrade(config, "head")
+            assert _schema_snapshot(paths.business_database) == schema
+        else:
+            command.upgrade(config, "head")
+        with sqlite3.connect(paths.business_database) as connection:
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            for table, rows in before.items():
+                columns = ",".join(schema["columns"].get(table, ("name", "seq")))
+                assert (
+                    connection.execute(
+                        f'SELECT {columns} FROM "{table}" ORDER BY rowid'
+                    ).fetchall()
+                    == rows
+                )
+            if not fail_ddl:
+                assert connection.execute(
+                    "SELECT healthy_since, last_healthy_at, health_interrupted_at, closed_at FROM incidents"
+                ).fetchall() == [(None, None, None, None)]
+                assert connection.execute(
+                    "SELECT signal_revision, reconciled_signal_revision FROM current_alert_observations"
+                ).fetchall() == [(0, None)]
+        with sqlite3.connect(paths.checkpoint_database) as connection:
+            assert tuple(connection.iterdump()) == checkpoint_before
+
+
+async def test_stable_closure_downgrade_requires_the_consistent_backup(
+    tmp_path: Path,
+) -> None:
+    from tests.unit.persistence.test_incident_lifecycle import (
+        advance_window,
+        open_episode,
+    )
+    from tests.unit.persistence.test_repair_persistence import (
+        _database,  # pyright: ignore[reportPrivateUsage]
+    )
+    from tests.unit.repair.test_repair_preparation import FRESH_NOW
+
+    from k8s_incident_agent.persistence.repositories import IncidentRepository
+
+    clock = [FRESH_NOW]
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory, now=lambda: clock[0])
+        await open_episode(repository)
+        await advance_window(repository, clock, 11)
+        paths = RuntimePaths.prepare(tmp_path / "runtime")
+        with sqlite3.connect(paths.business_database) as connection:
+            before = tuple(connection.iterdump())
+        with pytest.raises(RuntimeError, match="consistent pre-upgrade backup"):
+            command.downgrade(_alembic_config(paths), "20261018_0016")
+        with sqlite3.connect(paths.business_database) as connection:
+            assert tuple(connection.iterdump()) == before
+
+
+@pytest.mark.parametrize("fail_ddl", [False, True])
 async def test_current_observation_migration_preserves_nonempty_ledger_and_checkpoint(
     tmp_path: Path,
     credential: tuple[str, str],
@@ -49,6 +137,9 @@ async def test_current_observation_migration_preserves_nonempty_ledger_and_check
         await applied_result(harness)
         paths = RuntimePaths.prepare(tmp_path / "runtime")
         config = _alembic_config(paths)
+        # Construct the older schema before taking its preservation snapshot.
+        with sqlite3.connect(paths.business_database) as connection:
+            connection.execute("DELETE FROM current_alert_observations")
         command.downgrade(config, "20261006_0014")
         schema = _schema_snapshot(paths.business_database)
         with sqlite3.connect(paths.business_database) as connection:
@@ -108,6 +199,9 @@ async def test_durable_intake_migration_preserves_nonempty_ledger_checkpoint_and
         await applied_result(harness)
         paths = RuntimePaths.prepare(tmp_path / "runtime")
         config = _alembic_config(paths)
+        # Intake revisions did not exist in the schema under test.
+        with sqlite3.connect(paths.business_database) as connection:
+            connection.execute("DELETE FROM current_alert_observations")
         command.downgrade(config, "20260919_0013")
         schema = _schema_snapshot(paths.business_database)
         with sqlite3.connect(paths.business_database) as connection:
@@ -158,7 +252,7 @@ async def test_durable_intake_migration_preserves_nonempty_ledger_checkpoint_and
             ).fetchone() == (500,)
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260919_0013" if fail_ddl else "20261018_0016",)
+            ).fetchone() == ("20260919_0013" if fail_ddl else "20261020_0017",)
             if not fail_ddl:
                 assert connection.execute(
                     "SELECT lifecycle_status FROM incidents"
@@ -212,7 +306,7 @@ async def test_durable_intake_downgrade_refuses_to_discard_notification_facts(
         paths = RuntimePaths.prepare(tmp_path / "runtime")
         with sqlite3.connect(paths.business_database) as connection:
             before = tuple(connection.iterdump())
-        with pytest.raises(RuntimeError, match="restore the consistent backup"):
+        with pytest.raises(RuntimeError, match=r"consistent.*backup"):
             command.downgrade(_alembic_config(paths), "20260919_0013")
         with sqlite3.connect(paths.business_database) as connection:
             assert tuple(connection.iterdump()) == before
@@ -453,7 +547,7 @@ async def test_approval_upgrade_preserves_nonempty_source_waiting_and_rolls_back
             } == before
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone() == ("20260913_0008" if fail_ddl else "20261018_0016",)
+            ).fetchone() == ("20260913_0008" if fail_ddl else "20261020_0017",)
             if fail_ddl:
                 assert (
                     connection.execute(
@@ -474,6 +568,8 @@ EXPECTED_COLUMNS = {
         "resource_name",
         "checked_order",
         "observation_json",
+        "signal_revision",
+        "reconciled_signal_revision",
     ),
     "public_demo_budgets": ("category", "used", "window_started_at"),
     "verifications": ("execution_id", "record_json"),
@@ -530,6 +626,10 @@ EXPECTED_COLUMNS = {
         "target_uid",
         "correlation_group",
         "pending_diagnosis_json",
+        "healthy_since",
+        "last_healthy_at",
+        "health_interrupted_at",
+        "closed_at",
     ),
     "agent_runs": (
         "id",
@@ -1069,7 +1169,7 @@ def test_alertmanager_intake_downgrade_rejects_nonempty_head_before_ddl(
     with sqlite3.connect(paths.business_database) as connection:
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
-        ).fetchone() == ("20261018_0016",)
+        ).fetchone() == ("20261020_0017",)
 
 
 def test_alertmanager_intake_upgrade_rejects_nonempty_lifecycle_tables_before_ddl(

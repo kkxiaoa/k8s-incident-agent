@@ -1062,7 +1062,7 @@ function parseIncidentActions(value: unknown): IncidentActionsView | null {
   const reasons: ReadonlyArray<Exclude<IncidentActionsView["approve"], null>> = [
     "not_applicable", "active_run", "execution_held", "target_occupied", "execution_disabled",
     "outside_scope", "proposal_expired", "no_history_candidates", "diagnosis_unavailable",
-    "authentication_required", "not_owner",
+    "authentication_required", "not_owner", "incident_reopen_conflict",
   ];
   const keys = ["prepare", "refresh", "edit", "approve", "reject", "rerun", "rollback"] as const;
   if (keys.some((key) => value[key] !== null && !reasons.some((reason) => reason === value[key]))) return null;

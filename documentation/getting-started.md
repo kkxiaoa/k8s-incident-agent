@@ -152,3 +152,23 @@ These tests use fresh synthetic credentials and their own fake Runtime, not your
 | Real data seems lost | Confirm `RUNTIME_DATA_DIR` and process first; do not reset/purge or delete files. |
 
 Never share passwords, verifiers, kubeconfigs, API keys, raw sensitive logs or databases in support requests.
+
+## 8. Explicit retention maintenance
+
+Pruning is destructive, separately authorized maintenance of a specific installation. It is not part of normal startup or a way to repair stale-looking history. First identify the intended `RUNTIME_DATA_DIR`, stop its Runtime, and make a consistent backup of its business database, checkpoint database and artifacts. Keep the same private-directory and no-symlink requirements used for startup.
+
+From `services/agent-runtime`, with that installation's configuration selected:
+
+```bash
+uv run runtime prune --preview
+```
+
+Inspect the exact Incident/Run/artifact targets and any resolved-only occurrence targets. The default retention window is seven days (`RUNTIME_RETENTION_DAYS`, allowed range 1–30). CLOSED Incidents use their last `closedAt`, including those with no Runs; resolved-only unassigned occurrences use their last receipt time and require trusted source reconciliation. OPEN or undetermined historical lifecycle, active/waiting work, ambiguous execution and unresolved facts remain protected.
+
+Only after approving deletion for this installation:
+
+```bash
+uv run runtime prune --confirm
+```
+
+Both commands require the maintenance lock. Confirm performs a fresh eligibility scan; it is not bound to a saved preview digest, so review changes and rerun preview if circumstances have changed. Artifact/checkpoint deletion precedes the final business-ledger deletion and is not a cross-store atomic operation. If any step fails, preserve the remaining data and investigate the explicit error; do not manually remove ledger rows or reset the installation. Deleted history has no application undo and requires a consistent backup to restore.

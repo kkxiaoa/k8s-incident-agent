@@ -49,6 +49,7 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
     target = PruneTarget(
         incident_id=INCIDENT_ID,
         updated_at=datetime(2026, 9, 1, 8, 0, tzinfo=UTC),
+        closed_at=datetime(2026, 9, 1, 8, 0, tzinfo=UTC),
         run_ids=(RUN_ID,),
         artifact_directories=(tmp_path / "runtime" / "runs" / str(RUN_ID),),
         event_rows=5,
@@ -94,6 +95,8 @@ def test_prune_cli_emits_exact_targets_for_selected_mode(
                 "runIds": [str(RUN_ID)],
                 "runRows": 1,
                 "updatedAt": "2026-09-01T08:00:00+00:00",
+                "closedAt": "2026-09-01T08:00:00+00:00",
+                "kind": "incident",
             }
         ],
     }

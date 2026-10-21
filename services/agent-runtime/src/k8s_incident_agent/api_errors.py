@@ -42,6 +42,7 @@ from k8s_incident_agent.monitoring.errors import (
 from k8s_incident_agent.persistence.repositories import (
     ApprovalConflictError,
     ExecutionDisabledError,
+    IncidentReopenConflictError,
     RepairSourceInvalidError,
     RunNotApplicableError,
 )
@@ -129,6 +130,22 @@ _ALERT_TARGET_INVALID = _ErrorContract(
 
 
 def install_exception_handlers(app: FastAPI) -> None:
+    async def incident_reopen_conflict_handler(
+        _request: Request, _error: IncidentReopenConflictError
+    ) -> JSONResponse:
+        return _response(
+            _ErrorContract(
+                409,
+                "incident_reopen_conflict",
+                "Another open Incident owns this target and alert group.",
+            )
+        )
+
+    app.add_exception_handler(
+        IncidentReopenConflictError,
+        cast(ExceptionHandler, incident_reopen_conflict_handler),
+    )
+
     async def run_not_applicable_handler(
         _request: Request, _error: RunNotApplicableError
     ) -> JSONResponse:

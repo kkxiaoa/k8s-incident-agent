@@ -215,6 +215,18 @@ describe("fixed REST helpers", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual(body);
   });
+  it("preserves the explicit reopen conflict across the BFF", async () => {
+    const body = { error: { code: "incident_reopen_conflict", message: "Another open Incident owns this target and alert group.", retryable: false } };
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => jsonResponse(body, 409)));
+    const response = await createRun(INCIDENT_ID, new Request("https://console.example.test/api/runtime/incidents/runs", { method: "POST" }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual(body);
+    const rollback = await createRepairRun(INCIDENT_ID, new Request("https://console.example.test/api/runtime/incidents/repair-runs", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sourceExecutionId: RUN_ID }),
+    }));
+    expect(rollback.status).toBe(409);
+    expect(await rollback.json()).toEqual(body);
+  });
   it("preserves the base path and sends a no-store scenario GET", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
     vi.stubGlobal("fetch", fetchMock);

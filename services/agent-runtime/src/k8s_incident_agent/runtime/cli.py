@@ -13,7 +13,10 @@ from pydantic import ValidationError
 from pydantic_settings import SettingsError
 
 from k8s_incident_agent.config import Settings
-from k8s_incident_agent.persistence.repositories import PruneTarget
+from k8s_incident_agent.persistence.repositories import (
+    PruneTarget,
+    ResolvedAlertPruneTarget,
+)
 from k8s_incident_agent.runtime.backup import RuntimeBackupError, backup_runtime_data
 from k8s_incident_agent.runtime.operator import initialize_operator
 from k8s_incident_agent.runtime.reset import (
@@ -114,9 +117,18 @@ def _parse_plan_digest(value: str) -> str:
 
 
 def _target_payload(
-    target: PruneTarget,
+    target: PruneTarget | ResolvedAlertPruneTarget,
 ) -> dict[str, str | int | list[str]]:
+    if isinstance(target, ResolvedAlertPruneTarget):
+        return {
+            "kind": "resolved_alert",
+            "fingerprint": target.fingerprint,
+            "startsAt": target.starts_at,
+            "endsAt": target.ends_at,
+            "lastReceivedAt": target.last_received_at.isoformat(),
+        }
     return {
+        "kind": "incident",
         "artifactDirectories": [
             str(directory) for directory in target.artifact_directories
         ],
@@ -132,6 +144,7 @@ def _target_payload(
         "runIds": [str(run_id) for run_id in target.run_ids],
         "runRows": target.run_rows,
         "updatedAt": target.updated_at.isoformat(),
+        "closedAt": target.closed_at.isoformat(),
     }
 
 

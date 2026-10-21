@@ -102,6 +102,11 @@ EXPECTED_ERROR_STATUSES = {
 }
 
 EXPECTED_EVENT_COMPONENTS = {
+    "incident.closed": ("IncidentClosedStreamEvent", "IncidentClosedEventPayload"),
+    "incident.reopened": (
+        "IncidentReopenedStreamEvent",
+        "IncidentReopenedEventPayload",
+    ),
     "alert.associated": ("AlertAssociatedStreamEvent", "AlertAssociatedEventPayload"),
     "diagnosis.change_recorded": (
         "DiagnosisChangeRecordedStreamEvent",

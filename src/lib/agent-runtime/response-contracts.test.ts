@@ -61,6 +61,15 @@ it("requires authoritative action availability and preserves int64 candidate ide
   }
 });
 
+it("preserves the Runtime reopen conflict separately from Run state", () => {
+  const detail = makeIncidentDetail();
+  const wire = { ...detail, incident: { ...detail.incident, lifecycleStatus: "CLOSED" }, actions: { ...detail.actions, rerun: "incident_reopen_conflict" } };
+  const parsed = parseIncidentDetailResponse(wire);
+  expect(parsed?.incident.lifecycleStatus).toBe("CLOSED");
+  expect(parsed?.actions.rerun).toBe("incident_reopen_conflict");
+  expect(parsed?.selectedRun).toEqual(detail.selectedRun);
+});
+
 it.each(["observing", "recovered", "monitoring_unavailable"] as const)("keeps rollback %s separate from inverse completion and binds its source", (outcome) => {
   const value = makeRollbackRecoveryDetail(outcome);
   expect(parseIncidentDetailResponse(value)?.verification).toEqual(value.verification);
