@@ -3,6 +3,9 @@ kind: Ingress
 metadata:
   name: incident-console
   namespace: k8s-incident-agent
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
   labels:
     app.kubernetes.io/name: incident-console
     app.kubernetes.io/part-of: k8s-incident-agent

@@ -47,6 +47,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
               </span>
             </Link>
             <div className="site-header__actions">
+              <a className="product-link" href="https://www.kubesmith.cloud/">
+                个人主页
+                <UiIcon name="external-link" />
+              </a>
               {yamlAssistantUrl === null ? null : (
                 <a className="product-link" href={yamlAssistantUrl}>
                   YAML 编写助手

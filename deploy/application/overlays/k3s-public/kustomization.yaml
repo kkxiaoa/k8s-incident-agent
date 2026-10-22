@@ -28,6 +28,7 @@ patches:
       data:
         OPERATOR_ORIGIN: https://incident.kubesmith.cloud
         CONSOLE_ACCESS_MODE: public_demo
+        SANDBOX_EXECUTION_ENABLED: "false"
   # CD never approves public data: the installer's approval lives in a
   # bootstrap-owned ConfigMap, and the Runtime refuses public_demo without it.
   - target:
@@ -74,3 +75,4 @@ patches:
         namespace: k8s-incident-agent
       data:
         YAML_ASSISTANT_URL: https://yaml.kubesmith.cloud/
+        PUBLIC_ICP_RECORD: 豫ICP备2026051618号-1

@@ -105,7 +105,16 @@ async function main() {
         const args = ["--platform", platform, "--pull=never", "--read-only", "--pids-limit=128", "--memory=1g",
           "--tmpfs", "/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700"];
         if (component === "runtime") {
+          // Kind's volume initializers override the default user with only CHOWN.
+          await container([...args, "--user", "0:0", "--cap-add=CHOWN",
+            "--tmpfs", "/permissions:rw,nosuid,nodev,mode=0700", "--entrypoint", "/bin/sh", image.Id,
+            "-ec", "/usr/bin/chown 10001:10001 /permissions; " +
+            "/usr/bin/test \"$(/usr/bin/stat -c %u:%g /permissions)\" = 10001:10001; " +
+            "/usr/bin/chown 65534:65534 /permissions; " +
+            "/usr/bin/test \"$(/usr/bin/stat -c %u:%g /permissions)\" = 65534:65534"],
+          scratch, 120_000, `${check} volume permissions`);
           args.push("--tmpfs", "/var/lib/k8s-incident-agent/runtime:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700",
+            "--tmpfs", "/var/backups/k8s-incident-agent:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700",
             "--volume", `${tls}:/smoke/tls:ro`,
             "--volume", `${tls}:/var/run/secrets/kubernetes.io/serviceaccount:ro`,
             "--volume", `${path.join(root, ".github/ci/smoke-runtime.py")}:/smoke/runtime.py:ro`,
@@ -115,7 +124,8 @@ async function main() {
             "--entrypoint", "node", image.Id, "/smoke/console.mjs");
         }
         // Exceeds the in-container startup deadline, which reports its own failure.
-        await container([...args, architecture, JSON.stringify(image.Config.Cmd)], scratch, 7 * 60_000, `${check} startup`);
+        const launch = [...(config.config.Entrypoint ?? []), ...config.config.Cmd];
+        await container([...args, architecture, JSON.stringify(launch)], scratch, 7 * 60_000, `${check} startup`);
         results.push({ component, platform, status: "passed" });
       }
     }

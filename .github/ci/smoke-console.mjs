@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 // Runs inside the exact candidate image, without a network interface or host ports.
@@ -8,6 +11,18 @@ const [architecture, rawCommand] = process.argv.slice(2);
 const startupSeconds = 300;
 const deadline = performance.now() + startupSeconds * 1000;
 assert.equal(process.arch, architecture === "amd64" ? "x64" : "arm64");
+assert.equal(process.versions.node, process.env.NODE_VERSION);
+execFileSync("/bin/true", { timeout: 5000 });
+for (const filename of ["/usr/local/bin/npm", "/usr/local/bin/npx", "/usr/local/bin/yarn",
+  "/usr/local/bin/yarnpkg", "/usr/local/lib/node_modules/npm", "/opt/yarn-v1.22.22"]) {
+  assert.equal(existsSync(filename), false, `Unexpected runtime package manager: ${filename}`);
+}
+const require = createRequire(path.resolve("package.json"));
+const sharp = require("sharp");
+const encoded = await sharp({ create: { width: 8, height: 8, channels: 3, background: "white" } })
+  .resize(4, 4).webp().toBuffer();
+const decoded = await sharp(encoded).metadata();
+assert.deepEqual([decoded.format, decoded.width, decoded.height], ["webp", 4, 4]);
 const [program, ...args] = JSON.parse(rawCommand);
 const child = spawn(program, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOSTNAME: "127.0.0.1" } });
 let output = "";

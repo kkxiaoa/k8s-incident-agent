@@ -2937,9 +2937,26 @@ async function readInstallationStatus(
     consoleConfig,
     requireRenderedResource(desiredResources, "ConfigMap", "incident-console-config", APPLICATION_NAMESPACE),
   );
+  const desiredApplicationPolicies = new Map(desiredResources);
+  if (request.profile.name === "k3s-public") {
+    const installerResources = indexRenderedManifest(await readFile(
+      path.join(contract.applicationRoot, "platform/k3s-public/tls/network-policy.yaml"),
+      "utf8",
+    ));
+    const solverPolicy = requireRenderedResource(
+      installerResources,
+      "NetworkPolicy",
+      "allow-traefik-to-acme-solver",
+      APPLICATION_NAMESPACE,
+    );
+    desiredApplicationPolicies.set(
+      renderedResourceKey(solverPolicy.kind, solverPolicy.metadata.name, APPLICATION_NAMESPACE),
+      solverPolicy,
+    );
+  }
   requireNetworkPolicies(
     applicationNetworkPolicies,
-    desiredResources,
+    desiredApplicationPolicies,
     APPLICATION_NAMESPACE,
     "application",
   );
@@ -4699,6 +4716,10 @@ export function requireReadyIngress(document, desired) {
     document.spec?.ingressClassName !== "traefik" ||
     !isDeepStrictEqual(document.spec?.rules, desired.spec?.rules) ||
     !isDeepStrictEqual(document.spec?.tls, desired.spec?.tls) ||
+    [
+      "traefik.ingress.kubernetes.io/router.entrypoints",
+      "traefik.ingress.kubernetes.io/router.tls",
+    ].some((key) => document.metadata?.annotations?.[key] !== desired.metadata?.annotations?.[key]) ||
     !Array.isArray(addresses) ||
     addresses.length === 0 ||
     !addresses.some(

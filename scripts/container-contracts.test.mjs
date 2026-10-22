@@ -35,11 +35,11 @@ test("container base images are versioned and digest pinned at their only source
 
   assert.match(
     consoleDockerfile,
-    /^FROM node:24\.19\.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS node-base$/m,
+    /^FROM node:24\.19\.0-trixie-slim@sha256:ab3eebe934147fee049b5eb83c570f68c849a13c930bdfa482de99fcdfa3b3de AS node-base$/m,
   );
   assert.match(
     runtimeDockerfile,
-    /^FROM python:3\.13\.15-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca AS python-base$/m,
+    /^FROM python:3\.13\.15-slim-trixie@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b AS python-base$/m,
   );
   assert.match(
     runtimeDockerfile,
