@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,10 +10,34 @@ import { createReleaseFixture, gitFixtureEnvironment } from "./test-support/rele
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function smokeFixture(t, transform = () => {}) {
+function smokeFixture(t, transform = () => {}, entrypoint) {
   const directory = mkdtempSync(path.join(os.tmpdir(), "release-smoke-test-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const fixture = createReleaseFixture(directory, "a".repeat(40));
+  if (entrypoint) {
+    const layout = path.join(directory, "console-oci");
+    const readBlob = digest => JSON.parse(readFileSync(path.join(layout, "blobs/sha256", digest.slice(7)), "utf8"));
+    const replaceBlob = (descriptor, value) => {
+      const bytes = Buffer.from(JSON.stringify(value));
+      descriptor.digest = "sha256:" + createHash("sha256").update(bytes).digest("hex");
+      descriptor.size = bytes.length;
+      writeFileSync(path.join(layout, "blobs/sha256", descriptor.digest.slice(7)), bytes);
+    };
+    const outer = JSON.parse(readFileSync(path.join(layout, "index.json"), "utf8"));
+    const index = readBlob(outer.manifests[0].digest);
+    for (const child of index.manifests) {
+      const manifest = readBlob(child.digest);
+      const config = readBlob(manifest.config.digest);
+      config.config.Entrypoint = entrypoint;
+      replaceBlob(manifest.config, config);
+      replaceBlob(child, manifest);
+      fixture.manifest.images.console.platforms["linux/" + child.platform.architecture] = child.digest;
+    }
+    replaceBlob(outer.manifests[0], index);
+    fixture.manifest.images.console.indexDigest = outer.manifests[0].digest;
+    writeFileSync(path.join(layout, "index.json"), JSON.stringify(outer));
+    fixture.save();
+  }
   const environment = gitFixtureEnvironment(directory, fixture.manifest.sourceRevision);
   const images = {};
   for (const [component, identity] of Object.entries(fixture.manifest.images)) {
@@ -47,6 +72,7 @@ if (args[0] === 'run' && args.includes('copy')) {
   if (process.env.SMOKE_TEST_WRONG_ROOTFS === '1') image.RootFS.Layers = ['sha256:' + '0'.repeat(64)];
   console.log(JSON.stringify([image]));
 } else if (args[0] === 'run' && args.includes('--pull=never')) {
+  if (process.env.SMOKE_TEST_PERMISSIONS_FAIL === '1' && args.includes('--cap-add=CHOWN')) process.exit(3);
   if (process.env.SMOKE_TEST_FAIL === '1') {
     fs.writeSync(2, process.env.SMOKE_TEST_STDERR ?? '');
     process.exit(3);
@@ -80,6 +106,7 @@ for (const [name, env, expected, transform] of [["executes both exact platforms"
     StopTimeout: 0, ArgsEscaped: true, NetworkDisabled: true, Tty: true,
   }).map(([key, value]) => [`rejects added non-default ${key}`, {}, 1, additions({ [key]: value })]),
   ["stops on startup failure", { SMOKE_TEST_FAIL: "1" }, 1],
+  ["stops on volume initialization failure", { SMOKE_TEST_PERMISSIONS_FAIL: "1" }, 1],
   ["rejects a substituted image", { SMOKE_TEST_WRONG_PLATFORM: "1" }, 1],
   ["rejects substituted rootfs", { SMOKE_TEST_WRONG_ROOTFS: "1" }, 1]]) {
   test(`candidate smoke orchestration ${name} (fake Docker boundary, not smoke evidence)`, t => {
@@ -89,26 +116,50 @@ for (const [name, env, expected, transform] of [["executes both exact platforms"
     assert.equal(result.status, expected, result.stderr);
     const calls = readFileSync(f.log, "utf8").trim().split("\n").map(line => JSON.parse(line));
     const copies = calls.filter(args => args[0] === "run" && args.includes("copy"));
-    const runs = calls.filter(args => args[0] === "run" && args.includes("--pull=never"));
+    const runs = calls.filter(args => args[0] === "run" &&
+      (args.includes("/smoke/console.mjs") || args.includes("/smoke/runtime.py")));
+    const permissions = calls.filter(args => args[0] === "run" && args.includes("--cap-add=CHOWN"));
     assert.ok(calls.filter(args => args[0] === "run").every(args => args.includes("--network=none")));
     if (expected === 0) {
       assert.equal(copies.length, 4);
       assert.ok(copies.every(args => args.includes("/var/tmp:rw,nosuid,nodev,mode=1777")));
       assert.equal(runs.length, 4);
+      assert.equal(permissions.length, 2);
+      for (const args of permissions) {
+        assert.ok(args.includes("--cap-drop=ALL"));
+        assert.equal(args[args.indexOf("--user") + 1], "0:0");
+        assert.ok(args.includes("/permissions:rw,nosuid,nodev,mode=0700"));
+        assert.ok(args.includes("--read-only"));
+      }
       assert.deepEqual(JSON.parse(result.stdout).checks.map(check => [check.component, check.platform]),
         [["console", "linux/amd64"], ["console", "linux/arm64"], ["runtime", "linux/amd64"], ["runtime", "linux/arm64"]]);
       for (const args of runs) {
         assert.ok(args.includes(`sha256:${"f".repeat(64)}`));
         assert.ok(args.includes("--read-only"));
+        assert.ok(!args.includes("--cap-add=CHOWN") && !args.includes("--user"));
+        if (args.includes("/smoke/runtime.py")) {
+          assert.ok(args.includes("/var/backups/k8s-incident-agent:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700"));
+        }
         assert.ok(!args.some(value => value.includes("docker.sock") || value.startsWith("--env-file")));
       }
     } else {
       assert.match(result.stderr, /release_smoke_failed/);
       assert.ok(runs.length < 4);
-      if (!env.SMOKE_TEST_FAIL) assert.equal(runs.length, 0);
+      if (!env.SMOKE_TEST_FAIL && !env.SMOKE_TEST_PERMISSIONS_FAIL) assert.equal(runs.length, 0);
     }
   });
 }
+
+test("candidate smoke forwards the inherited entrypoint before the default command (fake Docker boundary)", t => {
+  const f = smokeFixture(t, undefined, ["docker-entrypoint.sh"]);
+  const result = spawnSync(process.execPath, [path.join(root, "scripts/release-smoke.mjs"), "--release", f.fixture.release],
+    { cwd: root, env: { ...process.env, ...f.environment }, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const runs = readFileSync(f.log, "utf8").trim().split("\n").map(line => JSON.parse(line))
+    .filter(args => args.includes("/smoke/console.mjs"));
+  assert.equal(runs.length, 2);
+  for (const args of runs) assert.deepEqual(JSON.parse(args.at(-1)), ["docker-entrypoint.sh", "node", "server.js"]);
+});
 
 test("candidate smoke failure names the check and keeps bounded container output on one line (fake Docker boundary, not smoke evidence)", t => {
   const f = smokeFixture(t);

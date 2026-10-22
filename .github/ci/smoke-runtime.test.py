@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -72,6 +73,54 @@ class SmokeProducerContract(unittest.TestCase):
             server.shutdown()
             thread.join(timeout=2)
             server.server_close()
+
+
+class BackupProbe(unittest.TestCase):
+    def test_real_cli_copies_migrated_data_wal_and_artifacts(self):
+        self.check_backup(lock_works=True)
+
+    def test_probe_rejects_a_backup_that_ignores_runtime_ownership(self):
+        self.check_backup(lock_works=False)
+
+    def check_backup(self, *, lock_works: bool) -> None:
+        module = load_fixture()
+        config = (
+            Path(__file__).resolve().parents[2] / "services/agent-runtime/alembic.ini"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            data = root / "data"
+            destination = root / "backups"
+            data.mkdir(mode=0o700)
+            destination.mkdir(mode=0o700)
+            environment = {
+                "RUNTIME_DATA_DIR": str(data),
+                "PATH": f"{Path(sys.executable).parent}{os.pathsep}{os.environ['PATH']}",
+            }
+            previous_umask = os.umask(0o077)
+            try:
+                with mock.patch.dict(os.environ, environment):
+                    subprocess.run(
+                        ["alembic", "-c", str(config), "upgrade", "head"],
+                        check=True,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    if lock_works:
+                        module.verify_backup(data, destination, time.monotonic() + 30)
+                        self.assertEqual(len(list(destination.iterdir())), 1)
+                    else:
+                        with (
+                            mock.patch.object(module, "RuntimeLock"),
+                            self.assertRaisesRegex(
+                                RuntimeError, "did not reject an occupied Runtime"
+                            ),
+                        ):
+                            module.verify_backup(
+                                data, destination, time.monotonic() + 30
+                            )
+            finally:
+                os.umask(previous_umask)
 
 
 class StartupFailureOutput(unittest.TestCase):
