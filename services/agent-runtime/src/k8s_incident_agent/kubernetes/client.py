@@ -299,7 +299,7 @@ async def enforce_direct_kubernetes_transport(api_client: ApiClient) -> None:
             session, "_trust_env"
         ):
             raise AttributeError
-        # kubernetes 36.0.3 hardcodes trust_env=True; aiohttp 3.14.3 reads this
+        # kubernetes 36.0.3 hardcodes trust_env=True; aiohttp 3.14.4 reads this
         # field at request time and exposes the resulting state via trust_env.
         session._trust_env = False  # pyright: ignore[reportPrivateUsage]
         if session.trust_env is not False:

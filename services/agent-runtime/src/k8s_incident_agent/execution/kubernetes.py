@@ -37,7 +37,7 @@ class _SingleAttemptPool:
     def __init__(self, session: aiohttp.ClientSession) -> None:
         if not hasattr(session, "_retry_connection"):
             raise ValueError("Locked Kubernetes transport is unavailable")
-        # aiohttp 3.14.3 otherwise retries some broken persistent connections.
+        # aiohttp 3.14.4 otherwise retries some broken persistent connections.
         session._retry_connection = False  # pyright: ignore[reportPrivateUsage]
         self._session = session
 
