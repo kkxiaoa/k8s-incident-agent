@@ -180,7 +180,7 @@ def _copy_artifacts(root: Path, staging: Path) -> list[dict[str, str | int]]:
                 target_fd = os.open(target, _NEW_FILE_FLAGS, PRIVATE_FILE_MODE)
                 try:
                     while chunk := os.read(source_fd, _COPY_BUFFER_SIZE):
-                        os.write(target_fd, chunk)
+                        _write_all(target_fd, chunk)
                     os.fsync(target_fd)
                 finally:
                     os.close(target_fd)
@@ -202,10 +202,19 @@ def _describe(path: Path, relative: str) -> dict[str, str | int]:
     return {"path": relative, "sha256": digest.hexdigest(), "size": size}
 
 
+def _write_all(file_descriptor: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(file_descriptor, remaining)
+        if written <= 0:
+            raise OSError("Backup write did not progress")
+        remaining = remaining[written:]
+
+
 def _write_private(path: Path, content: bytes) -> None:
     file_descriptor = os.open(path, _NEW_FILE_FLAGS, PRIVATE_FILE_MODE)
     try:
-        os.write(file_descriptor, content)
+        _write_all(file_descriptor, content)
         os.fsync(file_descriptor)
     finally:
         os.close(file_descriptor)

@@ -118,6 +118,8 @@ test("the public render splits into bootstrap-owned objects and daily updates", 
   assert.deepEqual(kinds(bootstrap), ["ClusterRole", "ClusterRoleBinding", "Namespace", "PersistentVolumeClaim", "Role", "RoleBinding",
     "ServiceAccount", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"]);
   assert.ok(daily.every(document => ["k8s-incident-agent", "k8s-incident-monitoring"].includes(document.metadata.namespace)));
+  assert.ok(![...daily, ...bootstrap].some(document => ["Issuer", "Certificate", "Middleware", "IngressRoute"].includes(document.kind)
+    || document.metadata.name === "allow-traefik-to-acme-solver"));
 });
 
 for (const [name, mutate, code] of [
@@ -210,7 +212,10 @@ function cluster(profile, scenario = {}) {
       live.spec = { finalizers: ["kubernetes"] };
     }
     if (live.kind === "PersistentVolumeClaim") live.spec = { ...live.spec, volumeName: "pvc-1", volumeMode: "Filesystem" };
-    if (live.kind === "Ingress") live.status = { loadBalancer: { ingress: [{ ip: "192.0.2.10" }] } };
+    if (live.kind === "Ingress") {
+      live.status = { loadBalancer: { ingress: [{ ip: "192.0.2.10" }] } };
+      live.metadata.annotations["example.test/controller-note"] = "unrelated";
+    }
     scenario.live?.(live);
     return live;
   };
@@ -398,6 +403,20 @@ test("a read that fails after apply is reported in the phase it happened", async
   const { outcome } = await run(t, "k3s-public", { readFails: "Ingress" });
   await assert.rejects(outcome, { code: "command_failed", phase: "rollout" });
 });
+
+for (const [key, value] of [
+  ["traefik.ingress.kubernetes.io/router.entrypoints", "web,websecure"],
+  ["traefik.ingress.kubernetes.io/router.tls", undefined],
+]) {
+  test(`the gateway rejects drift in the required HTTPS annotation ${key}`, async t => {
+    const { outcome } = await run(t, "k3s-public", {
+      live: document => {
+        if (document.kind === "Ingress") document.metadata.annotations[key] = value;
+      },
+    });
+    await assert.rejects(outcome, { code: "rollout_failed", phase: "rollout", message: "Console Ingress is not ready through Traefik" });
+  });
+}
 
 test("the production release and source readers run inside the gateway's own work directory", async t => {
   const assets = [["candidate.tar.gz", Buffer.from("candidate")], ["SHA256SUMS", Buffer.from("sums")],
@@ -647,6 +666,17 @@ test("the deploy identity is authorized for exactly what a gateway deployment do
 test("the deploy identity patches only rendered daily objects and holds no direct secret, token, node or RBAC write access", () => {
   const { rules, allows } = authorizer(gatewayBundle());
   const { daily, bootstrap } = planScope(clone(renders["k3s-public"]));
+  for (const [group, resource, name] of [
+    ["cert-manager.io", "issuers", "letsencrypt-production"],
+    ["cert-manager.io", "certificates", "incident-console"],
+    ["traefik.io", "middlewares", "incident-console-https-redirect"],
+    ["traefik.io", "ingressroutes", "incident-console-http"],
+    ["networking.k8s.io", "networkpolicies", "allow-traefik-to-acme-solver"],
+  ]) {
+    for (const verb of ["get", "create", "patch", "update", "delete"]) {
+      assert.equal(allows({ namespace: "k8s-incident-agent", group, resource, verb, name }), false, `${verb} ${resource}/${name}`);
+    }
+  }
   for (const document of daily) {
     const [group, resource] = RESOURCES[document.kind];
     assert.ok(allows({ namespace: document.metadata.namespace, group, resource, verb: "patch", name: document.metadata.name }), `patch ${document.kind}/${document.metadata.name}`);

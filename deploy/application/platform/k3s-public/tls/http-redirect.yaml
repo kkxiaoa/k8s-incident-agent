@@ -1,0 +1,16 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: incident-console-http
+  namespace: k8s-incident-agent
+spec:
+  entryPoints:
+    - web
+  routes:
+    - kind: Rule
+      match: Host(`incident.kubesmith.cloud`) && !PathPrefix(`/.well-known/acme-challenge/`)
+      middlewares:
+        - name: incident-console-https-redirect
+      services:
+        - name: incident-console
+          port: 80

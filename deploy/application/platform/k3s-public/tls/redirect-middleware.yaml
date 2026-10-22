@@ -1,0 +1,9 @@
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: incident-console-https-redirect
+  namespace: k8s-incident-agent
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
