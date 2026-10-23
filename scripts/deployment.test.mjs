@@ -1537,7 +1537,7 @@ function createFakeKubectl(t, overrides = {}) {
   writeFileSync(
     executable,
     `#!/usr/bin/env node
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { loadAll, dump } = require(${JSON.stringify(path.join(REPOSITORY_ROOT, "node_modules/js-yaml"))});
 const args = process.argv.slice(2);
@@ -1592,7 +1592,9 @@ function state() {
 }
 
 function saveState(value) {
-  writeFileSync(process.env.FAKE_KUBECTL_STATE, JSON.stringify(value));
+  const temporary = process.env.FAKE_KUBECTL_STATE + "." + process.pid + ".tmp";
+  writeFileSync(temporary, JSON.stringify(value));
+  renameSync(temporary, process.env.FAKE_KUBECTL_STATE);
 }
 
 function fixture(kind, name, namespace) {
