@@ -26,8 +26,7 @@ from argon2.profiles import RFC_9106_LOW_MEMORY
 from k8s_incident_agent.runtime.lock import RuntimeLock
 from k8s_incident_agent.runtime.paths import RuntimePaths
 
-# A hang bound, not a startup target: an emulated platform compiles every
-# imported module from source many times slower than a native one.
+# A total hang bound for migration, backup, and startup on emulated platforms.
 STARTUP_SECONDS = 300
 OUTPUT_TAIL_BYTES = 2000
 

@@ -27,7 +27,9 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY services/agent-runtime/alembic.ini ./
 COPY services/agent-runtime/migrations ./migrations
 COPY services/agent-runtime/src ./src
-RUN uv sync --locked --no-dev
+# Avoid recompiling imports in every process of the read-only runner.
+RUN uv sync --locked --no-dev \
+    && .venv/bin/python -m compileall -q .venv src migrations
 
 FROM python-base AS runner
 
