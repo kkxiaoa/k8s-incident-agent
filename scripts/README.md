@@ -380,8 +380,16 @@ Header 的个人主页入口固定指向 `https://www.kubesmith.cloud/`，不携
 SSH 会话请求的命令（`SSH_ORIGINAL_COMMAND`）、多余字段或多行输入一律拒绝。网关丢弃 SSH 会话
 带来的环境变量，子进程只使用固定的最小环境。主机配置是不超过 4 KiB 的 JSON 文件，字段固定为
 `schemaVersion`（`2`）、`profiles`、`kubeconfig`（部署身份 kubeconfig 的绝对路径）、`context`、
-`workRoot`（网关工作目录）与 `proxy`（HTTP 代理，只接受 `http://主机:端口` 的规范写法，可为 `null`）。
+`workRoot`（网关工作目录）与 `proxy`（HTTP 或 HTTPS 代理，只接受带显式端口的规范 URL，
+如 `http://proxy.example.com:3128` 或 `https://proxy.example.com:3128`，可为 `null`）。URL 不得含
+用户名、密码、非根路径、查询或片段；代理协议必须与实际端点一致。
 配置代理时，网关读取 GitHub release 及其附件、取回 release 源码与核验 GHCR 都经它发出；kubectl 不经代理。
+
+HTTPS 代理和目标站点都须通过证书与主机名验证。使用私有或自签代理证书时，安装者先核定证书身份并将其
+加入主机受控的系统信任库，再在 root 管理的 SSH 强制命令中为锁定 Node 加 `--use-system-ca`
+（放在脚本路径之前；配置路径仍是脚本唯一参数）。该选项追加整个系统信任库，作用于此 Node 进程的 TLS
+连接，不是代理专属信任；git 也必须能通过主机信任库验证代理证书。程序、证书、配置和强制命令均不得由
+部署用户改写，不接受 SSH 调用方提供信任材料，不关闭 TLS 验证。信任库更新须核定后用于新的网关进程。
 
 执行顺序：
 
