@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.2.0...v0.2.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **deploy:** support trusted HTTPS gateway proxies ([e6b8547](https://github.com/kkxiaoa/k8s-incident-agent/commit/e6b85478e7db7c3a1229663eb41994da3dfac49f))
+
 ## [0.2.0](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.1.1...v0.2.0) (2026-10-23)
 
 
