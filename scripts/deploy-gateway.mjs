@@ -118,9 +118,8 @@ function proxyUrl(value) {
   if (typeof value !== "string") return false;
   try {
     const url = new URL(value);
-    // Only the canonical spelling with an explicit port: Node's global agent ignores a proxy that git and fetch
-    // would still accept, and without a port git assumes 1080 where Node assumes 80.
-    return url.protocol === "http:" && url.port !== "" && url.pathname === "/" && !url.search && !url.hash
+    // Canonical spelling and an explicit port keep Node and git on the same proxy endpoint.
+    return ["http:", "https:"].includes(url.protocol) && url.port !== "" && url.pathname === "/" && !url.search && !url.hash
       && !url.username && !url.password && [url.origin, url.href].includes(value);
   } catch {
     return false;
