@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.2.1...v0.2.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* **console:** bound metric reads and restore stopped event streams ([#32](https://github.com/kkxiaoa/k8s-incident-agent/issues/32)) ([e28fa9f](https://github.com/kkxiaoa/k8s-incident-agent/commit/e28fa9f5d1cd853fb7ce5619c9ab507cecb98edc))
+
 ## [0.2.1](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.2.0...v0.2.1) (2026-10-23)
 
 
