@@ -122,6 +122,8 @@ async function prepareAnonymousRepair(page: Page) {
   const selectedUrl = page.url();
   await page.getByRole("button", { name: "登出", exact: true }).click();
   await expect(page.getByRole("banner").getByRole("link", { name: "登录", exact: true })).toBeVisible();
+  // Leave the setup document before its queued reads can enter the test's routes.
+  await page.goto("about:blank");
   return { incidentId, selectedUrl };
 }
 
@@ -136,7 +138,7 @@ test("anonymous repair detail leaves capacity for its source and events while ei
     await route.continue();
   });
   try {
-    await page.reload();
+    await page.goto(selectedUrl);
     await waitForLiveEvents(page);
     await expect(page.getByRole("heading", { name: "来源诊断证据 · 第 1 次运行" })).toBeVisible();
     await expect.poll(() => reads).toBe(4);
@@ -170,7 +172,7 @@ test("anonymous source and native EventSource recover explicitly after HTTP 429"
     if (++streamReads === 1) await route.fulfill(limited);
     else await route.continue();
   });
-  await page.reload();
+  await page.goto(selectedUrl);
   await expect(page.getByText("来源诊断读取暂时受限，请稍后重试。", { exact: true })).toBeVisible();
   const timeline = page.getByRole("region", { name: "运行时间线" });
   await expect(timeline.getByRole("status")).toHaveText("实时连接已停止");
