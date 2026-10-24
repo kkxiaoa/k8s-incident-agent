@@ -80,3 +80,20 @@ describe("source diagnosis for the selected repair", () => {
     await waitFor(() => expect(result.current.detail).toEqual(source));
   });
 });
+
+
+it.each(["public_demo_limited", "not_found"] as const)("preserves %s until an explicit source retry succeeds", async (failure) => {
+  const source = makeWaitingApprovalIncidentDetail();
+  const repair = makeRepairRunWaitingDetail();
+  repair.selectedRun.sourceRunId = source.selectedRun.id;
+  fetchDetail.mockResolvedValueOnce({ ok: false, failure });
+  const { result } = renderHook(() => useSourceDiagnosis(repair));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.failure).toBe(failure);
+  expect(result.current.detail).toBeNull();
+  fetchDetail.mockResolvedValueOnce({ ok: true, data: source });
+  act(() => result.current.reload());
+  expect(result.current.failure).toBeNull();
+  await waitFor(() => expect(result.current.detail).toEqual(source));
+  expect(result.current.failure).toBeNull();
+});

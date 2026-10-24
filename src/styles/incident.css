@@ -232,9 +232,17 @@
   background: var(--amber-soft);
 }
 
+.connection-state--stopped,
 .connection-state--invalid {
   color: var(--red);
   background: var(--red-soft);
+}
+
+.timeline-connection-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .timeline {

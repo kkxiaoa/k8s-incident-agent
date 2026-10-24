@@ -44,6 +44,44 @@ function isUnavailable(snapshot: MetricPanelLoadSnapshot | undefined): boolean {
   );
 }
 
+function createPanelScheduler() {
+  let active = 0;
+  const waiting: {
+    load: () => Promise<void>;
+    signal: AbortSignal;
+    cancel: () => void;
+  }[] = [];
+
+  const drain = () => {
+    // Leave capacity for source diagnosis, session checks and stream admission.
+    while (active < 4 && waiting.length > 0) {
+      const entry = waiting.shift()!;
+      entry.signal.removeEventListener("abort", entry.cancel);
+      if (entry.signal.aborted) continue;
+      active += 1;
+      void entry.load().finally(() => {
+        active -= 1;
+        drain();
+      });
+    }
+  };
+
+  return (load: () => Promise<void>, signal: AbortSignal) => {
+    if (signal.aborted) return;
+    const entry: (typeof waiting)[number] = {
+      load,
+      signal,
+      cancel: () => {
+        const index = waiting.indexOf(entry);
+        if (index !== -1) waiting.splice(index, 1);
+      },
+    };
+    waiting.push(entry);
+    signal.addEventListener("abort", entry.cancel, { once: true });
+    drain();
+  };
+}
+
 export function IncidentMonitoringOverview({
   incidentId,
   panels,
@@ -61,6 +99,7 @@ export function IncidentMonitoringOverview({
   selectedRun?: MonitoringSelectedRun | null;
   latestRunId?: string | null;
 }) {
+  const [schedulePanel] = useState(createPanelScheduler);
   const desiredReplicas = incidentDesiredReplicas(evidence);
   const anchor = monitoringPanelAnchor(selectedRun, latestRunId);
   const [panelLoads, setPanelLoads] = useState<
@@ -144,20 +183,21 @@ export function IncidentMonitoringOverview({
             )
             .map((panel) => (
               <MetricPanelCard
-                  key={panel.panelId}
-                  incidentId={incidentId}
-                  panel={panel}
-                  refreshKey={refreshKey}
-                  anchor={anchor}
-                  alertStatus={
-                    panel.signalRole === "trigger" && anchor.kind === "current"
-                      ? alertStatus
-                      : null
-                  }
-                  desiredReplicas={desiredReplicas}
-                  onLoadSnapshot={updatePanelLoad}
-                  lead={panel.signalRole === "trigger"}
-                />
+                key={panel.panelId}
+                incidentId={incidentId}
+                scheduleLoad={schedulePanel}
+                panel={panel}
+                refreshKey={refreshKey}
+                anchor={anchor}
+                alertStatus={
+                  panel.signalRole === "trigger" && anchor.kind === "current"
+                    ? alertStatus
+                    : null
+                }
+                desiredReplicas={desiredReplicas}
+                onLoadSnapshot={updatePanelLoad}
+                lead={panel.signalRole === "trigger"}
+              />
             ))}
         </div>
       )}

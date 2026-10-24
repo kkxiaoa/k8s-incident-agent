@@ -110,3 +110,87 @@ test("expired login clears an open confirmation without replaying it after login
   expect(detail.approval).toBeNull();
   expect(detail.selectedRun.status).toBe("WAITING_APPROVAL");
 });
+
+
+async function prepareAnonymousRepair(page: Page) {
+  const incidentId = await seed(page);
+  await login(page);
+  await page.goto(`/incidents/${incidentId}`);
+  await waitForLiveEvents(page);
+  await page.getByRole("button", { name: "准备修复提案", exact: true }).click();
+  await expect(page).toHaveURL(/\?runId=/);
+  const selectedUrl = page.url();
+  await page.getByRole("button", { name: "登出", exact: true }).click();
+  await expect(page.getByRole("banner").getByRole("link", { name: "登录", exact: true })).toBeVisible();
+  return { incidentId, selectedUrl };
+}
+
+test("anonymous repair detail leaves capacity for its source and events while eight panels load", async ({ page }) => {
+  const { selectedUrl } = await prepareAnonymousRepair(page);
+  let reads = 0;
+  let release!: () => void;
+  const blockedPanels = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(/\/api\/runtime\/incidents\/[^/]+\/monitoring\/[^/?]+\?/, async (route) => {
+    reads += 1;
+    await blockedPanels;
+    await route.continue();
+  });
+  try {
+    await page.reload();
+    await waitForLiveEvents(page);
+    await expect(page.getByRole("heading", { name: "来源诊断证据 · 第 1 次运行" })).toBeVisible();
+    await expect.poll(() => reads).toBe(4);
+    await expect(page.locator(".metric-panel--loading")).toHaveCount(8);
+    release();
+    await expect(page.locator(".metric-panel--loading")).toHaveCount(0);
+    await expect(page.locator(".metric-panel")).toHaveCount(8);
+    await expect(page.getByLabel("指标读取失败", { exact: true })).toHaveCount(0);
+    expect(reads).toBe(8);
+    await expect(page).toHaveURL(selectedUrl);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
+
+test("anonymous source and native EventSource recover explicitly after HTTP 429", async ({ page }) => {
+  const { incidentId, selectedUrl } = await prepareAnonymousRepair(page);
+  const selectedRunId = new URL(selectedUrl).searchParams.get("runId")!;
+  const detail = await (await page.request.get(`/api/runtime/incidents/${incidentId}?runId=${selectedRunId}`)).json();
+  const limited = { status: 429, contentType: "application/json", body: JSON.stringify({
+    error: { code: "public_demo_limited", message: "Public demo capacity is exhausted.", retryable: false },
+  }) };
+  let sourceReads = 0;
+  let streamReads = 0;
+  await page.route(`**/api/runtime/incidents/${incidentId}?runId=${detail.selectedRun.sourceRunId}`, async (route) => {
+    if (++sourceReads === 1) await route.fulfill(limited);
+    else await route.continue();
+  });
+  await page.route(`**/api/runtime/incidents/${incidentId}/events?*`, async (route) => {
+    if (++streamReads === 1) await route.fulfill(limited);
+    else await route.continue();
+  });
+  await page.reload();
+  await expect(page.getByText("来源诊断读取暂时受限，请稍后重试。", { exact: true })).toBeVisible();
+  const timeline = page.getByRole("region", { name: "运行时间线" });
+  await expect(timeline.getByRole("status")).toHaveText("实时连接已停止");
+  await timeline.screenshot({ path: test.info().outputPath("stream-stopped.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const reconnect = timeline.getByRole("button", { name: "重新连接", exact: true });
+  const bounds = await reconnect.boundingBox();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  await timeline.screenshot({ path: test.info().outputPath("stream-stopped-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  expect(streamReads).toBe(1);
+  await page.getByRole("button", { name: "重新读取来源诊断" }).click();
+  await expect(page.getByRole("heading", { name: "来源诊断证据 · 第 1 次运行" })).toBeVisible();
+  await expect(timeline.getByRole("status")).toHaveText("实时连接已停止");
+  await timeline.getByRole("button", { name: "重新连接", exact: true }).click();
+  await waitForLiveEvents(page);
+  await expect(page).toHaveURL(selectedUrl);
+  await expect(page.getByRole("region", { name: "运行记录" })).toContainText("正在查看第 2 次");
+  expect(sourceReads).toBe(2);
+  expect(streamReads).toBe(2);
+  await timeline.screenshot({ path: test.info().outputPath("stream-resumed.png") });
+});

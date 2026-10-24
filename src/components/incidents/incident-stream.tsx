@@ -154,6 +154,7 @@ export function IncidentStream({
   const [confirmRerun, setConfirmRerun] = useState(false);
   const mutationLock = useRef(false);
   const refreshDetail = useRef<(() => Promise<void>) | null>(null);
+  const reconnectStream = useRef<((cursor: string) => void) | null>(null);
   const selectedRunId = useRef(state.detail.selectedRun.id);
 
   useEffect(() => {
@@ -179,19 +180,8 @@ export function IncidentStream({
     let pendingHistoryRefresh = false;
     let refreshInFlight: Promise<void> | null = null;
     let lastKnownEventId = initialDetail.eventCursor;
-    const query = new URLSearchParams({ cursor: initialDetail.eventCursor });
-    const source = new EventSource(
-      `/api/runtime/incidents/${encodeURIComponent(initialDetail.incident.id)}/events?${query}`,
-    );
-
-    source.onopen = () => {
-      dispatch({ type: "connected" });
-      void scheduleDetailRefresh(lastKnownEventId, true);
-    };
-    source.onerror = () => {
-      dispatch({ type: "disconnected" });
-      if (active) void checkOperatorSession();
-    };
+    let source: EventSource | null = null;
+    let disconnectSource: (() => void) | null = null;
 
     const refreshPersistedDetail = async (): Promise<void> => {
       try {
@@ -294,7 +284,8 @@ export function IncidentStream({
           initialDetail.incident.id,
         );
       } catch {
-        source.close();
+        disconnectSource?.();
+        reconnectStream.current = null;
         dispatch({
           type: "invalid",
           message: "收到无法验证的运行事件，实时更新已停止。",
@@ -314,19 +305,58 @@ export function IncidentStream({
       }
     };
 
-    for (const eventName of RUN_EVENT_NAMES) {
-      source.addEventListener(eventName, receiveEvent);
-    }
+    const connect = (cursor: string) => {
+      disconnectSource?.();
+      lastKnownEventId = cursor;
+      const query = new URLSearchParams({ cursor });
+      const current = new EventSource(
+        `/api/runtime/incidents/${encodeURIComponent(initialDetail.incident.id)}/events?${query}`,
+      );
+      source = current;
+      const isCurrent = () => active && source === current;
+      const onEvent = (event: Event) => {
+        if (isCurrent()) receiveEvent(event);
+      };
+      current.onopen = () => {
+        if (!isCurrent()) return;
+        dispatch({ type: "connected" });
+        void scheduleDetailRefresh(lastKnownEventId, true);
+      };
+      current.onerror = () => {
+        if (!isCurrent()) return;
+        dispatch({
+          type: current.readyState === EventSource.CLOSED ? "stopped" : "disconnected",
+        });
+        void checkOperatorSession();
+      };
+      for (const eventName of RUN_EVENT_NAMES) {
+        current.addEventListener(eventName, onEvent);
+      }
+      disconnectSource = () => {
+        current.onopen = null;
+        current.onerror = null;
+        for (const eventName of RUN_EVENT_NAMES) {
+          current.removeEventListener(eventName, onEvent);
+        }
+        current.close();
+        if (source === current) source = null;
+      };
+    };
+
+    reconnectStream.current = (cursor) => {
+      if (!active || source?.readyState !== EventSource.CLOSED) return;
+      dispatch({ type: "connecting" });
+      connect(cursor);
+    };
+    connect(initialDetail.eventCursor);
 
     return () => {
       active = false;
       refreshDetail.current = null;
+      reconnectStream.current = null;
       window.removeEventListener("focus", onFocus);
       pendingRefreshEventId = null;
-      for (const eventName of RUN_EVENT_NAMES) {
-        source.removeEventListener(eventName, receiveEvent);
-      }
-      source.close();
+      disconnectSource?.();
     };
   }, [
     initialDetail.eventCursor,
@@ -846,7 +876,13 @@ export function IncidentStream({
           ) : (
             <>
               <p>
-                来源诊断暂不可用，无法确认诊断结论。不会使用其他运行的结果替代。
+                {sourceDiagnosis.failure === "public_demo_limited"
+                  ? "来源诊断读取暂时受限，请稍后重试。"
+                  : sourceDiagnosis.failure === "not_found"
+                    ? "来源诊断记录不存在，无法确认诊断结论。"
+                    : sourceDiagnosis.failure === "invalid_response"
+                      ? "来源诊断响应无法验证，未采用该结果。"
+                      : "来源诊断暂不可用，无法确认诊断结论。不会使用其他运行的结果替代。"}
               </p>
               <button
                 className="secondary-button"
@@ -905,7 +941,11 @@ export function IncidentStream({
             加载更早事件
           </ActionButton>
         )}
-        <RunTimeline events={state.events} connection={state.connection} />
+        <RunTimeline
+          events={state.events}
+          connection={state.connection}
+          onReconnect={() => reconnectStream.current?.(state.lastEventId)}
+        />
       </details>
       <EvidenceList
         evidence={detail.evidence}

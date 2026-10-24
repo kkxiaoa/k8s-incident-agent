@@ -127,6 +127,7 @@ function PanelHeader({
 
 export function MetricPanelCard({
   incidentId,
+  scheduleLoad,
   panel,
   refreshKey,
   anchor = { kind: "current" },
@@ -136,6 +137,7 @@ export function MetricPanelCard({
   lead = false,
 }: {
   incidentId: string;
+  scheduleLoad: (load: () => Promise<void>, signal: AbortSignal) => void;
   panel: MonitoringPanelReferenceView;
   refreshKey: string;
   anchor?: MetricPanelAnchor;
@@ -174,19 +176,21 @@ export function MetricPanelCard({
   const anchorRunId = anchor.kind === "run" ? anchor.runId : null;
 
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
     const requestAnchor: MonitoringPanelAnchor =
       anchorRunId === null
         ? { kind: "current" }
         : { kind: "run", runId: anchorRunId };
     onLoadSnapshot?.(panel.panelId, { state: "loading", result: null });
-    void fetchMonitoringPanelFromBrowser(
-      incidentId,
-      panel.panelId,
-      window,
-      requestAnchor,
-    ).then((result) => {
-      if (!active) {
+    // Browser cancellation would release capacity before the upstream query ends.
+    scheduleLoad(async () => {
+      const result = await fetchMonitoringPanelFromBrowser(
+        incidentId,
+        panel.panelId,
+        window,
+        requestAnchor,
+      );
+      if (controller.signal.aborted) {
         return;
       }
       if (
@@ -207,11 +211,10 @@ export function MetricPanelCard({
         });
         onLoadSnapshot?.(panel.panelId, { state: "error", result: null });
       }
-    });
-    return () => {
-      active = false;
-    };
+    }, controller.signal);
+    return () => controller.abort();
   }, [
+    scheduleLoad,
     anchorRunId,
     incidentId,
     onLoadSnapshot,
