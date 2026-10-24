@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { authenticatedFetch } from "./operator-client";
-import { decideRepairFromBrowser, prepareRepairFromBrowser } from "./browser-client";
+import { decideRepairFromBrowser, prepareRepairFromBrowser, fetchIncidentFromBrowser } from "./browser-client";
 import { makeRecoveryDetail } from "@/test/agent-runtime-fixtures";
 
 vi.mock("./operator-client", () => ({ authenticatedFetch: vi.fn() }));
@@ -28,3 +28,11 @@ it.each([[409, "conflict"], [403, "forbidden"], [503, "unavailable"]])("keeps %s
   vi.mocked(authenticatedFetch).mockResolvedValueOnce(new Response("not forwarded", { status: Number(status) }));
   expect(await prepareRepairFromBrowser("incident", { sourceRunId: "source" })).toEqual({ ok: false, failure });
 });
+
+
+it.each([[429, "public_demo_limited"], [404, "not_found"], [503, "unavailable"]] as const)(
+  "preserves detail read failure %s for the source diagnosis consumer", async (status, failure) => {
+    vi.mocked(authenticatedFetch).mockResolvedValueOnce(new Response(null, { status }));
+    expect(await fetchIncidentFromBrowser("incident", "source")).toEqual({ ok: false, failure });
+  },
+);
