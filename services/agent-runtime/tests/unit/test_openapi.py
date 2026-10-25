@@ -21,6 +21,7 @@ EXPECTED_OPERATIONS = {
     ("GET", "/api/v1/incidents"),
     ("GET", "/api/v1/incidents/{incident_id}"),
     ("GET", "/api/v1/incidents/{incident_id}/events"),
+    ("GET", "/api/v1/incidents/{incident_id}/alerts"),
     ("GET", "/api/v1/incidents/{incident_id}/monitoring/panels"),
     (
         "GET",
@@ -52,6 +53,13 @@ EXPECTED_ERROR_STATUSES = {
     ("POST", "/api/v1/incidents"): {"404", "422", "500", "503"},
     ("GET", "/api/v1/incidents"): {"400", "422", "500", "503"},
     ("GET", "/api/v1/incidents/{incident_id}"): {"404", "422", "500", "503"},
+    ("GET", "/api/v1/incidents/{incident_id}/alerts"): {
+        "400",
+        "404",
+        "422",
+        "500",
+        "503",
+    },
     ("GET", "/api/v1/incidents/{incident_id}/events"): {
         "400",
         "404",
@@ -304,6 +312,11 @@ def test_operations_reference_their_success_and_error_models(
         ): "MonitoringOverviewSnapshot",
         ("POST", "/api/v1/incidents", "202"): "CreateIncidentResponse",
         ("GET", "/api/v1/incidents", "200"): "IncidentListResponse",
+        (
+            "GET",
+            "/api/v1/incidents/{incident_id}/alerts",
+            "200",
+        ): "IncidentAlertHistoryResponse",
         (
             "GET",
             "/api/v1/incidents/{incident_id}",

@@ -30,6 +30,7 @@ interface FakeIncident {
   metricSamples?: { timestamp: string; value: number }[];
   mode: OutcomeMode;
   history?: IncidentDetailResponse[];
+  alerts?: components["schemas"]["IncidentAlertOccurrence"][];
   /** Walkthrough-only: renders every panel state on one Incident. */
   panelsDemo?: "states" | "list_unavailable" | "list_empty";
 }
@@ -42,6 +43,7 @@ let healthOverride: Record<string, unknown> | null = null;
 function publishLifecycle(record: FakeIncident, event: RunEventStreamItem) {
   record.events.push(event);
   record.detail.eventCursor = event.id;
+  record.detail.incident.updatedAt = event.data.occurredAt;
   record.detail.eventPage.items.unshift(event);
   for (const response of lifecycleStreams.get(record.detail.incident.id) ?? []) response.write(serializeEvent(event));
 }
@@ -57,6 +59,9 @@ function selectedFakeDetail(record: FakeIncident, runId: string | null): Inciden
   const detail = structuredClone(selected);
   detail.incident = structuredClone(record.detail.incident);
   detail.eventCursor = record.detail.eventCursor;
+  detail.alertSummary = structuredClone(record.detail.alertSummary);
+  detail.diagnosisDeferral = structuredClone(record.detail.diagnosisDeferral);
+  detail.closure = structuredClone(record.detail.closure);
   const otherActive = selected !== record.detail && ["QUEUED", "RUNNING", "WAITING_APPROVAL"].includes(record.detail.selectedRun.status);
   const busy = record.detail.actions.rerun === "execution_held" ? "execution_held" : otherActive ? "active_run" : null;
   if (busy) {
@@ -550,6 +555,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
         lifecycleStatus: "OPEN",
         target: SCENARIO.target,
         createdAt: CREATED_AT,
+        updatedAt: CREATED_AT,
       },
       selectedRun: {
         initiatedByYou: false,
@@ -573,6 +579,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
       repair: null,
       verification: null,
       alertSignal: null,
+      closure: null,
       alertSummary: { state: "UNKNOWN", complete: false, observedAt: null, receivedAt: null, targetHealthy: null, reason: "not_observed", rules: [], lastKnownState: null, lastKnownAt: null },
     },
   };
@@ -580,6 +587,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
 
 function applyEvent(record: FakeIncident, event: RunEventStreamItem): void {
   record.detail.eventCursor = event.id;
+  record.detail.incident.updatedAt = event.data.occurredAt;
   if (!record.detail.eventPage.items.some((item) => item.id === event.id)) {
     record.detail.eventPage.items.unshift(event);
   }
@@ -991,18 +999,27 @@ function streamEvents(
   }
 }
 
+function alertHistory(record: FakeIncident): components["schemas"]["IncidentAlertOccurrence"][] {
+  if (record.alerts) return record.alerts;
+  const { incident, alertSignal } = record.detail;
+  return alertSignal === null ? [] : [{
+    source: incident.source, displayName: incident.displayName,
+    fingerprint: incident.id.replaceAll("-", "").slice(-16),
+    status: alertSignal.status, startsAt: alertSignal.startsAt, endsAt: alertSignal.endsAt,
+    firstReceivedAt: null, lastReceivedAt: alertSignal.lastReceivedAt ?? null,
+  }];
+}
+
 function listItem(record: FakeIncident): IncidentListItem {
-  const { incident } = record.detail;
+  const { incident, selectedRun } = record.detail;
   return {
-    id: incident.id,
-    displayName: incident.displayName,
-    target: incident.target,
-    status: incident.status,
-    lifecycleStatus: incident.lifecycleStatus,
-    updatedAt:
-      record.detail.selectedRun.completedAt ??
-      record.detail.selectedRun.startedAt ??
-      incident.createdAt,
+    id: incident.id, displayName: incident.displayName, target: incident.target,
+    status: incident.status, lifecycleStatus: incident.lifecycleStatus,
+    updatedAt: incident.updatedAt,
+    alertIds: [...new Set([incident.source.type === "scenario" ? "K8sIncidentImagePullBackOff" : incident.source.ref,
+      ...alertHistory(record).map(item => item.source.ref)])].filter(id => id in CATALOG_ALERT_TEXT).sort(),
+    alertSummary: record.detail.alertSummary,
+    latestRun: { kind: selectedRun.kind, attempt: selectedRun.attempt, status: selectedRun.status },
   };
 }
 
@@ -1082,10 +1099,11 @@ function monitoringOverview() {
     (record) => record.detail.alertSignal?.status === "FIRING",
   );
   const families = new Map<string, { displayName: string; count: number }>();
-  const currentTargets = new Set(records.map(({ detail }) => {
+  const currentTargets = new Map(records.map(({ detail }) => {
     const target = detail.incident.target;
-    return JSON.stringify([target.cluster, target.namespace, target.apiVersion, target.kind, target.name]);
+    return [JSON.stringify([target.cluster, target.namespace, target.apiVersion, target.kind, target.name]), { target, summary: detail.alertSummary }];
   }));
+  const current = [...currentTargets.values()];
   for (const record of firingRecords) {
     const sourceRef = record.detail.incident.source.ref;
     const current = families.get(sourceRef);
@@ -1099,7 +1117,17 @@ function monitoringOverview() {
     unassignedSignals: [],
     window: "24h",
     generatedAt: generatedAt.toISOString(),
-    currentAlerts: { totalTargets: currentTargets.size, unknownTargets: currentTargets.size, firingRules: 0, pendingRules: 0, oldestObservedAt: null },
+    currentAlerts: {
+      totalTargets: currentTargets.size, unknownTargets: current.filter(item => !item.summary.complete).length,
+      firingRules: current.reduce((count, item) => count + item.summary.rules.filter(rule => rule.state === "FIRING").length, 0),
+      pendingRules: current.reduce((count, item) => count + item.summary.rules.filter(rule => rule.state === "PENDING").length, 0),
+      oldestObservedAt: current.flatMap(item => item.summary.observedAt ? [item.summary.observedAt] : []).sort()[0] ?? null,
+      activities: current.filter(item => item.summary.rules.some(rule => rule.state === "FIRING" || rule.state === "PENDING")).slice(0, 20).map(item => ({
+        target: { cluster: item.target.cluster, namespace: item.target.namespace, api_version: item.target.apiVersion, kind: item.target.kind, name: item.target.name },
+        observedAt: item.summary.observedAt,
+        rules: item.summary.rules.filter(rule => rule.state === "FIRING" || rule.state === "PENDING").map(rule => ({ alertId: rule.alertId, state: rule.state })),
+      })),
+    },
     counts: {
       totalIncidents: records.length,
       firingAlerts: firingRecords.length,
@@ -1987,6 +2015,22 @@ async function handleRequest(
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/__test__/query-showcase") {
+    for (let index = 0; index < 70; index++) {
+      const record = seedAlertIncident(index < 25 ? "K8sIncidentContainerOOMKilled" : "K8sIncidentDeploymentReplicasUnavailable", `long-target-name-for-query-${index}`);
+      record.detail.incident.lifecycleStatus = index < 25 ? "CLOSED" : "OPEN";
+      record.detail.closure = index < 25 ? { closedAt: TERMINAL_AT, basis: "observed_stable" } : null;
+      record.detail.alertSummary = { ...record.detail.alertSummary, state: index < 25 ? "CLEAR" : "FIRING", complete: true, reason: null,
+        observedAt: TERMINAL_AT, receivedAt: TERMINAL_AT, targetHealthy: index < 25,
+        rules: [{ alertId: record.detail.incident.source.ref, state: index < 25 ? "CLEAR" : "FIRING", complete: true, reason: null, evaluatedAt: TERMINAL_AT }] };
+      const signal = alertHistory(record)[0];
+      record.alerts = Array.from({ length: 25 }, (_, occurrence) => ({ ...signal, fingerprint: occurrence.toString(16).padStart(16, "0"),
+        ...(index >= 25 && occurrence === 1 ? { source: { ...signal.source, ref: "K8sIncidentCrashLoopBackOff" }, displayName: CATALOG_ALERT_TEXT.K8sIncidentCrashLoopBackOff.displayName } : {}),
+      }));
+    }
+    json(response, 200, { ok: true, incidents: incidents.size }); return;
+  }
+
   if (request.method === "POST" && url.pathname === "/__test__/showcase") {
     seedShowcase();
     json(response, 200, { incidents: incidents.size, ok: true });
@@ -2198,11 +2242,64 @@ async function handleRequest(
   }
 
   if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
-    json(response, 200, {
-      schemaVersion: 6,
-      items: [...incidents.values()].reverse().map(listItem),
-      nextCursor: null,
+    const query = Object.fromEntries(["alertId", "lifecycleStatus", "alertState", "status"].map(key => [key, url.searchParams.get(key) ?? ""]));
+    const limit = Number(url.searchParams.get("limit") ?? "20");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100 ||
+      (query.alertId && !(query.alertId in CATALOG_ALERT_TEXT)) ||
+      (query.lifecycleStatus && !["OPEN", "CLOSED", "UNDETERMINED"].includes(query.lifecycleStatus)) ||
+      (query.alertState && !["FIRING", "PENDING", "CLEAR", "UNKNOWN"].includes(query.alertState)) ||
+      (query.status && ![...TERMINAL_INCIDENT_STATUSES, "RECEIVED", "TRIAGING", "DIAGNOSED", "PATCH_READY", "DRY_RUN_PASSED", "WAITING_APPROVAL", "APPLYING", "VERIFYING"].includes(query.status))) {
+      runtimeError(response, 422, "invalid_request", "Request is invalid.", false); return;
+    }
+    let after: { id: string; createdAt: string } | null = null;
+    const cursor = url.searchParams.get("cursor");
+    if (cursor !== null) {
+      try {
+        const value = JSON.parse(Buffer.from(cursor, "base64url").toString());
+        if (typeof value.id !== "string" || typeof value.createdAt !== "string" ||
+          Object.entries(query).some(([key, expected]) => value[key] !== expected)) throw new Error();
+        after = value;
+      } catch { runtimeError(response, 400, "invalid_cursor", "Cursor is invalid.", false); return; }
+    }
+    const matching = [...incidents.values()].sort((left, right) =>
+      right.detail.incident.createdAt.localeCompare(left.detail.incident.createdAt) || right.detail.incident.id.localeCompare(left.detail.incident.id)
+    ).filter(record => {
+      const item = listItem(record);
+      const incident = record.detail.incident;
+      return (!after || incident.createdAt < after.createdAt || (incident.createdAt === after.createdAt && item.id < after.id)) &&
+        (!query.alertId || item.alertIds.includes(query.alertId)) &&
+        (!query.lifecycleStatus || (item.lifecycleStatus ?? "UNDETERMINED") === query.lifecycleStatus) &&
+        (!query.alertState || item.alertSummary.state === query.alertState) && (!query.status || item.status === query.status);
     });
+    const page = matching.slice(0, limit);
+    const last = page.at(-1)?.detail.incident;
+    json(response, 200, { schemaVersion: 6, items: page.map(listItem),
+      alertTypes: Object.entries(CATALOG_ALERT_TEXT).map(([alertId, entry]) => ({ alertId, displayName: entry.displayName })),
+      nextCursor: matching.length > limit && last ? Buffer.from(JSON.stringify({ id: last.id, createdAt: last.createdAt, ...query })).toString("base64url") : null });
+    return;
+  }
+
+  const alertsMatch = url.pathname.match(/^\/api\/v1\/incidents\/([0-9a-f-]+)\/alerts$/i);
+  if (request.method === "GET" && alertsMatch) {
+    const record = incidents.get(alertsMatch[1]);
+    if (!record) { runtimeError(response, 404, "incident_not_found", "Incident was not found.", false); return; }
+    const limit = Number(url.searchParams.get("limit") ?? "20");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) { runtimeError(response, 422, "invalid_request", "Request is invalid.", false); return; }
+    let after: { startsAt: string; fingerprint: string } | null = null;
+    const cursor = url.searchParams.get("cursor");
+    if (cursor !== null) {
+      try {
+        const value = JSON.parse(Buffer.from(cursor, "base64url").toString());
+        if (value.incidentId !== alertsMatch[1] || typeof value.startsAt !== "string" || typeof value.fingerprint !== "string") throw new Error();
+        after = value;
+      } catch { runtimeError(response, 400, "invalid_cursor", "Cursor is invalid.", false); return; }
+    }
+    const matching = alertHistory(record).sort((a, b) => b.startsAt.localeCompare(a.startsAt) || b.fingerprint.localeCompare(a.fingerprint))
+      .filter(item => !after || item.startsAt < after.startsAt || (item.startsAt === after.startsAt && item.fingerprint < after.fingerprint));
+    const items = matching.slice(0, limit);
+    const last = items.at(-1);
+    json(response, 200, { schemaVersion: 6, items, nextCursor: matching.length > limit && last
+      ? Buffer.from(JSON.stringify({ incidentId: alertsMatch[1], startsAt: last.startsAt, fingerprint: last.fingerprint })).toString("base64url") : null });
     return;
   }
 

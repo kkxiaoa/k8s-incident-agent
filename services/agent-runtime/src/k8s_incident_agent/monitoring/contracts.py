@@ -171,12 +171,24 @@ class CurrentAlertObservation(_MonitoringContract):
     summary: CurrentAlertSummary
 
 
+class CurrentAlertActivityRule(_MonitoringContract):
+    alert_id: str
+    state: CurrentAlertState
+
+
+class CurrentAlertActivity(_MonitoringContract):
+    target: KubernetesTarget
+    rules: tuple[CurrentAlertActivityRule, ...] = Field(max_length=13)
+    observed_at: datetime | None
+
+
 class CurrentAlertOverview(_MonitoringContract):
     total_targets: int = Field(ge=0)
     unknown_targets: int = Field(ge=0)
     firing_rules: int = Field(ge=0)
     pending_rules: int = Field(ge=0)
     oldest_observed_at: datetime | None
+    activities: tuple[CurrentAlertActivity, ...] = Field(max_length=20)
 
 
 class MetricSample(_MonitoringContract):

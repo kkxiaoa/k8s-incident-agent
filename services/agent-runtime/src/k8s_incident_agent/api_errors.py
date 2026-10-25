@@ -12,6 +12,7 @@ from k8s_incident_agent.application.incidents import (
     ActiveRunConflictError,
     IncidentNotFoundError,
     InvalidCursorError,
+    InvalidIncidentQueryError,
     RunNotFoundError,
     RuntimeNotReadyError,
     ScenarioNotFoundError,
@@ -310,6 +311,12 @@ def install_exception_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         return _response(_ACTIVE_RUN_EXISTS)
 
+    async def invalid_incident_query_handler(
+        _request: Request,
+        _error: InvalidIncidentQueryError,
+    ) -> JSONResponse:
+        return _response(_INVALID_REQUEST)
+
     async def invalid_cursor_handler(
         _request: Request,
         _error: InvalidCursorError,
@@ -394,6 +401,10 @@ def install_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         ActiveRunConflictError,
         cast(ExceptionHandler, active_run_handler),
+    )
+    app.add_exception_handler(
+        InvalidIncidentQueryError,
+        cast(ExceptionHandler, invalid_incident_query_handler),
     )
     app.add_exception_handler(
         InvalidCursorError,

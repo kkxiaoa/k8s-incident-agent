@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { components } from "@/lib/agent-runtime/generated";
 import { parseRunEvent } from "@/lib/agent-runtime/sse";
@@ -37,6 +37,10 @@ const navigation = vi.hoisted(() => ({
 vi.mock("next/navigation", () => ({
   useRouter: () => navigation,
 }));
+
+beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+});
 
 type Scenario = components["schemas"]["ScenarioResponse"];
 
@@ -141,11 +145,12 @@ it("renders partial current source facts separately from a historical FIRING not
   detail.alertSummary = { state: "UNKNOWN", complete: false, observedAt: "2026-08-29T01:01:00Z", receivedAt: "2026-08-29T01:01:01Z", targetHealthy: true, reason: "input_missing", lastKnownState: "CLEAR", lastKnownAt: "2026-08-29T01:00:30Z", rules: [{ alertId: "K8sIncidentImagePullBackOff", state: "PENDING", complete: true, reason: null, evaluatedAt: "2026-08-29T01:01:00Z" }] };
   renderIncidentStream(detail);
   const current = screen.getByRole("region", { name: "当前目标观察" });
-  expect(current).toHaveTextContent("当前源端：UNKNOWN（观察不完整）");
-  expect(current).toHaveTextContent("K8sIncidentImagePullBackOff：PENDING");
-  expect(current).toHaveTextContent("最后完整观察：CLEAR");
+  expect(current).toHaveTextContent("当前源端：UNKNOWN · 未确认（观察不完整）");
+  expect(current).toHaveTextContent("K8sIncidentImagePullBackOffPENDING");
+  expect(current).toHaveTextContent("最后完整观察CLEAR");
   expect(current).toHaveTextContent("不代表 Incident 已关闭");
   expect(screen.getByText("末次通知 FIRING", { selector: "dd" })).toBeVisible();
+  expect(screen.getByText(/历史记录的更新时间可能包含通知刷新。/)).toBeVisible();
 });
 
 it("shows the selected diagnosis trigger instead of the Incident's initial source", () => {
@@ -936,6 +941,7 @@ describe("read-only incident presentation", () => {
     const detail = makeIncidentDetail();
     render(
       <IncidentList
+        alertTypes={[]} nextCursor={null}
         incidents={[
           {
             id: detail.incident.id,
@@ -944,6 +950,7 @@ describe("read-only incident presentation", () => {
             status: "TRIAGING",
             lifecycleStatus: null,
             updatedAt: detail.incident.createdAt,
+            alertIds: [], alertSummary: detail.alertSummary, latestRun: null,
           },
         ]}
       />,
@@ -962,7 +969,8 @@ describe("read-only incident presentation", () => {
       detail.incident.createdAt,
     );
     expect(screen.queryByText(/ UTC$/)).toBeNull();
-    expect(document.querySelector('td[data-label="Incident"]')).toHaveAttribute(
+    expect(screen.getByText("历史记录的更新时间可能包含通知刷新。")).toBeVisible();
+    expect(document.querySelector('td[data-label="Incident / 类型"]')).toHaveAttribute(
       "headers",
       "incident-column-name",
     );
@@ -975,21 +983,22 @@ describe("read-only incident presentation", () => {
   it("sorts the current incident list by update time and status without mutating input", async () => {
     const user = userEvent.setup();
     const target = makeIncidentDetail().incident.target;
+    const extra = { alertIds: [], alertSummary: makeIncidentDetail().alertSummary, latestRun: null };
     const incidents = [
-      { id: "a", displayName: "失败 · 较旧", status: "FAILED", lifecycleStatus: null, updatedAt: "2026-09-16T01:00:00Z", target },
-      { id: "b", displayName: "已诊断 · 最新", status: "DIAGNOSED", lifecycleStatus: null, updatedAt: "2026-09-16T03:00:00Z", target },
-      { id: "c", displayName: "失败 · 较新", status: "FAILED", lifecycleStatus: null, updatedAt: "2026-09-16T02:00:00Z", target },
+      { ...extra, id: "a", displayName: "失败 · 较旧", status: "FAILED", lifecycleStatus: null, updatedAt: "2026-09-16T01:00:00Z", target },
+      { ...extra, id: "b", displayName: "已诊断 · 最新", status: "DIAGNOSED", lifecycleStatus: null, updatedAt: "2026-09-16T03:00:00Z", target },
+      { ...extra, id: "c", displayName: "失败 · 较新", status: "FAILED", lifecycleStatus: null, updatedAt: "2026-09-16T02:00:00Z", target },
     ] satisfies Parameters<typeof IncidentList>[0]["incidents"];
     const original = structuredClone(incidents);
-    render(<IncidentList incidents={incidents} />);
+    render(<IncidentList incidents={incidents} nextCursor={null} alertTypes={[]} />);
     const order = () => screen.getAllByRole("link").map(link => link.textContent);
     expect(order()).toEqual(["已诊断 · 最新", "失败 · 较新", "失败 · 较旧"]);
     await user.click(screen.getByRole("button", { name: "按更新时间升序排列" }));
     expect(order()).toEqual(["失败 · 较旧", "失败 · 较新", "已诊断 · 最新"]);
     expect(document.querySelector("#incident-column-updated")).toHaveAttribute("aria-sort", "ascending");
-    await user.click(screen.getByRole("button", { name: "按状态降序排列" }));
+    await user.click(screen.getByRole("button", { name: "按处理状态降序排列" }));
     expect(order()).toEqual(["已诊断 · 最新", "失败 · 较新", "失败 · 较旧"]);
-    await user.click(screen.getByRole("button", { name: "按状态升序排列" }));
+    await user.click(screen.getByRole("button", { name: "按处理状态升序排列" }));
     expect(order()).toEqual(["失败 · 较新", "失败 · 较旧", "已诊断 · 最新"]);
     expect(document.querySelector("#incident-column-status")).toHaveAttribute("aria-sort", "ascending");
     expect(document.querySelector("#incident-column-updated")).toHaveAttribute("aria-sort", "none");
@@ -1390,3 +1399,42 @@ function stubSessionFetch(name: string, handler: typeof fetch) {
       ? Promise.resolve(Response.json({ accessMode: "private", role: "operator", expiresAt: 2000000000, csrfToken: "a".repeat(64) }))
       : handler(input, init)));
 }
+
+it("keeps complete catalog filters available and ignores stale filter and load-more responses", async () => {
+  const user = userEvent.setup();
+  const detail = makeIncidentDetail();
+  const alertTypes = [
+    { alertId: "K8sIncidentImagePullBackOff", displayName: "Image pull failure" },
+    { alertId: "K8sIncidentCrashLoopBackOff", displayName: "Container restart loop" },
+  ];
+  const item = { ...detail.incident, updatedAt: detail.incident.updatedAt,
+    alertIds: [alertTypes[0].alertId], alertSummary: detail.alertSummary, latestRun: null };
+  const pending: { url: string; signal: AbortSignal; resolve: (response: Response) => void }[] = [];
+  vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit) => new Promise<Response>(resolve => {
+    pending.push({ url, signal: init.signal as AbortSignal, resolve });
+  })));
+  const { rerender } = render(<IncidentList incidents={[item]} nextCursor="older" alertTypes={alertTypes} />);
+  await user.click(screen.getByRole("button", { name: "加载更早记录" }));
+  await user.click(screen.getByRole("combobox", { name: "告警类型" }));
+  await user.click(screen.getByRole("option", { name: "Container restart loop" }));
+  await user.click(screen.getByRole("combobox", { name: "当前告警" }));
+  await user.keyboard("{End}{Enter}");
+  expect(pending[0].signal.aborted).toBe(true);
+  expect(pending[1].signal.aborted).toBe(true);
+  const body = (items: typeof item[]) => Response.json({ schemaVersion: 6, items, alertTypes, nextCursor: null });
+  await act(async () => pending[2].resolve(body([])));
+  await act(async () => {
+    pending[1].resolve(body([{ ...item, displayName: "旧筛选回包" }]));
+    pending[0].resolve(body([{ ...item, displayName: "旧加载更多回包" }]));
+  });
+  expect(screen.queryByText("旧筛选回包")).toBeNull();
+  expect(screen.queryByText("旧加载更多回包")).toBeNull();
+  expect(screen.getByText(/没有符合条件的 Incident/)).toBeVisible();
+  rerender(<IncidentList incidents={[{ ...item, displayName: "SSR 默认页" }]} nextCursor={null} alertTypes={alertTypes} />);
+  await waitFor(() => expect(pending).toHaveLength(4));
+  expect(pending[3].url).toContain("alertId=K8sIncidentCrashLoopBackOff");
+  expect(pending[3].url).toContain("alertState=UNKNOWN");
+  await act(async () => pending[3].resolve(body([{ ...item, displayName: "当前筛选的新快照", alertIds: [alertTypes[1].alertId] }])));
+  expect(screen.getByRole("link", { name: /当前筛选的新快照/ })).toBeVisible();
+  expect(screen.queryByText("SSR 默认页")).toBeNull();
+});

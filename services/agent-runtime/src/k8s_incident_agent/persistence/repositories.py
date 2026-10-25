@@ -12,7 +12,7 @@ from typing import Final, Literal, cast
 from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
-from sqlalchemy import and_, delete, exists, func, or_, select, text
+from sqlalchemy import and_, delete, exists, func, or_, select, text, tuple_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
@@ -49,6 +49,7 @@ from k8s_incident_agent.domain.contracts import (
     DiagnosisChangeReference,
     DiagnosisDeferral,
     DiagnosisTrigger,
+    IncidentClosure,
     IncidentSource,
     KubernetesTarget,
     NormalizedIncidentTrigger,
@@ -102,6 +103,8 @@ from k8s_incident_agent.kubernetes.contracts import (
 from k8s_incident_agent.monitoring.catalog import AlertCatalog
 from k8s_incident_agent.monitoring.contracts import (
     AlertAssociationReason,
+    CurrentAlertActivity,
+    CurrentAlertActivityRule,
     CurrentAlertObservation,
     CurrentAlertOverview,
     CurrentAlertState,
@@ -208,8 +211,34 @@ class IncidentListRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class IncidentQueryItem:
+    incident: IncidentListRecord
+    alert_ids: tuple[str, ...]
+    alert_summary: CurrentAlertSummary
+    latest_run: tuple[RunKind, int, RunStatus] | None
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentAlertOccurrence:
+    source: IncidentSource
+    display_name: str
+    fingerprint: str
+    status: AlertSignalStatus
+    starts_at: CanonicalAlertTimestamp
+    ends_at: CanonicalAlertTimestamp | None
+    first_received_at: datetime | None
+    last_received_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class IncidentAlertPage:
+    items: tuple[IncidentAlertOccurrence, ...]
+    has_more: bool
+
+
+@dataclass(frozen=True, slots=True)
 class IncidentListPage:
-    items: tuple[IncidentListRecord, ...]
+    items: tuple[IncidentQueryItem, ...]
     has_more: bool
 
 
@@ -298,6 +327,7 @@ class IncidentDetailRecord:
     actions: IncidentActions | None = None
     alert_summary: CurrentAlertSummary = field(default_factory=CurrentAlertSummary)
     diagnosis_deferral: DiagnosisDeferral | None = None
+    closure: IncidentClosure | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,13 +694,15 @@ class IncidentRepository:
         targets = _current_targets()
         total = unknown = firing = pending = 0
         oldest: datetime | None = None
+        activities: list[CurrentAlertActivity] = []
         try:
             async with self._session_factory() as session:
-                summaries = await session.stream_scalars(
+                summaries = await session.stream(
                     select(
+                        targets,
                         func.json_extract(
                             CurrentAlertObservationRow.observation_json, "$.summary"
-                        )
+                        ),
                     )
                     .select_from(targets)
                     .outerjoin(
@@ -683,9 +715,10 @@ class IncidentRepository:
                             )
                         ),
                     )
+                    .order_by(*(targets.c[name] for name in _TARGET_COLUMNS))
                     .execution_options(yield_per=100)
                 )
-                async for value in summaries:
+                async for *target_values, value in summaries:
                     total += 1
                     if value is None:
                         unknown += 1
@@ -707,12 +740,38 @@ class IncidentRepository:
                         rule.state is CurrentAlertState.PENDING
                         for rule in summary.rules
                     )
+                    active_rules = tuple(
+                        rule
+                        for rule in summary.rules
+                        if rule.state
+                        in (CurrentAlertState.FIRING, CurrentAlertState.PENDING)
+                    )
+                    if active_rules and len(activities) < 20:
+                        activities.append(
+                            CurrentAlertActivity(
+                                target=KubernetesTarget(
+                                    cluster=target_values[0],
+                                    namespace=target_values[1],
+                                    api_version=target_values[2],
+                                    kind=target_values[3],
+                                    name=target_values[4],
+                                ),
+                                rules=tuple(
+                                    CurrentAlertActivityRule(
+                                        alert_id=rule.alert_id, state=rule.state
+                                    )
+                                    for rule in active_rules
+                                ),
+                                observed_at=summary.observed_at,
+                            )
+                        )
                 return CurrentAlertOverview(
                     total_targets=total,
                     unknown_targets=unknown,
                     firing_rules=firing,
                     pending_rules=pending,
                     oldest_observed_at=oldest,
+                    activities=tuple(activities),
                 )
         except ValidationError:
             raise RecoveryConsistencyError from None
@@ -1196,34 +1255,206 @@ class IncidentRepository:
         *,
         limit: int,
         cursor: tuple[datetime, UUID] | None,
+        alert_ids: tuple[str, ...],
+        scenario_alert_ids: dict[str, str],
+        alert_id: str | None = None,
+        lifecycle_status: Literal["OPEN", "CLOSED", "UNDETERMINED"] | None = None,
+        alert_state: CurrentAlertState | None = None,
+        status: IncidentStatus | None = None,
+        now: datetime | None = None,
     ) -> IncidentListPage:
         if limit < 1 or limit > 100:
             raise ValueError("Incident list limit must be between 1 and 100")
+        at = _require_aware_datetime(now or self._now())
         try:
             async with self._session_factory() as session:
+                await session.execute(text("BEGIN"))
                 statement = select(IncidentRow)
-                if cursor is not None:
-                    cursor_created_at = _require_aware_datetime(cursor[0])
-                    cursor_id = str(cursor[1])
+                if status is not None:
+                    statement = statement.where(IncidentRow.status == status)
+                if lifecycle_status is not None:
+                    statement = statement.where(
+                        IncidentRow.lifecycle_status.is_(None)
+                        if lifecycle_status == "UNDETERMINED"
+                        else IncidentRow.lifecycle_status == lifecycle_status
+                    )
+                if alert_id is not None:
                     statement = statement.where(
                         or_(
-                            IncidentRow.created_at < cursor_created_at,
+                            exists().where(
+                                AlertSignalRow.incident_id == IncidentRow.id,
+                                AlertSignalRow.trigger_ref == alert_id,
+                            ),
                             and_(
-                                IncidentRow.created_at == cursor_created_at,
-                                IncidentRow.id < cursor_id,
+                                IncidentRow.trigger_source == "alertmanager",
+                                IncidentRow.trigger_ref == alert_id,
+                            ),
+                            and_(
+                                IncidentRow.trigger_source == "scenario",
+                                IncidentRow.trigger_ref.in_(
+                                    tuple(
+                                        key
+                                        for key, value in scenario_alert_ids.items()
+                                        if value == alert_id
+                                    )
+                                ),
+                            ),
+                        )
+                    )
+                items: list[IncidentQueryItem] = []
+                position = cursor
+                while len(items) <= limit:
+                    block_statement = statement
+                    if position is not None:
+                        created_at, incident_id = position
+                        block_statement = block_statement.where(
+                            or_(
+                                IncidentRow.created_at < created_at,
+                                and_(
+                                    IncidentRow.created_at == created_at,
+                                    IncidentRow.id < str(incident_id),
+                                ),
+                            )
+                        )
+                    # Sparse current-state queries may scan to the end. Only each
+                    # snapshot block and its observation/Evidence cache are bounded.
+                    block_size = 100 if alert_state is not None else limit + 1
+                    rows = list(
+                        await session.scalars(
+                            block_statement.order_by(
+                                IncidentRow.created_at.desc(), IncidentRow.id.desc()
+                            ).limit(block_size)
+                        )
+                    )
+                    if not rows:
+                        break
+                    summaries = await _incident_alert_summaries(session, rows, at)
+                    ids = tuple(row.id for row in rows)
+                    types: dict[str, set[str]] = {key: set() for key in ids}
+                    for owner, ref in await session.execute(
+                        select(AlertSignalRow.incident_id, AlertSignalRow.trigger_ref)
+                        .where(
+                            AlertSignalRow.incident_id.in_(ids),
+                            AlertSignalRow.trigger_ref.in_(alert_ids),
+                        )
+                        .distinct()
+                    ):
+                        types[owner].add(ref)
+                    latest_attempt = (
+                        select(
+                            RunRow.incident_id,
+                            func.max(RunRow.attempt).label("attempt"),
+                        )
+                        .where(RunRow.incident_id.in_(ids))
+                        .group_by(RunRow.incident_id)
+                        .subquery()
+                    )
+                    runs = {
+                        row.incident_id: (row.kind, row.attempt, row.status)
+                        for row in await session.scalars(
+                            select(RunRow).join(
+                                latest_attempt,
+                                and_(
+                                    RunRow.incident_id == latest_attempt.c.incident_id,
+                                    RunRow.attempt == latest_attempt.c.attempt,
+                                ),
+                            )
+                        )
+                    }
+                    for row in rows:
+                        summary = summaries[row.id]
+                        if alert_state is not None and summary.state is not alert_state:
+                            continue
+                        primary = (
+                            scenario_alert_ids.get(row.trigger_ref)
+                            if row.trigger_source == "scenario"
+                            else row.trigger_ref
+                        )
+                        if primary in alert_ids:
+                            types[row.id].add(primary)
+                        items.append(
+                            IncidentQueryItem(
+                                incident=_incident_list_record(row),
+                                alert_ids=tuple(sorted(types[row.id])),
+                                alert_summary=summary,
+                                latest_run=runs.get(row.id),
+                            )
+                        )
+                        if len(items) > limit:
+                            break
+                    if len(rows) < block_size:
+                        break
+                    position = (
+                        _database_datetime(rows[-1].created_at),
+                        UUID(rows[-1].id),
+                    )
+                return IncidentListPage(
+                    items=tuple(items[:limit]), has_more=len(items) > limit
+                )
+        except RepositoryError:
+            raise
+        except SQLAlchemyError:
+            raise PersistenceOperationError from None
+
+    async def list_incident_alerts(
+        self,
+        incident_id: UUID,
+        *,
+        limit: int,
+        cursor: tuple[CanonicalAlertTimestamp, str] | None,
+    ) -> IncidentAlertPage | None:
+        if limit < 1 or limit > 100:
+            raise ValueError("Alert history limit must be between 1 and 100")
+        try:
+            async with self._session_factory() as session:
+                await session.execute(text("BEGIN"))
+                if await session.get(IncidentRow, str(incident_id)) is None:
+                    return None
+                statement = select(AlertSignalRow).where(
+                    AlertSignalRow.incident_id == str(incident_id)
+                )
+                if cursor is not None:
+                    statement = statement.where(
+                        or_(
+                            AlertSignalRow.starts_at < cursor[0],
+                            and_(
+                                AlertSignalRow.starts_at == cursor[0],
+                                AlertSignalRow.fingerprint < cursor[1],
                             ),
                         )
                     )
                 rows = list(
                     await session.scalars(
                         statement.order_by(
-                            IncidentRow.created_at.desc(),
-                            IncidentRow.id.desc(),
+                            AlertSignalRow.starts_at.desc(),
+                            AlertSignalRow.fingerprint.desc(),
                         ).limit(limit + 1)
                     )
                 )
-                return IncidentListPage(
-                    items=tuple(_incident_list_record(row) for row in rows[:limit]),
+                return IncidentAlertPage(
+                    items=tuple(
+                        IncidentAlertOccurrence(
+                            source=IncidentSource(
+                                type="alertmanager",
+                                ref=row.trigger_ref,
+                                revision=row.trigger_revision,
+                            ),
+                            display_name=row.display_name,
+                            fingerprint=row.fingerprint,
+                            status=row.status,
+                            starts_at=_database_alert_timestamp(row.starts_at),
+                            ends_at=_database_alert_timestamp(row.ends_at)
+                            if row.ends_at is not None
+                            else None,
+                            first_received_at=_database_datetime(row.first_received_at)
+                            if row.first_received_at is not None
+                            else None,
+                            last_received_at=_database_datetime(row.last_received_at)
+                            if row.last_received_at is not None
+                            else None,
+                        )
+                        for row in rows[:limit]
+                    ),
                     has_more=len(rows) > limit,
                 )
         except RepositoryError:
@@ -1256,6 +1487,8 @@ class IncidentRepository:
                     incident,
                     _require_aware_datetime(now or self._now()),
                 )
+
+                closure = await _incident_closure(session, incident)
 
                 if run_id is None:
                     run = await session.scalar(
@@ -1297,6 +1530,7 @@ class IncidentRepository:
                         has_older_events=False,
                         event_cursor=event_cursor,
                         alert_summary=alert_summary,
+                        closure=closure,
                         diagnosis_deferral=_pending_diagnosis(incident).deferral,
                         actions=IncidentActions(
                             prepare="not_applicable",
@@ -1389,6 +1623,7 @@ class IncidentRepository:
                     detail,
                     run_creation_blocked=bool(occupied),
                     alert_summary=alert_summary,
+                    closure=closure,
                     diagnosis_deferral=_pending_diagnosis(incident).deferral,
                 )
                 assert detail.run is not None
@@ -8458,57 +8693,133 @@ def _fresh_alert_summary(
 async def _incident_alert_summary(
     session: AsyncSession, incident: IncidentRow, at: datetime
 ) -> CurrentAlertSummary:
-    row = await session.get(
-        CurrentAlertObservationRow,
-        tuple(getattr(incident, name) for name in _TARGET_COLUMNS),
-    )
-    if row is None:
-        return CurrentAlertSummary()
-    observation = _alert_observation(row.observation_json)
-    summary = _fresh_alert_summary(observation.summary, at)
-    uid = await _incident_target_uid(session, incident)
-    if observation.facts is None or uid != observation.facts.target_ref.uid:
-        return CurrentAlertSummary(reason=ObservationReason.IDENTITY_UNVERIFIED)
-    return summary
+    return (await _incident_alert_summaries(session, [incident], at))[incident.id]
+
+
+async def _incident_alert_summaries(
+    session: AsyncSession, incidents: list[IncidentRow], at: datetime
+) -> dict[str, CurrentAlertSummary]:
+    keys = {
+        tuple(getattr(incident, name) for name in _TARGET_COLUMNS)
+        for incident in incidents
+    }
+    observations: dict[tuple[object, ...], tuple[str | None, CurrentAlertSummary]] = {}
+    for row in await session.scalars(
+        select(CurrentAlertObservationRow).where(
+            tuple_(
+                *(getattr(CurrentAlertObservationRow, name) for name in _TARGET_COLUMNS)
+            ).in_(keys)
+        )
+    ):
+        observation = _alert_observation(row.observation_json)
+        observations[tuple(getattr(row, name) for name in _TARGET_COLUMNS)] = (
+            observation.facts.target_ref.uid if observation.facts is not None else None,
+            _fresh_alert_summary(observation.summary, at),
+        )
+    uids = await _incident_target_uids(session, incidents)
+    results: dict[str, CurrentAlertSummary] = {}
+    for incident in incidents:
+        observed = observations.get(
+            tuple(getattr(incident, name) for name in _TARGET_COLUMNS)
+        )
+        results[incident.id] = (
+            CurrentAlertSummary()
+            if observed is None
+            else CurrentAlertSummary(reason=ObservationReason.IDENTITY_UNVERIFIED)
+            if observed[0] is None or uids[incident.id] != observed[0]
+            else observed[1]
+        )
+    return results
 
 
 async def _incident_target_uid(
     session: AsyncSession, incident: IncidentRow
 ) -> str | None:
-    if incident.target_uid is not None:
-        return incident.target_uid
-    # Historical names do not establish identity. Check all saved target Evidence,
-    # not only the selected Run, so contradictory UIDs cannot be hidden by a tab.
-    references = await session.scalars(
-        select(EvidenceRow.target_ref_json)
+    return (await _incident_target_uids(session, [incident]))[incident.id]
+
+
+async def _incident_target_uids(
+    session: AsyncSession, incidents: list[IncidentRow]
+) -> dict[str, str | None]:
+    result = {incident.id: incident.target_uid for incident in incidents}
+    historical = {
+        incident.id: incident for incident in incidents if incident.target_uid is None
+    }
+    if not historical:
+        return result
+    references = await session.stream(
+        select(RunRow.incident_id, EvidenceRow.target_ref_json)
         .join(RunRow, EvidenceRow.run_id == RunRow.id)
         .where(
-            RunRow.incident_id == incident.id,
+            RunRow.incident_id.in_(historical),
             EvidenceRow.evidence_kind.in_(
                 ("workload", "pods", "service_network", "pvc_storage")
             ),
         )
         .distinct()
+        .order_by(EvidenceRow.target_ref_json, RunRow.incident_id)
+        .execution_options(yield_per=100)
     )
-    uids: set[str] = set()
-    for value in references:
-        try:
-            reference = TargetRef.model_validate_json(value)
-        except ValidationError:
-            continue
+    uids: dict[str, set[str]] = {key: set() for key in historical}
+    previous: str | None = None
+    reference: TargetRef | None = None
+    async for owner, value in references:
+        if value != previous:
+            previous = value
+            try:
+                reference = TargetRef.model_validate_json(value)
+            except ValidationError:
+                reference = None
+        incident = historical[owner]
         if (
-            reference.namespace,
-            reference.api_version,
-            reference.kind,
-            reference.name,
-        ) == (
-            incident.namespace,
-            incident.api_version,
-            incident.kind,
-            incident.resource_name,
+            len(uids[owner]) < 2
+            and reference is not None
+            and (
+                reference.namespace,
+                reference.api_version,
+                reference.kind,
+                reference.name,
+            )
+            == (
+                incident.namespace,
+                incident.api_version,
+                incident.kind,
+                incident.resource_name,
+            )
         ):
-            uids.add(reference.uid)
-    return next(iter(uids)) if len(uids) == 1 else None
+            uids[owner].add(reference.uid)
+    result.update(
+        {
+            owner: next(iter(values)) if len(values) == 1 else None
+            for owner, values in uids.items()
+        }
+    )
+    return result
+
+
+async def _incident_closure(
+    session: AsyncSession, incident: IncidentRow
+) -> IncidentClosure | None:
+    if incident.closed_at is None:
+        return None
+    row = await session.scalar(
+        select(RunEventRow)
+        .where(
+            RunEventRow.incident_id == incident.id,
+            RunEventRow.event_type == "incident.closed",
+        )
+        .order_by(RunEventRow.id.desc())
+        .limit(1)
+    )
+    if row is None:
+        raise RecoveryConsistencyError
+    event = _event_from_row(row, expected_incident_id=UUID(incident.id))
+    try:
+        return IncidentClosure.model_validate(
+            {"closed_at": event.occurred_at, "basis": event.payload["basis"]}
+        )
+    except (KeyError, ValidationError):
+        raise RecoveryConsistencyError from None
 
 
 def _require_aware_datetime(value: datetime) -> datetime:

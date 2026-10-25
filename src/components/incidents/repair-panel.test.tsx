@@ -16,7 +16,7 @@ describe("read-only repair validation", () => {
     const value = parseIncidentDetailResponse(makeRollbackRecoveryDetail(outcome))!;
     render(<RepairPanel detail={value} pending={false} refreshError={null} />);
     expect(screen.getByText("ROLLED_BACK")).toBeVisible();
-    expect(screen.getByText("批准的逆向写入已完成；恢复结果单独判定。")).toBeVisible();
+    expect(screen.getByText("批准的回滚写入已完成；恢复结果单独判定。")).toBeVisible();
     expect(screen.getByText(/原镜像可能正是故障来源/)).toHaveTextContent("不保证相同镜像字节或应用健康");
     expect(screen.getByText("原执行 before image")).toBeVisible();
     expect(screen.queryByText("上一 revision")).toBeNull();

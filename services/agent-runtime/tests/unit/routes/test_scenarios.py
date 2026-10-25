@@ -20,6 +20,7 @@ from k8s_incident_agent.application.scheduling import RunScheduler
 from k8s_incident_agent.config import Settings
 from k8s_incident_agent.domain.models import RunBudget
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredentialLease
+from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 from k8s_incident_agent.scenarios.catalog import load_scenario_catalog
@@ -34,8 +35,13 @@ async def test_scenario_route_returns_only_versioned_public_projection(
         scenario_catalog_dir=REPOSITORY_ROOT / "scenarios",
         _env_file=None,  # pyright: ignore[reportCallIssue]
     )
+    catalog = load_scenario_catalog(REPOSITORY_ROOT / "scenarios")
     service = IncidentApplicationService(
-        catalog=load_scenario_catalog(REPOSITORY_ROOT / "scenarios"),
+        alert_catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog"),
+        catalog=catalog,
+        scenario_alert_ids={
+            scenario.scenario_id: scenario.monitoring_alert_id for scenario in catalog
+        },
         repository=cast(IncidentRepository, object()),
         supervisor=cast(RunScheduler, object()),
         credential=cast(DiagnosticCredentialLease, object()),

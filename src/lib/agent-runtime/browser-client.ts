@@ -1,3 +1,4 @@
+import type { paths } from "./generated";
 import { authenticatedFetch } from "./operator-client";
 import {
   parseCreateIncidentResponse,
@@ -5,6 +6,8 @@ import {
   parseCreateRunResponse,
   parseIncidentDetailResponse,
   parseIncidentListResponse,
+  parseIncidentAlertHistoryResponse,
+  type IncidentAlertHistoryView,
   parseIncidentMetricPanelResponse,
   parseRunEventHistoryResponse,
   parseRunHistoryResponse,
@@ -152,14 +155,21 @@ export async function fetchIncidentFromBrowser(
     : { ok: false, failure: "invalid_response" };
 }
 
+export type IncidentListQuery = Pick<NonNullable<paths["/api/v1/incidents"]["get"]["parameters"]["query"]>, "alertId" | "lifecycleStatus" | "alertState" | "status">;
+
 export async function fetchIncidentsFromBrowser(
-  cursor: string,
+  cursor: string | null,
+  filters: IncidentListQuery = {},
+  signal?: AbortSignal,
 ): Promise<BrowserRuntimeResult<IncidentListView>> {
+  const query = new URLSearchParams({ limit: "20" });
+  if (cursor !== null) query.set("cursor", cursor);
+  for (const [key, value] of Object.entries(filters)) if (value) query.set(key, value);
   let response: Response;
   try {
     response = await authenticatedFetch(
-      `/api/runtime/incidents?limit=50&cursor=${encodeURIComponent(cursor)}`,
-      { method: "GET", cache: "no-store" },
+      `/api/runtime/incidents?${query}`,
+      { method: "GET", cache: "no-store", signal },
     );
   } catch {
     return { ok: false, failure: "unavailable" };
@@ -296,4 +306,18 @@ export async function fetchRunEventsFromBrowser(
   return data !== null
     ? { ok: true, data }
     : { ok: false, failure: "invalid_response" };
+}
+
+export async function fetchIncidentAlertsFromBrowser(
+  incidentId: string, cursor: string | null, signal?: AbortSignal,
+): Promise<BrowserRuntimeResult<IncidentAlertHistoryView>> {
+  const query = new URLSearchParams({ limit: "20" });
+  if (cursor !== null) query.set("cursor", cursor);
+  try {
+    const response = await authenticatedFetch(`/api/runtime/incidents/${encodeURIComponent(incidentId)}/alerts?${query}`,
+      { method: "GET", cache: "no-store", signal });
+    if (!response.ok) return { ok: false, failure: failureForStatus(response.status) };
+    const data = parseIncidentAlertHistoryResponse(await jsonBody(response));
+    return data === null ? { ok: false, failure: "invalid_response" } : { ok: true, data };
+  } catch { return { ok: false, failure: "unavailable" }; }
 }

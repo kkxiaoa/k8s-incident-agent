@@ -34,6 +34,7 @@ from k8s_incident_agent.domain.models import (
     RunKind,
     RunStatus,
 )
+from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.persistence.database import create_business_database
 from k8s_incident_agent.persistence.models import (
     RunRow,
@@ -44,7 +45,7 @@ from k8s_incident_agent.persistence.repositories import (
 )
 from k8s_incident_agent.repair.client import PatchValidator
 from k8s_incident_agent.repair.preparation import prepare_repair
-from k8s_incident_agent.runtime.paths import RuntimePaths
+from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 
 TABLES = (
     "incidents",
@@ -64,7 +65,9 @@ def _alembic_config(paths: RuntimePaths) -> Config:
 
 def _application(repository: IncidentRepository) -> IncidentApplicationService:
     return IncidentApplicationService(
+        alert_catalog=load_alert_catalog(REPOSITORY_ROOT / "monitoring" / "catalog"),
         catalog=(),
+        scenario_alert_ids={},
         repository=repository,
         supervisor=cast(RunScheduler, object()),
         credential=credential(),

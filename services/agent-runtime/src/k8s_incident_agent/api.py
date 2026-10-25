@@ -272,11 +272,8 @@ async def build_runtime_container(
         checkpointer = await resources.enter_async_context(
             open_checkpoint_store(settings.runtime_paths.checkpoint_database)
         )
-        catalog = (
-            load_scenario_catalog(settings.scenario_catalog_dir)
-            if settings.incident_intake_mode == "manual"
-            else ()
-        )
+        all_scenarios = load_scenario_catalog(settings.scenario_catalog_dir)
+        catalog = all_scenarios if settings.incident_intake_mode == "manual" else ()
         alert_catalog = load_alert_catalog(settings.alert_catalog_dir)
         alert_authenticator = (
             AlertmanagerWebhookAuthenticator.from_file(
@@ -407,6 +404,11 @@ async def build_runtime_container(
 
         incidents = IncidentApplicationService(
             catalog=catalog,
+            scenario_alert_ids={
+                scenario.scenario_id: scenario.monitoring_alert_id
+                for scenario in all_scenarios
+            },
+            alert_catalog=alert_catalog,
             repository=repository,
             supervisor=supervisor,
             credential=credential,

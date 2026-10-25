@@ -5,11 +5,12 @@ import re
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID
 
 from k8s_incident_agent.api_contracts import (
     AlertSignalResponse,
+    AlertTypeOption,
     ApprovalRequest,
     ApprovalResponse,
     CreateIncidentRequest,
@@ -20,12 +21,15 @@ from k8s_incident_agent.api_contracts import (
     EventPageResponse,
     EvidenceResponse,
     ExecutionResponse,
+    IncidentAlertHistoryResponse,
+    IncidentAlertOccurrence,
     IncidentDetailResponse,
     IncidentListItem,
     IncidentListResponse,
     IncidentResponse,
     IncidentSourceResponse,
     IncidentTargetResponse,
+    LatestRunProgress,
     RecommendationResponse,
     RepairDiffResponse,
     RepairHistorySelectionResponse,
@@ -57,7 +61,14 @@ from k8s_incident_agent.domain.contracts import (
     NormalizedIncidentTrigger,
     RepairHistorySelection,
 )
-from k8s_incident_agent.domain.models import ModelSnapshot, RunBudget, RunEvent
+from k8s_incident_agent.domain.models import (
+    CANONICAL_ALERT_TIMESTAMP_PATTERN,
+    CanonicalAlertTimestamp,
+    IncidentStatus,
+    ModelSnapshot,
+    RunBudget,
+    RunEvent,
+)
 from k8s_incident_agent.kubernetes.credentials import (
     DiagnosticCredentialLease,
     require_credential_window,
@@ -65,11 +76,12 @@ from k8s_incident_agent.kubernetes.credentials import (
 from k8s_incident_agent.kubernetes.errors import KubernetesBoundaryError
 from k8s_incident_agent.model.availability import DiagnosisUnavailableError
 from k8s_incident_agent.monitoring.catalog import AlertCatalog
+from k8s_incident_agent.monitoring.contracts import CurrentAlertState
 from k8s_incident_agent.persistence.repositories import (
     ActiveRunExistsError,
     AlertObservationRevision,
     IncidentDetailRecord,
-    IncidentListRecord,
+    IncidentQueryItem,
     IncidentRepairDetail,
     IncidentRepository,
     IncidentRunDetail,
@@ -97,6 +109,10 @@ class ActiveRunConflictError(RuntimeError):
     pass
 
 
+class InvalidIncidentQueryError(RuntimeError):
+    pass
+
+
 class InvalidCursorError(RuntimeError):
     pass
 
@@ -110,6 +126,8 @@ class IncidentApplicationService:
         self,
         *,
         catalog: tuple[PublicScenario, ...],
+        scenario_alert_ids: dict[str, str],
+        alert_catalog: AlertCatalog,
         repository: IncidentRepository,
         supervisor: RunScheduler,
         credential: DiagnosticCredentialLease,
@@ -117,7 +135,9 @@ class IncidentApplicationService:
         budget: RunBudget,
         now: Callable[[], datetime],
     ) -> None:
+        self._alert_catalog = alert_catalog
         self._catalog = catalog
+        self._scenario_alert_ids = scenario_alert_ids
         self._scenarios = {scenario.scenario_id: scenario for scenario in catalog}
         if len(self._scenarios) != len(catalog):
             raise ValueError("Scenario catalog contains duplicate identifiers")
@@ -272,20 +292,103 @@ class IncidentApplicationService:
         *,
         limit: int,
         cursor: str | None,
+        alert_id: str | None = None,
+        lifecycle_status: Literal["OPEN", "CLOSED", "UNDETERMINED"] | None = None,
+        alert_state: CurrentAlertState | None = None,
+        status: IncidentStatus | None = None,
     ) -> IncidentListResponse:
-        decoded_cursor = _decode_incident_cursor(cursor) if cursor is not None else None
+        if alert_id is not None and self._alert_catalog.find(alert_id) is None:
+            raise InvalidIncidentQueryError
+        query = {
+            "alertId": alert_id or "",
+            "lifecycleStatus": lifecycle_status or "",
+            "alertState": alert_state.value if alert_state is not None else "",
+            "status": status.value if status is not None else "",
+        }
+        decoded_cursor = (
+            _decode_incident_cursor(cursor, query) if cursor is not None else None
+        )
         page = await self._repository.list_incident_records(
             limit=limit,
             cursor=decoded_cursor,
+            alert_ids=tuple(entry.alert_id for entry in self._alert_catalog.entries),
+            scenario_alert_ids=self._scenario_alert_ids,
+            alert_id=alert_id,
+            lifecycle_status=lifecycle_status,
+            alert_state=alert_state,
+            status=status,
+            now=self._now(),
         )
+        next_cursor = None
+        if page.has_more and page.items:
+            last = page.items[-1].incident
+            next_cursor = _encode_cursor(
+                {
+                    "createdAt": _rfc3339(last.created_at),
+                    "id": str(last.id),
+                    **query,
+                }
+            )
+        return IncidentListResponse(
+            items=tuple(_incident_list_item(item) for item in page.items),
+            alert_types=tuple(
+                AlertTypeOption(
+                    alert_id=entry.alert_id, display_name=entry.display_name
+                )
+                for entry in self._alert_catalog.entries
+            ),
+            next_cursor=next_cursor,
+        )
+
+    async def list_alerts(
+        self,
+        incident_id: UUID,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> IncidentAlertHistoryResponse:
+        position = None
+        if cursor is not None:
+            value = _decode_cursor_document(cursor)
+            starts_at, fingerprint = value.get("startsAt"), value.get("fingerprint")
+            if (
+                value.get("incidentId") != str(incident_id)
+                or not isinstance(starts_at, str)
+                or re.fullmatch(CANONICAL_ALERT_TIMESTAMP_PATTERN, starts_at) is None
+                or not isinstance(fingerprint, str)
+                or re.fullmatch(r"[0-9a-f]{16}", fingerprint) is None
+            ):
+                raise InvalidCursorError
+            position = (CanonicalAlertTimestamp(starts_at), fingerprint)
+        page = await self._repository.list_incident_alerts(
+            incident_id, limit=limit, cursor=position
+        )
+        if page is None:
+            raise IncidentNotFoundError
         next_cursor = None
         if page.has_more and page.items:
             last = page.items[-1]
             next_cursor = _encode_cursor(
-                {"createdAt": _rfc3339(last.created_at), "id": str(last.id)}
+                {
+                    "incidentId": str(incident_id),
+                    "startsAt": last.starts_at,
+                    "fingerprint": last.fingerprint,
+                }
             )
-        return IncidentListResponse(
-            items=tuple(_incident_list_item(item) for item in page.items),
+        return IncidentAlertHistoryResponse(
+            items=tuple(
+                IncidentAlertOccurrence(
+                    source=_source_response(item.source),
+                    display_name=item.display_name,
+                    fingerprint=item.fingerprint,
+                    status=item.status,
+                    starts_at=item.starts_at,
+                    ends_at=item.ends_at,
+                    first_received_at=item.first_received_at,
+                    last_received_at=item.last_received_at,
+                )
+                for item in page.items
+            ),
             next_cursor=next_cursor,
         )
 
@@ -477,7 +580,9 @@ def _source_response(source: IncidentSource) -> IncidentSourceResponse:
     )
 
 
-def _incident_list_item(item: IncidentListRecord) -> IncidentListItem:
+def _incident_list_item(query_item: IncidentQueryItem) -> IncidentListItem:
+    item = query_item.incident
+    progress = query_item.latest_run
     return IncidentListItem(
         id=item.id,
         display_name=item.display_name,
@@ -485,6 +590,13 @@ def _incident_list_item(item: IncidentListRecord) -> IncidentListItem:
         status=item.status,
         lifecycle_status=item.lifecycle_status,
         updated_at=item.updated_at,
+        alert_ids=query_item.alert_ids,
+        alert_summary=query_item.alert_summary,
+        latest_run=LatestRunProgress(
+            kind=progress[0], attempt=progress[1], status=progress[2]
+        )
+        if progress is not None
+        else None,
     )
 
 
@@ -651,6 +763,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
             status=incident.status,
             lifecycle_status=incident.lifecycle_status,
             created_at=incident.created_at,
+            updated_at=incident.updated_at,
         ),
         selected_run=_selected_run(detail.run) if detail.run is not None else None,
         event_page=EventPageResponse(
@@ -678,6 +791,7 @@ def _incident_detail_response(detail: IncidentDetailRecord) -> IncidentDetailRes
         actions=detail.actions,
         alert_signal=alert_signal,
         alert_summary=detail.alert_summary,
+        closure=detail.closure,
         diagnosis_deferral=detail.diagnosis_deferral,
         event_cursor=str(detail.event_cursor),
     )
@@ -715,8 +829,12 @@ def _decode_cursor_document(cursor: str) -> dict[object, object]:
         raise InvalidCursorError from None
 
 
-def _decode_incident_cursor(cursor: str) -> tuple[datetime, UUID]:
+def _decode_incident_cursor(
+    cursor: str, query: dict[str, str]
+) -> tuple[datetime, UUID]:
     value = _decode_cursor_document(cursor)
+    if any(value.get(key) != expected for key, expected in query.items()):
+        raise InvalidCursorError
     created_at_raw = value.get("createdAt")
     incident_id_raw = value.get("id")
     try:

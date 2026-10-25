@@ -62,6 +62,12 @@ The private cluster profiles omit the link; the `k3s-public` profile points it a
 
 `PUBLIC_ICP_RECORD` is optional. Set to a plain MIIT filing number such as `京ICP备12345678号-1`, the Console footer shows it as a link to `https://beian.miit.gov.cn/`; any other value fails configuration. Leave it unset unless the site is served under a Chinese ICP filing.
 
+### Read Incident state and history
+
+The Incident list separates lifecycle, current source alerts and diagnostic/repair progress. `UNKNOWN` means current activity cannot be established; a completed diagnosis does not mean the Incident is closed. Filter by catalog alert type, lifecycle, current alert state or business status to query the full history. The Console loads 20 matching records per page, while the desktop scroll area fits ten data rows. Sorting applies only to loaded records. Historical update times may include notification refreshes and do not necessarily identify new processing activity. Changing a filter clears the previous page and scroll position.
+
+In an Incident detail, expand the notification history and load earlier pages as needed. A last `FIRING` notification can coexist with current `CLEAR` observations. An end time comes from the received notification and does not prove when recovery occurred; missing historical receipt times remain unknown. Closure explains either sustained observed health or recovery backed by repair verification. A reopened Incident labels the retained closure as its previous closure. A deferred diagnosis may show a review time, which does not guarantee that a Run will start then. Selecting a historical Run preserves that Run's results while lifecycle and current observations describe the Incident now.
+
 ## 5. Real Runtime: prerequisites, then startup
 
 **This section accesses a real, explicitly authorized fixed sandbox and may incur model costs. It is not needed for the fake UI.** The current implementation is not a generic kubeconfig connector.

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -41,7 +41,7 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
   return {
     window: "24h",
     generatedAt: "2026-09-03T02:15:00.000Z",
-    currentAlerts: { totalTargets: 2, unknownTargets: 1, firingRules: 1, pendingRules: 0, oldestObservedAt: "2026-09-03T02:14:45.000Z" },
+    currentAlerts: { activities: [], totalTargets: 2, unknownTargets: 1, firingRules: 1, pendingRules: 0, oldestObservedAt: "2026-09-03T02:14:45.000Z" },
     counts: {
       totalIncidents: 8,
       firingAlerts,
@@ -71,10 +71,17 @@ function overview(firingAlerts = 2): MonitoringOverviewView {
 
 describe("HomeMonitoringDashboard", () => {
   it("keeps current partial activity separate from last notification totals", () => {
-    render(<HomeMonitoringDashboard initialOverview={overview(12)} initialHealth={HEALTH} runtimeHealth={null} />);
-    expect(screen.getByRole("region", { name: "当前源端告警" })).toHaveTextContent("已知 FIRING 1 · 已知 PENDING 0 · UNKNOWN 目标 1 / 2");
+    const value = overview(12);
+    value.currentAlerts.activities = [{ target: { cluster: "test-cluster", api_version: "apps/v1", kind: "Deployment", namespace: "incident-demo", name: "current-target" },
+      observedAt: "2026-09-03T02:14:45.000Z", rules: [{ alertId: "K8sIncidentCrashLoopBackOff", state: "FIRING" }] }];
+    render(<HomeMonitoringDashboard initialOverview={value} initialHealth={HEALTH} runtimeHealth={null} />);
+    expect(screen.getByText("已知 FIRING").nextElementSibling).toHaveTextContent("1");
+    expect(screen.getByText("已知 PENDING").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("UNKNOWN 目标").nextElementSibling).toHaveTextContent("1 / 2");
     expect(screen.getByRole("region", { name: "当前源端告警" })).toHaveTextContent("不能解释为没有活动");
     expect(screen.getByText("末次通知 FIRING").closest("article")).toHaveTextContent("12");
+    expect(screen.getByRole("region", { name: "当前源端告警" })).toHaveTextContent("Deployment · incident-demo/current-target");
+    expect(screen.getByRole("region", { name: "当前源端告警" })).toHaveTextContent("未证明与具体通知一一对应");
   });
   it("shows durable unassigned notifications without presenting them as Incidents or current source truth", () => {
     const value = overview();
@@ -119,7 +126,7 @@ describe("HomeMonitoringDashboard", () => {
     expect(
       screen.getByLabelText("说明已记录 Incident 的统计口径"),
     ).toBeVisible();
-    expect(screen.getByRole("tooltip")).toHaveTextContent(
+    expect(within(screen.getByLabelText("说明已记录 Incident 的统计口径")).getByRole("tooltip")).toHaveTextContent(
       "Runtime 已持久化的 Incident 累计数，含已结束的记录；不是当前未恢复的数量。",
     );
     expect(

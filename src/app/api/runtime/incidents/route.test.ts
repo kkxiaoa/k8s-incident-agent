@@ -12,7 +12,7 @@ describe("/api/runtime/incidents", () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ items: [] }));
     vi.stubGlobal("fetch", fetchMock);
     const request = new Request(
-      "http://console.test/api/runtime/incidents?limit=10&cursor=next&url=http://attacker.test",
+      "http://console.test/api/runtime/incidents?limit=10&cursor=next&alertId=K8sIncidentCrashLoopBackOff&lifecycleStatus=OPEN&alertState=UNKNOWN&status=RECEIVED&url=http://attacker.test",
       { headers: { authorization: "Bearer secret", cookie: "session=secret" } },
     );
 
@@ -20,7 +20,7 @@ describe("/api/runtime/incidents", () => {
 
     const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
     expect(url.href).toBe(
-      "http://127.0.0.1:8000/api/v1/incidents?limit=10&cursor=next",
+      "http://127.0.0.1:8000/api/v1/incidents?limit=10&cursor=next&alertId=K8sIncidentCrashLoopBackOff&lifecycleStatus=OPEN&alertState=UNKNOWN&status=RECEIVED",
     );
     expect(new Headers(init.headers)).toEqual(new Headers());
   });

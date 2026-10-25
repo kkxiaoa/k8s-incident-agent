@@ -35,7 +35,7 @@ function monitoringOverview() {
     unassignedSignals: [],
     window: "24h",
     generatedAt: "2026-09-03T02:15:00.000Z",
-    currentAlerts: {
+    currentAlerts: { activities: [],
       totalTargets: 0,
       unknownTargets: 0,
       firingRules: 0,
@@ -82,11 +82,11 @@ describe("server view data", () => {
       url.pathname === "/healthz" ? health
         : url.pathname.endsWith("/monitoring/health") ? monitoringHealth()
         : url.pathname.endsWith("/monitoring/overview") ? monitoringOverview()
-        : { schemaVersion: 6, items: [], nextCursor: null },
+        : { schemaVersion: 6, items: [], alertTypes: [], nextCursor: null },
     ))));
     const result = await loadIncidentConsoleOverview("online");
     expect(result.runtimeHealth).toEqual(health);
-    expect(result.incidents).toEqual({ items: [], nextCursor: null });
+    expect(result.incidents).toEqual({ items: [], alertTypes: [], nextCursor: null });
     expect(result.monitoringHealth).toEqual(monitoringHealth());
   });
   it("rejects malformed items from successful list responses", async () => {
@@ -127,7 +127,7 @@ describe("server view data", () => {
           ? jsonResponse(monitoringHealth())
           : url.pathname.endsWith("/monitoring/overview")
           ? jsonResponse(monitoringOverview())
-          : jsonResponse({ schemaVersion: 6, items: [], nextCursor: null }),
+          : jsonResponse({ schemaVersion: 6, items: [], alertTypes: [], nextCursor: null }),
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -146,7 +146,7 @@ describe("server view data", () => {
     expect(overview).toEqual({
       runtimeHealth: null,
       scenarios: null,
-      incidents: { items: [], nextCursor: null },
+      incidents: { items: [], alertTypes: [], nextCursor: null },
       monitoringHealth: monitoringHealth(),
       monitoringOverview: monitoringOverviewView(),
     });
@@ -231,7 +231,7 @@ describe("server view data", () => {
           thresholdDuration: "30s",
         },
       ]);
-      expect(pageData.detail.incident).not.toHaveProperty("updatedAt");
+      expect(pageData.detail.incident.updatedAt).toBe(makeIncidentDetail().incident.updatedAt);
     }
     expect(fetchMock).toHaveBeenCalledTimes(3);
     const panelsUrl = fetchMock.mock.calls.map(call => call[0] as URL).find(url => url.pathname.endsWith("/monitoring/panels"));

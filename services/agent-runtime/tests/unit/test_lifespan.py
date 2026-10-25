@@ -379,7 +379,7 @@ async def test_runtime_builds_in_order_and_closes_every_owned_resource_in_revers
 
 
 @pytest.mark.asyncio
-async def test_online_runtime_uses_incluster_source_without_loading_manual_catalog(
+async def test_online_runtime_reads_scenario_metadata_with_incluster_identity_and_no_manual_intake(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -392,12 +392,14 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
         }
     )
 
-    async with api.build_runtime_container(settings):
+    async with api.build_runtime_container(settings) as container:
+        assert (await container.incidents.list_scenarios()).items == ()
         assert events == [
             "lock.acquire",
             "database.open",
             "database.head",
             "checkpoint.open",
+            "catalog",
             "alert.catalog",
             "patch-validator.key",
             "kubernetes.incluster.open",
@@ -413,7 +415,6 @@ async def test_online_runtime_uses_incluster_source_without_loading_manual_catal
             "reconciliation.start",
         ]
 
-    assert "catalog" not in events
     assert "credential" not in events
     assert not any(event.startswith("credential.window:") for event in events)
 

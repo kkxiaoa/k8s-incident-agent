@@ -576,7 +576,7 @@ export function fetchIncidents(
     200,
     INCIDENT_LIST_ERROR_CODES,
     { method: "GET" },
-    forwardQuery(searchParams, ["limit", "cursor"]),
+    forwardQuery(searchParams, ["limit", "cursor", "alertId", "lifecycleStatus", "alertState", "status"]),
     incoming,
   );
 }
@@ -749,6 +749,15 @@ export function fetchRuns(
     forwardQuery(searchParams, ["limit", "cursor", "mine"]),
     incoming,
   );
+}
+
+export function fetchIncidentAlerts(
+  incidentId: string, searchParams: URLSearchParams, incoming?: Headers,
+): Promise<RuntimeJsonResult> {
+  const path = incidentPath("/api/v1/incidents/{incident_id}/alerts" satisfies RuntimePath, incidentId);
+  if (path === null) return Promise.resolve({ response: errorResponse(422, INVALID_REQUEST), value: null });
+  return requestRest(path, 200, RUN_HISTORY_ERROR_CODES, { method: "GET" },
+    forwardQuery(searchParams, ["limit", "cursor"]), incoming);
 }
 
 export async function createRun(

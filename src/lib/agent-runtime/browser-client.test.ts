@@ -28,3 +28,14 @@ it.each([[409, "conflict"], [403, "forbidden"], [503, "unavailable"]])("keeps %s
   vi.mocked(authenticatedFetch).mockResolvedValueOnce(new Response("not forwarded", { status: Number(status) }));
   expect(await prepareRepairFromBrowser("incident", { sourceRunId: "source" })).toEqual({ ok: false, failure });
 });
+
+it("queries the fixed list and history routes with the same page size and cancellation", async () => {
+  const { fetchIncidentsFromBrowser, fetchIncidentAlertsFromBrowser } = await import("./browser-client");
+  const signal = new AbortController().signal;
+  vi.mocked(authenticatedFetch).mockResolvedValueOnce(Response.json({ schemaVersion: 6, alertTypes: [], items: [], nextCursor: null }));
+  expect(await fetchIncidentsFromBrowser(null, { alertState: "UNKNOWN", lifecycleStatus: "OPEN" }, signal)).toEqual({ ok: true, data: { alertTypes: [], items: [], nextCursor: null } });
+  expect(authenticatedFetch).toHaveBeenLastCalledWith("/api/runtime/incidents?limit=20&alertState=UNKNOWN&lifecycleStatus=OPEN", expect.objectContaining({ signal }));
+  vi.mocked(authenticatedFetch).mockResolvedValueOnce(Response.json({ schemaVersion: 6, items: [], nextCursor: null }));
+  expect((await fetchIncidentAlertsFromBrowser("incident/id", "next", signal)).ok).toBe(true);
+  expect(authenticatedFetch).toHaveBeenLastCalledWith("/api/runtime/incidents/incident%2Fid/alerts?limit=20&cursor=next", expect.objectContaining({ signal }));
+});

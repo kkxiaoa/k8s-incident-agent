@@ -113,7 +113,7 @@ function eventCopy(event: RunEventStreamItem): {
     case "repair.verification_updated":
       return {
         title: event.data.outcome === "recovered" ? "恢复验证通过" : event.data.outcome === "observing" ? "恢复观测已保存" : "恢复验证已停止",
-        detail: `${event.data.incidentStatus === "ROLLED_BACK" ? "逆向写入已完成；恢复结果单列 · " : ""}${event.data.sampleCount} 次观测 · ${event.data.reason ?? "工作负载与告警判据"}`,
+        detail: `${event.data.incidentStatus === "ROLLED_BACK" ? "回滚写入已完成；恢复结果单列 · " : ""}${event.data.sampleCount} 次观测 · ${event.data.reason ?? "工作负载与告警判据"}`,
         tone: event.data.outcome === "recovered" ? "success" : event.data.outcome === "observing" ? "active" : "warning",
       };
     case "diagnosis.insufficient":

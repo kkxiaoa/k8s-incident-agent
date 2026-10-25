@@ -331,6 +331,25 @@
         "title": "AlertSignalStatus",
         "type": "string"
       },
+      "AlertTypeOption": {
+        "additionalProperties": false,
+        "properties": {
+          "alertId": {
+            "title": "Alertid",
+            "type": "string"
+          },
+          "displayName": {
+            "title": "Displayname",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alertId",
+          "displayName"
+        ],
+        "title": "AlertTypeOption",
+        "type": "object"
+      },
       "AlertmanagerAlert": {
         "additionalProperties": false,
         "properties": {
@@ -872,9 +891,70 @@
         "title": "CreateRunResponse",
         "type": "object"
       },
+      "CurrentAlertActivity": {
+        "additionalProperties": false,
+        "properties": {
+          "observedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observedat"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/CurrentAlertActivityRule"
+            },
+            "maxItems": 13,
+            "title": "Rules",
+            "type": "array"
+          },
+          "target": {
+            "$ref": "#/components/schemas/KubernetesTarget"
+          }
+        },
+        "required": [
+          "target",
+          "rules",
+          "observedAt"
+        ],
+        "title": "CurrentAlertActivity",
+        "type": "object"
+      },
+      "CurrentAlertActivityRule": {
+        "additionalProperties": false,
+        "properties": {
+          "alertId": {
+            "title": "Alertid",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CurrentAlertState"
+          }
+        },
+        "required": [
+          "alertId",
+          "state"
+        ],
+        "title": "CurrentAlertActivityRule",
+        "type": "object"
+      },
       "CurrentAlertOverview": {
         "additionalProperties": false,
         "properties": {
+          "activities": {
+            "items": {
+              "$ref": "#/components/schemas/CurrentAlertActivity"
+            },
+            "maxItems": 20,
+            "title": "Activities",
+            "type": "array"
+          },
           "firingRules": {
             "minimum": 0.0,
             "title": "Firingrules",
@@ -913,7 +993,8 @@
           "unknownTargets",
           "firingRules",
           "pendingRules",
-          "oldestObservedAt"
+          "oldestObservedAt",
+          "activities"
         ],
         "title": "CurrentAlertOverview",
         "type": "object"
@@ -2161,6 +2242,114 @@
         "title": "IncidentActions",
         "type": "object"
       },
+      "IncidentAlertHistoryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IncidentAlertOccurrence"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nextcursor"
+          },
+          "schemaVersion": {
+            "const": 6,
+            "default": 6,
+            "title": "Schemaversion",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "title": "IncidentAlertHistoryResponse",
+        "type": "object"
+      },
+      "IncidentAlertOccurrence": {
+        "additionalProperties": false,
+        "properties": {
+          "displayName": {
+            "title": "Displayname",
+            "type": "string"
+          },
+          "endsAt": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endsat"
+          },
+          "fingerprint": {
+            "pattern": "^[0-9a-f]{16}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "firstReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Firstreceivedat"
+          },
+          "lastReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastreceivedat"
+          },
+          "source": {
+            "$ref": "#/components/schemas/IncidentSourceResponse"
+          },
+          "startsAt": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}Z$",
+            "title": "Startsat",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AlertSignalStatus"
+          }
+        },
+        "required": [
+          "source",
+          "displayName",
+          "fingerprint",
+          "status",
+          "startsAt",
+          "endsAt",
+          "firstReceivedAt",
+          "lastReceivedAt"
+        ],
+        "title": "IncidentAlertOccurrence",
+        "type": "object"
+      },
       "IncidentClosedEventPayload": {
         "additionalProperties": false,
         "properties": {
@@ -2261,6 +2450,30 @@
           "data"
         ],
         "title": "IncidentClosedStreamEvent",
+        "type": "object"
+      },
+      "IncidentClosure": {
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "enum": [
+              "observed_stable",
+              "recovery_verified"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "closedAt": {
+            "format": "date-time",
+            "title": "Closedat",
+            "type": "string"
+          }
+        },
+        "required": [
+          "closedAt",
+          "basis"
+        ],
+        "title": "IncidentClosure",
         "type": "object"
       },
       "IncidentCreatedEventPayload": {
@@ -2373,6 +2586,16 @@
               }
             ]
           },
+          "closure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IncidentClosure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "diagnosis": {
             "anyOf": [
               {
@@ -2458,6 +2681,7 @@
           "actions",
           "alertSignal",
           "alertSummary",
+          "closure",
           "eventCursor"
         ],
         "title": "IncidentDetailResponse",
@@ -2474,6 +2698,16 @@
       "IncidentListItem": {
         "additionalProperties": false,
         "properties": {
+          "alertIds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Alertids",
+            "type": "array"
+          },
+          "alertSummary": {
+            "$ref": "#/components/schemas/CurrentAlertSummary"
+          },
           "displayName": {
             "title": "Displayname",
             "type": "string"
@@ -2482,6 +2716,16 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "latestRun": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LatestRunProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "lifecycleStatus": {
             "anyOf": [
@@ -2511,7 +2755,10 @@
           "target",
           "status",
           "lifecycleStatus",
-          "updatedAt"
+          "updatedAt",
+          "alertIds",
+          "alertSummary",
+          "latestRun"
         ],
         "title": "IncidentListItem",
         "type": "object"
@@ -2519,6 +2766,13 @@
       "IncidentListResponse": {
         "additionalProperties": false,
         "properties": {
+          "alertTypes": {
+            "items": {
+              "$ref": "#/components/schemas/AlertTypeOption"
+            },
+            "title": "Alerttypes",
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/IncidentListItem"
@@ -2546,6 +2800,7 @@
         },
         "required": [
           "items",
+          "alertTypes",
           "nextCursor"
         ],
         "title": "IncidentListResponse",
@@ -2724,6 +2979,11 @@
           "triggerSummary": {
             "title": "Triggersummary",
             "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "title": "Updatedat",
+            "type": "string"
           }
         },
         "required": [
@@ -2734,7 +2994,8 @@
           "target",
           "status",
           "lifecycleStatus",
-          "createdAt"
+          "createdAt",
+          "updatedAt"
         ],
         "title": "IncidentResponse",
         "type": "object"
@@ -2901,6 +3162,29 @@
           "name"
         ],
         "title": "KubernetesTarget",
+        "type": "object"
+      },
+      "LatestRunProgress": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RunKind"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        },
+        "required": [
+          "kind",
+          "attempt",
+          "status"
+        ],
+        "title": "LatestRunProgress",
         "type": "object"
       },
       "MetricMarker": {
@@ -5886,6 +6170,75 @@
               ],
               "title": "Cursor"
             }
+          },
+          {
+            "in": "query",
+            "name": "alertId",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Alertid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lifecycleStatus",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "OPEN",
+                    "CLOSED",
+                    "UNDETERMINED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lifecyclestatus"
+            }
+          },
+          {
+            "in": "query",
+            "name": "alertState",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CurrentAlertState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Alertstate"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/IncidentStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
           }
         ],
         "responses": {
@@ -6189,6 +6542,144 @@
           }
         },
         "summary": "Get Incident"
+      }
+    },
+    "/api/v1/incidents/{incident_id}/alerts": {
+      "get": {
+        "operationId": "list_incident_alerts_api_v1_incidents__incident_id__alerts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentAlertHistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "List Incident Alerts"
       }
     },
     "/api/v1/incidents/{incident_id}/approvals": {

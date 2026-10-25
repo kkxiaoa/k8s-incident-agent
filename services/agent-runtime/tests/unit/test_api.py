@@ -10,15 +10,26 @@ from fastapi.responses import StreamingResponse
 from tests.factories import (
     diagnostic_model_stub,
     monitoring_health_service_stub,
+    normalized_trigger,
     operator_sessions_stub,
 )
+from tests.unit.persistence.test_repair_persistence import (
+    BUDGET,
+    MODEL,
+    _database,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.test_lifespan import install_runtime_fakes
 
 from k8s_incident_agent import api
 from k8s_incident_agent.api import RuntimeContainer
 from k8s_incident_agent.application.events import IncidentEventService
 from k8s_incident_agent.application.incidents import IncidentApplicationService
+from k8s_incident_agent.auth.http import console_access
 from k8s_incident_agent.config import ConfigurationInvalidError, Settings
+from k8s_incident_agent.persistence.database import BusinessDatabase
+from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
+from k8s_incident_agent.scenarios.catalog import load_scenario_catalog
 
 
 class _UnusedService:
@@ -141,6 +152,7 @@ def test_manual_route_table_contains_read_and_create_endpoints() -> None:
         ("GET", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents/{incident_id}"),
         ("GET", "/api/v1/incidents/{incident_id}/events"),
+        ("GET", "/api/v1/incidents/{incident_id}/alerts"),
         ("GET", "/api/v1/incidents/{incident_id}/monitoring/panels"),
         (
             "GET",
@@ -171,6 +183,7 @@ def test_online_route_table_omits_manual_entrypoints(tmp_path: Path) -> None:
         ("GET", "/api/v1/incidents"),
         ("GET", "/api/v1/incidents/{incident_id}"),
         ("GET", "/api/v1/incidents/{incident_id}/events"),
+        ("GET", "/api/v1/incidents/{incident_id}/alerts"),
         ("GET", "/api/v1/incidents/{incident_id}/monitoring/panels"),
         (
             "GET",
@@ -202,6 +215,56 @@ def test_configured_alertmanager_route_is_internal_runtime_only(
     assert ("POST", "/api/v1/incidents") not in routes
     assert ("POST", "/api/v1/incidents/{incident_id}/runs") in routes
     assert ("GET", "/api/v1/scenarios") not in routes
+
+
+@pytest.mark.asyncio
+async def test_online_startup_keeps_retained_scenario_types_queryable_without_manual_intake(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path).model_copy(
+        update={
+            "incident_intake_mode": "online",
+            "kubernetes_credential_mode": "in_cluster",
+            "operator_verifier_file": tmp_path / "operator-verifier",
+            "operator_origin": "http://127.0.0.1:13000",
+        }
+    )
+    async_client = httpx.AsyncClient
+    async with _database(tmp_path) as database:
+        repository = IncidentRepository(database.session_factory)
+        created = await repository.create_incident_and_run(
+            normalized_trigger(), MODEL, BUDGET
+        )
+        install_runtime_fakes(monkeypatch, [])
+
+        async def open_database(_paths: RuntimePaths) -> BusinessDatabase:
+            return database
+
+        monkeypatch.setattr(api, "create_business_database", open_database)
+        monkeypatch.setattr(api, "load_scenario_catalog", load_scenario_catalog)
+        app = api.create_app(settings=settings)
+        app.dependency_overrides[console_access] = lambda: (
+            operator_sessions_stub().access
+        )
+        async with app.router.lifespan_context(app):
+            container = cast(RuntimeContainer, app.state.container)
+            assert (await container.incidents.list_scenarios()).items == ()
+            async with async_client(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                for query in ({}, {"alertId": "K8sIncidentImagePullBackOff"}):
+                    response = await client.get("/api/v1/incidents", params=query)
+                    assert response.status_code == 200
+                    items = response.json()["items"]
+                    assert [item["id"] for item in items] == [str(created.incident_id)]
+                    assert items[0]["alertIds"] == ["K8sIncidentImagePullBackOff"]
+                assert (await client.get("/api/v1/scenarios")).status_code == 404
+                assert (
+                    await client.post(
+                        "/api/v1/incidents", json={"scenarioId": "image-pull-backoff"}
+                    )
+                ).status_code == 405
 
 
 def test_runtime_entrypoint_freezes_loopback_single_worker(

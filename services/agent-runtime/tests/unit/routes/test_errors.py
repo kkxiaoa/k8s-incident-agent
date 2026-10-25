@@ -45,7 +45,9 @@ class _FailingService:
             raise RuntimeError("sensitive internal detail")
         raise ScenarioNotFoundError
 
-    async def list_incidents(self, *, limit: int, cursor: str | None) -> object:
+    async def list_incidents(
+        self, *, limit: int, cursor: str | None, **query: object
+    ) -> object:
         del limit, cursor
         raise InvalidCursorError
 

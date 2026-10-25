@@ -56,7 +56,7 @@ export async function loadIncidentConsoleOverview(
 ): Promise<IncidentConsoleOverview> {
   if (intakeMode === "online") {
     const [incidentResult, healthResult, overviewResult, runtimeResult] = await Promise.all([
-      fetchIncidents(new URLSearchParams({ limit: "50" }), incoming),
+      fetchIncidents(new URLSearchParams({ limit: "20" }), incoming),
       fetchMonitoringHealth(incoming),
       fetchMonitoringOverview(incoming),
       fetchRuntimeHealth(),
@@ -82,7 +82,7 @@ export async function loadIncidentConsoleOverview(
   const [scenarioResult, incidentResult, healthResult, overviewResult, runtimeResult] =
     await Promise.all([
       fetchScenarios(incoming),
-      fetchIncidents(new URLSearchParams({ limit: "50" }), incoming),
+      fetchIncidents(new URLSearchParams({ limit: "20" }), incoming),
       fetchMonitoringHealth(incoming),
       fetchMonitoringOverview(incoming),
       fetchRuntimeHealth(),

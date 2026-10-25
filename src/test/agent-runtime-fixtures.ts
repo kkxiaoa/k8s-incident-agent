@@ -156,6 +156,7 @@ export function makeIncidentDetail(): IncidentDetailResponse {
         cluster: "kind-k8s-incident-agent",
       },
       createdAt: "2026-08-29T01:00:00Z",
+      updatedAt: "2026-08-29T01:00:00Z",
     },
     selectedRun: {
       initiatedByYou: false,
@@ -175,6 +176,7 @@ export function makeIncidentDetail(): IncidentDetailResponse {
     diagnosis: null,
     repair: null,
     alertSignal: null,
+    closure: null,
     alertSummary: { state: "UNKNOWN", complete: false, observedAt: null, receivedAt: null, targetHealthy: null, reason: "not_observed", rules: [], lastKnownState: null, lastKnownAt: null },
   };
 }

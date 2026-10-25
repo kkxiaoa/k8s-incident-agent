@@ -41,10 +41,13 @@ it.each([false, true])("replays closure and reopen without rewriting Run history
   expect(reduceIncidentStream(state, { type: "event", event: closeEvent })).toEqual(state);
   const behind = reduceIncidentStream(state, { type: "snapshot", afterEventId: "10", detail: { ...detail, eventCursor: "9" } });
   expect(behind.detail.incident.lifecycleStatus).toBe("CLOSED");
+  expect(behind.detail.incident.updatedAt).toBe(common.occurredAt);
+  expect(behind.detail.closure).toEqual({ basis: "observed_stable", closedAt: common.occurredAt });
   const reopened = { ...common, reason: "manual_rerun", previousClosedAt: common.occurredAt };
   const reopenEvent = parseRunEvent("incident.reopened", "11", JSON.stringify(reopened), INCIDENT_ID)!;
   const next = reduceIncidentStream(behind, { type: "event", event: reopenEvent });
   expect(next.detail.incident.lifecycleStatus).toBe("OPEN");
+  expect(next.detail.closure).toEqual(behind.detail.closure);
   expect(next.detail.selectedRun).toEqual(detail.selectedRun);
   expect(next.detail.incident.status).toBe(detail.incident.status);
   for (const invalid of [{ runId: RUN_ID }, { runKind: "repair" }, { basis: "unknown" }, { verificationRunId: RUN_ID }, { basis: "recovery_verified" }]) {

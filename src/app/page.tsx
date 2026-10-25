@@ -41,7 +41,7 @@ async function RuntimeOverview({
             <h2 id="recent-incidents-heading">最近 Incident</h2>
           </div>
           {overview.incidents !== null && overview.incidents.nextCursor !== null ? (
-            <span>先加载最近 50 条</span>
+            <span>先加载最近 20 条</span>
           ) : null}
         </header>
         <div className="recent-incidents__body">
@@ -53,6 +53,7 @@ async function RuntimeOverview({
             <>
               <IncidentList
                 incidents={overview.incidents.items}
+                alertTypes={overview.incidents.alertTypes}
                 nextCursor={overview.incidents.nextCursor}
               />
             </>

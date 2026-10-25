@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response, status
@@ -11,6 +11,7 @@ from k8s_incident_agent.api_contracts import (
     CreateRepairRunRequest,
     CreateRunRequest,
     CreateRunResponse,
+    IncidentAlertHistoryResponse,
     IncidentDetailResponse,
     IncidentListResponse,
     RunEventHistoryResponse,
@@ -26,6 +27,8 @@ from k8s_incident_agent.auth.http import (
 from k8s_incident_agent.auth.sessions import (
     OperatorSession,
 )
+from k8s_incident_agent.domain.models import IncidentStatus
+from k8s_incident_agent.monitoring.contracts import CurrentAlertState
 from k8s_incident_agent.routes import incident_service
 
 manual_router = APIRouter(prefix="/api/v1")
@@ -143,8 +146,21 @@ async def list_incidents(
     service: _IncidentService,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     cursor: Annotated[str | None, Query()] = None,
+    alert_id: Annotated[str | None, Query(alias="alertId")] = None,
+    lifecycle_status: Annotated[
+        Literal["OPEN", "CLOSED", "UNDETERMINED"] | None, Query(alias="lifecycleStatus")
+    ] = None,
+    alert_state: Annotated[CurrentAlertState | None, Query(alias="alertState")] = None,
+    status: Annotated[IncidentStatus | None, Query()] = None,
 ) -> IncidentListResponse:
-    return await service.list_incidents(limit=limit, cursor=cursor)
+    return await service.list_incidents(
+        limit=limit,
+        cursor=cursor,
+        alert_id=alert_id,
+        lifecycle_status=lifecycle_status,
+        alert_state=alert_state,
+        status=status,
+    )
 
 
 @router.get(
@@ -198,3 +214,18 @@ async def list_run_events(
         limit=limit,
         cursor=cursor,
     )
+
+
+@router.get(
+    "/incidents/{incident_id}/alerts",
+    dependencies=[Depends(require_reader, scope="function")],
+    response_model=IncidentAlertHistoryResponse,
+    responses=error_responses(400, 404, 422, 500, 503),
+)
+async def list_incident_alerts(
+    incident_id: UUID,
+    service: _IncidentService,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: Annotated[str | None, Query()] = None,
+) -> IncidentAlertHistoryResponse:
+    return await service.list_alerts(incident_id, limit=limit, cursor=cursor)

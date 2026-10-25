@@ -157,7 +157,7 @@ export function RepairPanel({
         <>
           <div id="repair-execution" className={`repair-verdict repair-verdict--${tone}`} data-running={running}>
             <div>
-              {rollback && execution?.status === "APPLIED" ? <p>批准的逆向写入已完成；恢复结果单独判定。</p> : null}
+              {rollback && execution?.status === "APPLIED" ? <p>批准的回滚写入已完成；恢复结果单独判定。</p> : null}
               <strong><ShimmerText active={running}>{verification ? {
                 observing: "写入已确认，正在观察恢复",
                 recovered: "工作负载与告警恢复已验证",

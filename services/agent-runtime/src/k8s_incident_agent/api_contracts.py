@@ -21,6 +21,7 @@ from k8s_incident_agent.domain.contracts import (
     DiagnosisChangeReference,
     DiagnosisDeferral,
     DiagnosisTrigger,
+    IncidentClosure,
     IncidentSource,
     RepairHistorySelection,
 )
@@ -238,6 +239,34 @@ class ApprovalResponse(_ApiContract):
     execution: ExecutionResponse | None
 
 
+class AlertTypeOption(_ApiContract):
+    alert_id: str
+    display_name: str
+
+
+class LatestRunProgress(_ApiContract):
+    kind: RunKind
+    attempt: int = Field(ge=1)
+    status: RunStatus
+
+
+class IncidentAlertOccurrence(_ApiContract):
+    source: IncidentSourceResponse
+    display_name: str
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{16}$")
+    status: AlertSignalStatus
+    starts_at: _CanonicalAlertTimestamp
+    ends_at: _CanonicalAlertTimestamp | None
+    first_received_at: datetime | None
+    last_received_at: datetime | None
+
+
+class IncidentAlertHistoryResponse(_ApiContract):
+    schema_version: Literal[6] = 6
+    items: tuple[IncidentAlertOccurrence, ...]
+    next_cursor: str | None
+
+
 class IncidentListItem(_ApiContract):
     id: UUID
     display_name: str
@@ -246,10 +275,15 @@ class IncidentListItem(_ApiContract):
     lifecycle_status: IncidentLifecycleStatus | None
     updated_at: datetime
 
+    alert_ids: tuple[str, ...]
+    alert_summary: CurrentAlertSummary
+    latest_run: LatestRunProgress | None
+
 
 class IncidentListResponse(_ApiContract):
     schema_version: Literal[6] = 6
     items: tuple[IncidentListItem, ...]
+    alert_types: tuple[AlertTypeOption, ...]
     next_cursor: str | None
 
 
@@ -262,6 +296,8 @@ class IncidentResponse(_ApiContract):
     status: IncidentStatus
     lifecycle_status: IncidentLifecycleStatus | None
     created_at: datetime
+
+    updated_at: datetime
 
 
 class RunErrorResponse(_ApiContract):
@@ -896,6 +932,7 @@ class IncidentDetailResponse(_ApiContract):
     actions: IncidentActions
     alert_signal: AlertSignalResponse | None
     alert_summary: CurrentAlertSummary
+    closure: IncidentClosure | None
     diagnosis_deferral: DiagnosisDeferral | None = None
     event_cursor: str = Field(pattern=r"^(0|[1-9][0-9]*)$")
 

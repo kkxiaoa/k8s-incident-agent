@@ -164,7 +164,7 @@ test("renders the tests-only chart showcase with drill-down data", async ({
   await expect(page.locator(".incident-list__link")).toHaveCount(12);
   const totalInfo = page.getByLabel("说明已记录 Incident 的统计口径");
   await totalInfo.hover();
-  await expect(page.getByRole("tooltip")).toBeVisible();
+  await expect(totalInfo.getByRole("tooltip")).toHaveCSS("opacity", "1");
 
   await page.goto(
     "/incidents/10000000-0000-4000-8000-000000000005",
@@ -271,7 +271,7 @@ test("keeps the overview inside a phone screen while it loads", async ({ page })
 });
 
 test("shows which incident list edges contain clipped records", async ({ page }) => {
-  for (let incident = 0; incident < 6; incident += 1) {
+  for (let incident = 0; incident < 12; incident += 1) {
     await control("/api/v1/incidents", { scenarioId: "image-pull-backoff" });
   }
 
@@ -280,7 +280,7 @@ test("shows which incident list edges contain clipped records", async ({ page })
   const above = page.getByText("上方还有 Incident");
   const below = page.getByText("下方还有 Incident");
 
-  await expect(list.locator(".incident-list__link")).toHaveCount(6);
+  await expect(list.locator(".incident-list__link")).toHaveCount(12);
   await expect(above).toHaveCSS("opacity", "0");
   await expect(below).toHaveCSS("opacity", "1");
 
@@ -571,4 +571,77 @@ test("renders typed tool and terminal failures", async ({ page }) => {
   await expect(repair).toContainText("本次没有可执行的受控修复。");
   await expect(repair).toContainText("没有产生诊断结论");
   await expect(page.getByRole("list", { name: "修复验证门禁" })).toHaveCount(0);
+});
+
+
+test("measures ten complete desktop rows and queries matching history beyond the initial page", async ({ page }) => {
+  await control("/__test__/query-showcase", {});
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/");
+  await expect(page.locator(".incident-table tbody tr")).toHaveCount(20);
+  for (const width of [1280, 1000]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(async () => page.locator(".incident-list").evaluate(list => {
+      const rows = list.querySelectorAll("tbody tr");
+      const top = list.getBoundingClientRect().top;
+      const bottom = top + list.clientHeight;
+      return Math.abs(rows[9].getBoundingClientRect().bottom - bottom);
+    })).toBeLessThanOrEqual(1);
+    const geometry = await page.locator(".incident-list").evaluate(list => ({
+      bottom: list.getBoundingClientRect().top + list.clientHeight,
+      eleventhBottom: list.querySelectorAll("tbody tr")[10].getBoundingClientRect().bottom,
+    }));
+    expect(geometry.eleventhBottom).toBeGreaterThan(geometry.bottom + 20);
+    if (width === 1280) {
+      await page.setViewportSize({ width, height: 1800 });
+      await page.locator(".recent-incidents").screenshot({ path: test.info().outputPath("incident-list-desktop.png") });
+    }
+  }
+  const region = page.getByRole("region", { name: "Incident 记录" });
+  await region.focus();
+  await page.keyboard.press("PageDown");
+  await expect.poll(() => region.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  const pinnedHeader = await region.evaluate(element => {
+    const header = element.querySelector("thead")!.getBoundingClientRect();
+    const cue = element.parentElement!.querySelector(".incident-list__overflow-cue--top")!.getBoundingClientRect();
+    return { top: header.top, containerTop: element.getBoundingClientRect().top, bottom: header.bottom, cueTop: cue.top };
+  });
+  expect(Math.abs(pinnedHeader.top - pinnedHeader.containerTop)).toBeLessThanOrEqual(1);
+  expect(pinnedHeader.cueTop).toBeGreaterThanOrEqual(pinnedHeader.bottom);
+  await page.getByRole("combobox", { name: "告警类型", exact: true }).click();
+  await page.getByRole("option", { name: "Recent container OOM kill", exact: true }).click();
+  const lifecycle = page.getByRole("combobox", { name: "生命周期", exact: true });
+  await lifecycle.focus();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(lifecycle).toHaveText("已关闭");
+  await expect(lifecycle).toBeFocused();
+  await page.getByRole("combobox", { name: "当前告警", exact: true }).click();
+  await page.getByRole("option", { name: "CLEAR", exact: true }).click();
+  await expect(page.locator(".incident-table tbody tr")).toHaveCount(20);
+  await expect(page.locator(".incident-table tbody")).toContainText("Recent container OOM kill");
+  await expect.poll(() => region.evaluate(element => element.scrollTop)).toBe(0);
+  await page.getByRole("button", { name: "加载更早记录" }).click();
+  await expect(page.locator(".incident-table tbody tr")).toHaveCount(25);
+  await expect(page.getByRole("button", { name: "加载更早记录" })).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator(".incident-table thead")).toHaveCSS("position", "absolute");
+  const widths = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }));
+  expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+  const first = page.locator(".incident-list__link").first();
+  await first.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: test.info().outputPath("incident-list-mobile.png") });
+  await first.focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/incidents\/[0-9a-f-]+$/);
+  await expect(page.getByText(/关闭时间/).first()).toBeVisible();
+  await page.getByRole("button", { name: "告警通知历史 · 展开" }).click();
+  const history = page.getByRole("region", { name: "告警通知历史" });
+  await expect(history.getByRole("listitem")).toHaveCount(20);
+  await expect(history).toContainText("FIRING");
+  await page.getByRole("button", { name: "加载更早通知" }).click();
+  await expect(history.getByRole("listitem")).toHaveCount(25);
+  await expect(page.getByRole("region", { name: "当前目标观察" })).toContainText("CLEAR");
 });

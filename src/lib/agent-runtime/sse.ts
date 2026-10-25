@@ -113,8 +113,11 @@ function applyIncidentStatus(
 ): IncidentDetailResponse {
   switch (event.event) {
     case "incident.closed":
+      return { ...detail, closure: { closedAt: event.data.occurredAt, basis: event.data.basis },
+        diagnosisDeferral: null,
+        incident: { ...detail.incident, lifecycleStatus: "CLOSED", updatedAt: event.data.occurredAt } };
     case "incident.reopened":
-      return { ...detail, incident: { ...detail.incident, lifecycleStatus: event.event === "incident.closed" ? "CLOSED" : "OPEN" } };
+      return { ...detail, incident: { ...detail.incident, lifecycleStatus: "OPEN", updatedAt: event.data.occurredAt } };
     case "incident.created":
     case "run.started":
     case "diagnosis.completed":
@@ -139,8 +142,9 @@ function applyIncidentStatus(
     case "alert.notification":
     case "alert.associated":
     case "diagnosis.change_recorded":
-    case "diagnosis.deferred":
       return detail;
+    case "diagnosis.deferred":
+      return { ...detail, diagnosisDeferral: event.data.deferral };
   }
 }
 
@@ -217,7 +221,9 @@ export function reduceIncidentStream(
       const detail = snapshotBehind
         ? {
             ...action.detail,
-            incident: { ...action.detail.incident, status: state.detail.incident.status, lifecycleStatus: state.detail.incident.lifecycleStatus },
+            incident: { ...action.detail.incident, status: state.detail.incident.status, lifecycleStatus: state.detail.incident.lifecycleStatus, updatedAt: state.detail.incident.updatedAt },
+            closure: state.detail.closure,
+            diagnosisDeferral: state.detail.diagnosisDeferral,
             selectedRun: sameRun && action.detail.selectedRun !== null && state.detail.selectedRun !== null
               ? { ...action.detail.selectedRun, status: state.detail.selectedRun.status }
               : action.detail.selectedRun,

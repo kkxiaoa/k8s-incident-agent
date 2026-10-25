@@ -52,6 +52,7 @@ def test_monitoring_overview_rejects_a_stale_24_hour_window() -> None:
         MonitoringOverviewSnapshot(
             generated_at=NOW,
             current_alerts=CurrentAlertOverview(
+                activities=(),
                 total_targets=0,
                 unknown_targets=0,
                 firing_rules=0,
@@ -108,6 +109,7 @@ class _MonitoringService:
         return MonitoringOverviewSnapshot(
             generated_at=NOW,
             current_alerts=CurrentAlertOverview(
+                activities=(),
                 total_targets=2,
                 unknown_targets=1,
                 firing_rules=1,

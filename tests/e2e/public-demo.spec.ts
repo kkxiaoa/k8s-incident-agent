@@ -31,6 +31,9 @@ test("anonymous reads create no identity and manual actions explain login requir
   await page.getByText("选择运行记录", { exact: true }).click();
   await expect(page.getByRole("checkbox", { name: "仅看我发起的" })).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Incident 指标" })).toBeVisible();
+  const history = await page.request.get(`/api/runtime/incidents/${incidentId}/alerts`);
+  expect(history.status()).toBe(200);
+  expect((await history.json()).items).toEqual([]);
   const detail = await (await page.request.get(`/api/runtime/incidents/${incidentId}`)).json();
   const denied = await page.request.post(`/api/runtime/incidents/${incidentId}/repair-runs`, { data: { sourceRunId: detail.selectedRun.id } });
   expect(denied.status()).toBe(401);

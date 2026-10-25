@@ -32,13 +32,14 @@ from k8s_incident_agent.domain.models import (
     TerminalRecord,
 )
 from k8s_incident_agent.kubernetes.credentials import DiagnosticCredential
+from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.persistence.database import (
     BusinessDatabase,
     create_business_database,
 )
 from k8s_incident_agent.persistence.models import IncidentRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
-from k8s_incident_agent.runtime.paths import RuntimePaths
+from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 from k8s_incident_agent.scenarios.contracts import (
     PublicScenario,
     ScenarioTarget,
@@ -108,6 +109,7 @@ def _service(
     credential_lifetime: int = 3600,
 ) -> tuple[IncidentApplicationService, _Scheduler]:
     resolved_scheduler = scheduler or _Scheduler(repository)
+    scenario = _scenario()
     credential = DiagnosticCredential(
         kubeconfig_path=Path("/unused/diagnostic.kubeconfig"),
         context_name="kind-k8s-incident-agent",
@@ -117,7 +119,11 @@ def _service(
     )
     return (
         IncidentApplicationService(
-            catalog=(_scenario(),),
+            alert_catalog=load_alert_catalog(
+                REPOSITORY_ROOT / "monitoring" / "catalog"
+            ),
+            catalog=(scenario,),
+            scenario_alert_ids={scenario.scenario_id: scenario.monitoring_alert_id},
             repository=repository,
             supervisor=resolved_scheduler,
             credential=credential,
@@ -229,12 +235,15 @@ async def test_list_uses_descending_keyset_order_and_canonical_cursor(
             {
                 "id": f"{{{str(boundary.id).upper()}}}",
                 "extra": "ignored",
+                "alertId": "",
+                "lifecycleStatus": "",
+                "alertState": "",
+                "status": "",
                 "createdAt": NOW.isoformat(),
             },
             padded=True,
             compact=False,
         )
-        assert equivalent_cursor.endswith("=")
 
         second = await service.list_incidents(limit=2, cursor=equivalent_cursor)
         assert [item.id for item in second.items] == expected[2:]

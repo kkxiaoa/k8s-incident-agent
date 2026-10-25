@@ -99,3 +99,12 @@ def _normalized_string(value: str) -> str:
     ):
         raise ValueError("Contract text must be normalized")
     return value
+
+
+class IncidentClosure(_ImmutableContract):
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, serialize_by_alias=True
+    )
+
+    closed_at: AwareDatetime
+    basis: Literal["observed_stable", "recovery_verified"]

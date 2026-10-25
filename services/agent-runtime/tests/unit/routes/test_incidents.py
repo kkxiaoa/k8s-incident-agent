@@ -57,6 +57,7 @@ from k8s_incident_agent.domain.models import (
     RunKind,
     RunStatus,
 )
+from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.monitoring.contracts import CurrentAlertSummary
 from k8s_incident_agent.persistence.models import RunEventRow, RunRow
 from k8s_incident_agent.persistence.repositories import IncidentRepository
@@ -81,7 +82,11 @@ async def test_online_authenticated_existing_incident_mutations_use_real_persist
         repository = IncidentRepository(database.session_factory)
         incident_id, source_id = await seed_source(repository)
         service = IncidentApplicationService(
+            alert_catalog=load_alert_catalog(
+                REPOSITORY_ROOT / "monitoring" / "catalog"
+            ),
             catalog=(),
+            scenario_alert_ids={},
             repository=repository,
             supervisor=_QueuedScheduler(),
             credential=diagnostic_credential(),
@@ -251,11 +256,16 @@ class _IncidentService:
         *,
         limit: int,
         cursor: str | None,
+        **query: object,
     ) -> IncidentListResponse:
         self.list_arguments = (limit, cursor)
         return IncidentListResponse(
+            alert_types=(),
             items=(
                 IncidentListItem(
+                    alert_ids=(),
+                    alert_summary=CurrentAlertSummary(),
+                    latest_run=None,
                     id=INCIDENT_ID,
                     display_name="Image pull failure",
                     target=TARGET,
@@ -277,6 +287,7 @@ class _IncidentService:
         assert incident_id == INCIDENT_ID
         assert run_id in (None, RUN_ID)
         return IncidentDetailResponse(
+            closure=None,
             alert_summary=CurrentAlertSummary(),
             actions=IncidentActions(
                 prepare="not_applicable",
@@ -302,6 +313,7 @@ class _IncidentService:
                 status=IncidentStatus.RECEIVED,
                 lifecycle_status=None,
                 created_at=NOW,
+                updated_at=NOW,
             ),
             selected_run=SelectedRunResponse(
                 id=RUN_ID,
@@ -430,7 +442,11 @@ async def test_incident_without_runs_has_empty_read_contract_and_rejects_rerun(
                 delete(RunRow).where(RunRow.id == str(created.run_id))
             )
         service = IncidentApplicationService(
+            alert_catalog=load_alert_catalog(
+                REPOSITORY_ROOT / "monitoring" / "catalog"
+            ),
             catalog=(),
+            scenario_alert_ids={},
             repository=repository,
             supervisor=NoScheduling(),
             credential=diagnostic_credential(),

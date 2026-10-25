@@ -131,6 +131,7 @@ class _PanelRepository:
 class _OverviewRepository:
     async def get_current_alert_overview(self, at: datetime) -> CurrentAlertOverview:
         return CurrentAlertOverview(
+            activities=(),
             total_targets=0,
             unknown_targets=0,
             firing_rules=0,

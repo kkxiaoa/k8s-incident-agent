@@ -56,6 +56,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/incidents/{incident_id}/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Incident Alerts */
+        get: operations["list_incident_alerts_api_v1_incidents__incident_id__alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/incidents/{incident_id}/approvals": {
         parameters: {
             query?: never;
@@ -461,6 +478,13 @@ export interface components {
          * @enum {string}
          */
         AlertSignalStatus: "FIRING" | "RESOLVED";
+        /** AlertTypeOption */
+        AlertTypeOption: {
+            /** Alertid */
+            alertId: string;
+            /** Displayname */
+            displayName: string;
+        };
         /** AlertmanagerAlert */
         AlertmanagerAlert: {
             /** Annotations */
@@ -706,8 +730,24 @@ export interface components {
              */
             schemaVersion: 6;
         };
+        /** CurrentAlertActivity */
+        CurrentAlertActivity: {
+            /** Observedat */
+            observedAt: string | null;
+            /** Rules */
+            rules: components["schemas"]["CurrentAlertActivityRule"][];
+            target: components["schemas"]["KubernetesTarget"];
+        };
+        /** CurrentAlertActivityRule */
+        CurrentAlertActivityRule: {
+            /** Alertid */
+            alertId: string;
+            state: components["schemas"]["CurrentAlertState"];
+        };
         /** CurrentAlertOverview */
         CurrentAlertOverview: {
+            /** Activities */
+            activities: components["schemas"]["CurrentAlertActivity"][];
             /** Firingrules */
             firingRules: number;
             /** Oldestobservedat */
@@ -1235,6 +1275,36 @@ export interface components {
             /** @default not_applicable */
             withdraw: components["schemas"]["ActionUnavailableReason"] | null;
         };
+        /** IncidentAlertHistoryResponse */
+        IncidentAlertHistoryResponse: {
+            /** Items */
+            items: components["schemas"]["IncidentAlertOccurrence"][];
+            /** Nextcursor */
+            nextCursor: string | null;
+            /**
+             * Schemaversion
+             * @default 6
+             * @constant
+             */
+            schemaVersion: 6;
+        };
+        /** IncidentAlertOccurrence */
+        IncidentAlertOccurrence: {
+            /** Displayname */
+            displayName: string;
+            /** Endsat */
+            endsAt: string | null;
+            /** Fingerprint */
+            fingerprint: string;
+            /** Firstreceivedat */
+            firstReceivedAt: string | null;
+            /** Lastreceivedat */
+            lastReceivedAt: string | null;
+            source: components["schemas"]["IncidentSourceResponse"];
+            /** Startsat */
+            startsAt: string;
+            status: components["schemas"]["AlertSignalStatus"];
+        };
         /** IncidentClosedEventPayload */
         IncidentClosedEventPayload: {
             /**
@@ -1286,6 +1356,19 @@ export interface components {
             event: "incident.closed";
             /** Id */
             id: string;
+        };
+        /** IncidentClosure */
+        IncidentClosure: {
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "observed_stable" | "recovery_verified";
+            /**
+             * Closedat
+             * Format: date-time
+             */
+            closedAt: string;
         };
         /** IncidentCreatedEventPayload */
         IncidentCreatedEventPayload: {
@@ -1344,6 +1427,7 @@ export interface components {
             alertSignal: components["schemas"]["AlertSignalResponse"] | null;
             alertSummary: components["schemas"]["CurrentAlertSummary"];
             approval?: components["schemas"]["ApprovalResponse"] | null;
+            closure: components["schemas"]["IncidentClosure"] | null;
             diagnosis: components["schemas"]["DiagnosisResponse"] | null;
             diagnosisDeferral?: components["schemas"]["DiagnosisDeferral"] | null;
             /** Eventcursor */
@@ -1369,6 +1453,9 @@ export interface components {
         IncidentLifecycleStatus: "OPEN" | "CLOSED";
         /** IncidentListItem */
         IncidentListItem: {
+            /** Alertids */
+            alertIds: string[];
+            alertSummary: components["schemas"]["CurrentAlertSummary"];
             /** Displayname */
             displayName: string;
             /**
@@ -1376,6 +1463,7 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            latestRun: components["schemas"]["LatestRunProgress"] | null;
             lifecycleStatus: components["schemas"]["IncidentLifecycleStatus"] | null;
             status: components["schemas"]["IncidentStatus"];
             target: components["schemas"]["IncidentTargetResponse"];
@@ -1387,6 +1475,8 @@ export interface components {
         };
         /** IncidentListResponse */
         IncidentListResponse: {
+            /** Alerttypes */
+            alertTypes: components["schemas"]["AlertTypeOption"][];
             /** Items */
             items: components["schemas"]["IncidentListItem"][];
             /** Nextcursor */
@@ -1486,6 +1576,11 @@ export interface components {
             target: components["schemas"]["IncidentTargetResponse"];
             /** Triggersummary */
             triggerSummary: string;
+            /**
+             * Updatedat
+             * Format: date-time
+             */
+            updatedAt: string;
         };
         /** IncidentSource */
         IncidentSource: {
@@ -1541,6 +1636,13 @@ export interface components {
             name: string;
             /** Namespace */
             namespace: string | null;
+        };
+        /** LatestRunProgress */
+        LatestRunProgress: {
+            /** Attempt */
+            attempt: number;
+            kind: components["schemas"]["RunKind"];
+            status: components["schemas"]["RunStatus"];
         };
         /** MetricMarker */
         MetricMarker: {
@@ -2783,6 +2885,10 @@ export interface operations {
             query?: {
                 limit?: number;
                 cursor?: string | null;
+                alertId?: string | null;
+                lifecycleStatus?: ("OPEN" | "CLOSED" | "UNDETERMINED") | null;
+                alertState?: components["schemas"]["CurrentAlertState"] | null;
+                status?: components["schemas"]["IncidentStatus"] | null;
             };
             header?: never;
             path?: never;
@@ -2971,6 +3077,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IncidentDetailResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_incident_alerts_api_v1_incidents__incident_id__alerts_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IncidentAlertHistoryResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Unauthorized */

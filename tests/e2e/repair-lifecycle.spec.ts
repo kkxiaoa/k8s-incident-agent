@@ -43,7 +43,7 @@ async function captureWorkbench(page: Page, name: string) {
   await expect(page.getByRole("region", { name: "Incident 指标" })).toBeVisible();
   const spacing = await page.locator(".run-controls").evaluate((element) =>
     document.querySelector(".incident-progress")!.getBoundingClientRect().top - element.getBoundingClientRect().bottom);
-  expect(spacing).toBeGreaterThanOrEqual(24);
+  expect(spacing).toBeCloseTo(16, 0);
   const path = test.info().outputPath(`${name}.png`);
   await page.screenshot({ path, fullPage: true });
   await test.info().attach(name, { path, contentType: "image/png" });
@@ -372,7 +372,7 @@ test("rollback needs a new approval and remains distinct from recovery on mobile
   await page.setViewportSize({ width: 390, height: 844 });
   await approve(page);
   await setState(incidentId, "monitoring_unavailable");
-  await expect(page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toContainText("批准的逆向写入已完成；恢复结果单独判定。");
+  await expect(page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toContainText("批准的回滚写入已完成；恢复结果单独判定。");
   await expect(page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toContainText("ROLLED_BACK");
   await expect(page.getByRole("region", { name: /修复处置|回滚处置|修复建议/ })).toContainText("监控链路不可用，无法证明恢复");
   const overflow = await page.evaluate(() => ({

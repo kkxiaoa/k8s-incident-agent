@@ -1,3 +1,4 @@
+import type { components } from "@/lib/agent-runtime/generated";
 import type { IncidentStatus, RunStatus } from "@/lib/agent-runtime/view-models";
 import { ShimmerText } from "@/components/ui/shimmer-text";
 import {
@@ -40,4 +41,13 @@ export function IncidentStatusBadge({ status }: { status: IncidentStatus }) {
 export function RunStatusBadge({ status }: { status: RunStatus }) {
   const className = tone(status);
   return <span className={className}><ShimmerText active={className === "status-badge status-badge--active"}>{runStatusLabel(status)}</ShimmerText></span>;
+}
+
+export function CurrentAlertBadge({ state }: { state: components["schemas"]["CurrentAlertState"] }) {
+  const tone = state === "CLEAR" ? "success" : state === "FIRING" ? "danger" : "warning";
+  return <span className={`status-badge status-badge--${tone}`}>{state === "UNKNOWN" ? "UNKNOWN · 未确认" : state}</span>;
+}
+
+export function lifecycleLabel(status: components["schemas"]["IncidentLifecycleStatus"] | null) {
+  return status === null ? "历史未判定" : status === "OPEN" ? "未关闭" : "已关闭";
 }

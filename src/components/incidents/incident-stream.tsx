@@ -1,5 +1,8 @@
 "use client";
 
+import { AlertHistory } from "./alert-history";
+import { CurrentAlertBadge, lifecycleLabel } from "./incident-status";
+
 import { checkOperatorSession } from "@/lib/agent-runtime/operator-client";
 
 import Link from "next/link";
@@ -110,69 +113,41 @@ function CurrentAlertStatus({
     (rule) => rule.state === "FIRING" || rule.state === "PENDING",
   );
   return (
-    <section aria-label="当前目标观察">
-      <p>
-        当前源端：{summary.state}
-        {summary.complete ? "" : "（观察不完整）"}；目标健康：
-        {summary.targetHealthy === null
-          ? "尚未确认"
-          : summary.targetHealthy
-            ? "受支持检查通过"
-            : "未通过"}
-      </p>
-      {summary.reason === null ? null : (
-        <p>{OBSERVATION_REASON_LABELS[summary.reason]}</p>
-      )}
-      {summary.observedAt === null ? null : (
-        <p>
-          观察时间 <LocalTimestamp timestamp={summary.observedAt} />
-        </p>
-      )}
-      {summary.lastKnownState === null ||
-      summary.lastKnownAt === null ? null : (
-        <p>
-          最后完整观察：{summary.lastKnownState} ·{" "}
-          <LocalTimestamp timestamp={summary.lastKnownAt} />
-        </p>
-      )}
-      {active.length === 0 ? null : (
-        <ul>
-          {active.map((rule) => (
-            <li key={rule.alertId}>
-              {rule.alertId}：{rule.state}
-              {rule.complete ? "" : "（输入不完整）"}
-            </li>
-          ))}
-        </ul>
-      )}
-      <p>
-        这是目标层观察，源端活动与具体通知归属待确认；不代表 Incident
-        已关闭，也不替代修复恢复验证。
-      </p>
+    <section className="current-observation" aria-label="当前目标观察">
+      <header className="current-observation__header">
+        <h2>当前目标观察</h2>
+        <div className="current-observation__state">当前源端：<CurrentAlertBadge state={summary.state} />{summary.complete ? null : <span>（观察不完整）</span>}</div>
+      </header>
+      <dl className="current-observation__facts">
+        <div><dt>目标健康</dt><dd>{summary.targetHealthy === null ? "尚未确认" : summary.targetHealthy ? "受支持检查通过" : "未通过"}</dd></div>
+        <div><dt>观察时间</dt><dd>{summary.observedAt === null ? "尚无观察" : <LocalTimestamp timestamp={summary.observedAt} />}</dd></div>
+        {summary.lastKnownState === null || summary.lastKnownAt === null ? null : <div><dt>最后完整观察</dt><dd>{summary.lastKnownState} · <LocalTimestamp timestamp={summary.lastKnownAt} /></dd></div>}
+      </dl>
+      {summary.reason === null ? null : <p className="current-observation__reason">{OBSERVATION_REASON_LABELS[summary.reason]}</p>}
+      {active.length === 0 ? null : <ul className="current-observation__rules">{active.map(rule => <li key={rule.alertId}>
+        <span>{rule.alertId}</span><CurrentAlertBadge state={rule.state} />{rule.complete ? null : <span>（输入不完整）</span>}
+      </li>)}</ul>}
+      <p className="incident-context-note">这是目标层观察，未证明与具体通知一一对应；不代表 Incident 已关闭，也不替代修复恢复验证。</p>
     </section>
   );
 }
 
-function latestActivityAt(
-  detail: IncidentDetailResponse,
-  events: ReadonlyArray<{ data: { occurredAt: string } }>,
-): string {
-  const timestamps = [
-    detail.incident.createdAt,
-    detail.selectedRun?.createdAt,
-    detail.selectedRun?.startedAt,
-    detail.selectedRun?.completedAt,
-    detail.alertSignal?.startsAt,
-    detail.alertSignal?.endsAt,
-    ...detail.evidence.map((item) => item.observedAt),
-    ...events.map((event) => event.data.occurredAt),
-  ];
-  return timestamps.reduce<string>((latest, value) => {
-    if (value === null || value === undefined) {
-      return latest;
-    }
-    return Date.parse(value) > Date.parse(latest) ? value : latest;
-  }, detail.incident.createdAt);
+function IncidentLifecycle({ detail }: { detail: IncidentDetailResponse }) {
+  return <div className="incident-lifecycle">
+    <div className="incident-lifecycle__summary">
+      <span className="status-badge status-badge--neutral">生命周期：{lifecycleLabel(detail.incident.lifecycleStatus)}</span>
+      <span>业务更新时间 <LocalTimestamp timestamp={detail.incident.updatedAt} /></span>
+    </div>
+    <p className="incident-context-note">历史记录的更新时间可能包含通知刷新。</p>
+    {detail.closure === null ? null : <div className="incident-lifecycle__closure">
+      <strong>{detail.incident.lifecycleStatus === "CLOSED" ? "关闭时间" : "上次关闭时间"} <LocalTimestamp timestamp={detail.closure.closedAt} /></strong>
+      <p>{detail.closure.basis === "observed_stable" ? "受支持检查持续稳定，未据此宣称 Agent 修复成功。" : "受控修复已验证恢复，并通过持续稳定检查。"}</p>
+    </div>}
+    {detail.diagnosisDeferral ? <p className="incident-lifecycle__deferral" role="status">
+      {DIAGNOSIS_DEFERRAL_LABELS[detail.diagnosisDeferral.reason]}
+      {detail.diagnosisDeferral.reviewAfter === null ? null : <> · 可复核时间 <LocalTimestamp timestamp={detail.diagnosisDeferral.reviewAfter} />；到时仍需重新核对准入条件，不保证启动。</>}
+    </p> : null}
+  </div>;
 }
 
 export function IncidentStream({
@@ -586,22 +561,19 @@ export function IncidentStream({
   const selectedRun = detail.selectedRun;
   if (selectedRun === null) {
     return (
+      <>
+      <div className="detail-toolbar"><nav className="breadcrumb" aria-label="面包屑"><Link href="/">Incident 列表</Link><span aria-hidden="true">/</span><span>Incident 详情</span></nav></div>
       <section className="incident-overview" aria-labelledby="incident-heading">
-        <Link href="/">Incident 列表</Link>
-        <h1 id="incident-heading">{detail.incident.displayName}</h1>
-        <p>{detail.incident.triggerSummary}</p>
-        <p>{targetLabel(detail.incident.target)}</p>
-        <p>
-          生命周期：
-          {detail.incident.lifecycleStatus === null
-            ? "历史未判定"
-            : detail.incident.lifecycleStatus}
-        </p>
-        <p role="status">尚无诊断运行。没有诊断证据、结论或可执行操作。</p>
-        {detail.diagnosisDeferral ? <p role="status">{DIAGNOSIS_DEFERRAL_LABELS[detail.diagnosisDeferral.reason]}</p> : null}
+        <div className="incident-overview__main">
+          <h1 id="incident-heading">{detail.incident.displayName}</h1>
+          <p>{detail.incident.triggerSummary}</p>
+          <p>{targetLabel(detail.incident.target)}</p>
+          <IncidentLifecycle detail={detail} />
+        </div>
+        <p className="incident-context-note" role="status">尚无诊断运行。没有诊断证据、结论或可执行操作。</p>
         <CurrentAlertStatus summary={detail.alertSummary} />
         {detail.alertSignal === null ? null : (
-          <p>
+          <p className="incident-context-note">
             末次通知：{detail.alertSignal.status}
             ；通知不代表源端当前状态、Incident 关闭或恢复验证完成。
           </p>
@@ -609,7 +581,9 @@ export function IncidentStream({
         {state.refreshError || state.streamError ? (
           <p role="alert">{state.refreshError ?? state.streamError}</p>
         ) : null}
+        <AlertHistory key={detail.incident.id} incidentId={detail.incident.id} />
         <button
+          className="secondary-button incident-overview__refresh"
           type="button"
           onClick={() => void refreshDetail.current?.()}
           disabled={state.refreshing}
@@ -617,6 +591,7 @@ export function IncidentStream({
           刷新记录
         </button>
       </section>
+      </>
     );
   }
   const diagnosisDetail = sourceDiagnosis.detail;
@@ -657,7 +632,7 @@ export function IncidentStream({
     selectedRun?.completedAt,
     detail.alertSignal?.endsAt ?? "firing",
   ].join(":");
-  const updatedAt = latestActivityAt(detail, state.events);
+  const updatedAt = detail.incident.updatedAt;
 
   return (
     <ApprovalWindowProvider detail={detail}>
@@ -668,7 +643,7 @@ export function IncidentStream({
           <span>Incident 详情</span>
         </nav>
         <span className="detail-toolbar__updated">
-          最近更新 <LocalTimestamp timestamp={updatedAt} />
+          业务更新时间 <LocalTimestamp timestamp={updatedAt} />
         </span>
       </div>
 
@@ -682,10 +657,9 @@ export function IncidentStream({
             </div>
           </div>
           <p>{diagnosisDetail?.selectedRun?.diagnosisTrigger?.summary ?? diagnosisDetail?.incident.triggerSummary ?? "来源诊断记录暂不可用"}</p>
-          {detail.diagnosisDeferral ? <p role="status">{DIAGNOSIS_DEFERRAL_LABELS[detail.diagnosisDeferral.reason]}</p> : null}
+          <IncidentLifecycle detail={detail} />
         </div>
         <div className="incident-facts">
-          <CurrentAlertStatus summary={detail.alertSummary} />
           <dl className="incident-facts__column incident-facts__column--primary">
             <div>
               <dt>目标</dt>
@@ -726,6 +700,8 @@ export function IncidentStream({
             </div>
           </dl>
         </div>
+        <CurrentAlertStatus summary={detail.alertSummary} />
+        <AlertHistory key={detail.incident.id} incidentId={detail.incident.id} />
       </section>
 
       <section className="run-controls" aria-labelledby="run-controls-heading">

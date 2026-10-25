@@ -49,6 +49,7 @@ from k8s_incident_agent.domain.models import (
 from k8s_incident_agent.execution.api import ExecutionEndpoint
 from k8s_incident_agent.execution.contracts import ExecutionReceipt, ExecutionResult
 from k8s_incident_agent.internal_auth import NonceReplayCache
+from k8s_incident_agent.monitoring.catalog import load_alert_catalog
 from k8s_incident_agent.persistence.database import BusinessDatabase
 from k8s_incident_agent.persistence.models import (
     ApprovalRow,
@@ -62,7 +63,7 @@ from k8s_incident_agent.persistence.repositories import (
     IncidentRepository,
     PruneTarget,
 )
-from k8s_incident_agent.runtime.paths import RuntimePaths
+from k8s_incident_agent.runtime.paths import REPOSITORY_ROOT, RuntimePaths
 from k8s_incident_agent.runtime.retention import confirm_prune
 from k8s_incident_agent.workflow.checkpoint import open_checkpoint_store
 from k8s_incident_agent.workflow.graph import build_incident_graph
@@ -166,7 +167,11 @@ async def approval_harness(
         )
         assert detail is not None and detail.repair is not None
         service = IncidentApplicationService(
+            alert_catalog=load_alert_catalog(
+                REPOSITORY_ROOT / "monitoring" / "catalog"
+            ),
             catalog=(),
+            scenario_alert_ids={},
             repository=repository,
             supervisor=MissedNotification(),
             credential=diagnostic_credential(),

@@ -58,9 +58,13 @@ export interface IncidentListItemView {
   lifecycleStatus: components["schemas"]["IncidentLifecycleStatus"] | null;
   target: TargetView;
   updatedAt: string;
+  alertIds: string[];
+  alertSummary: CurrentAlertSummaryView;
+  latestRun: components["schemas"]["LatestRunProgress"] | null;
 }
 
 export interface IncidentListView {
+  alertTypes: components["schemas"]["AlertTypeOption"][];
   items: IncidentListItemView[];
   nextCursor: string | null;
 }
@@ -80,6 +84,7 @@ export interface IncidentView {
   source: IncidentSourceView;
   target: TargetView;
   createdAt: string;
+  updatedAt: string;
 }
 
 export type RunErrorView = Pick<ApiRunError, "code" | "retryable">;
@@ -168,6 +173,7 @@ export interface IncidentDetailView {
   actions: IncidentActionsView;
   alertSignal: AlertSignalView | null;
   alertSummary: CurrentAlertSummaryView;
+  closure: components["schemas"]["IncidentClosure"] | null;
   diagnosisDeferral?: components["schemas"]["DiagnosisDeferral"] | null;
 }
 
@@ -428,13 +434,23 @@ function parseIncidentListItem(value: unknown): IncidentListItemView | null {
     typeof value.displayName !== "string" ||
     !isIncidentStatus(value.status) ||
     (value.lifecycleStatus !== null && value.lifecycleStatus !== "OPEN" && value.lifecycleStatus !== "CLOSED") ||
-    !isTimestamp(value.updatedAt)
+    !isTimestamp(value.updatedAt) || !Array.isArray(value.alertIds) || value.alertIds.length > 64 ||
+    !value.alertIds.every((id): id is string => isBoundedText(id, 128)) ||
+    new Set(value.alertIds).size !== value.alertIds.length
   ) {
     return null;
   }
 
+  let latestRun: IncidentListItemView["latestRun"] = null;
+  const progress = value.latestRun;
+  if (progress !== null) {
+    if (!isObject(progress) || (progress.kind !== "diagnosis" && progress.kind !== "repair") ||
+      !isPositiveInteger(progress.attempt) || !isRunStatus(progress.status)) return null;
+    latestRun = { kind: progress.kind, attempt: progress.attempt, status: progress.status };
+  }
   const target = parseTarget(value.target);
-  return target === null
+  const alertSummary = parseCurrentAlertSummary(value.alertSummary);
+  return target === null || alertSummary === null
     ? null
     : {
         id: value.id,
@@ -443,6 +459,9 @@ function parseIncidentListItem(value: unknown): IncidentListItemView | null {
         lifecycleStatus: value.lifecycleStatus,
         target,
         updatedAt: value.updatedAt,
+        alertIds: value.alertIds,
+        alertSummary,
+        latestRun,
       };
 }
 
@@ -488,7 +507,7 @@ function parseCurrentAlertSummary(value: unknown): CurrentAlertSummaryView | nul
     if (!isObject(rule) || !isBoundedText(rule.alertId, 128) || !isCurrentAlertState(rule.state) ||
       typeof rule.complete !== "boolean" || !isObservationReason(rule.reason) ||
       (rule.evaluatedAt !== null && !isTimestamp(rule.evaluatedAt)) ||
-      rules.some((other) => other.alertId === rule.alertId)) return null;
+      rules.some(other => other.alertId === rule.alertId)) return null;
     rules.push({ alertId: rule.alertId, state: rule.state, complete: rule.complete, reason: rule.reason, evaluatedAt: rule.evaluatedAt });
   }
   return { state: value.state, complete: value.complete, observedAt: value.observedAt, receivedAt: value.receivedAt, targetHealthy: value.targetHealthy, reason: value.reason, rules, lastKnownState: value.lastKnownState, lastKnownAt: value.lastKnownAt };
@@ -502,7 +521,7 @@ function parseIncident(value: unknown): IncidentView | null {
     typeof value.triggerSummary !== "string" ||
     !isIncidentStatus(value.status) ||
     (value.lifecycleStatus !== null && value.lifecycleStatus !== "OPEN" && value.lifecycleStatus !== "CLOSED") ||
-    !isTimestamp(value.createdAt)
+    !isTimestamp(value.createdAt) || !isTimestamp(value.updatedAt)
   ) {
     return null;
   }
@@ -520,6 +539,7 @@ function parseIncident(value: unknown): IncidentView | null {
         source,
         target,
         createdAt: value.createdAt,
+        updatedAt: value.updatedAt,
       };
 }
 
@@ -947,22 +967,40 @@ export function parseScenarioListResponse(
     : { items: items as ScenarioView[] };
 }
 
-export function parseIncidentListResponse(
-  value: unknown,
-): IncidentListView | null {
-  if (
-    !isObject(value) ||
-    value.schemaVersion !== 6 ||
-    !Array.isArray(value.items) ||
-    (value.nextCursor !== null && typeof value.nextCursor !== "string")
-  ) {
-    return null;
+export function parseIncidentListResponse(value: unknown): IncidentListView | null {
+  if (!isObject(value) || value.schemaVersion !== 6 || !Array.isArray(value.items) ||
+    !Array.isArray(value.alertTypes) || value.alertTypes.length > 64 ||
+    (value.nextCursor !== null && typeof value.nextCursor !== "string")) return null;
+  const alertTypes: IncidentListView["alertTypes"] = [];
+  for (const option of value.alertTypes) {
+    if (!isObject(option) || !isBoundedText(option.alertId, 128) ||
+      !isBoundedText(option.displayName, 160) || alertTypes.some(item => item.alertId === option.alertId)) return null;
+    alertTypes.push({ alertId: option.alertId, displayName: option.displayName });
   }
-
   const items = value.items.map(parseIncidentListItem);
-  return items.some((item) => item === null)
-    ? null
-    : { items: items as IncidentListItemView[], nextCursor: value.nextCursor };
+  return items.some(item => item === null || item.alertIds.some(id => !alertTypes.some(option => option.alertId === id)))
+    ? null : { items: items as IncidentListItemView[], alertTypes, nextCursor: value.nextCursor };
+}
+
+export type IncidentAlertHistoryView = Pick<components["schemas"]["IncidentAlertHistoryResponse"], "items" | "nextCursor">;
+
+export function parseIncidentAlertHistoryResponse(value: unknown): IncidentAlertHistoryView | null {
+  if (!isObject(value) || value.schemaVersion !== 6 || !Array.isArray(value.items) ||
+    (value.nextCursor !== null && typeof value.nextCursor !== "string")) return null;
+  const items: IncidentAlertHistoryView["items"] = [];
+  for (const item of value.items) {
+    if (!isObject(item)) return null;
+    const source = parseIncidentSource(item.source);
+    const signal = parseAlertSignal(item);
+    if (source === null || source.type !== "alertmanager" || signal === null ||
+      !isBoundedText(item.displayName, 160) || typeof item.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(item.fingerprint) ||
+      (item.firstReceivedAt !== null && !isTimestamp(item.firstReceivedAt)) ||
+      (item.lastReceivedAt !== null && !isTimestamp(item.lastReceivedAt))) return null;
+    items.push({ source, displayName: item.displayName, fingerprint: item.fingerprint,
+      status: signal.status, startsAt: signal.startsAt, endsAt: signal.endsAt,
+      firstReceivedAt: item.firstReceivedAt, lastReceivedAt: item.lastReceivedAt });
+  }
+  return { items, nextCursor: value.nextCursor };
 }
 
 export function parseRunHistoryResponse(value: unknown): RunHistoryView | null {
@@ -1115,6 +1153,13 @@ export function parseIncidentDetailResponse(
   const alertSignal =
     value.alertSignal === null ? null : parseAlertSignal(value.alertSignal);
   const alertSummary = parseCurrentAlertSummary(value.alertSummary);
+  const closure = value.closure;
+  let parsedClosure: IncidentDetailView["closure"] = null;
+  if (closure !== null) {
+    if (!isObject(closure) || !isTimestamp(closure.closedAt) ||
+      (closure.basis !== "observed_stable" && closure.basis !== "recovery_verified")) return null;
+    parsedClosure = { closedAt: closure.closedAt, basis: closure.basis };
+  }
   const diagnosisDeferral = value.diagnosisDeferral == null ? null : parseDiagnosisDeferral(value.diagnosisDeferral);
   if (
     (value.diagnosisDeferral != null && diagnosisDeferral === null) ||
@@ -1189,6 +1234,7 @@ export function parseIncidentDetailResponse(
     actions,
     alertSignal,
     alertSummary,
+    closure: parsedClosure,
     ...(value.diagnosisDeferral !== undefined ? { diagnosisDeferral } : {}),
   };
 }
@@ -1303,7 +1349,23 @@ export function parseMonitoringOverviewResponse(
   if (!isObject(currentAlerts) || !isNonNegativeInteger(currentAlerts.totalTargets) ||
     !isNonNegativeInteger(currentAlerts.unknownTargets) || currentAlerts.unknownTargets > currentAlerts.totalTargets ||
     !isNonNegativeInteger(currentAlerts.firingRules) || !isNonNegativeInteger(currentAlerts.pendingRules) ||
-    (currentAlerts.oldestObservedAt !== null && !isTimestamp(currentAlerts.oldestObservedAt))) return null;
+    (currentAlerts.oldestObservedAt !== null && !isTimestamp(currentAlerts.oldestObservedAt)) ||
+    !Array.isArray(currentAlerts.activities) || currentAlerts.activities.length > 20) return null;
+  const activities: components["schemas"]["CurrentAlertActivity"][] = [];
+  for (const activity of currentAlerts.activities) {
+    if (!isObject(activity) || !isObject(activity.target)) return null;
+    const target = parseTarget(activity.target);
+    if (target === null || !isBoundedText(activity.target.cluster, 253) || !isBoundedText(activity.target.api_version, 64) ||
+      (activity.observedAt !== null && !isTimestamp(activity.observedAt)) ||
+      !Array.isArray(activity.rules) || activity.rules.length > 13) return null;
+    const rules: components["schemas"]["CurrentAlertActivity"]["rules"] = [];
+    for (const rule of activity.rules) {
+      if (!isObject(rule) || !isBoundedText(rule.alertId, 128) || !isCurrentAlertState(rule.state)) return null;
+      rules.push({ alertId: rule.alertId, state: rule.state });
+    }
+    activities.push({ target: { ...target, cluster: activity.target.cluster, api_version: activity.target.api_version },
+      rules, observedAt: activity.observedAt });
+  }
   if (
     !isNonNegativeInteger(counts.totalIncidents) ||
     !isNonNegativeInteger(counts.firingAlerts) ||
@@ -1395,7 +1457,7 @@ export function parseMonitoringOverviewResponse(
   return {
     window: "24h",
     generatedAt: value.generatedAt,
-    currentAlerts: { totalTargets: currentAlerts.totalTargets, unknownTargets: currentAlerts.unknownTargets, firingRules: currentAlerts.firingRules, pendingRules: currentAlerts.pendingRules, oldestObservedAt: currentAlerts.oldestObservedAt },
+    currentAlerts: { totalTargets: currentAlerts.totalTargets, unknownTargets: currentAlerts.unknownTargets, firingRules: currentAlerts.firingRules, pendingRules: currentAlerts.pendingRules, oldestObservedAt: currentAlerts.oldestObservedAt, activities },
     counts: {
       totalIncidents: counts.totalIncidents,
       firingAlerts: counts.firingAlerts,

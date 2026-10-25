@@ -446,7 +446,7 @@ describe("monitoring response contracts", () => {
     unassignedSignals: [],
       window: "24h",
       generatedAt: "2026-09-03T02:15:00.000Z",
-      currentAlerts: { totalTargets: 2, unknownTargets: 1, firingRules: 1, pendingRules: 0, oldestObservedAt: "2026-09-03T02:14:45.000Z" },
+      currentAlerts: { activities: [], totalTargets: 2, unknownTargets: 1, firingRules: 1, pendingRules: 0, oldestObservedAt: "2026-09-03T02:14:45.000Z" },
       counts: {
         totalIncidents: 8,
         firingAlerts: 2,
