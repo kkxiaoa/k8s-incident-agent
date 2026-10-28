@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,7 @@ import type {
   MetricQueryStateView,
   MetricWindowView,
   MonitoringHealthView,
+  MonitoringPanelReferenceView,
 } from "@/lib/agent-runtime/response-contracts";
 import { INCIDENT_ID } from "@/test/agent-runtime-fixtures";
 
@@ -492,6 +493,7 @@ describe("IncidentMonitoringOverview", () => {
 
     render(
       <MetricPanelCard
+        scheduleLoad={(load) => { void load(); }}
         incidentId={INCIDENT_ID}
         panel={AFFECTED_PODS_PANEL}
         refreshKey="running"
@@ -544,6 +546,7 @@ describe("IncidentMonitoringOverview", () => {
 
     render(
       <MetricPanelCard
+        scheduleLoad={(load) => { void load(); }}
         incidentId={INCIDENT_ID}
         panel={SERVICE_ENDPOINT_PANEL}
         refreshKey="service-running"
@@ -588,6 +591,7 @@ describe("MetricPanelCard states", () => {
 
     render(
       <MetricPanelCard
+        scheduleLoad={(load) => { void load(); }}
         incidentId={INCIDENT_ID}
         panel={AFFECTED_PODS_PANEL}
         refreshKey={state}
@@ -620,6 +624,7 @@ describe("MetricPanelCard states", () => {
 
     render(
       <MetricPanelCard
+        scheduleLoad={(load) => { void load(); }}
         incidentId={INCIDENT_ID}
         panel={AFFECTED_PODS_PANEL}
         refreshKey="no-data-with-markers"
@@ -651,6 +656,7 @@ describe("MetricPanelCard states", () => {
 
     render(
       <MetricPanelCard
+        scheduleLoad={(load) => { void load(); }}
         incidentId={INCIDENT_ID}
         panel={AFFECTED_PODS_PANEL}
         refreshKey={state}
@@ -671,6 +677,7 @@ describe("MetricPanelCard states", () => {
 
     render(
       <MetricPanelCard
+        scheduleLoad={(load) => { void load(); }}
         incidentId={INCIDENT_ID}
         panel={AFFECTED_PODS_PANEL}
         refreshKey="invalid"
@@ -680,4 +687,75 @@ describe("MetricPanelCard states", () => {
     expect(await screen.findByText("指标数据暂不可用")).toBeVisible();
     expect(screen.queryByRole("button", { name: "重新读取" })).toBeNull();
   });
+});
+
+
+it("bounds the panel burst and discards queued and late reads from a previous view", async () => {
+  const contextPanels: MonitoringPanelReferenceView[] = [
+    ["container-cpu-cores", "CPU", "cores", "pod_container", "neutral"],
+    ["container-memory-working-set-bytes", "内存", "bytes", "pod_container", "neutral"],
+    ["container-cpu-throttled-ratio", "CPU限流", "ratio", "pod_container", "neutral"],
+    ["container-probe-failures", "探针", "probes", "pod_container", "neutral"],
+    ["container-last-terminated-reason", "终止原因", "containers", "pod_container", "neutral"],
+    ["pod-unschedulable", "未调度Pod", "pods", "pod", "higher_is_worse"],
+  ].map(([panelId, title, unit, seriesBinding, riskDirection]) => ({
+    panelId, title, unit, seriesBinding, riskDirection,
+    purpose: "Registered deployment context.", recommendedWindow: "15m",
+    signalRole: "context", thresholdDuration: null,
+  } as MonitoringPanelReferenceView));
+  const panels = { panels: [AFFECTED_PODS_PANEL, AVAILABLE_REPLICAS_PANEL, ...contextPanels] };
+  let generation = "old";
+  let active = 0;
+  let peak = 0;
+  const pending: { finish: () => void }[] = [];
+  const started: string[] = [];
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), "http://localhost");
+    const panel = panels.panels.find((item) => url.pathname.endsWith(`/${item.panelId}`))!;
+    started.push(generation);
+    active += 1;
+    peak = Math.max(peak, active);
+    return new Promise<Response>((resolve, reject) => {
+      const abort = () => reject(new DOMException("Request aborted", "AbortError"));
+      init?.signal?.addEventListener("abort", abort, { once: true });
+      // A browser disconnect does not end the BFF's upstream read.
+      pending.push({ finish: () => {
+        init?.signal?.removeEventListener("abort", abort);
+        active -= 1;
+        const body = panelResponse(panel.panelId, url.searchParams.get("window") as MetricWindowView, "no_data");
+        Object.assign(body.result, {
+          title: panel.title, unit: panel.unit, seriesBinding: panel.seriesBinding,
+          riskDirection: panel.riskDirection, threshold: panel.riskDirection === "higher_is_worse" ? 1 : null,
+        });
+        resolve(jsonResponse(body));
+      } });
+    });
+  }));
+  const view = (refreshKey: string) => <IncidentMonitoringOverview incidentId={INCIDENT_ID}
+    panels={panels} evidence={[]} refreshKey={refreshKey} />;
+  const { rerender, unmount } = render(view("old"));
+  expect(started).toHaveLength(4);
+  expect(screen.getAllByRole("article").filter((card) => card.getAttribute("aria-busy") === "true")).toHaveLength(8);
+
+  generation = "current";
+  rerender(view("current"));
+  await act(async () => {});
+  expect(started).toHaveLength(4);
+  expect(active).toBe(4);
+  await act(async () => pending.splice(0, 4).forEach((item) => item.finish()));
+  expect(started.filter((item) => item === "old")).toHaveLength(4);
+  expect(screen.getAllByRole("article").filter((card) => card.getAttribute("aria-busy") === "true")).toHaveLength(8);
+  await act(async () => pending.splice(0, 4).forEach((item) => item.finish()));
+  await act(async () => pending.splice(0, 4).forEach((item) => item.finish()));
+  expect(started.filter((item) => item === "current")).toHaveLength(8);
+  expect(peak).toBe(4);
+  expect(screen.getAllByText("暂无数据")).toHaveLength(8);
+
+  generation = "unmounted";
+  rerender(view("unmounted"));
+  unmount();
+  await act(async () => {});
+  expect(active).toBe(4);
+  await act(async () => pending.splice(0).forEach((item) => item.finish()));
+  expect(started.filter((item) => item === "unmounted")).toHaveLength(4);
 });

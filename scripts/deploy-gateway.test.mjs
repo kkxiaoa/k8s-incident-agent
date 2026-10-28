@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import tls from "node:tls";
 import { after, before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -71,6 +72,17 @@ test("the caller contract is one bounded line with a stable version and an allow
   }
 });
 
+test("host configuration accepts canonical HTTP and HTTPS proxies", async t => {
+  const base = await config(t);
+  const file = path.join(base.workRoot, "gateway.json");
+  for (const proxy of ["http://proxy.example.test:3128", "https://proxy.example.test:3128",
+    "https://proxy.example.test:3128/", null]) {
+    const settings = { ...base, proxy };
+    await writeFile(file, JSON.stringify(settings));
+    assert.deepEqual(await loadConfig(file), settings);
+  }
+});
+
 test("host configuration is a closed contract that the caller cannot redirect", async t => {
   const base = await config(t);
   const file = path.join(base.workRoot, "gateway.json");
@@ -80,12 +92,16 @@ test("host configuration is a closed contract that the caller cannot redirect", 
     { profiles: ["kind-evaluation"] },
     { workRoot: "relative/work" },
     { kubeconfig: "/var/lib/deploy/../root/.kube/config" },
-    { proxy: "http://user:secret@proxy.example.test:3128" },
     { proxy: "socks5://proxy.example.test:1080" },
-    { proxy: "HTTP://proxy.example.test:3128" },
-    { proxy: " http://proxy.example.test:3128" },
-    { proxy: "http://proxy.example.test:3128/path" },
-    { proxy: "http://proxy.example.test" },
+    ...["http", "https"].flatMap(scheme => [
+      `${scheme}://user:secret@proxy.example.test:3128`,
+      `${scheme.toUpperCase()}://proxy.example.test:3128`,
+      ` ${scheme}://proxy.example.test:3128`,
+      `${scheme}://proxy.example.test:3128/path`,
+      `${scheme}://proxy.example.test:3128?query=1`,
+      `${scheme}://proxy.example.test:3128#fragment`,
+      `${scheme}://proxy.example.test`,
+    ].map(proxy => ({ proxy }))),
     { context: "deploy --token=x" },
     { schemaVersion: 1 },
     { extra: true },
@@ -118,6 +134,8 @@ test("the public render splits into bootstrap-owned objects and daily updates", 
   assert.deepEqual(kinds(bootstrap), ["ClusterRole", "ClusterRoleBinding", "Namespace", "PersistentVolumeClaim", "Role", "RoleBinding",
     "ServiceAccount", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"]);
   assert.ok(daily.every(document => ["k8s-incident-agent", "k8s-incident-monitoring"].includes(document.metadata.namespace)));
+  assert.ok(![...daily, ...bootstrap].some(document => ["Issuer", "Certificate", "Middleware", "IngressRoute"].includes(document.kind)
+    || document.metadata.name === "allow-traefik-to-acme-solver"));
 });
 
 for (const [name, mutate, code] of [
@@ -210,7 +228,10 @@ function cluster(profile, scenario = {}) {
       live.spec = { finalizers: ["kubernetes"] };
     }
     if (live.kind === "PersistentVolumeClaim") live.spec = { ...live.spec, volumeName: "pvc-1", volumeMode: "Filesystem" };
-    if (live.kind === "Ingress") live.status = { loadBalancer: { ingress: [{ ip: "192.0.2.10" }] } };
+    if (live.kind === "Ingress") {
+      live.status = { loadBalancer: { ingress: [{ ip: "192.0.2.10" }] } };
+      live.metadata.annotations["example.test/controller-note"] = "unrelated";
+    }
     scenario.live?.(live);
     return live;
   };
@@ -399,6 +420,20 @@ test("a read that fails after apply is reported in the phase it happened", async
   await assert.rejects(outcome, { code: "command_failed", phase: "rollout" });
 });
 
+for (const [key, value] of [
+  ["traefik.ingress.kubernetes.io/router.entrypoints", "web,websecure"],
+  ["traefik.ingress.kubernetes.io/router.tls", undefined],
+]) {
+  test(`the gateway rejects drift in the required HTTPS annotation ${key}`, async t => {
+    const { outcome } = await run(t, "k3s-public", {
+      live: document => {
+        if (document.kind === "Ingress") document.metadata.annotations[key] = value;
+      },
+    });
+    await assert.rejects(outcome, { code: "rollout_failed", phase: "rollout", message: "Console Ingress is not ready through Traefik" });
+  });
+}
+
 test("the production release and source readers run inside the gateway's own work directory", async t => {
   const assets = [["candidate.tar.gz", Buffer.from("candidate")], ["SHA256SUMS", Buffer.from("sums")],
     ["release.json", Buffer.from(JSON.stringify(manifest))]].map(([name, bytes], index) => ({ id: 70 + index, name, bytes,
@@ -419,6 +454,7 @@ test("the production release and source readers run inside the gateway's own wor
     return new Response(asset.bytes);
   };
   for (const [proxy, sequence] of [["http://proxy.example.test:3128", ["init", "config", "fetch", "checkout", "rev-parse", "ls-tree"]],
+    ["https://proxy.example.test:3128", ["init", "config", "fetch", "checkout", "rev-parse", "ls-tree"]],
     [null, ["init", "fetch", "checkout", "rev-parse", "ls-tree"]]]) {
     const { fake, outcome, settings } = await run(t, "k3s-public", { git: true }, {
       fetchManifest: undefined, checkoutSource: undefined,
@@ -544,6 +580,62 @@ test("the entry sends its GitHub requests through the host's proxy", async t => 
   assert.deepEqual([...new Set(requests)], ["CONNECT api.github.com:443"]);
 });
 
+test("the HTTPS proxy entry requires a trusted certificate with a matching host", async t => {
+  const certificates = await mkdtemp(path.join(directory, "proxy-tls-"));
+  t.after(() => rm(certificates, { recursive: true, force: true }));
+  const openssl = args => {
+    const result = spawnSync("openssl", args, { cwd: certificates, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const keyArguments = ["-newkey", "rsa:2048", "-nodes"];
+  openssl(["req", "-x509", ...keyArguments, "-sha256", "-days", "1", "-subj", "/CN=proxy-test-ca", "-keyout", "ca.key", "-out", "ca.pem"]);
+  openssl(["req", ...keyArguments, "-subj", "/CN=proxy-test", "-keyout", "proxy.key", "-out", "proxy.csr"]);
+  for (const [name, alternativeName] of [["matching", "IP:127.0.0.1"], ["mismatched", "DNS:other.example.test"]]) {
+    await writeFile(path.join(certificates, "extensions"), `subjectAltName=${alternativeName}\n`);
+    openssl(["x509", "-req", "-sha256", "-in", "proxy.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "1",
+      "-extfile", "extensions", "-out", `${name}.pem`]);
+  }
+  for (const [name, certificate, trusted, expectedRequests] of [
+    ["trusted matching certificate", "matching", true, ["CONNECT api.github.com:443"]],
+    ["untrusted certificate", "matching", false, []],
+    ["trusted certificate for another host", "mismatched", true, []],
+  ]) {
+    await t.test(name, async t => {
+      const requests = [];
+      const proxy = tls.createServer({ key: await readFile(path.join(certificates, "proxy.key")),
+        cert: await readFile(path.join(certificates, `${certificate}.pem`)) }, client => {
+        client.on("error", () => {});
+        client.once("data", chunk => {
+          requests.push(chunk.toString("latin1").split("\r\n")[0].split(" ").slice(0, 2).join(" "));
+          // Refusing CONNECT keeps the real gateway release reader on loopback.
+          client.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+        });
+      });
+      proxy.on("tlsClientError", () => {});
+      await new Promise(resolve => proxy.listen(0, "127.0.0.1", resolve));
+      t.after(() => proxy.close());
+      const settings = await config(t, { proxy: `https://127.0.0.1:${proxy.address().port}` });
+      const file = path.join(settings.workRoot, "gateway.json");
+      await writeFile(file, JSON.stringify(settings));
+      const child = spawn(process.execPath, ["--use-system-ca", gateway, file],
+        { stdio: ["pipe", "pipe", "pipe"], timeout: 15000,
+        env: { PATH: process.env.PATH, HTTPS_PROXY: "http://127.0.0.1:1", NO_PROXY: "*",
+          // A temporary CA gives this child trust without changing the machine's certificate store.
+          ...(trusted ? { NODE_EXTRA_CA_CERTS: path.join(certificates, "ca.pem") } : {}) } });
+      t.after(() => child.kill());
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", chunk => { stdout += chunk; });
+      child.stderr.on("data", chunk => { stderr += chunk; });
+      child.stdin.end('{"version":"v0.2.0","profile":"k3s-public"}\n');
+      assert.equal(await new Promise(resolve => child.on("exit", resolve)), 1, stderr);
+      assert.equal(JSON.parse(stdout).code, "release_unverified", stdout);
+      assert.deepEqual([...new Set(requests)], expectedRequests, stderr);
+      assert.deepEqual((await readdir(settings.workRoot)).sort(), ["gateway.json"]);
+    });
+  }
+});
+
 // The bootstrap-installed identity, read the way the API server would evaluate it.
 function gatewayBundle() {
   const result = spawnSync(process.env.KUBECTL_BINARY ?? "kubectl", ["kustomize", path.join(root, "deploy/application/gateway")], { encoding: "utf8" });
@@ -647,6 +739,17 @@ test("the deploy identity is authorized for exactly what a gateway deployment do
 test("the deploy identity patches only rendered daily objects and holds no direct secret, token, node or RBAC write access", () => {
   const { rules, allows } = authorizer(gatewayBundle());
   const { daily, bootstrap } = planScope(clone(renders["k3s-public"]));
+  for (const [group, resource, name] of [
+    ["cert-manager.io", "issuers", "letsencrypt-production"],
+    ["cert-manager.io", "certificates", "incident-console"],
+    ["traefik.io", "middlewares", "incident-console-https-redirect"],
+    ["traefik.io", "ingressroutes", "incident-console-http"],
+    ["networking.k8s.io", "networkpolicies", "allow-traefik-to-acme-solver"],
+  ]) {
+    for (const verb of ["get", "create", "patch", "update", "delete"]) {
+      assert.equal(allows({ namespace: "k8s-incident-agent", group, resource, verb, name }), false, `${verb} ${resource}/${name}`);
+    }
+  }
   for (const document of daily) {
     const [group, resource] = RESOURCES[document.kind];
     assert.ok(allows({ namespace: document.metadata.namespace, group, resource, verb: "patch", name: document.metadata.name }), `patch ${document.kind}/${document.metadata.name}`);

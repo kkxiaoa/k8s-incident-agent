@@ -62,6 +62,9 @@ const NODE_METRICS_CLUSTER_RBAC = documentsFromFile(
 );
 const PATCH_VALIDATOR_HMAC_KEY_TEMPLATE =
   '{{if index .data "hmac-key"}}{{if eq (len (base64decode (index .data "hmac-key"))) 32}}present{{else}}missing{{end}}{{else}}missing{{end}}';
+const TLS_INSTALLER_DOCUMENTS = [
+  "issuer", "certificate", "network-policy", "redirect-middleware", "http-redirect",
+].flatMap(name => documentsFromFile(path.join(APPLICATION_ROOT, "platform/k3s-public/tls", `${name}.yaml`)));
 
 function documentsFromFile(filePath) {
   const result = [];
@@ -127,6 +130,7 @@ test("public profile fixes its origin and navigation but leaves data approval to
   const consoleConfig = rendered.find(item => item.kind === "ConfigMap" && item.metadata.name === "incident-console-config");
   assert.equal(runtimeConfig.data.OPERATOR_ORIGIN, "https://incident.kubesmith.cloud");
   assert.equal(runtimeConfig.data.CONSOLE_ACCESS_MODE, "public_demo");
+  assert.equal(runtimeConfig.data.SANDBOX_EXECUTION_ENABLED, "false");
   // CD must never approve public data; the Runtime refuses public_demo without it.
   assert.equal(Object.hasOwn(runtimeConfig.data, "PUBLIC_DEMO_DATA_APPROVED"), false);
   assert.equal(rendered.some(item => item.metadata?.name === "agent-runtime-public-approval"), false);
@@ -154,8 +158,58 @@ test("public profile fixes its origin and navigation but leaves data approval to
     ["migrate", "runtime"],
   );
   assert.equal(consoleConfig.data.YAML_ASSISTANT_URL, "https://yaml.kubesmith.cloud/");
+  assert.equal(consoleConfig.data.PUBLIC_ICP_RECORD, "豫ICP备2026051618号-1");
   for (const key of ["CONSOLE_ACCESS_MODE", "PUBLIC_DEMO_DATA_APPROVED"]) {
     assert.equal(Object.hasOwn(consoleConfig.data, key), false);
+  }
+});
+
+test("installer TLS resources keep HTTP challenges reachable without joining release or uninstall inventories", () => {
+  const byKind = kind => TLS_INSTALLER_DOCUMENTS.find(document => document.kind === kind);
+  const issuer = byKind("Issuer");
+  assert.equal(issuer.metadata.name, "letsencrypt-production");
+  assert.deepEqual(issuer.spec.acme, {
+    server: "https://acme-v02.api.letsencrypt.org/directory",
+    privateKeySecretRef: { name: "letsencrypt-production-account" },
+    solvers: [{ http01: { ingress: {
+      ingressClassName: "traefik", serviceType: "ClusterIP",
+      ingressTemplate: { metadata: { annotations: { "traefik.ingress.kubernetes.io/router.entrypoints": "web" } } },
+    } } }],
+  });
+  const certificate = byKind("Certificate");
+  assert.equal(certificate.metadata.name, "incident-console");
+  assert.deepEqual(certificate.spec, {
+    secretName: "incident-console-tls",
+    issuerRef: { name: issuer.metadata.name, kind: "Issuer", group: "cert-manager.io" },
+    dnsNames: ["incident.kubesmith.cloud"],
+  });
+  const solver = byKind("NetworkPolicy");
+  assert.equal(solver.metadata.name, "allow-traefik-to-acme-solver");
+  assert.deepEqual(solver.spec, {
+    podSelector: { matchLabels: { "acme.cert-manager.io/http01-solver": "true" } },
+    policyTypes: ["Ingress"],
+    ingress: [{ from: [{
+      namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } },
+      podSelector: { matchLabels: { "app.kubernetes.io/name": "traefik" } },
+    }], ports: [{ protocol: "TCP", port: 8089 }] }],
+  });
+  const middleware = byKind("Middleware");
+  assert.equal(middleware.metadata.name, "incident-console-https-redirect");
+  assert.deepEqual(middleware.spec, { redirectScheme: { scheme: "https", permanent: true } });
+  const redirect = byKind("IngressRoute");
+  assert.equal(redirect.metadata.name, "incident-console-http");
+  assert.deepEqual(redirect.spec, {
+    entryPoints: ["web"],
+    routes: [{ kind: "Rule", match: "Host(`incident.kubesmith.cloud`) && !PathPrefix(`/.well-known/acme-challenge/`)",
+      middlewares: [{ name: middleware.metadata.name }], services: [{ name: "incident-console", port: 80 }] }],
+  });
+  for (const document of TLS_INSTALLER_DOCUMENTS) {
+    assert.equal(document.metadata.namespace, "k8s-incident-agent");
+    assert.equal(document.metadata.labels?.["app.kubernetes.io/part-of"], undefined);
+  }
+  for (const profile of ["overlays/k3s-public", "overlays/k3s-evaluation", "overlays/kind-evaluation", "uninstall/k3s", "uninstall/kind"]) {
+    const indexed = indexDocuments(render(profile));
+    for (const document of TLS_INSTALLER_DOCUMENTS) assert.equal(indexed.has(identity(document)), false, `${profile}: ${identity(document)}`);
   }
 });
 
@@ -266,6 +320,8 @@ test("profile overlays change platform storage, ingress, intake and operator ori
     "k8s-incident-agent",
   );
   assert.equal(publicIngress.spec.ingressClassName, "traefik");
+  assert.equal(publicIngress.metadata.annotations["traefik.ingress.kubernetes.io/router.entrypoints"], "websecure");
+  assert.equal(publicIngress.metadata.annotations["traefik.ingress.kubernetes.io/router.tls"], "true");
   assert.deepEqual(publicIngress.spec.rules.map((rule) => rule.host), ["incident.kubesmith.cloud"]);
   assert.deepEqual(publicIngress.spec.tls, [
     { hosts: ["incident.kubesmith.cloud"], secretName: "incident-console-tls" },
@@ -1475,10 +1531,13 @@ function createFakeKubectl(t, overrides = {}) {
       ),
     ]),
   );
+  networkPolicyFixtures["k3s-public"]["k8s-incident-agent"].push(
+    TLS_INSTALLER_DOCUMENTS.find(document => document.kind === "NetworkPolicy"),
+  );
   writeFileSync(
     executable,
     `#!/usr/bin/env node
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const { loadAll, dump } = require(${JSON.stringify(path.join(REPOSITORY_ROOT, "node_modules/js-yaml"))});
 const args = process.argv.slice(2);
@@ -1533,7 +1592,9 @@ function state() {
 }
 
 function saveState(value) {
-  writeFileSync(process.env.FAKE_KUBECTL_STATE, JSON.stringify(value));
+  const temporary = process.env.FAKE_KUBECTL_STATE + "." + process.pid + ".tmp";
+  writeFileSync(temporary, JSON.stringify(value));
+  renameSync(temporary, process.env.FAKE_KUBECTL_STATE);
 }
 
 function fixture(kind, name, namespace) {
@@ -2183,6 +2244,7 @@ function response(key, args) {
         }
         : {
           AGENT_RUNTIME_URL: "http://agent-runtime.k8s-incident-agent.svc.cluster.local:8000",
+          ...(process.env.FAKE_PROFILE === "k3s-public" ? { PUBLIC_ICP_RECORD: process.env.FAKE_ICP_RECORD ?? "豫ICP备2026051618号-1" } : {}),
           ...(process.env.FAKE_YAML_ASSISTANT_URL === undefined
             ? process.env.FAKE_PROFILE === "k3s-public" ? { YAML_ASSISTANT_URL: "https://yaml.kubesmith.cloud/" } : {}
             : { YAML_ASSISTANT_URL: process.env.FAKE_YAML_ASSISTANT_URL }),
@@ -2215,6 +2277,15 @@ function response(key, args) {
       const defaultDeny = items.find((item) => item.metadata.name === "default-deny");
       if (defaultDeny) defaultDeny.spec.ingress = [{}];
       else items.push({ kind: "NetworkPolicy", metadata: { name: "unexpected" }, spec: {} });
+    }
+    if (process.env.FAKE_SOLVER_POLICY_DRIFT === "missing") {
+      items.splice(items.findIndex(item => item.metadata.name === "allow-traefik-to-acme-solver"), 1);
+    }
+    if (process.env.FAKE_SOLVER_POLICY_DRIFT === "spec") {
+      items.find(item => item.metadata.name === "allow-traefik-to-acme-solver").spec.ingress[0].ports[0].port = 8080;
+    }
+    if (process.env.FAKE_SOLVER_POLICY_DRIFT === "extra") {
+      items.push({ kind: "NetworkPolicy", metadata: { name: "unexpected", namespace: "k8s-incident-agent" }, spec: { podSelector: {}, ingress: [{}] } });
     }
     return {
       apiVersion: "networking.k8s.io/v1",
@@ -2336,6 +2407,9 @@ function response(key, args) {
     const document = structuredClone(resourceFixtures["k3s-public"]["Ingress/k8s-incident-agent/incident-console"]);
     if (process.env.FAKE_INGRESS_DRIFT === "host") document.spec.rules[0].host = "other.kubesmith.cloud";
     if (process.env.FAKE_INGRESS_DRIFT === "tls") delete document.spec.tls;
+    if (process.env.FAKE_INGRESS_DRIFT === "entrypoints") document.metadata.annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure";
+    if (process.env.FAKE_INGRESS_DRIFT === "router-tls") delete document.metadata.annotations["traefik.ingress.kubernetes.io/router.tls"];
+    document.metadata.annotations["example.test/controller-note"] = "unrelated";
     document.status = {
       loadBalancer: {
         ingress: process.env.FAKE_INGRESS_UNAVAILABLE === "1" ? [] : [{ ip: "192.0.2.10" }],
@@ -3582,13 +3656,26 @@ test("public status rejects drift in exposure host, TLS, access mode and sibling
   for (const [environment, message] of [
     [{ FAKE_INGRESS_DRIFT: "host" }, /Console Ingress is not ready through Traefik/],
     [{ FAKE_INGRESS_DRIFT: "tls" }, /Console Ingress is not ready through Traefik/],
+    [{ FAKE_INGRESS_DRIFT: "entrypoints" }, /Console Ingress is not ready through Traefik/],
+    [{ FAKE_INGRESS_DRIFT: "router-tls" }, /Console Ingress is not ready through Traefik/],
     [{ FAKE_ACCESS_MODE_DRIFT: "1" }, /Console access mode differs from the rendered profile/],
     [{ FAKE_YAML_ASSISTANT_URL: "https://yaml.example.test/editor/" }, /Console ConfigMap does not match the selected profile/],
+    [{ FAKE_ICP_RECORD: "豫ICP备2026051618号" }, /Console ConfigMap does not match the selected profile/],
   ]) {
     const fake = createFakeKubectl(t, { FAKE_PROFILE: "k3s-public", ...environment });
     const result = runDeployment(["status", "k3s-public", "--context", "demo-k3s"], fake.environment);
     assert.equal(result.status, 1, JSON.stringify(environment));
     assert.match(result.stderr, message);
+  }
+});
+
+test("public status requires the exact installer solver policy and rejects unknown extra policies", (t) => {
+  for (const drift of ["missing", "spec", "extra"]) {
+    const fake = createFakeKubectl(t, { FAKE_PROFILE: "k3s-public", FAKE_SOLVER_POLICY_DRIFT: drift });
+    const result = runDeployment(["status", "k3s-public", "--context", "demo-k3s"], fake.environment);
+    assert.equal(result.status, 1, drift);
+    assert.match(result.stderr, /application NetworkPolicies do not match the selected profile/);
+    assert.equal(fake.calls().some(call => call.args.includes("apply")), false);
   }
 });
 

@@ -132,7 +132,7 @@ export function decideRepairFromBrowser(incidentId: string, request: ApprovalReq
 export async function fetchIncidentFromBrowser(
   incidentId: string,
   runId?: string,
-): Promise<BrowserRuntimeResult<IncidentDetailView>> {
+): Promise<BrowserRuntimeResult<IncidentDetailView, BrowserRuntimeFailure | "public_demo_limited">> {
   const query = runId === undefined ? "" : `?runId=${encodeURIComponent(runId)}`;
   let response: Response;
   try {
@@ -145,7 +145,7 @@ export async function fetchIncidentFromBrowser(
   }
 
   if (!response.ok) {
-    return { ok: false, failure: failureForStatus(response.status) };
+    return { ok: false, failure: response.status === 429 ? "public_demo_limited" : failureForStatus(response.status) };
   }
 
   const body = await jsonBody(response);

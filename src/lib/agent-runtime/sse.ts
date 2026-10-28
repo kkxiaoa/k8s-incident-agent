@@ -13,6 +13,7 @@ export type IncidentStreamConnection =
   | "connecting"
   | "live"
   | "reconnecting"
+  | "stopped"
   | "invalid";
 
 export interface IncidentStreamState {
@@ -28,7 +29,9 @@ export interface IncidentStreamState {
 }
 
 export type IncidentStreamAction =
+  | { type: "connecting" }
   | { type: "connected" }
+  | { type: "stopped" }
   | { type: "disconnected" }
   | { type: "event"; event: RunEventStreamItem }
   | { type: "refresh_requested"; afterEventId: string }
@@ -198,6 +201,10 @@ export function reduceIncidentStream(
   switch (action.type) {
     case "refresh_requested":
       return { ...state, detailRefreshEventId: action.afterEventId, refreshing: true };
+    case "connecting":
+      return { ...state, connection: "connecting", streamError: null };
+    case "stopped":
+      return { ...state, connection: "stopped" };
     case "connected":
       return { ...state, connection: "live", streamError: null };
     case "disconnected":

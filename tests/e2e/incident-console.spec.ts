@@ -41,6 +41,10 @@ async function createFromHome(page: Page): Promise<void> {
     "href",
     "http://127.0.0.1:3001/",
   );
+  await expect(page.getByRole("link", { name: "个人主页" })).toHaveAttribute(
+    "href",
+    "https://www.kubesmith.cloud/",
+  );
   const record = page.getByRole("contentinfo").getByRole("link", { name: "京ICP备00000000号-1" });
   await expect(record).toHaveAttribute("href", "https://beian.miit.gov.cn/");
   await expect(record).toHaveAttribute("target", "_blank");

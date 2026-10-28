@@ -1,16 +1,21 @@
 """Isolated candidate startup, not Kubernetes/model or repair acceptance evidence."""
 
+import importlib.util
 import json
 import os
 import platform
 import secrets
+import shutil
+import sqlite3
 import ssl
+import stat
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import IO
@@ -18,8 +23,10 @@ from typing import IO
 from argon2 import PasswordHasher
 from argon2.profiles import RFC_9106_LOW_MEMORY
 
-# A hang bound, not a startup target: an emulated platform compiles every
-# imported module from source many times slower than a native one.
+from k8s_incident_agent.runtime.lock import RuntimeLock
+from k8s_incident_agent.runtime.paths import RuntimePaths
+
+# A total hang bound for migration, backup, and startup on emulated platforms.
 STARTUP_SECONDS = 300
 OUTPUT_TAIL_BYTES = 2000
 
@@ -99,6 +106,76 @@ class KubernetesStub(BaseHTTPRequestHandler):
         )
 
 
+def verify_backup(root: Path, destination: Path, deadline: float) -> None:
+    paths = RuntimePaths.prepare(root)
+    artifact = (
+        paths.run_artifacts / "00000000-0000-4000-8000-000000000001" / "probe.txt"
+    )
+    artifact.parent.mkdir(parents=True, mode=0o700)
+    paths.run_artifacts.chmod(0o700)
+    artifact.write_text("isolated backup probe", encoding="utf-8")
+    artifact.chmod(0o600)
+    command = ["runtime", "backup", "--destination", str(destination)]
+    # Keep the connection open so the committed record remains in the WAL.
+    with closing(sqlite3.connect(paths.checkpoint_database)) as checkpoint:
+        checkpoint.execute("PRAGMA journal_mode=WAL")
+        checkpoint.execute("PRAGMA wal_autocheckpoint=0")
+        checkpoint.execute("CREATE TABLE smoke_probe (value TEXT)")
+        checkpoint.execute("INSERT INTO smoke_probe VALUES ('committed WAL record')")
+        checkpoint.commit()
+        paths.checkpoint_database.chmod(0o600)
+        lock = RuntimeLock(paths.runtime_lock)
+        lock.acquire()
+        try:
+            refused = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=deadline - time.monotonic(),
+                check=False,
+            )
+            if refused.returncode != 1 or json.loads(refused.stderr) != {
+                "error": {"code": "runtime_in_use", "phase": "backup"}
+            }:
+                raise RuntimeError(
+                    "Candidate backup did not reject an occupied Runtime"
+                )
+        finally:
+            lock.release()
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=deadline - time.monotonic(),
+            check=True,
+        )
+        backup = destination / json.loads(result.stdout)["backup"]
+        for name in ("incidents.sqlite3", "checkpoints.sqlite3"):
+            with closing(
+                sqlite3.connect(f"file:{backup / name}?mode=ro", uri=True)
+            ) as copy:
+                if copy.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                    raise RuntimeError("Candidate backup database is not intact")
+                query = (
+                    "SELECT version_num FROM alembic_version"
+                    if name == "incidents.sqlite3"
+                    else "SELECT value FROM smoke_probe"
+                )
+                with closing(
+                    sqlite3.connect(f"file:{root / name}?mode=ro", uri=True)
+                ) as source:
+                    if (
+                        copy.execute(query).fetchall()
+                        != source.execute(query).fetchall()
+                    ):
+                        raise RuntimeError("Candidate backup lost migrated or WAL data")
+        if (backup / artifact.relative_to(root)).read_bytes() != artifact.read_bytes():
+            raise RuntimeError("Candidate backup lost an artifact")
+        for item in (backup, *backup.rglob("*")):
+            if stat.S_IMODE(item.stat().st_mode) != (0o700 if item.is_dir() else 0o600):
+                raise RuntimeError("Candidate backup permissions are not private")
+
+
 def start_candidate(raw_command: str, output: IO[bytes], deadline: float) -> None:
     subprocess.run(
         ["alembic", "upgrade", "head"],
@@ -106,6 +183,11 @@ def start_candidate(raw_command: str, output: IO[bytes], deadline: float) -> Non
         timeout=deadline - time.monotonic(),
         stdout=output,
         stderr=subprocess.STDOUT,
+    )
+    verify_backup(
+        Path(os.environ["RUNTIME_DATA_DIR"]),
+        Path("/var/backups/k8s-incident-agent"),
+        deadline,
     )
     child = subprocess.Popen(
         json.loads(raw_command), stdout=output, stderr=subprocess.STDOUT
@@ -156,7 +238,27 @@ def main() -> None:
     expected = "x86_64" if architecture == "amd64" else "aarch64"
     if platform.machine() != expected:
         raise RuntimeError("Candidate architecture differs from requested platform")
+    if platform.python_version() != os.environ["PYTHON_VERSION"]:
+        raise RuntimeError("Candidate Python differs from its declared version")
+    if any(importlib.util.find_spec(name) for name in ("pip", "ensurepip")) or any(
+        shutil.which(name) for name in ("pip", "pip3", "pip3.13")
+    ):
+        raise RuntimeError("Candidate retains a runtime package manager")
     os.umask(0o077)
+    subprocess.run(["/bin/true"], check=True, timeout=5)
+    permissions = Path("/tmp/permissions")
+    permissions.mkdir(mode=0o755)
+    permissions.chmod(0o755)
+    subprocess.run(
+        ["/usr/bin/test", "!", "-L", str(permissions)], check=True, timeout=5
+    )
+    subprocess.run(
+        ["/usr/bin/chmod", "--recursive", "u=rwX,go=,a-s", str(permissions)],
+        check=True,
+        timeout=5,
+    )
+    if stat.S_IMODE(permissions.stat().st_mode) != 0o700:
+        raise RuntimeError("Candidate permission initialization failed")
     verifier = Path("/tmp/operator-verifier")
     verifier.write_text(
         PasswordHasher.from_parameters(RFC_9106_LOW_MEMORY).hash(

@@ -1,6 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
-FROM python:3.13.15-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca AS python-base
+FROM python:3.13.15-slim-trixie@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b AS python-base
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends --only-upgrade \
+        libpcre2-8-0=10.46-1~deb13u3 \
+        libssl3t64=3.5.7-1~deb13u3 \
+        openssl=3.5.7-1~deb13u3 \
+        openssl-provider-legacy=3.5.7-1~deb13u3 \
+    && apt-get dist-clean
 
 FROM ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc AS uv
 
@@ -19,7 +27,9 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY services/agent-runtime/alembic.ini ./
 COPY services/agent-runtime/migrations ./migrations
 COPY services/agent-runtime/src ./src
-RUN uv sync --locked --no-dev
+# Avoid recompiling imports in every process of the read-only runner.
+RUN uv sync --locked --no-dev \
+    && .venv/bin/python -m compileall -q .venv src migrations
 
 FROM python-base AS runner
 
@@ -27,6 +37,8 @@ ARG SOURCE_REVISION
 ARG SOURCE_VERSION=0.1.0
 
 RUN test -n "${SOURCE_REVISION}" \
+    && /usr/local/bin/python -m pip uninstall --yes pip \
+    && rm -rf /usr/local/lib/python3.13/ensurepip \
     && groupadd --gid 10001 app \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/app app \
     && install -d --owner=10001 --group=10001 --mode=0700 \

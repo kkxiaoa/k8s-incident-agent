@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: incident-console
+  namespace: k8s-incident-agent
+spec:
+  secretName: incident-console-tls
+  issuerRef:
+    name: letsencrypt-production
+    kind: Issuer
+    group: cert-manager.io
+  dnsNames:
+    - incident.kubesmith.cloud

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { authenticatedFetch } from "./operator-client";
-import { decideRepairFromBrowser, prepareRepairFromBrowser } from "./browser-client";
+import { decideRepairFromBrowser, prepareRepairFromBrowser, fetchIncidentFromBrowser } from "./browser-client";
 import { makeRecoveryDetail } from "@/test/agent-runtime-fixtures";
 
 vi.mock("./operator-client", () => ({ authenticatedFetch: vi.fn() }));
@@ -39,3 +39,10 @@ it("queries the fixed list and history routes with the same page size and cancel
   expect((await fetchIncidentAlertsFromBrowser("incident/id", "next", signal)).ok).toBe(true);
   expect(authenticatedFetch).toHaveBeenLastCalledWith("/api/runtime/incidents/incident%2Fid/alerts?limit=20&cursor=next", expect.objectContaining({ signal }));
 });
+
+it.each([[429, "public_demo_limited"], [404, "not_found"], [503, "unavailable"]] as const)(
+  "preserves detail read failure %s for the source diagnosis consumer", async (status, failure) => {
+    vi.mocked(authenticatedFetch).mockResolvedValueOnce(new Response(null, { status }));
+    expect(await fetchIncidentFromBrowser("incident", "source")).toEqual({ ok: false, failure });
+  },
+);

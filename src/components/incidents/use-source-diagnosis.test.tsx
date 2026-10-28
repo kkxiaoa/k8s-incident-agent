@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchIncidentFromBrowser } from "@/lib/agent-runtime/browser-client";
-import { makeRepairRunWaitingDetail, makeWaitingApprovalIncidentDetail } from "@/test/agent-runtime-fixtures";
+import { makeIncidentWithoutRuns, makeRepairRunWaitingDetail, makeWaitingApprovalIncidentDetail } from "@/test/agent-runtime-fixtures";
 import { useSourceDiagnosis } from "./use-source-diagnosis";
 
 vi.mock("@/lib/agent-runtime/browser-client", () => ({ fetchIncidentFromBrowser: vi.fn() }));
@@ -27,7 +27,7 @@ describe("source diagnosis for the selected repair", () => {
     expect(rollback).toEqual(before);
   });
 
-  it.each(["missing", "wrong_incident", "wrong_run", "cycle"])("does not invent a diagnosis for %s sources", async (failure) => {
+  it.each(["missing", "wrong_incident", "wrong_run", "cycle", "no_run"])("does not invent a diagnosis for %s sources", async (failure) => {
     const source = makeWaitingApprovalIncidentDetail();
     const repair = makeRepairRunWaitingDetail();
     repair.selectedRun.sourceRunId = source.selectedRun.id;
@@ -40,10 +40,11 @@ describe("source diagnosis for the selected repair", () => {
     }
     fetchDetail.mockImplementation(async (_, id) => failure === "missing"
       ? { ok: false, failure: "not_found" }
-      : { ok: true, data: id === repair.selectedRun.id ? repair : source });
+      : { ok: true, data: failure === "no_run" ? makeIncidentWithoutRuns() : id === repair.selectedRun.id ? repair : source });
     const { result } = renderHook(() => useSourceDiagnosis(repair));
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.detail).toBeNull();
+    expect(result.current.failure).toBe(failure === "missing" ? "not_found" : "invalid_response");
   });
 
   it("retains a failed source diagnosis as failed, not repair success", async () => {
@@ -79,4 +80,21 @@ describe("source diagnosis for the selected repair", () => {
     act(() => result.current.reload());
     await waitFor(() => expect(result.current.detail).toEqual(source));
   });
+});
+
+
+it.each(["public_demo_limited", "not_found"] as const)("preserves %s until an explicit source retry succeeds", async (failure) => {
+  const source = makeWaitingApprovalIncidentDetail();
+  const repair = makeRepairRunWaitingDetail();
+  repair.selectedRun.sourceRunId = source.selectedRun.id;
+  fetchDetail.mockResolvedValueOnce({ ok: false, failure });
+  const { result } = renderHook(() => useSourceDiagnosis(repair));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.failure).toBe(failure);
+  expect(result.current.detail).toBeNull();
+  fetchDetail.mockResolvedValueOnce({ ok: true, data: source });
+  act(() => result.current.reload());
+  expect(result.current.failure).toBeNull();
+  await waitFor(() => expect(result.current.detail).toEqual(source));
+  expect(result.current.failure).toBeNull();
 });

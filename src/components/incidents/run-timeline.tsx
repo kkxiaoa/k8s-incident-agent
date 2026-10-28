@@ -9,6 +9,7 @@ const CONNECTION_LABELS: Record<IncidentStreamConnection, string> = {
   connecting: "正在连接事件流",
   live: "实时追踪中",
   reconnecting: "连接中断，正在恢复",
+  stopped: "实时连接已停止",
   invalid: "事件流数据无效",
 };
 
@@ -153,9 +154,11 @@ function runningToolCalls(events: RunEventStreamItem[]): ReadonlySet<string> {
 export function RunTimeline({
   events,
   connection,
+  onReconnect,
 }: {
   events: RunEventStreamItem[];
   connection: IncidentStreamConnection;
+  onReconnect?: () => void;
 }) {
   const running = runningToolCalls(events);
   const streamCanBeRunning =
@@ -171,12 +174,19 @@ export function RunTimeline({
           <span className="eyebrow">Persisted event stream</span>
           <h2 id="timeline-heading">运行时间线</h2>
         </div>
-        <span
-          className={`connection-state connection-state--${connection}`}
-          role="status"
-        >
-          {CONNECTION_LABELS[connection]}
-        </span>
+        <div className="timeline-connection-actions">
+          <span
+            className={`connection-state connection-state--${connection}`}
+            role="status"
+          >
+            {CONNECTION_LABELS[connection]}
+          </span>
+          {connection === "stopped" && onReconnect ? (
+            <button className="secondary-button" onClick={onReconnect}>
+              重新连接
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {events.length === 0 ? (
@@ -186,7 +196,9 @@ export function RunTimeline({
           <ShimmerText active={streamCanBeRunning}>
             {connection === "invalid"
                 ? "事件流已停止，未收到有效运行事件。"
-                : "正在等待持久化运行事件"}
+                : connection === "stopped"
+                  ? "实时连接已停止，可重新连接以获取后续事件。"
+                  : "正在等待持久化运行事件"}
           </ShimmerText>
         </p>
       ) : (

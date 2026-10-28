@@ -173,6 +173,84 @@ async def test_a_backup_of_the_running_version_restores_and_migrates_forward(
         ).fetchall() == [(1,)]
 
 
+@pytest.mark.parametrize("target", ["artifact", "manifest"])
+async def test_backup_preserves_complete_bytes_after_short_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    paths = await _seeded_paths(tmp_path)
+    destination = _destination(tmp_path)
+    artifact = paths.run_artifacts / str(RUN_ID) / "nested" / "trace.json"
+    content = artifact.read_bytes()
+    source_databases = [
+        _dump(paths.business_database),
+        _dump(paths.checkpoint_database),
+    ]
+    actual_write = os.write
+
+    def short_write(descriptor: int, data: bytes | memoryview) -> int:
+        prefix = b'{"step"' if target == "artifact" else b'{"alembicHead"'
+        if bytes(data).startswith(prefix):
+            return actual_write(descriptor, data[:3])
+        return actual_write(descriptor, data)
+
+    monkeypatch.setattr(os, "write", short_write)
+    result = backup_runtime_data(_settings(paths), destination, NOW)
+
+    backup = destination / result.name
+    copied = backup / "runs" / str(RUN_ID) / "nested" / "trace.json"
+    assert copied.read_bytes() == content
+    manifest_bytes = (backup / BACKUP_MANIFEST).read_bytes()
+    manifest = json.loads(manifest_bytes)
+    assert manifest["alembicHead"] == _head()
+    assert {item["path"] for item in manifest["files"]} == {
+        "incidents.sqlite3",
+        "checkpoints.sqlite3",
+        f"runs/{RUN_ID}/nested/trace.json",
+    }
+    for item in manifest["files"]:
+        stored = (backup / item["path"]).read_bytes()
+        assert item["size"] == len(stored)
+        assert item["sha256"] == hashlib.sha256(stored).hexdigest()
+    assert artifact.read_bytes() == content
+    assert [
+        _dump(paths.business_database),
+        _dump(paths.checkpoint_database),
+    ] == source_databases
+
+
+@pytest.mark.parametrize("target", ["artifact", "manifest"])
+async def test_a_write_without_progress_does_not_publish_a_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    paths = await _seeded_paths(tmp_path)
+    destination = _destination(tmp_path)
+    artifact = paths.run_artifacts / str(RUN_ID) / "nested" / "trace.json"
+    content = artifact.read_bytes()
+    source_databases = [
+        _dump(paths.business_database),
+        _dump(paths.checkpoint_database),
+    ]
+    earlier = backup_runtime_data(_settings(paths), destination, NOW)
+    actual_write = os.write
+
+    def stalled_write(descriptor: int, data: bytes | memoryview) -> int:
+        if (target == "artifact") == bytes(data).startswith(b'{"step"'):
+            return 0
+        return actual_write(descriptor, data)
+
+    monkeypatch.setattr(os, "write", stalled_write)
+    with pytest.raises(RuntimeBackupError) as error:
+        backup_runtime_data(_settings(paths), destination, NOW + timedelta(hours=1))
+
+    assert error.value.code == "backup_failed"
+    assert _backups(destination) == [earlier.name]
+    assert artifact.read_bytes() == content
+    assert [
+        _dump(paths.business_database),
+        _dump(paths.checkpoint_database),
+    ] == source_databases
+
+
 async def test_a_running_runtime_is_never_copied(tmp_path: Path) -> None:
     paths = await _seeded_paths(tmp_path)
     destination = _destination(tmp_path)

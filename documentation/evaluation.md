@@ -31,7 +31,7 @@ Each dataset case declares the terminal it expects: a diagnosis, an explicit ins
 Select the bounded temporal dataset with the existing command, for example:
 
 ```sh
-npm run evaluation -- run --profile kind-evaluation --dataset evaluation/datasets/lifecycle-v1.json --scenario liveness-probe-misconfigured --release /absolute/path/release.json
+npm run evaluation -- run kind-evaluation --dataset evaluation/datasets/lifecycle-v1.json --scenario liveness-probe-misconfigured --release /absolute/path/release.json
 ```
 
 The scenario entry point validates each `lifecycle.json` sidecar and its fixed manifests. The cases cover three compatible symptoms on one Deployment UID, a relevant resource-request change while a Deployment is still failing, same-name replacement with a new UID, and sustained PVC/Service faults across repeat deliveries and the diagnosis cooldown. Inputs select fixed case kinds and bounded observation windows; they cannot supply shell commands, arbitrary manifests or patches. Lifecycle probe fixtures keep readiness faulty so replica unavailability can persist while liveness restarts continue. The original single-snapshot regression dataset remains separately selectable.

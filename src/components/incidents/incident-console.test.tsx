@@ -75,14 +75,20 @@ const SECOND_SCENARIO: Scenario = {
 
 class FakeEventSource {
   static current: FakeEventSource | null = null;
+  static instances: FakeEventSource[] = [];
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
 
-  readonly close = vi.fn();
+  readyState = FakeEventSource.CONNECTING;
+  readonly close = vi.fn(() => { this.readyState = FakeEventSource.CLOSED; });
   readonly listeners = new Map<string, EventListener>();
   onerror: ((event: Event) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
 
   constructor(readonly url: string) {
     FakeEventSource.current = this;
+    FakeEventSource.instances.push(this);
   }
 
   addEventListener(type: string, listener: EventListener): void {
@@ -239,6 +245,7 @@ afterEach(() => {
   navigation.replace.mockReset();
   navigation.refresh.mockReset();
   FakeEventSource.current = null;
+  FakeEventSource.instances = [];
 });
 
 it.each([false, true])("announces a newer Run from SSE without changing selection, including mine filter=%s", async (onlyMine) => {
@@ -1438,3 +1445,137 @@ it("keeps complete catalog filters available and ignores stale filter and load-m
   expect(screen.getByRole("link", { name: /当前筛选的新快照/ })).toBeVisible();
   expect(screen.queryByText("SSR 默认页")).toBeNull();
 });
+
+it("keeps native reconnecting distinct from a stopped stream and resumes the accepted cursor once", async () => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  stubSessionFetch("fetch", vi.fn(async () => new Response(null, { status: 503 })));
+  const { unmount } = renderIncidentStream();
+  const first = FakeEventSource.current!;
+  const event = {
+    schemaVersion: 6, incidentId: INCIDENT_ID, runId: RUN_ID, runKind: "diagnosis",
+    attempt: 1, incidentStatus: "TRIAGING", runStatus: "RUNNING", occurredAt: "2026-08-29T01:00:01Z",
+  };
+  act(() => first.emit("run.started", "2", event));
+  const timeline = screen.getByRole("region", { name: "运行时间线" });
+  const selectedBefore = screen.getByRole("region", { name: "运行记录" }).textContent;
+  act(() => first.onerror?.(new Event("error")));
+  expect(within(timeline).getByRole("status")).toHaveTextContent("连接中断，正在恢复");
+  expect(screen.queryByRole("button", { name: "重新连接" })).toBeNull();
+  expect(FakeEventSource.instances).toHaveLength(1);
+  first.readyState = FakeEventSource.CLOSED;
+  const lateError = first.onerror;
+  act(() => first.onerror?.(new Event("error")));
+  expect(within(timeline).getByRole("status")).toHaveTextContent("实时连接已停止");
+  await userEvent.setup().click(screen.getByRole("button", { name: "重新连接" }));
+  const second = FakeEventSource.current!;
+  expect(second).not.toBe(first);
+  expect(new URL(second.url, "http://localhost").searchParams.get("cursor")).toBe("2");
+  expect(first.close).toHaveBeenCalled();
+  expect(first.listeners.size).toBe(0);
+  act(() => lateError?.(new Event("error")));
+  expect(within(timeline).getByRole("status")).toHaveTextContent("正在连接事件流");
+  second.readyState = FakeEventSource.OPEN;
+  act(() => {
+    second.onopen?.(new Event("open"));
+    second.emit("run.started", "2", event);
+  });
+  expect(within(timeline).getAllByText("只读调查开始")).toHaveLength(1);
+  expect(screen.getByRole("region", { name: "运行记录" }).textContent).toBe(selectedBefore);
+  expect(FakeEventSource.instances.filter((item) => item.readyState !== FakeEventSource.CLOSED)).toHaveLength(1);
+  unmount();
+  expect(second.close).toHaveBeenCalled();
+  expect(second.listeners.size).toBe(0);
+});
+
+it.each([false, true])("resumes Incident-owned events without replacing the selected history, no Run=%s", async (noRun) => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  stubSessionFetch("fetch", vi.fn(async () => new Response(null, { status: 503 })));
+  const detail = noRun ? makeIncidentWithoutRuns() : makeWaitingApprovalIncidentDetail();
+  const newer = makeRepairRunWaitingDetail();
+  render(<IncidentStream initialDetail={detail} initialRuns={{
+    items: detail.selectedRun === null ? [] : [newer.selectedRun, detail.selectedRun], nextCursor: null,
+  }} manualActions={false} />);
+  const selectedBefore = screen.queryByRole("region", { name: "运行记录" })?.textContent;
+  const first = FakeEventSource.current!;
+  act(() => first.emit("incident.closed", "10", {
+    schemaVersion: 6, incidentId: INCIDENT_ID, runId: null, runKind: null,
+    occurredAt: "2026-09-03T00:10:00Z", basis: "observed_stable", targetUid: "workload-uid",
+    healthySince: "2026-09-03T00:05:00Z", lastHealthyAt: "2026-09-03T00:10:00Z", verificationRunId: null,
+  }));
+  expect(screen.getByText("生命周期：已关闭")).toBeVisible();
+  first.readyState = FakeEventSource.CLOSED;
+  act(() => first.onerror?.(new Event("error")));
+  expect(screen.getByText("实时连接已停止", { exact: true })).toBeVisible();
+  await userEvent.setup().click(screen.getByRole("button", { name: "重新连接" }));
+  const second = FakeEventSource.current!;
+  expect(new URL(second.url, "http://localhost").searchParams.get("cursor")).toBe("10");
+  act(() => second.emit("incident.reopened", "11", {
+    schemaVersion: 6, incidentId: INCIDENT_ID, runId: null, runKind: null,
+    occurredAt: "2026-09-03T00:11:00Z", reason: "manual_rerun", previousClosedAt: "2026-09-03T00:10:00Z",
+  }));
+  expect(screen.getByText("生命周期：未关闭")).toBeVisible();
+  if (noRun) {
+    expect(screen.getByText(/尚无诊断运行/)).toBeVisible();
+    expect(screen.queryByRole("region", { name: "运行时间线" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "运行记录" })).toBeNull();
+  } else {
+    expect(screen.getByRole("region", { name: "运行记录" }).textContent).toBe(selectedBefore);
+    expect(screen.getByText(/正在查看第 1 次 · 诊断/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "最新运行" })).toHaveAttribute("href", `/incidents/${INCIDENT_ID}?runId=${newer.selectedRun.id}`);
+  }
+  expect(navigation.replace).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("resumes only an accepted snapshot cursor, stale=%s", async (stale) => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  let finish!: (response: Response) => void;
+  let reads = 0;
+  stubSessionFetch("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).includes("/runs?")) return Response.json({ schemaVersion: 6, items: [], nextCursor: null });
+    if (++reads === 1) return new Promise<Response>((resolve) => { finish = resolve; });
+    return new Response(null, { status: 503 });
+  }));
+  renderIncidentStream();
+  const first = FakeEventSource.current!;
+  act(() => first.onopen?.(new Event("open")));
+  if (stale) act(() => first.emit("alert.resolved", "3", {
+    schemaVersion: 6, incidentId: INCIDENT_ID, runId: RUN_ID, runKind: "diagnosis",
+    occurredAt: "2026-08-29T01:00:02Z", alertStatus: "RESOLVED", endsAt: "2026-08-29T01:00:02.000000000Z",
+  }));
+  const snapshot = makeIncidentDetail();
+  snapshot.eventCursor = "10";
+  await act(async () => finish(detailResponse(snapshot)));
+  first.readyState = FakeEventSource.CLOSED;
+  act(() => first.onerror?.(new Event("error")));
+  await userEvent.setup().click(screen.getByRole("button", { name: "重新连接" }));
+  expect(new URL(FakeEventSource.current!.url, "http://localhost").searchParams.get("cursor")).toBe(stale ? "3" : "10");
+});
+
+it("keeps invalid event data stopped even if an old connection later reports an error", () => {
+  vi.stubGlobal("EventSource", FakeEventSource);
+  renderIncidentStream();
+  const first = FakeEventSource.current!;
+  const lateError = first.onerror;
+  const lateOpen = first.onopen;
+  act(() => first.emit("run.started", "2", {}));
+  act(() => {
+    lateError?.(new Event("error"));
+    lateOpen?.(new Event("open"));
+  });
+  expect(screen.getByText("事件流数据无效")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "重新连接" })).toBeNull();
+  expect(first.close).toHaveBeenCalled();
+});
+
+it.each([[429, "来源诊断读取暂时受限，请稍后重试。"], [404, "来源诊断记录不存在，无法确认诊断结论。"]] as const)(
+  "shows the source read %s without changing the selected repair", async (status, message) => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    stubSessionFetch("fetch", vi.fn(async () => new Response(null, { status })));
+    const repair = makeRepairRunWaitingDetail();
+    repair.selectedRun.sourceRunId = RUN_ID;
+    renderIncidentStream(repair);
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(screen.getByRole("button", { name: "重新读取来源诊断" })).toBeEnabled();
+    expect(screen.getByRole("region", { name: "运行记录" })).toHaveTextContent("第 2 次");
+  },
+);

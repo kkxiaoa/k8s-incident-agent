@@ -14,7 +14,9 @@ npm run evaluation-report -- .runtime/evaluation/<profile>/<campaign-id>.json
 
 评估入口不接受任意 URL、Namespace、manifest、PromQL、artifact 路径或 kubectl 参数。Kind 只使用固定 context；K3s 必须显式提供经过 deployment status 门禁的 context；`k3s-public` 只能执行 `online`。命令会在本机回环建立 Runtime、Console、Prometheus 与 Alertmanager 的固定临时 port-forward，完成后关闭。
 
-`run` 有精确的 live 副作用：应用并清理场景 fixture、重建固定 Pod、轮换 Webhook Secret、受控缩放监控组件；须在用户授权后运行。它不会 install / uninstall、purge、删除 Namespace / PVC / PV / Secret，也不修改 cert-manager 与兄弟项目资源。`online` 只做只读 API 与 Console 边界检查。`report` 只读本地记录，`evaluation-report` 是它的别名。
+`run` 会应用并清理选中场景的固定 fixture，并触发真实诊断。完整 campaign（未通过 `--scenario` 或 `--split` 收窄且覆盖数据集全部场景）在至少一个场景通过后，还会重建固定 Pod、轮换 Webhook Secret、受控缩放监控组件。PVC 场景在开始及结束清理时会删除 `k8s-incident-scenarios` 中的 `pvc-binding-pending`、`pvc-binding-pending-wffc-control` 两个 PVC，以及集群级 `pvc-binding-pending-immediate`、`pvc-binding-pending-wffc` 两个 StorageClass。执行前须核对这些固定名称没有承载需保留的数据，并取得精确资源范围与真实模型预算授权；不能把场景清理当作只读操作。入口不执行 install / uninstall、purge、Namespace / PV / Secret 删除，也不修改 cert-manager 与兄弟项目资源。
+
+`online` 检查 API 与 Console 边界，包含匿名重跑拒绝及认证重跑验证；认证请求可能创建真实诊断 Run，同样需要明确授权与模型预算。`report` 只读本地记录，`evaluation-report` 是它的别名。
 
 退出码：`run` 与 `online` 产出产物时在 stdout 打印一行 JSON 摘要（`status`、`profile`、`artifact`），`passed` 退出 `0`，`pending_manual_review` 退出 `2`，其余退出 `1`；未能产出产物时 stderr 输出一行 `FAIL <code> <message>` 并退出 `1`。`report` 生成成功退出 `0`，结论在 JSON 的 `status` 与各 Case 的 `review` 中；不能生成时 `FAIL <code> <message>` 退出 `1`。
 

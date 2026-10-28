@@ -227,9 +227,10 @@ Console 与 Runtime 的 Deployment Pod template；base 为 `manual`，`k3s-publi
 
 只有 `k3s-public` 渲染 Console Ingress 与放行 Traefik 访问 Console 的 NetworkPolicy
 `allow-traefik-to-console`：Ingress 只匹配 `incident.kubesmith.cloud`，并使用本项目的
-TLS Secret `incident-console-tls`（证书单独签发）。`k3s-evaluation` 不渲染这两个对象，
+TLS Secret `incident-console-tls`（证书单独签发），显式指定 `websecure` 与 `router.tls: "true"`。
+`k3s-evaluation` 不渲染这两个对象，
 只能经 port-forward 访问：没有 host 的规则会同时响应节点地址，并在同一 Traefik 上
-压过相邻站点的 IngressRoute。status 按渲染结果核对：公开 profile 要求 host、TLS 与后端一致
+压过相邻站点的 IngressRoute。status 按渲染结果核对：公开 profile 要求 host、TLS、两个 HTTPS 注解与后端一致
 且 Traefik 已分配地址；其他 profile 发现 `incident-console` Ingress 或多出的 NetworkPolicy 即失败。
 v0.1.1 及更早版本的私有 K3s 安装带有这两个对象，从 `k3s-public` 切换到私有 profile 也会留下它们；
 `upgrade` 不删除渲染结果之外的已有对象，清理前会在最后的 status 核对处失败。先确认它们带有
@@ -243,9 +244,39 @@ kubectl --context <context> --namespace k8s-incident-agent delete networkpolicy 
 
 `k3s-public` 在 K3s 基础之上启用 online 接收，并固定 `OPERATOR_ORIGIN=https://incident.kubesmith.cloud`、
 `CONSOLE_ACCESS_MODE=public_demo` 与 `YAML_ASSISTANT_URL=https://yaml.kubesmith.cloud/`。
+Runtime 显式设置 `SANDBOX_EXECUTION_ENABLED=false`；Console 注入备案服务号
+`PUBLIC_ICP_RECORD=豫ICP备2026051618号-1`。对外开放前须核对该域名与服务在备案范围内。
 公开数据批准不由部署写入：migration 与 Runtime 容器只从安装者预先创建的 ConfigMap
 `agent-runtime-public-approval` 读取 `PUBLIC_DEMO_DATA_APPROVED` 一个键；对象或键缺失时 Pod 无法启动，
 值为假或无法解析时 Runtime 拒绝以公开模式启动。
+
+正式 TLS 由安装者独立管理 `deploy/application/platform/k3s-public/tls/` 下五份清单：
+Namespace `k8s-incident-agent` 内的 Issuer `letsencrypt-production`（账户 Secret 为
+`letsencrypt-production-account`）、Certificate `incident-console`、NetworkPolicy
+`allow-traefik-to-acme-solver`、Middleware `incident-console-https-redirect` 与 IngressRoute
+`incident-console-http`。证书只覆盖 `incident.kubesmith.cloud`。这些对象不加入 release 的
+kustomization、gateway daily 标签集合或普通 uninstall，安装者须单独管理其生命周期。
+
+在获得集群操作授权后，先核对 cert-manager / Traefik CRD、`web` / `websecure` entrypoint、
+域名 DNS、80/443 可达及冲突路由，再依序安装：
+
+```bash
+kubectl --context <context> apply -f deploy/application/platform/k3s-public/tls/network-policy.yaml
+kubectl --context <context> apply -f deploy/application/platform/k3s-public/tls/redirect-middleware.yaml
+kubectl --context <context> apply -f deploy/application/platform/k3s-public/tls/http-redirect.yaml
+kubectl --context <context> apply -f deploy/application/platform/k3s-public/tls/issuer.yaml
+kubectl --context <context> apply -f deploy/application/platform/k3s-public/tls/certificate.yaml
+kubectl --context <context> --namespace k8s-incident-agent wait --for=condition=Ready certificate/incident-console --timeout=300s
+```
+
+HTTP 路由只接受精确 Host，并排除 `/.well-known/acme-challenge/`，普通业务请求永久跳转到 HTTPS。
+HTTP-01 solver 使用 Traefik `web`、ClusterIP Service；网络策略只允许 `kube-system` 中带
+Traefik 应用标签的 Pod 访问 solver TCP 8089，不开放额外出站。public status 从同一安装者 YAML
+读取完整策略 spec，要求其存在且一致，并继续拒绝其他未知策略；其他 profile 不接受该额外策略。
+切换为私有 profile 前，应独立核对并撤除已无消费者的 HTTP 路由与 solver 策略，不能仅删除
+Console Ingress 就认为 HTTP 暴露已撤除。证书、账户 Secret 和中间件须按实际消费者另行处理。
+status 和 gateway HTTPS readiness 只核对声明，不代替外部 TLS 主机名、HTTP 跳转、challenge
+可达、网络隔离和续期检查；不要修改共享 Traefik、TLSStore 或复制兄弟证书。
 
 所有 profile 都渲染 digest 锁定的 Prometheus、Alertmanager
 与 kube-state-metrics。operator 固定核对三个独立 ServiceAccount、当前
@@ -327,12 +358,13 @@ uninstall、purge 与 NetworkPolicy enforcement 都需要对应 live 授权。
 `incident-console-config` 中显式设置 `YAML_ASSISTANT_URL` 并重启 Console；不要修改
 兄弟资源。该值只是普通导航，既不是安装依赖也不是 Runtime 上游。
 URL 的合法性由 Console 配置边界校验（无凭据的 HTTP(S) URL 或同源绝对路径，
-禁止 query/fragment）；deployment status 只核对 profile 渲染出的值（即 `k3s-public` 的固定地址），
+禁止 query/fragment）；deployment status 只核对 profile 渲染出的值（含 `k3s-public` 的固定地址与备案号），
 自行添加的键不参与比较，也不探测外部链接。
 
 Console 页脚可显示 ICP 备案号：在 `incident-console-config` 中设置 `PUBLIC_ICP_RECORD`，
 只接受“省份简称 + ICP备 + 编号 + 号（可带 -N）”形式的纯文本，例如 `京ICP备12345678号-1`；
 链接固定为 `https://beian.miit.gov.cn/`，未设置时不显示，其他值使 Console 配置失败。
+Header 的个人主页入口固定指向 `https://www.kubesmith.cloud/`，不携带认证或 Incident 上下文。
 
 ### `deploy-gateway.mjs`
 
@@ -350,8 +382,16 @@ Console 页脚可显示 ICP 备案号：在 `incident-console-config` 中设置 
 SSH 会话请求的命令（`SSH_ORIGINAL_COMMAND`）、多余字段或多行输入一律拒绝。网关丢弃 SSH 会话
 带来的环境变量，子进程只使用固定的最小环境。主机配置是不超过 4 KiB 的 JSON 文件，字段固定为
 `schemaVersion`（`2`）、`profiles`、`kubeconfig`（部署身份 kubeconfig 的绝对路径）、`context`、
-`workRoot`（网关工作目录）与 `proxy`（HTTP 代理，只接受 `http://主机:端口` 的规范写法，可为 `null`）。
+`workRoot`（网关工作目录）与 `proxy`（HTTP 或 HTTPS 代理，只接受带显式端口的规范 URL，
+如 `http://proxy.example.com:3128` 或 `https://proxy.example.com:3128`，可为 `null`）。URL 不得含
+用户名、密码、非根路径、查询或片段；代理协议必须与实际端点一致。
 配置代理时，网关读取 GitHub release 及其附件、取回 release 源码与核验 GHCR 都经它发出；kubectl 不经代理。
+
+HTTPS 代理和目标站点都须通过证书与主机名验证。使用私有或自签代理证书时，安装者先核定证书身份并将其
+加入主机受控的系统信任库，再在 root 管理的 SSH 强制命令中为锁定 Node 加 `--use-system-ca`
+（放在脚本路径之前；配置路径仍是脚本唯一参数）。该选项追加整个系统信任库，作用于此 Node 进程的 TLS
+连接，不是代理专属信任；git 也必须能通过主机信任库验证代理证书。程序、证书、配置和强制命令均不得由
+部署用户改写，不接受 SSH 调用方提供信任材料，不关闭 TLS 验证。信任库更新须核定后用于新的网关进程。
 
 执行顺序：
 
@@ -436,6 +476,9 @@ artifact，在 `backup.json` 中记录 Alembic head 与每个文件的 SHA-256�
 受限网关每次部署在备份阶段生成一份，所以保留的是最近 3 次网关部署之前的数据；需要长期保留的恢复点应另行
 拷出备份 PVC。成功时在 stdout 输出一行 JSON（`backup`、`alembicHead`、`files`、`bytes`、
 `removed`），失败时在 stderr 输出 `{"error":{"code":…,"phase":"backup"}}` 并以 1 退出。
+artifact 和 manifest 遇到短写会继续写满；无法取得写入进展时以 `backup_failed` 失败，
+不发布部分备份并清理该次 staging。备份成功只证明已复制的内容，不证明选中了正确源卷；
+恢复前仍须核对源身份、准确业务关联、checkpoint 和 artifact 字节，并将重要副本保存在节点之外。
 
 恢复是需要另行授权的人工操作：
 

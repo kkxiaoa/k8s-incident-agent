@@ -26,7 +26,9 @@ test("login and header actions remain usable on narrow screens", async ({ page }
       }
     }
   }
-  await header.getByRole("link", { name: "YAML 编写助手" }).focus();
+  await header.getByRole("link", { name: "个人主页" }).focus();
+  await page.keyboard.press("Tab");
+  await expect(header.getByRole("link", { name: "YAML 编写助手" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(header.getByRole("button", { name: "登出" })).toBeFocused();
 });

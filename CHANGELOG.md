@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.2.2](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.2.1...v0.2.2) (2026-10-24)
+
+
+### Bug Fixes
+
+* **console:** bound metric reads and restore stopped event streams ([#32](https://github.com/kkxiaoa/k8s-incident-agent/issues/32)) ([e28fa9f](https://github.com/kkxiaoa/k8s-incident-agent/commit/e28fa9f5d1cd853fb7ce5619c9ab507cecb98edc))
+
+## [0.2.1](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.2.0...v0.2.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **deploy:** support trusted HTTPS gateway proxies ([e6b8547](https://github.com/kkxiaoa/k8s-incident-agent/commit/e6b85478e7db7c3a1229663eb41994da3dfac49f))
+
+## [0.2.0](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.1.1...v0.2.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deploy:** remove the k3s-online profile ([#20](https://github.com/kkxiaoa/k8s-incident-agent/issues/20))
+* **deploy:** add a host-bound public K3s profile with an ICP footer ([#14](https://github.com/kkxiaoa/k8s-incident-agent/issues/14))
+
+### Features
+
+* **deploy:** add a host-bound public K3s profile with an ICP footer ([#14](https://github.com/kkxiaoa/k8s-incident-agent/issues/14)) ([cd606b8](https://github.com/kkxiaoa/k8s-incident-agent/commit/cd606b8b75f5e6cfcd186cdca5cabbff44812836))
+* **deploy:** constrain release deployment and preserve runtime state ([#16](https://github.com/kkxiaoa/k8s-incident-agent/issues/16)) ([cdfbaf2](https://github.com/kkxiaoa/k8s-incident-agent/commit/cdfbaf263f92e2fc75d1db83e8b22eac78c722c1))
+* **deploy:** deploy published releases through an approval-gated workflow ([#17](https://github.com/kkxiaoa/k8s-incident-agent/issues/17)) ([74c7874](https://github.com/kkxiaoa/k8s-incident-agent/commit/74c7874acb4b684e170c10d8c4c288d5487a0e68))
+* **deploy:** prepare the formal incident domain and harden images ([6ffecac](https://github.com/kkxiaoa/k8s-incident-agent/commit/6ffecacad29e796d59634269e41e11432fa254c0))
+* **deploy:** remove the k3s-online profile ([#20](https://github.com/kkxiaoa/k8s-incident-agent/issues/20)) ([f8c71fe](https://github.com/kkxiaoa/k8s-incident-agent/commit/f8c71fec06fed43cbc3fdc49c840fd4312c8f06a))
+* **deploy:** send gateway GitHub and registry requests through the host proxy ([#18](https://github.com/kkxiaoa/k8s-incident-agent/issues/18)) ([5f2dfef](https://github.com/kkxiaoa/k8s-incident-agent/commit/5f2dfef755686541689be4d8893872b76bd4b24e))
+* **eval:** move the evaluation line into a typed TypeScript module ([#22](https://github.com/kkxiaoa/k8s-incident-agent/issues/22)) ([f4676a8](https://github.com/kkxiaoa/k8s-incident-agent/commit/f4676a8a47150790f20738b1cb2eb156a655222e))
+* **eval:** preserve trial outcomes and evidence-bound reviews ([#21](https://github.com/kkxiaoa/k8s-incident-agent/issues/21)) ([74e8f21](https://github.com/kkxiaoa/k8s-incident-agent/commit/74e8f2107b19227897171ccd65e05644f06d7cef))
+
+
+### Bug Fixes
+
+* **monitoring:** show risk boundaries for both threshold directions ([#23](https://github.com/kkxiaoa/k8s-incident-agent/issues/23)) ([5af4ef7](https://github.com/kkxiaoa/k8s-incident-agent/commit/5af4ef7ca7c4694d232c405e3a399d5808b863b3))
+* **runtime:** precompile bytecode for read-only containers ([d72944f](https://github.com/kkxiaoa/k8s-incident-agent/commit/d72944fc0b672aa57d166402a38724d83d50e662))
+
 ## [0.1.1](https://github.com/kkxiaoa/k8s-incident-agent/compare/v0.1.0...v0.1.1) (2026-09-24)
 
 
