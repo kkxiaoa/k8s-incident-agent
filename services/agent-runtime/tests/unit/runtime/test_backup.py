@@ -2,23 +2,38 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import stat
+import subprocess
+import sys
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.operations import BatchOperations
 from alembic.script import ScriptDirectory
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import CheckpointMetadata, empty_checkpoint
+from tests.unit.persistence.test_alert_intake import (
+    _occurrence,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.routes.test_approvals import applied_result, approval_harness
+from tests.unit.routes.test_operator import credential as credential
 
 from k8s_incident_agent.config import Settings
+from k8s_incident_agent.domain.models import RepairWorkflowRunSnapshot
+from k8s_incident_agent.persistence.database import (
+    create_business_database,
+    require_alembic_head,
+)
+from k8s_incident_agent.persistence.repositories import IncidentRepository
 from k8s_incident_agent.runtime import cli
 from k8s_incident_agent.runtime.backup import (
     BACKUP_MANIFEST,
@@ -290,3 +305,145 @@ async def test_backup_cli_prints_one_result_line_and_types_its_failures(
     assert cli.main(["backup", "--destination", "relative/backups"]) == 1
     failure = json.loads(capsys.readouterr().err)
     assert failure == {"error": {"code": "destination_invalid", "phase": "backup"}}
+
+
+@pytest.mark.parametrize("fail_ddl", [False, True])
+async def test_legacy_nonempty_backup_restores_before_forward_migration_or_failed_upgrade(
+    tmp_path: Path,
+    credential: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    fail_ddl: bool,
+) -> None:
+    async with approval_harness(
+        tmp_path, credential, occurrence=_occurrence()
+    ) as harness:
+        await harness.approve()
+        result = await applied_result(harness)
+        snapshot = await harness.repository.get_workflow_run_snapshot(harness.run_id)
+        assert isinstance(snapshot, RepairWorkflowRunSnapshot)
+        assert snapshot.execution is not None
+        applied = await harness.repository.report_execution(
+            snapshot.execution.id, result, now=harness.now
+        )
+        assert applied.status == "APPLIED"
+        incident_id, run_id = harness.incident_id, harness.run_id
+        paths = RuntimePaths.prepare(tmp_path / "runtime")
+        with closing(sqlite3.connect(paths.business_database)) as connection:
+            connection.execute("DELETE FROM current_alert_observations")
+            connection.commit()
+        command.downgrade(_alembic_config(paths), "20260919_0013")
+        paths.run_artifacts.mkdir(mode=0o700, exist_ok=True)
+        artifact = paths.run_artifact_directory(run_id)
+        artifact.mkdir(mode=0o700)
+        (artifact / "trace.json").write_text('{"retained":true}', encoding="utf-8")
+        (artifact / "trace.json").chmod(0o600)
+    # The old Runtime has released its handles before the candidate CLI takes its lock.
+    destination = _destination(tmp_path)
+    process = subprocess.run(
+        [
+            str(Path(sys.executable).with_name("runtime")),
+            "backup",
+            "--destination",
+            str(destination),
+        ],
+        env={"PATH": os.environ["PATH"], "RUNTIME_DATA_DIR": str(paths.root)},
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode == 0, process.stderr
+    output = json.loads(process.stdout)
+    assert output["alembicHead"] == "20260919_0013"
+    backup = destination / output["backup"]
+    assert _dump(backup / "incidents.sqlite3") == _dump(paths.business_database)
+    assert _dump(backup / "checkpoints.sqlite3") == _dump(paths.checkpoint_database)
+    with closing(sqlite3.connect(backup / "incidents.sqlite3")) as connection:
+        for table in (
+            "incidents",
+            "agent_runs",
+            "run_events",
+            "evidence",
+            "repair_proposals",
+            "approvals",
+            "executions",
+        ):
+            assert (
+                connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] > 0
+            )
+        columns = {
+            table: [
+                row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')
+            ]
+            for (table,) in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('alembic_version','sqlite_sequence')"
+            )
+        }
+        before = {
+            table: connection.execute(
+                f'SELECT * FROM "{table}" ORDER BY rowid'
+            ).fetchall()
+            for table in columns
+        }
+    restored = RuntimePaths.prepare(tmp_path / "restored")
+    for name in ("incidents.sqlite3", "checkpoints.sqlite3"):
+        shutil.copy2(backup / name, restored.root / name)
+    shutil.copytree(backup / "runs", restored.run_artifacts)
+    original = BatchOperations.create_check_constraint
+
+    def fail_owner(self: BatchOperations, name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "ck_run_events_owner":
+            raise RuntimeError("injected migration interruption")
+        return original(self, name, *args, **kwargs)
+
+    if fail_ddl:
+        monkeypatch.setattr(BatchOperations, "create_check_constraint", fail_owner)
+        with pytest.raises(RuntimeError, match="injected migration interruption"):
+            command.upgrade(_alembic_config(restored), "head")
+        # Recovery replaces the failed candidate's data with the untouched cold backup.
+        # It does not ask the old binary to interpret a new schema or run a downgrade.
+        for name in ("incidents.sqlite3", "checkpoints.sqlite3"):
+            shutil.copy2(backup / name, restored.root / name)
+        assert _dump(restored.business_database) == _dump(paths.business_database)
+        assert _dump(restored.checkpoint_database) == _dump(paths.checkpoint_database)
+    else:
+        command.upgrade(_alembic_config(restored), "head")
+        database = await create_business_database(restored)
+        try:
+            await require_alembic_head(database)
+            repository = IncidentRepository(database.session_factory)
+            detail = await repository.get_incident_detail(
+                incident_id, run_id=run_id, event_limit=100
+            )
+            assert (
+                detail is not None
+                and detail.run is not None
+                and detail.repair is not None
+            )
+            assert detail.run.id == run_id
+            assert (
+                detail.repair.approval is not None
+                and detail.repair.execution is not None
+            )
+            assert detail.repair.execution.status == "APPLIED"
+            with closing(sqlite3.connect(restored.business_database)) as connection:
+                assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+                for table, names in columns.items():
+                    projection = ",".join(f'"{name}"' for name in names)
+                    assert (
+                        connection.execute(
+                            f'SELECT {projection} FROM "{table}" ORDER BY rowid'
+                        ).fetchall()
+                        == before[table]
+                    )
+        finally:
+            await database.dispose()
+    async with open_checkpoint_store(restored.checkpoint_database) as saver:
+        checkpoint = await saver.aget_tuple(
+            {"configurable": {"thread_id": str(run_id)}}
+        )
+        assert checkpoint is not None
+    assert (restored.run_artifacts / str(run_id) / "trace.json").read_bytes() == (
+        backup / "runs" / str(run_id) / "trace.json"
+    ).read_bytes()
+    assert _dump(backup / "incidents.sqlite3") == _dump(paths.business_database)

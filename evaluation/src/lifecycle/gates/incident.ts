@@ -16,7 +16,7 @@ export function matchesScenarioIncident(detail: unknown, scenario: EvaluationSce
     sameTarget(incident.target, scenario.target) &&
     isPlainObject(source) &&
     source.type === "alertmanager" &&
-    source.ref === scenario.alertId
+    (source.ref === scenario.alertId || (scenario.lifecycle?.kind === "correlated-deployment" && ["K8sIncidentCrashLoopBackOff", "K8sIncidentDeploymentReplicasUnavailable"].includes(String(source.ref))))
   );
 }
 

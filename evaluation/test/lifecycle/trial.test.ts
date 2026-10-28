@@ -8,7 +8,7 @@ import type { CatalogArtifact, ScenarioResult } from "../../src/contracts/record
 import { runTrial } from "../../src/lifecycle/trial.ts";
 import { jsonResponse } from "../support/responses.ts";
 import { AUTH_PASSWORD } from "../support/harness.ts";
-import { caseNamed, trialFixture } from "./support.ts";
+import { caseNamed, lifecycleTrialFixture, trialFixture } from "./support.ts";
 
 const GOLDEN = path.resolve(import.meta.dirname, "../fixtures/golden");
 
@@ -198,4 +198,74 @@ test("the review package holds the projected Incident and its Run events without
   const paginated = await trialFixture({ paginatedIncidents: true });
   const retained = await runTrial(caseNamed(paginated.cases, "crash-loop-backoff"), paginated.environment);
   assert.equal(retained.status, "pending_manual_review", JSON.stringify(retained.failure));
+});
+
+test("a correlated lifecycle keeps both Run reviews, real budgets and the final closed Incident", async (t) => {
+  const { scenario, environment, harness, selectedReads } = await lifecycleTrialFixture(t);
+  const result = await runTrial(scenario, environment);
+  assert.equal(result.status, "pending_manual_review", JSON.stringify(result.failure));
+  assert.equal(result.lifecycle?.runs.length, 2);
+  assert.equal(result.lifecycle?.incidents.length, 1);
+  assert.equal(result.lifecycle?.incidents[0].final.incident.lifecycleStatus, "CLOSED");
+  assert.equal(result.lifecycle?.runs[0].usage.maxModelCalls, 5);
+  assert.equal(result.lifecycle?.runs[0].elapsedSeconds, 9);
+  assert.ok(result.lifecycle?.runs.every((run) => selectedReads.includes(run.runId)));
+  assert.equal((harness.calls.packages[0] as { runs: unknown[] }).runs.length, 2);
+});
+
+test("a crash episode consumes later availability before repeats and a separate configuration diagnosis", async (t) => {
+  const { scenario, environment } = await lifecycleTrialFixture(t, { scenarioId: "crash-loop-backoff" });
+  const result = await runTrial(scenario, environment);
+  assert.equal(result.status, "pending_manual_review", JSON.stringify(result.failure));
+  assert.equal(result.lifecycle?.incidents.length, 2);
+  const original = result.lifecycle!.runs.filter((run) => run.incidentId === result.incidentId);
+  assert.deepEqual(original.map((run) => run.trigger.reason), ["first_observation", "new_symptom", "facts_changed"]);
+  assert.equal(original[1].trigger.source.ref, "K8sIncidentDeploymentReplicasUnavailable");
+  assert.equal(result.lifecycle?.runs.length, 4);
+  const replacement = result.lifecycle!.runs.find((run) => run.incidentId !== result.incidentId)!;
+  assert.equal(replacement.trigger.changes.length, 1);
+  assert.equal(result.lifecycle?.incidents[1].final.incident.lifecycleStatus, "CLOSED");
+});
+
+test("comparable occurrences and superseded or reverted facts do not require another diagnosis", async (t) => {
+  for (const options of [{ newOccurrence: true }, { supersededFactChange: true }, { revertedFactChange: true }]) {
+    await t.test(JSON.stringify(options), async (subtest) => {
+      const { scenario, environment } = await lifecycleTrialFixture(subtest, options);
+      const result = await runTrial(scenario, environment);
+      assert.equal(result.status, "pending_manual_review", JSON.stringify(result.failure));
+      assert.equal(result.lifecycle?.runs.length, 2);
+    });
+  }
+});
+
+test("lifecycle failures cannot be replaced by a later PASS or hidden by cleanup", async (t) => {
+  for (const [options, code] of [
+    [{ missingSymptom: true }, "diagnosis_evidence_missing"],
+    [{ unknownUsage: true }, "diagnosis_invalid"],
+    [{ earlyClosure: true }, "upstream_contract_invalid"],
+    [{ extraIncident: true }, "duplicate_target_incident"],
+    [{ invalidFirstEvidence: true }, "diagnosis_evidence_missing"],
+    [{ scenarioId: "pvc-binding-pending", repeatRun: true }, "alert_repeat_not_deduplicated"],
+    [{ delayedRepeatRun: true }, "alert_repeat_not_deduplicated"],
+    [{ unconsumedSymptom: true }, "diagnosis_evidence_missing"],
+    [{ changeSourceMismatch: "type" }, "upstream_contract_invalid"],
+    [{ changeSourceMismatch: "ref" }, "upstream_contract_invalid"],
+    [{ changeSourceMismatch: "revision" }, "upstream_contract_invalid"],
+    [{ primarySourceMismatch: true }, "upstream_contract_invalid"],
+    [{ scenarioId: "crash-loop-backoff", configurationRunAbsent: true }, "diagnosis_not_terminal"],
+  ] as const) {
+    await t.test(code + JSON.stringify(options), async (subtest) => {
+      const { scenario, environment } = await lifecycleTrialFixture(subtest, options);
+      const result = await runTrial(scenario, environment);
+      assert.equal(result.status, "failed");
+      assert.equal(result.failure?.code, code, JSON.stringify(result.failure));
+      assert.ok(result.reviewPackage);
+    });
+  }
+  await t.test("cleanup failure is retained after the finalizer", async (subtest) => {
+    const { scenario, environment } = await lifecycleTrialFixture(subtest, { cleanupFailure: true });
+    const result = await runTrial(scenario, environment);
+    assert.equal(result.cleanup, "failed");
+    assert.equal(result.status, "failed");
+  });
 });

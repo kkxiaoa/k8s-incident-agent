@@ -713,3 +713,16 @@ describe("monitoring response contracts", () => {
     ).toBeNull();
   });
 });
+
+it("preserves measured diagnosis usage and null historical counts while rejecting invalid projections", () => {
+  const detail = makeIncidentDetail();
+  const usage = { modelCalls: null, toolCalls: null, maxModelCalls: 8, maxToolCalls: 6, timeoutSeconds: 90 };
+  const wire = { ...detail, selectedRun: { ...detail.selectedRun, diagnosisUsage: usage } };
+  expect(parseIncidentDetailResponse(wire)?.selectedRun?.diagnosisUsage).toEqual(usage);
+  expect(parseIncidentDetailResponse({ ...wire, selectedRun: { ...wire.selectedRun, diagnosisUsage: { ...usage, modelCalls: 3, toolCalls: 2 } } })?.selectedRun?.diagnosisUsage?.modelCalls).toBe(3);
+  for (const invalid of [{ modelCalls: -1 }, { toolCalls: "0" }, { timeoutSeconds: 0 }, { maxModelCalls: null }]) {
+    expect(parseIncidentDetailResponse({ ...wire, selectedRun: { ...wire.selectedRun, diagnosisUsage: { ...usage, ...invalid } } })).toBeNull();
+  }
+  const repair = makeRepairRunWaitingDetail();
+  expect(parseIncidentDetailResponse({ ...repair, selectedRun: { ...repair.selectedRun, diagnosisUsage: usage } })).toBeNull();
+});

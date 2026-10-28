@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "lifecycle_version": 1,
+  "kind": "persistent-pvc",
+  "observation_seconds": 660
+}

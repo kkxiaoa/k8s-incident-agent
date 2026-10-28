@@ -112,3 +112,21 @@ test("monitoring health is awaited through the same reader the campaign uses", a
   const health = await waitForHealthyMonitoring(runtimeReaders(fixture.environment.fetchImpl).runtime, fixture.environment.sleep);
   assert.equal(health.state, "healthy");
 });
+
+test("a replacement probe reads the new Incident and never uses the still-listed old episode", async () => {
+  const fixture = await trialFixture();
+  const passing = await runTrial(caseNamed(fixture.cases, "crash-loop-backoff"), fixture.environment);
+  const environment = probeEnvironment(fixture);
+  const fetch = environment.fetchImpl;
+  const reads: string[] = [];
+  environment.fetchImpl = async (input, init) => { reads.push(String(input)); return fetch(input, init); };
+  const result = await runInfrastructureProbe(passing, environment);
+  assert.equal(result.status, "passed");
+  const replacement = passing.incidentId!.replace(/^10000000/, "11000000");
+  assert.ok(reads.some((url) => url.includes(`/${replacement}/events`)));
+  assert.ok(reads.some((url) => url.includes(`/${replacement}/monitoring/panels/`)));
+  assert.ok(!reads.some((url) => url.includes(`/${passing.incidentId}/monitoring/panels/`)));
+  const ids = await (await fetch("http://127.0.0.1:18080/api/v1/incidents?limit=100")).json() as { items: Array<{ id: string }> };
+  assert.ok(ids.items.some((item) => item.id === passing.incidentId));
+  assert.ok(ids.items.some((item) => item.id === replacement));
+});

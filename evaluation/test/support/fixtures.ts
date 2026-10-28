@@ -45,6 +45,7 @@ export function caseCatalog(t: TestContext, caseId = "case-001"): string {
   const catalog = temporaryDirectory(t, "evaluation-catalog-");
   const directory = path.join(catalog, caseId);
   cpSync(path.join(REPOSITORY_ROOT, "scenarios/crash-loop-backoff"), directory, { recursive: true });
+  rmSync(path.join(directory, "lifecycle.json"));
   const definitionPath = path.join(directory, "scenario.json");
   const definition = JSON.parse(readFileSync(definitionPath, "utf8")) as Record<string, unknown> & {
     target: Record<string, unknown>;

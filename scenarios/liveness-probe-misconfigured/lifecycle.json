@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "lifecycle_version": 1,
+  "kind": "correlated-deployment",
+  "observation_seconds": 1260,
+  "recovery_timeout_seconds": 900
+}

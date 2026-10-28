@@ -38,6 +38,10 @@ export function fakeScenarioRunner(context: HarnessContext, calls: HarnessCalls,
     const scenario = context.scenarioById.get(String(scenarioId));
     assert.ok(scenario);
     if (action === "apply") {
+      if (scenario.resolved) {
+        scenario.previousIncidentId = scenario.incidentId;
+        scenario.incidentId = scenario.incidentId.replace(/^10000000/, "11000000");
+      }
       calls.scenarioApply += 1;
       scenario.applied = true;
       scenario.resolved = false;

@@ -159,6 +159,14 @@ These tests use fresh synthetic credentials and their own fake Runtime, not your
 
 Never share passwords, verifiers, kubeconfigs, API keys, raw sensitive logs or databases in support requests.
 
+## Retained-data upgrades
+
+Ordinary `deployment upgrade` does not automatically stop Runtime or take a backup. Before changing a retained installation, stop its Runtime and take a consistent cold backup of the business database, checkpoint database and run artifacts using the candidate Runtime's `runtime backup --destination /absolute/backup/directory`. The destination must already exist; preserve its manifest and checksums and keep an independent copy outside the installation. The candidate accepts only Alembic revisions present in its own migration history, including known older revisions.
+
+Install the matching Runtime, Console, catalog and monitoring configuration as one candidate. The compatible-symptom notification policy must not be enabled separately against an older Runtime that lacks UID correlation and bounded automatic diagnosis. Migrate the restored or stopped data forward, then verify schema head, retained Incident/Run IDs, approvals/executions, checkpoints and readable history before restoring traffic. Rehearse these steps against an isolated nonempty copy before a retained installation.
+
+If migration or startup validation fails, stop the candidate and restore the complete pre-upgrade backup together with a compatible prior release. Do not ask an old binary to read the new schema, reset the database, or assume an automatic downgrade can preserve new lifecycle facts. The restricted deployment gateway has its own drain/backup/apply sequence; see the [deployment and backup contract](../scripts/README.md).
+
 ## 8. Explicit retention maintenance
 
 Pruning is destructive, separately authorized maintenance of a specific installation. It is not part of normal startup or a way to repair stale-looking history. First identify the intended `RUNTIME_DATA_DIR`, stop its Runtime, and make a consistent backup of its business database, checkpoint database and artifacts. Keep the same private-directory and no-symlink requirements used for startup.

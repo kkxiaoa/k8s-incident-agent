@@ -359,6 +359,13 @@ async def test_detail_projects_terminal_run_and_sorts_evidence_by_time_then_id(
             ModelSnapshot("deepseek", "deepseek-v4-flash", False, "stage1-v1"),
             RunBudget(8, 6, 180),
         )
+        queued = await service.get_incident(created.incident_id, run_id=None)
+        assert (
+            queued.selected_run is not None
+            and queued.selected_run.diagnosis_usage is not None
+        )
+        assert queued.selected_run.diagnosis_usage.model_calls is None
+        assert queued.selected_run.diagnosis_usage.tool_calls is None
         await repository.start_run(created.run_id, NOW)
         persisted: list[PersistedEvidence] = []
         for call_id in ("call-b", "call-a"):
@@ -424,6 +431,14 @@ async def test_detail_projects_terminal_run_and_sorts_evidence_by_time_then_id(
         assert response.selected_run.attempt == 1
         assert response.selected_run.status is RunStatus.COMPLETED
         assert response.selected_run.error is None
+        assert response.selected_run.diagnosis_usage is not None
+        assert response.selected_run.diagnosis_usage.model_dump(mode="json") == {
+            "modelCalls": 4,
+            "toolCalls": 3,
+            "maxModelCalls": 8,
+            "maxToolCalls": 6,
+            "timeoutSeconds": 180,
+        }
         assert response.diagnosis is not None
         assert response.diagnosis.outcome is DiagnosisOutcome.DIAGNOSED
         assert response.diagnosis.recommendations is not None

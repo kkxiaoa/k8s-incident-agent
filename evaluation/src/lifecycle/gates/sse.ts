@@ -36,11 +36,13 @@ export function validateReplayEvents(
   cursor: string,
   repair: IncidentDetail["repair"],
   expectedTerminal: ExpectedTerminal,
+  runId?: string,
 ): SseReplayCheck {
   if (events.length === 0 || events[events.length - 1].id !== cursor) {
     throw contractError("sse_replay_incomplete", "SSE replay did not reach the persisted event cursor");
   }
-  const eventTypes = new Set<string>(events.map((item) => item.event));
+  const owned = runId === undefined ? events : events.filter((event) => event.data.runId === runId);
+  const eventTypes = new Set<string>(owned.map((item) => item.event));
   if (
     (!eventTypes.has("incident.created") && !eventTypes.has("run.queued")) ||
     !eventTypes.has("run.started") ||
@@ -48,7 +50,7 @@ export function validateReplayEvents(
   ) {
     throw contractError("sse_replay_invalid", "SSE replay omitted a required Incident lifecycle event");
   }
-  requireTerminalEventSequence(events, repair, expectedTerminal);
+  requireTerminalEventSequence(owned, repair, expectedTerminal);
   return { events: events.length, eventTypes: [...eventTypes].sort(), finalCursorMatched: true };
 }
 

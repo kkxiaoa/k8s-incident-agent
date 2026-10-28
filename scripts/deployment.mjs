@@ -5179,7 +5179,7 @@ function requireAlertmanagerConfiguration(rawConfiguration) {
     inhibit_rules: [
       {
         source_matchers: [
-          'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentCrashLoopBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentLivenessProbeRestart|K8sIncidentContainerOOMKilled|K8sIncidentContainerAbnormalExit|K8sIncidentContainerProbeFailing|K8sIncidentPodUnschedulable"',
+          'alertname=~"K8sIncidentImagePullBackOff|K8sIncidentReadinessProbeFailure|K8sIncidentContainerOOMKilled|K8sIncidentContainerAbnormalExit|K8sIncidentContainerProbeFailing|K8sIncidentPodUnschedulable"',
         ],
         target_matchers: [
           'alertname="K8sIncidentDeploymentReplicasUnavailable"',

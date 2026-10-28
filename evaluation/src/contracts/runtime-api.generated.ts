@@ -1043,6 +1043,19 @@ export interface components {
             /** Summary */
             summary: string;
         };
+        /** DiagnosisUsageResponse */
+        DiagnosisUsageResponse: {
+            /** Maxmodelcalls */
+            maxModelCalls: number;
+            /** Maxtoolcalls */
+            maxToolCalls: number;
+            /** Modelcalls */
+            modelCalls: number | null;
+            /** Timeoutseconds */
+            timeoutSeconds: number;
+            /** Toolcalls */
+            toolCalls: number | null;
+        };
         /** DiagnosticAvailabilityResponse */
         DiagnosticAvailabilityResponse: {
             reason: components["schemas"]["ModelErrorCode"] | null;
@@ -2576,6 +2589,7 @@ export interface components {
              */
             createdAt: string;
             diagnosisTrigger?: components["schemas"]["DiagnosisTrigger"] | null;
+            diagnosisUsage?: components["schemas"]["DiagnosisUsageResponse"] | null;
             /** Endreason */
             endReason?: ("expired" | "superseded" | "rejected" | "execution_expired" | "withdrawn") | null;
             error: components["schemas"]["RunErrorResponse"] | null;

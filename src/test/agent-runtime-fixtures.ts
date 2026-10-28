@@ -159,6 +159,7 @@ export function makeIncidentDetail(): IncidentDetailResponse {
       updatedAt: "2026-08-29T01:00:00Z",
     },
     selectedRun: {
+      diagnosisUsage: null,
       initiatedByYou: false,
       id: RUN_ID,
       kind: "diagnosis",

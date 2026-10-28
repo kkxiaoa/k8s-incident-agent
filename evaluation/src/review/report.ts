@@ -18,7 +18,6 @@ import {
   type ReviewRecord,
   type Reviewer,
   type ScenarioResult,
-  type Verdict,
 } from "../contracts/records.ts";
 import { contractError, type EvaluationErrorCode } from "../shared/errors.ts";
 import { isUuid } from "../shared/guards.ts";
@@ -32,7 +31,7 @@ type ReviewFile = ReviewRecord & { file: string };
 type PackageState =
   | { status: "missing" }
   | { status: "invalid" }
-  | { status: "present"; evidenceIds: Set<string>; truncated: boolean };
+  | { status: "present"; evidenceByRun: Map<string, Set<string>>; truncated: boolean };
 
 // The report's own guards are looser than the evaluator's: reviews are hand-written files, so a
 // bounded length matters more than control characters.
@@ -144,16 +143,32 @@ async function loadPackage(directory: string, result: ScenarioResult): Promise<P
   ) {
     return { status: "invalid" };
   }
-  return {
-    status: "present",
-    evidenceIds: new Set(incident.evidence.map((item) => (isRecordObject(item) ? item.id : undefined) as string)),
+  if (result.lifecycle === undefined) return {
+    status: "present", evidenceByRun: new Map([[record.runId as string, new Set(incident.evidence.map((item) => (isRecordObject(item) ? item.id : undefined) as string))]]),
     truncated: record.truncated === true,
   };
+  const details = record.runs;
+  if (!Array.isArray(details) || details.length === 0 || details.length > 6) return { status: "invalid" };
+  const evidenceByRun = new Map<string, Set<string>>();
+  for (const detail of details) {
+    if (!isRecordObject(detail) || !isRecordObject(detail.selectedRun) || !isUuid(detail.selectedRun.id) ||
+      !Array.isArray(detail.evidence) || evidenceByRun.has(detail.selectedRun.id)) return { status: "invalid" };
+    const selectedId = detail.selectedRun.id;
+    const expected = result.lifecycle.runs.find((run) => run.runId === selectedId);
+    if (expected === undefined || !isRecordObject(detail.incident) || detail.incident.id !== expected.incidentId) return { status: "invalid" };
+    evidenceByRun.set(detail.selectedRun.id, new Set(detail.evidence.map((item) => (isRecordObject(item) ? item.id : undefined) as string)));
+  }
+  const expectedIds = result.lifecycle?.runs.map((run) => run.runId) ?? [result.runId];
+  if (expectedIds.length !== evidenceByRun.size || expectedIds.some((id) => !id || !evidenceByRun.has(id))) return { status: "invalid" };
+  if (result.lifecycle !== undefined && (!Array.isArray(record.finalIncidents) || record.finalIncidents.length !== result.lifecycle.incidents.length ||
+    result.lifecycle.incidents.some((episode) => !(record.finalIncidents as unknown[]).some((detail) => isRecordObject(detail) && isRecordObject(detail.incident) && detail.incident.id === episode.incidentId)))) return { status: "invalid" };
+  return { status: "present", evidenceByRun, truncated: record.truncated === true };
 }
 
 function reviewOutcome(result: ScenarioResult, reviews: ReviewFile[], pkg: PackageState, campaignId: string, rulesAgree: boolean): ReviewOutcome {
   if (result.status === "not_run") return { status: "not_run" };
   const reviewers: Reviewer[] = reviews.map((review) => ({
+    ...(result.lifecycle === undefined ? {} : { runId: review.runId }),
     reviewer: review.reviewer, verdict: review.verdict, rulesVersion: review.rulesVersion, reviewedAt: review.reviewedAt, file: review.file,
   }));
   // No manual verdict promotes a Trial whose automated gates failed.
@@ -163,18 +178,21 @@ function reviewOutcome(result: ScenarioResult, reviews: ReviewFile[], pkg: Packa
   if (!rulesAgree) reasons.add("rules_version_mismatch");
   if (pkg.status === "missing") reasons.add("review_package_missing");
   if (pkg.status === "invalid") reasons.add("review_package_invalid");
+  const requiredRuns = result.lifecycle?.runs.map((run) => run.runId) ?? [result.runId];
+  if (result.lifecycle !== undefined && requiredRuns.some((runId) => !reviews.some((review) => review.runId === runId))) reasons.add("run_review_missing");
   for (const review of reviews) {
-    if (review.campaignId !== campaignId || review.trial !== result.trial?.index || review.runId !== result.runId) {
+    if (review.campaignId !== campaignId || review.trial !== result.trial?.index || !requiredRuns.includes(review.runId)) {
       reasons.add("trial_binding_mismatch");
     }
-    if (pkg.status === "present" && review.evidenceIds.some((id) => !pkg.evidenceIds.has(id))) {
+    if (pkg.status === "present" && requiredRuns.includes(review.runId) && review.evidenceIds.some((id) => !pkg.evidenceByRun.get(review.runId)?.has(id))) {
       reasons.add("evidence_not_in_package");
     }
   }
   if (reasons.size > 0) return { status: "incomplete", reasons: [...reasons].sort(), reviewers };
+  if (requiredRuns.some((runId) => new Set(reviews.filter((review) => review.runId === runId).map((review) => review.verdict)).size > 1)) return { status: "disagreement", reviewers };
   const verdicts = new Set(reviews.map((review) => review.verdict));
-  if (verdicts.size > 1) return { status: "disagreement", reviewers };
-  return { status: reviews[0].verdict as Verdict, rulesVersion: reviews[0].rulesVersion, reviewers };
+  const verdict = verdicts.has("fail") ? "fail" : verdicts.has("insufficient_to_score") ? "insufficient_to_score" : "pass";
+  return { status: verdict, rulesVersion: reviews[0].rulesVersion, reviewers };
 }
 
 async function followChain(file: string, artifact: CatalogArtifact): Promise<CampaignReport["chain"]> {
@@ -215,6 +233,7 @@ export async function buildCampaignReport(artifactPath: string): Promise<Campaig
     const own = reviews.filter((review) => review.scenarioId === result.scenarioId);
     const pkg: PackageState = result.status === "not_run" ? { status: "missing" } : await loadPackage(directory, result);
     scenarios.push({
+      ...(result.lifecycle === undefined ? {} : { lifecycle: result.lifecycle }),
       scenarioId: result.scenarioId,
       mechanism: result.mechanism,
       expectedTerminal: result.expectedTerminal,

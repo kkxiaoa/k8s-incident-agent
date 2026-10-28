@@ -113,8 +113,9 @@ test("Evidence must come from permitted tools and cover every expected kind", as
 
 test("a diagnosed terminal must still satisfy the completed-Run shape", async () => {
   const { scenario, detail } = await trialFor("crash-loop-backoff");
-  const attemptTwo = { ...detail, selectedRun: { ...detail.selectedRun, attempt: 2 } };
-  assert.throws(() => assessTerminal(scenario, attemptTwo), coded("diagnosis_invalid"));
+  const invalidAttempt = { ...detail, selectedRun: { ...detail.selectedRun, attempt: 0 } };
+  assert.throws(() => assessTerminal(scenario, invalidAttempt), coded("diagnosis_invalid"));
+  assert.doesNotThrow(() => assessTerminal(scenario, { ...detail, selectedRun: { ...detail.selectedRun, attempt: 2 } }));
   const tooMany = { ...detail, diagnosis: { ...detail.diagnosis!, rootCauses: Array.from({ length: 6 }, () => detail.diagnosis!.rootCauses[0]) } };
   assert.throws(() => assessTerminal(scenario, tooMany), coded("diagnosis_invalid"));
   const lowConfidence = { ...detail, diagnosis: { ...detail.diagnosis!, rootCauses: [{ ...detail.diagnosis!.rootCauses[0], confidence: "certain" }] } };

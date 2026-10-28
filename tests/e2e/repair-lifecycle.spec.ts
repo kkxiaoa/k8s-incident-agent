@@ -182,7 +182,7 @@ test("historical diagnosis prepares a new Run; editing preserves exact source an
   await expect(sourceEvidenceSection).toContainText("历史引用");
   const currentBox = await currentEvidence.boundingBox();
   const sourceBox = await sourceEvidenceSection.boundingBox();
-  expect(sourceBox!.y - currentBox!.y - currentBox!.height).toBeGreaterThanOrEqual(24);
+  expect(sourceBox!.y - currentBox!.y - currentBox!.height).toBeCloseTo(16, 0);
   await expect(page.getByRole("region", { name: "运行记录", exact: true }).getByRole("link", { name: "最新运行", exact: true })).toHaveCount(0);
   await page.getByText("选择运行记录", { exact: true }).click();
   await expect(page.getByRole("navigation", { name: "运行选择" }).getByRole("link", { name: /第 2 次 · 修复/ })).toContainText("最新");

@@ -88,7 +88,7 @@ function indexEvidence(scenario: EvaluationCase, detail: IncidentDetail): Eviden
 // A readable Incident need not have a diagnosis Run.
 function isDiagnosisRun(detail: IncidentDetail): boolean {
   const run: unknown = detail.selectedRun;
-  return isPlainObject(run) && run.kind === "diagnosis" && run.operation === null && run.attempt === 1;
+  return isPlainObject(run) && run.kind === "diagnosis" && run.operation === null && Number.isSafeInteger(run.attempt) && (run.attempt as number) >= 1;
 }
 
 function validateTerminalDiagnosis(scenario: EvaluationCase, detail: IncidentDetail): DiagnosisSummary {

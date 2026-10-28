@@ -1910,6 +1910,7 @@ test("a neutral revision-one scenario can be added without publishing its oracle
   t.after(() => rm(catalog, { recursive: true, force: true }));
   const directory = path.join(catalog, "case-001");
   cpSync(path.join(REPOSITORY_ROOT, "scenarios/crash-loop-backoff"), directory, { recursive: true });
+  rmSync(path.join(directory, "lifecycle.json"));
   const definitionPath = path.join(directory, "scenario.json");
   const definition = JSON.parse(readFileSync(definitionPath, "utf8"));
   definition.scenario_id = "case-001";
@@ -2757,4 +2758,41 @@ test("fixture keeps an image-only healthy revision before deterministic failure"
     { ...container, image: undefined },
     { ...healthyContainer, image: undefined },
   );
+});
+
+test("lifecycle variants permit only their fixed revision and preserve the fixture security boundary", async (t) => {
+  const catalog = realpathSync(mkdtempSync(path.join(os.tmpdir(), "scenario-lifecycle-")));
+  t.after(() => rmSync(catalog, { recursive: true, force: true }));
+  cpSync(path.join(REPOSITORY_ROOT, "scenarios/crash-loop-backoff"), path.join(catalog, "crash-loop-backoff"), { recursive: true });
+  const environment = { SCENARIO_CATALOG_DIR: catalog };
+  const entries = loadScenarioCatalog(REPOSITORY_ROOT, environment);
+  assert.equal(entries[0].lifecycle.kind, "reconfigured-deployment");
+  const file = path.join(catalog, "crash-loop-backoff/manifests/recovered-deployment.yaml");
+  const original = readFileSync(file, "utf8");
+  for (const changed of [original.replace("allowPrivilegeEscalation: false", "allowPrivilegeEscalation: true"), original.replace("name: crash-loop-backoff", "name: unrelated"), original.replace('args: ["pause"]', 'args: ["netexec"]')]) {
+    writeFileSync(file, changed);
+    assert.throws(() => loadScenarioCatalog(REPOSITORY_ROOT, environment), { code: "scenario_contract_invalid" });
+  }
+  writeFileSync(file, original);
+  const sidecar = path.join(catalog, "crash-loop-backoff/lifecycle.json");
+  const lifecycle = JSON.parse(readFileSync(sidecar, "utf8"));
+  for (const changed of [{ ...lifecycle, manifest: "../../other.yaml" }, { ...lifecycle, command: "echo injected" }, { ...lifecycle, observation_seconds: 30 }, { ...lifecycle, lifecycle_version: 2 }]) {
+    writeFileSync(sidecar, JSON.stringify(changed));
+    assert.throws(() => loadScenarioCatalog(REPOSITORY_ROOT, environment), { code: "scenario_contract_invalid" });
+  }
+});
+
+test("lifecycle probe verification requires the fixed faulty readiness and real liveness events", async () => {
+  const execute = createExecutor({ resolveOutput: ({ args, resource }) => {
+    const output = probeFailureOutput(args, resource, "liveness");
+    if (output === undefined) return undefined;
+    if (resource !== "deployment.apps") return output;
+    const document = JSON.parse(output);
+    if (document.metadata.name === "liveness-probe-misconfigured") document.spec.template.spec.containers[0].readinessProbe.tcpSocket.port = 8081;
+    return JSON.stringify(document);
+  } });
+  const result = await runScenarioCommand("lifecycle-verify", "liveness-probe-misconfigured", { repositoryRoot: REPOSITORY_ROOT, release: RELEASE, execute: execute.execute });
+  assert.equal(result.status, "verified");
+  const unchanged = createExecutor({ resolveOutput: ({ args, resource }) => probeFailureOutput(args, resource, "liveness") });
+  await assert.rejects(runScenarioCommand("lifecycle-verify", "liveness-probe-misconfigured", { repositoryRoot: REPOSITORY_ROOT, release: RELEASE, execute: unchanged.execute }), { code: "upstream_contract_invalid" });
 });

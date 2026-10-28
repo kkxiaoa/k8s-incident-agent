@@ -100,9 +100,27 @@ export async function readIncidentIds(read: ReadJson): Promise<Set<string>> {
   return new Set((await readIncidentSummaries(read)).keys());
 }
 
-// The deduplication gate judges this page's shape together with its content.
-export function readRunHistory(read: ReadJson, incidentId: string): Promise<unknown> {
-  return read(`/api/v1/incidents/${incidentId}/runs?limit=50`);
+// A complete bounded history is needed before comparing Run sets across repeat deliveries.
+export async function readRunHistory(read: ReadJson, incidentId: string): Promise<RunHistoryPage> {
+  const items: RunSummary[] = [];
+  const ids = new Set<string>();
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_INCIDENT_PAGES; page += 1) {
+    const suffix = cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`;
+    const history = await read(`/api/v1/incidents/${incidentId}/runs?limit=50${suffix}`);
+    if (!isRunHistoryPage(history) || !(history.nextCursor === null || isNormalizedString(history.nextCursor))) throw upstreamContractError();
+    for (const run of history.items) {
+      if (!isUuid(run.id) || ids.has(run.id)) throw upstreamContractError();
+      ids.add(run.id);
+      items.push(run);
+    }
+    if (history.nextCursor === null) return { schemaVersion: RUNTIME_SCHEMA_VERSION, items, nextCursor: null };
+    if (cursors.has(history.nextCursor) || history.nextCursor.length > 2048) throw upstreamContractError();
+    cursors.add(history.nextCursor);
+    cursor = history.nextCursor;
+  }
+  throw responseTooLarge();
 }
 
 export function isRunHistoryPage(value: unknown): value is RunHistoryPage {
@@ -229,7 +247,7 @@ export function splitSseFrames(buffer: string): { frames: string[]; rest: string
 
 export interface SseIdentity {
   incidentId: string;
-  runId: string;
+  runId: string | ReadonlySet<string>;
 }
 
 export function decodeSseFrame(
@@ -255,7 +273,7 @@ export function decodeSseFrame(
     data.schemaVersion !== RUNTIME_SCHEMA_VERSION ||
     data.incidentId !== expected.incidentId ||
     (incidentOwned ? data.runId !== null || data.runKind !== null
-      : data.runKind !== "diagnosis" || data.runId !== expected.runId) ||
+      : data.runKind !== "diagnosis" || (typeof expected.runId === "string" ? data.runId !== expected.runId : !expected.runId.has(String(data.runId)))) ||
     (event === "alert.notification" && (
         (data.alertStatus !== "FIRING" && data.alertStatus !== "RESOLVED") ||
         typeof data.fingerprint !== "string" || !/^[0-9a-f]{16}$/.test(data.fingerprint) ||

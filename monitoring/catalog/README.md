@@ -28,7 +28,8 @@ Opt-in rules only watch objects that carry their label: a Service labelled `k8s-
 
 ## Rule interactions
 
-- Startup that exceeds its window is covered by `K8sIncidentDeploymentReplicasUnavailable`; there is no separate startup rule. Alertmanager suppresses that alert while an image-pull, restart-loop, probe, OOM, abnormal-exit or unschedulable alert fires for the same Deployment.
+- Startup that exceeds its window is covered by `K8sIncidentDeploymentReplicasUnavailable`; there is no separate startup rule. Alertmanager suppresses that alert while an image-pull, readiness, generic probe, OOM, abnormal-exit or unschedulable alert fires for the same Deployment.
+- CrashLoop and liveness restart notifications do not suppress replica-unavailability notifications. All three symptoms reach Runtime, whose UID correlation and automatic diagnosis limits govern the episode. Install this notification policy together with its matching Runtime and catalog.
 - The OOM and abnormal-exit rules stand down for 10 minutes after an overlapping symptom alert on the same Deployment.
 - The kubelet-backed alerts need the node-metrics collection that only the K3s profiles enable. On Kind they have no series, which means not enabled rather than healthy.
 - `Watchdog` is monitoring-path health evidence: the Runtime rejects a delivery whose Watchdog names another cluster or severity, and recovery verification requires a recent Watchdog receipt. It does not create an Incident and is not a fault family.

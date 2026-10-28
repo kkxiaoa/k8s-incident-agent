@@ -200,3 +200,12 @@ test("the catalog gate accepts the committed catalog and rejects broken repair s
     (imagePull(scenarios).expectedPatchConstraints as unknown as Record<string, unknown>).extra = true;
   });
 });
+
+test("lifecycle inputs are explicitly selected and version-bound by the dataset", (t) => {
+  assert.ok(loadEvaluationDataset(REPOSITORY_ROOT, catalog).cases.every((entry) => entry.lifecycle === undefined));
+  const lifecycle = loadEvaluationDataset(REPOSITORY_ROOT, catalog, "evaluation/datasets/lifecycle-v1.json");
+  assert.equal(lifecycle.cases.length, 4);
+  assert.ok(lifecycle.cases.every((entry) => entry.lifecycle?.lifecycle_version === 1));
+  const invalid = datasetFile(t, (manifest) => { manifest.cases[0].lifecycle_version = 999; });
+  rejectsDataset(invalid);
+});

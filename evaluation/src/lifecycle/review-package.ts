@@ -1,6 +1,6 @@
 import type { Campaign, ReviewPackage } from "../contracts/records.ts";
 import { RECORD_LIMIT_BYTES, REVIEW_PACKAGE_SCHEMA_VERSION } from "../contracts/records.ts";
-import { readRunEvents, type IncidentDetail } from "../contracts/runtime-api.ts";
+import { readRunEvents, type IncidentDetail, type RunEvent } from "../contracts/runtime-api.ts";
 import { upstreamContractError } from "../shared/errors.ts";
 import { requireDate } from "../shared/guards.ts";
 import type { ReadJson } from "../shared/json.ts";
@@ -34,10 +34,14 @@ export async function captureReviewPackage(
   trialIndex: number,
   detail: IncidentDetail,
   capture: ReviewPackageCapture,
+  lifecycle?: { runs: IncidentDetail[]; finalIncidents: IncidentDetail[]; events: RunEvent[] },
 ): Promise<string> {
   if (detail.selectedRun === null) throw upstreamContractError();
-  const { events, truncated } = await readRunEvents(capture.runtime, detail.incident.id, detail.selectedRun.id);
+  const { events, truncated } = lifecycle === undefined
+    ? await readRunEvents(capture.runtime, detail.incident.id, detail.selectedRun.id)
+    : { events: lifecycle.events, truncated: false };
   const record: ReviewPackage = {
+    ...(lifecycle === undefined ? {} : { runs: lifecycle.runs, finalIncidents: lifecycle.finalIncidents }),
     schemaVersion: REVIEW_PACKAGE_SCHEMA_VERSION,
     campaignId: capture.campaign.id,
     scenarioId,

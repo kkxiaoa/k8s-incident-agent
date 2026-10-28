@@ -427,6 +427,7 @@ async def test_repair_waiting_reads_its_own_proposal_events_and_evidence_without
         )
         assert detail.selected_run is not None
         assert detail.selected_run.kind is RunKind.REPAIR
+        assert detail.selected_run.diagnosis_usage is None
         assert detail.selected_run.source_run_id == diagnostic_id
         assert detail.selected_run.waiting_expires_at == FRESH_NOW + timedelta(
             minutes=15

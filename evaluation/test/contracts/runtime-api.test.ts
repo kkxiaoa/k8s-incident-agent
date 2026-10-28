@@ -293,3 +293,23 @@ test("SSE frames split on blank LF lines with CRLF line ends normalised and deco
   const multiline = decodeSseFrame(`id: 4\nevent: tool.started\ndata: {"schemaVersion":6,\ndata: "incidentId":"${INCIDENT}","runId":"${RUN}","runKind":"diagnosis"}`, identity, "3");
   assert.equal(multiline.event, "tool.started");
 });
+
+test("Run histories follow every bounded page and reject duplicate IDs or cursor loops", async () => {
+  const { read, calls } = reader((pathname) => {
+    const cursor = new URL(pathname, "http://runtime").searchParams.get("cursor");
+    return { schemaVersion: 6, items: [{ id: cursor === null ? RUN : uuid(2) }], nextCursor: cursor === null ? "older" : null };
+  });
+  assert.deepEqual((await readRunHistory(read, INCIDENT)).items.map((run) => run.id), [RUN, uuid(2)]);
+  assert.equal(calls[1].pathname, `/api/v1/incidents/${INCIDENT}/runs?limit=50&cursor=older`);
+  await assert.rejects(readRunHistory(reader(() => ({ schemaVersion: 6, items: [{ id: RUN }], nextCursor: "older" })).read, INCIDENT), coded("upstream_contract_invalid"));
+  await assert.rejects(readRunHistory(reader(() => ({ schemaVersion: 6, items: [], nextCursor: "older" })).read, INCIDENT), coded("upstream_contract_invalid"));
+  let page = 0;
+  await assert.rejects(readRunHistory(reader(() => ({ schemaVersion: 6, items: [{ id: uuid(++page) }], nextCursor: String(page) })).read, INCIDENT), coded("response_too_large"));
+});
+
+test("Incident replay accepts all known diagnosis owners and rejects an unrelated Run", () => {
+  const other = uuid(2);
+  const frame = (runId: string) => `id: 8\nevent: run.started\ndata: ${JSON.stringify({ schemaVersion: 6, incidentId: INCIDENT, runKind: "diagnosis", runId })}`;
+  assert.equal(decodeSseFrame(frame(other), { incidentId: INCIDENT, runId: new Set([RUN, other]) }, "7").data.runId, other);
+  assert.throws(() => decodeSseFrame(frame(uuid(3)), { incidentId: INCIDENT, runId: new Set([RUN, other]) }, "7"), coded("sse_replay_invalid"));
+});

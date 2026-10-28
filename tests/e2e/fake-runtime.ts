@@ -558,6 +558,7 @@ function createIncident(outcome: OutcomeMode): FakeIncident {
         updatedAt: CREATED_AT,
       },
       selectedRun: {
+      diagnosisUsage: null,
         initiatedByYou: false,
         kind: "diagnosis",
         operation: null,

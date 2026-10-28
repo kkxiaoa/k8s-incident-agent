@@ -109,7 +109,25 @@ export interface ScenarioChecks {
   postResolutionPanelStates: PanelState[];
 }
 
+export interface LifecycleRun {
+  panels: PanelCheck[];
+  incidentId: string;
+  runId: string;
+  run: ObservedRun;
+  trigger: Schemas["DiagnosisTrigger"];
+  usage: Schemas["DiagnosisUsageResponse"];
+  elapsedSeconds: number;
+  evidenceIds: string[];
+}
+
+export interface LifecycleResult {
+  version: number;
+  runs: LifecycleRun[];
+  incidents: Array<{ incidentId: string; targetUid: string; final: IncidentDetail }>;
+}
+
 export interface ScenarioResult {
+  lifecycle?: LifecycleResult;
   scenarioId: string;
   scenarioVersion: number;
   split: DatasetSplit;
@@ -199,6 +217,8 @@ export interface OnlineArtifact {
 }
 
 export interface ReviewPackage {
+  runs?: IncidentDetail[];
+  finalIncidents?: IncidentDetail[];
   schemaVersion: typeof REVIEW_PACKAGE_SCHEMA_VERSION;
   campaignId: string;
   scenarioId: string;
@@ -226,6 +246,7 @@ export interface ReviewRecord {
 }
 
 export interface Reviewer {
+  runId?: string;
   reviewer: string;
   verdict: Verdict;
   rulesVersion: string;
@@ -240,6 +261,7 @@ export type ReviewOutcome =
   | { status: Verdict; rulesVersion: string; reviewers: Reviewer[] };
 
 export interface ReportScenario {
+  lifecycle?: LifecycleResult;
   scenarioId: string;
   mechanism: string;
   expectedTerminal: ExpectedTerminal;

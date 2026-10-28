@@ -18,6 +18,7 @@ from k8s_incident_agent.api_contracts import (
     CreateRepairRunRequest,
     CreateRunResponse,
     DiagnosisResponse,
+    DiagnosisUsageResponse,
     EventPageResponse,
     EvidenceResponse,
     ExecutionResponse,
@@ -627,6 +628,15 @@ def _selected_run(run: IncidentRunDetail) -> SelectedRunResponse:
     return SelectedRunResponse(
         **_run_summary(run).model_dump(),
         error=run_error,
+        diagnosis_usage=None
+        if run.budget is None
+        else DiagnosisUsageResponse(
+            model_calls=run.model_calls,
+            tool_calls=run.tool_calls,
+            max_model_calls=run.budget.max_model_calls,
+            max_tool_calls=run.budget.max_tool_calls,
+            timeout_seconds=run.budget.timeout_seconds,
+        ),
         selection=None
         if run.selection is None
         else RepairHistorySelectionResponse(

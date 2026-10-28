@@ -263,6 +263,9 @@ class IncidentRunDetail:
         | None
     )
     diagnosis_trigger: DiagnosisTrigger | None = None
+    budget: RunBudget | None = None
+    model_calls: int | None = None
+    tool_calls: int | None = None
     initiated_by_you: bool = False
 
 
@@ -6277,6 +6280,11 @@ def _incident_run_detail(
             else None
         ),
         request_source=run.request_source,
+        budget=workflow.budget
+        if isinstance(workflow, DiagnosisWorkflowRunSnapshot)
+        else None,
+        model_calls=run.model_calls,
+        tool_calls=run.tool_calls,
         diagnosis_trigger=workflow.diagnosis_trigger
         if isinstance(workflow, DiagnosisWorkflowRunSnapshot)
         else None,

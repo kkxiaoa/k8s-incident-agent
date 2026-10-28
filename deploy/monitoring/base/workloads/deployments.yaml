@@ -117,7 +117,7 @@ spec:
         app.kubernetes.io/name: alertmanager
         app.kubernetes.io/part-of: k8s-incident-agent
       annotations:
-        k8s-incident-agent.io/config-digest: "sha256:35a18b51f1bc60b55865222f80512a04de25403d6c684532fcbd9cf24940975d"
+        k8s-incident-agent.io/config-digest: "sha256:fa400c0adc9b33d86d0c4f73f95841478d1ccbfb3e63e60d9a55fc3b4eb11bd4"
     spec:
       serviceAccountName: alertmanager
       automountServiceAccountToken: false

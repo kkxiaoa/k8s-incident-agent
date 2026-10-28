@@ -4,6 +4,8 @@ import {
   isHealthyMonitoring,
   readIncident,
   readIncidentIds,
+  readIncidentForRun,
+  readRunHistory,
   readMonitoringHealth,
   readPanel,
   type MetricPanel,
@@ -28,11 +30,12 @@ import {
 } from "../shared/wait.ts";
 import { matchesScenarioIncident } from "./gates/incident.ts";
 import { isRiskyValue } from "./gates/panels.ts";
+import { validateReplayEvents } from "./gates/sse.ts";
 import {
   requireConsoleIncident,
   runtimeReaders,
   scenarioDependencies,
-  validateSseReplay,
+  readIncidentReplay,
   type TrialEnvironment,
 } from "./trial.ts";
 
@@ -74,8 +77,9 @@ async function waitForFreshWatchdog(baseline: number, runtime: ReadJson, sleep: 
   );
 }
 
-async function findLatestIncidentIdForScenario(scenario: EvaluationCase, runtime: ReadJson): Promise<string | undefined> {
+async function findLatestIncidentIdForScenario(scenario: EvaluationCase, runtime: ReadJson, excluded: ReadonlySet<string> = new Set()): Promise<string | undefined> {
   for (const incidentId of await readIncidentIds(runtime)) {
+    if (excluded.has(incidentId)) continue;
     const detail = await readIncident(runtime, incidentId);
     if (matchesScenarioIncident(detail, scenario)) return incidentId;
   }
@@ -123,8 +127,8 @@ export async function runInfrastructureProbe(probe: ScenarioResult, environment:
   }
   const readers = runtimeReaders(environment.fetchImpl);
   const runtime = readers.runtime;
-  const incidentId = await findLatestIncidentIdForScenario(scenario, runtime);
-  if (incidentId === undefined) {
+  const existingId = await findLatestIncidentIdForScenario(scenario, runtime);
+  if (existingId === undefined) {
     return { status: "failed", failureCode: "incident_probe_unavailable" };
   }
 
@@ -137,11 +141,18 @@ export async function runInfrastructureProbe(probe: ScenarioResult, environment:
   };
   const dependencies = scenarioDependencies(environment);
   const { context, execute, sleep } = environment;
+  const before = await readIncidentIds(runtime);
   let applied = false;
   try {
     applied = true;
     await runScenario(environment.scenarioRunner, "apply", scenario.scenarioId, dependencies);
     await runScenario(environment.scenarioRunner, "verify", scenario.scenarioId, dependencies);
+    const incidentId = await waitUntil("incident_not_created", () => findLatestIncidentIdForScenario(scenario, runtime, before), scenario.alertWaitMilliseconds, sleep);
+    const initial = await readIncident(runtime, incidentId);
+    const initialRuns = await readRunHistory(runtime, incidentId);
+    const initialEvents = await readIncidentReplay(incidentId, initial.eventCursor, new Set(initialRuns.items.map((run) => run.id)), environment.fetchImpl);
+    const uids = new Set(initialEvents.filter((event) => event.event === "alert.associated").map((event) => (event.data as unknown as { targetUid: string }).targetUid));
+    if (uids.size !== 1 || ![...uids][0] || probe.lifecycle?.incidents.some((episode) => uids.has(episode.targetUid))) throw upstreamContractError();
     await waitForRiskyPanel(incidentId, panel, runtime, sleep);
 
     try {
@@ -172,14 +183,12 @@ export async function runInfrastructureProbe(probe: ScenarioResult, environment:
     await waitForFreshWatchdog(watchdogBeforeRotation, runtime, sleep);
     const recovered = await readIncident(runtime, incidentId);
     if (recovered.selectedRun === null) throw upstreamContractError();
-    await validateSseReplay(
-      incidentId,
-      recovered.eventCursor,
-      recovered.selectedRun.id,
-      recovered.repair,
-      probe.expectedTerminal,
-      environment.fetchImpl,
-    );
+    const history = await readRunHistory(runtime, incidentId);
+    const events = await readIncidentReplay(incidentId, recovered.eventCursor, new Set(history.items.map((run) => run.id)), environment.fetchImpl);
+    for (const run of history.items) {
+      const detail = await readIncidentForRun(runtime, incidentId, run.id);
+      validateReplayEvents(events, recovered.eventCursor, detail.repair, probe.expectedTerminal, run.id);
+    }
     await requireConsoleIncident(recovered, environment.fetchImpl);
     checks.secretRotation = true;
     checks.workloadRecovery = true;

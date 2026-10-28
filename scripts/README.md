@@ -211,6 +211,8 @@ key 是否非空，不把 Secret value 返回给生命周期
 不会自动生成manifest所引用的应用repository@index。因此operator必须在导入同一
 archive后，使用`ctr images tag <imported-reference> <canonical-repository>@<index-digest>`
 为同一index增加精确reference。预检继续要求完整repository@index，不降级为可变tag。
+普通 `deployment upgrade` 不自动停机或备份 retained 数据。安装者须先停止 Runtime，使用候选 Runtime 的 `runtime backup` 取得业务库、checkpoint 与 artifacts 的一致备份，再迁移并核对历史读取。通知 inhibition、catalog、Runtime 与 Console 必须来自同一候选；支持兼容症状关联的通知配置不能单独用于旧 Runtime。迁移或启动门禁失败时停止候选，恢复升级前整套备份及兼容旧版本，不能默认执行 schema downgrade。受限部署网关的停机备份流程见下文。
+
 镜像导入/预取是另行授权的安装准备动作。render/status 基于临时 release Kustomize overlay；
 server dry-run 与实际 apply 使用同一份渲染内容。裸 `kubectl kustomize` 只得到源码模板，
 不是安装产物。第三方 monitoring 镜像 digest 由 `deploy/application/versions.json` 与
@@ -431,7 +433,7 @@ Runtime 镜像不含 `runtime backup` 的版本在备份阶段失败，集群保
 artifact，在 `backup.json` 中记录 Alembic head 与每个文件的 SHA-256；数据的 Alembic head 不在
 所用镜像的迁移中时以 `schema_unknown` 拒绝。备份目录按 UTC 时间命名（如
 `20260926T071500Z`），成功后只保留最近 3 份（刚完成的一份始终保留），不触碰其他目录。网关
-每次部署在备份阶段生成一份，所以保留的是最近 3 次部署之前的数据；需要长期保留的恢复点应另行
+受限网关每次部署在备份阶段生成一份，所以保留的是最近 3 次网关部署之前的数据；需要长期保留的恢复点应另行
 拷出备份 PVC。成功时在 stdout 输出一行 JSON（`backup`、`alembicHead`、`files`、`bytes`、
 `removed`），失败时在 stderr 输出 `{"error":{"code":…,"phase":"backup"}}` 并以 1 退出。
 

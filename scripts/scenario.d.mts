@@ -49,12 +49,22 @@ export interface ScenarioDefinition {
   expected_patch_constraints?: ScenarioPatchConstraints;
 }
 
+export interface ScenarioLifecycle {
+  schema_version: 1;
+  lifecycle_version: 1;
+  kind: "correlated-deployment" | "reconfigured-deployment" | "persistent-pvc" | "persistent-service";
+  observation_seconds: number;
+  recovery_timeout_seconds?: number;
+}
+
 export interface ScenarioCatalogEntry {
+  lifecycle?: ScenarioLifecycle;
+  lifecycleManifestPaths?: Partial<Record<ScenarioAction, string>>;
   definition: ScenarioDefinition;
   manifestPaths: string[];
 }
 
-export type ScenarioAction = "list" | "apply" | "verify" | "cleanup";
+export type ScenarioAction = "list" | "apply" | "verify" | "cleanup" | "lifecycle-apply" | "lifecycle-verify" | "reconfigure" | "recover";
 
 export interface ExternalCommandOptions {
   timeoutMilliseconds?: number;

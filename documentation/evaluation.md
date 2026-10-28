@@ -26,6 +26,22 @@ A focused run explicitly records unselected scenarios and non-executed infrastru
 
 Each dataset case declares the terminal it expects: a diagnosis, an explicit insufficient-evidence stop, or a typed failure with a named error code. A failure that the case expects and the Runtime handles correctly passes the automated checks; the Run's own status and error code stay on record either way, and a terminal that differs from the expectation is reported as a mismatch rather than rewritten. Every run is a campaign whose records are written once and never overwritten; a retry names the campaign it continues instead of replacing it. Manual verdicts are bound to the exact trial, Run and evidence they judged and are reported as pass, fail or insufficient to score; trials without a verdict, with disagreeing reviewers, or with a verdict that no longer matches its records are reported as such, and no verdict changes Runtime state.
 
+## Lifecycle cases
+
+Select the bounded temporal dataset with the existing command, for example:
+
+```sh
+npm run evaluation -- run --profile kind-evaluation --dataset evaluation/datasets/lifecycle-v1.json --scenario liveness-probe-misconfigured --release /absolute/path/release.json
+```
+
+The scenario entry point validates each `lifecycle.json` sidecar and its fixed manifests. The cases cover three compatible symptoms on one Deployment UID, a relevant resource-request change while a Deployment is still failing, same-name replacement with a new UID, and sustained PVC/Service faults across repeat deliveries and the diagnosis cooldown. Inputs select fixed case kinds and bounded observation windows; they cannot supply shell commands, arbitrary manifests or patches. Lifecycle probe fixtures keep readiness faulty so replica unavailability can persist while liveness restarts continue. The original single-snapshot regression dataset remains separately selectable.
+
+Every new target Incident and every diagnosis Run must be accounted for. Run histories are read with bounded pagination; original Evidence, terminal outcomes, trigger references and SSE ownership are checked per Run. A correlated episode may use one to three automatic diagnoses, at least ten minutes apart. Repeated delivery alone must preserve the Run set. Healthy recovery preserves the target UID and requires the Runtime's complete `CLEAR` observation and five-minute stable closure. The pending PVC case has no safe same-UID Bound fixture: it remains anomalous until cleanup, and deletion is not recovery. Exact dropped-resolved delivery has no live injector; verify convergence without a resolved notification and after monitoring uncertainty through offline production-chain tests.
+
+Trial packages retain every required Run and each Incident's final state. Manual review requires a verdict for each exact Run, with Evidence belonging to that Run; the last diagnosis cannot substitute for earlier reviews. Recorded `modelCalls`, `toolCalls` and fixed limits come from the selected Run, with unavailable counts represented as null. Elapsed time is derived from its persisted start/completion timestamps and includes completion overhead, so it is not equated with the execution deadline. These observations cover the captured trial, not campaign-wide or installation-wide cost, tokens or money. A full campaign's separate infrastructure probe can create additional diagnoses outside the trial's usage record.
+
+The observation and recovery windows take substantially longer than a single diagnosis. Review the selected inputs and obtain explicit authorization for the cluster, targets and real-model budget before running them. Failed phases still attempt cleanup only for that scenario's permitted objects; a cleanup failure fails the trial and requires operator attention.
+
 ## Review the diagnosis, not just a code or phrase
 
 Machine-checkable coverage includes required evidence kinds, supported targets, legal states and bounded output. A generated diagnosis code or exact sentence is not, by itself, a correctness oracle. Manual review should ask:

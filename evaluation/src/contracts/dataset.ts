@@ -7,6 +7,7 @@ import {
   supportedScenarioVersion,
   type ScenarioCatalogEntry,
   type ScenarioDefinition,
+  type ScenarioLifecycle,
   type VerifierKind,
 } from "../../../scripts/scenario.mjs";
 import {
@@ -78,6 +79,7 @@ export interface EvaluationScenario {
   verifierKind: VerifierKind;
   healthyControlNames: string[];
   expectedPatchConstraints: ExpectedPatchConstraints | undefined;
+  lifecycle?: ScenarioLifecycle;
 }
 
 export type ExpectedTerminal =
@@ -114,7 +116,7 @@ export function loadEvaluationScenarioCatalog(
     }
     throw error;
   }
-  return entries.map(({ definition }) => projectEvaluationScenario(definition));
+  return entries.map(({ definition, lifecycle }) => ({ ...projectEvaluationScenario(definition), ...(lifecycle === undefined ? {} : { lifecycle }) }));
 }
 
 // The private oracle (expected_root_causes) and the fixture manifests stay behind; only what
@@ -192,7 +194,7 @@ export function loadEvaluationDataset(
     const seen = new Set<string>();
     const sourceSplits = new Map<string, string>();
     const cases = manifest.cases.map((entry: unknown): EvaluationCase => {
-      if (!hasExactKeys(entry, CASE_KEYS)) reject();
+      if (!hasExactKeys(entry, CASE_KEYS) && !hasExactKeys(entry, [...CASE_KEYS, "lifecycle_version"])) reject();
       for (const value of [entry.scenario_id, entry.mechanism, entry.source_group]) {
         if (!isNormalizedString(value) || !/^[a-z0-9][a-z0-9-]{0,127}$/.test(value)) reject();
       }
@@ -228,8 +230,10 @@ export function loadEvaluationDataset(
       ) {
         reject();
       }
+      if (entry.lifecycle_version !== undefined && (scenario.lifecycle === undefined || entry.lifecycle_version !== scenario.lifecycle.lifecycle_version)) reject();
       return {
         ...scenario,
+        lifecycle: entry.lifecycle_version === undefined ? undefined : scenario.lifecycle,
         split,
         mechanism: entry.mechanism as string,
         sourceGroup,

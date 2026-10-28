@@ -99,6 +99,7 @@ export interface SelectedRunView {
   startedAt: string | null;
   completedAt: string | null;
   error: RunErrorView | null;
+  diagnosisUsage?: components["schemas"]["DiagnosisUsageResponse"] | null;
   requestSource?: "system" | "operator" | null;
   initiatedByYou?: boolean;
   sourceRunId?: string | null;
@@ -108,7 +109,7 @@ export interface SelectedRunView {
   endReason?: "expired" | "superseded" | "rejected" | "execution_expired" | "withdrawn" | null;
 }
 
-export type RunSummaryView = Omit<SelectedRunView, "error" | "selection" | "waitingExpiresAt" | "endReason">;
+export type RunSummaryView = Omit<SelectedRunView, "error" | "selection" | "waitingExpiresAt" | "endReason" | "diagnosisUsage">;
 
 export interface RunHistoryView {
   items: RunSummaryView[];
@@ -616,10 +617,15 @@ function parseSelectedRun(value: unknown): SelectedRunView | null {
   if (value.error !== null && error === null) return null;
   if (value.waitingExpiresAt !== undefined && value.waitingExpiresAt !== null && !isTimestamp(value.waitingExpiresAt)) return null;
   if (value.endReason !== undefined && value.endReason !== null && value.endReason !== "expired" && value.endReason !== "superseded" && value.endReason !== "rejected" && value.endReason !== "execution_expired" && value.endReason !== "withdrawn") return null;
+  const usage = value.diagnosisUsage;
+  if (usage != null && (!isObject(usage) || run.kind !== "diagnosis" ||
+    ![usage.maxModelCalls, usage.maxToolCalls, usage.timeoutSeconds].every(isPositiveInteger) ||
+    ![usage.modelCalls, usage.toolCalls].every((count) => count === null || (typeof count === "number" && Number.isSafeInteger(count) && count >= 0)))) return null;
   const selection = value.selection;
   if (selection !== undefined && selection !== null && !isHistorySelection(selection)) return null;
   return {
     ...run, error,
+    ...(usage !== undefined ? { diagnosisUsage: usage as SelectedRunView["diagnosisUsage"] } : {}),
     ...(selection !== undefined ? { selection: selection as SelectedRunView["selection"] } : {}),
     ...(value.waitingExpiresAt !== undefined ? { waitingExpiresAt: value.waitingExpiresAt as string | null } : {}),
     ...(value.endReason !== undefined ? { endReason: value.endReason as SelectedRunView["endReason"] } : {}),

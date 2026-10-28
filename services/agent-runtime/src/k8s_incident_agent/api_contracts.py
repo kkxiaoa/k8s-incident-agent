@@ -330,7 +330,16 @@ class RunSummaryResponse(_ApiContract):
         return self
 
 
+class DiagnosisUsageResponse(_ApiContract):
+    model_calls: int | None = Field(ge=0)
+    tool_calls: int | None = Field(ge=0)
+    max_model_calls: int = Field(ge=1)
+    max_tool_calls: int = Field(ge=1)
+    timeout_seconds: int = Field(ge=1)
+
+
 class SelectedRunResponse(RunSummaryResponse):
+    diagnosis_usage: DiagnosisUsageResponse | None = None
     error: RunErrorResponse | None
     selection: RepairHistorySelectionResponse | None = None
     waiting_expires_at: datetime | None = None

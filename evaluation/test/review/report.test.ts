@@ -6,7 +6,7 @@ import test from "node:test";
 import type { CampaignReport } from "../../src/contracts/records.ts";
 import { buildCampaignReport } from "../../src/review/report.ts";
 import { EvaluationError } from "../../src/shared/errors.ts";
-import { CAMPAIGN, campaign, EVIDENCE, review, scenario, type LooseRecord } from "./layout.ts";
+import { CAMPAIGN, campaign, EVIDENCE, review, RUN, scenario, type LooseRecord } from "./layout.ts";
 
 const GOLDEN = path.resolve(import.meta.dirname, "../fixtures/golden");
 
@@ -118,4 +118,31 @@ test("malformed or misplaced records are refused by name without echoing their c
   await assert.rejects(buildCampaignReport(file), (error: unknown) => error instanceof EvaluationError && error.code === "evaluation_artifact_invalid");
   await assert.rejects(buildCampaignReport(path.join(root, "20260905T000000Z-0000ffff.json")), (error: unknown) =>
     error instanceof EvaluationError && error.code === "evaluation_artifact_invalid" && error.message === "Cannot read 20260905T000000Z-0000ffff.json");
+});
+
+test("every lifecycle Run needs its own bound verdict and evidence before a report settles", async (t) => {
+  const second = "20000000-0000-4000-8000-000000000099";
+  const firstIncident = "10000000-0000-4000-8000-000000000001";
+  const lifecycle = {
+    version: 1,
+    runs: [{ runId: RUN, incidentId: firstIncident }, { runId: second, incidentId: firstIncident }],
+    incidents: [{ incidentId: firstIncident, targetUid: "target-uid", final: { incident: { id: firstIncident, lifecycleStatus: "CLOSED" } } }],
+  };
+  for (const [reviews, expected, reason] of [
+    [[review({ runId: second })], "incomplete", "run_review_missing"],
+    [[review(), review({ runId: second, evidenceIds: [EVIDENCE[1]] })], "pass", undefined],
+    [[review({ verdict: "fail" }), review({ runId: second, evidenceIds: [EVIDENCE[1]] })], "fail", undefined],
+    [[review(), review({ runId: second, evidenceIds: [EVIDENCE[0]] })], "incomplete", "evidence_not_in_package"],
+  ] as const) {
+    const layout = campaign(t, { scenarios: [scenario({ lifecycle })], reviews });
+    const filename = path.join(layout.root, CAMPAIGN, "trials/crash-loop-backoff.json");
+    const pkg = JSON.parse(readFileSync(filename, "utf8"));
+    pkg.runs = lifecycle.runs.map((run, index) => ({ incident: { id: run.incidentId }, selectedRun: { id: run.runId }, evidence: [{ id: EVIDENCE[index] }] }));
+    pkg.finalIncidents = lifecycle.incidents.map((episode) => episode.final);
+    writeFileSync(filename, JSON.stringify(pkg));
+    const report = await buildCampaignReport(layout.file);
+    assert.equal(report.scenarios[0].review.status, expected);
+    if (reason) assert.ok(report.scenarios[0].review.status === "incomplete" && report.scenarios[0].review.reasons.includes(reason));
+    assert.equal(report.status, expected === "incomplete" ? "pending_manual_review" : "reviewed");
+  }
 });

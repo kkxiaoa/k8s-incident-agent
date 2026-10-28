@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "dataset_id": "lifecycle-v1",
+  "dataset_version": 1,
+  "cases": [
+    {
+      "scenario_id": "crash-loop-backoff",
+      "scenario_version": 3,
+      "split": "regression",
+      "mechanism": "invalid-startup-command",
+      "source_group": "legacy-crash-loop",
+      "expected_terminal": {
+        "outcome": "diagnosed"
+      },
+      "profiles": [
+        "kind-evaluation",
+        "k3s-evaluation"
+      ],
+      "alert_wait_seconds": 420,
+      "lifecycle_version": 1
+    },
+    {
+      "scenario_id": "liveness-probe-misconfigured",
+      "scenario_version": 3,
+      "split": "regression",
+      "mechanism": "probe-misconfiguration",
+      "source_group": "legacy-probe",
+      "expected_terminal": {
+        "outcome": "diagnosed"
+      },
+      "profiles": [
+        "kind-evaluation",
+        "k3s-evaluation"
+      ],
+      "alert_wait_seconds": 420,
+      "lifecycle_version": 1
+    },
+    {
+      "scenario_id": "pvc-binding-pending",
+      "scenario_version": 2,
+      "split": "regression",
+      "mechanism": "pvc-provisioning-or-binding-blocked",
+      "source_group": "legacy-pvc",
+      "expected_terminal": {
+        "outcome": "diagnosed"
+      },
+      "profiles": [
+        "kind-evaluation",
+        "k3s-evaluation"
+      ],
+      "alert_wait_seconds": 420,
+      "lifecycle_version": 1
+    },
+    {
+      "scenario_id": "service-selector-mismatch",
+      "scenario_version": 2,
+      "split": "regression",
+      "mechanism": "service-selector-mismatch",
+      "source_group": "legacy-service-selector",
+      "expected_terminal": {
+        "outcome": "diagnosed"
+      },
+      "profiles": [
+        "kind-evaluation",
+        "k3s-evaluation"
+      ],
+      "alert_wait_seconds": 420,
+      "lifecycle_version": 1
+    }
+  ]
+}

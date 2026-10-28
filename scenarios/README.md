@@ -51,3 +51,9 @@ cluster data out of fixtures, screenshots, logs, and published artifacts.
 
 See [SECURITY.md](../SECURITY.md) for the project's trust boundaries and private
 vulnerability reporting policy.
+
+## Lifecycle evaluation inputs
+
+Four catalog cases also carry a versioned `lifecycle.json`: liveness probe failure, CrashLoop, PVC binding pending and Service selector mismatch. Select them through `evaluation/datasets/lifecycle-v1.json`; ordinary regression cases do not implicitly enable temporal mutations. The scenario entry point validates the sidecar and the exact fixed manifest revisions before any cluster command. `lifecycle-apply` and `lifecycle-verify` use the persistent liveness/readiness fault; `reconfigure` changes the CrashLoop CPU request while preserving the fault; `recover` applies the same-object healthy revision for the supported Deployment or Service. These commands have the same fixed cluster/profile and namespace restrictions as apply/cleanup.
+
+The evaluator waits across repeat deliveries and cooldowns, checks all target Incidents and Runs, and preserves per-Run review material. Same-name recreation first clears the old producer alert after cleanup and then applies the original fixture, requiring a new UID and Incident. Recovery of a supported object requires stable observed closure before final cleanup; deleting a pending PVC is never counted as recovery. See the [evaluation contract](../documentation/evaluation.md#lifecycle-cases) for scope, measured usage and manual review.

@@ -1606,6 +1606,59 @@
         "title": "DiagnosisTrigger",
         "type": "object"
       },
+      "DiagnosisUsageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "maxModelCalls": {
+            "minimum": 1.0,
+            "title": "Maxmodelcalls",
+            "type": "integer"
+          },
+          "maxToolCalls": {
+            "minimum": 1.0,
+            "title": "Maxtoolcalls",
+            "type": "integer"
+          },
+          "modelCalls": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelcalls"
+          },
+          "timeoutSeconds": {
+            "minimum": 1.0,
+            "title": "Timeoutseconds",
+            "type": "integer"
+          },
+          "toolCalls": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Toolcalls"
+          }
+        },
+        "required": [
+          "modelCalls",
+          "toolCalls",
+          "maxModelCalls",
+          "maxToolCalls",
+          "timeoutSeconds"
+        ],
+        "title": "DiagnosisUsageResponse",
+        "type": "object"
+      },
       "DiagnosticAvailabilityResponse": {
         "additionalProperties": false,
         "properties": {
@@ -5435,6 +5488,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/DiagnosisTrigger"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnosisUsage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiagnosisUsageResponse"
               },
               {
                 "type": "null"

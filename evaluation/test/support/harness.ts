@@ -89,6 +89,7 @@ export interface HarnessScenario extends EvaluationScenario {
   applied: boolean;
   resolved: boolean;
   repeated: boolean;
+  previousIncidentId?: string;
   updatedAt: string;
 }
 

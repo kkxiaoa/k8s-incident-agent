@@ -70,7 +70,7 @@ const DIAGNOSTIC_EVIDENCE_TOOLS = new Map([
   ["metrics", "query_prometheus"],
 ]);
 const VALID_DIAGNOSTIC_TOOLS = new Set(DIAGNOSTIC_EVIDENCE_TOOLS.values());
-const VALID_ACTIONS = new Set(["list", "apply", "verify", "cleanup"]);
+const VALID_ACTIONS = new Set(["list", "apply", "verify", "cleanup", "lifecycle-apply", "lifecycle-verify", "reconfigure", "recover"]);
 const VALID_EXECUTION_PROFILES = new Set([
   "kind-evaluation",
   "k3s-evaluation",
@@ -162,6 +162,14 @@ export async function runScenarioCommand(
     dependencies,
   );
 
+  if (["lifecycle-apply", "reconfigure", "recover"].includes(action)) {
+    if (entry.lifecycle === undefined) throw new ScenarioCommandError("invalid_arguments", "Scenario has no lifecycle contract");
+    const manifest = entry.lifecycleManifestPaths[action];
+    if (manifest === undefined) throw new ScenarioCommandError("invalid_arguments", "Lifecycle action is not supported for this case");
+    if (action === "lifecycle-apply") await mutateFixture("apply", entry, target.context, execute);
+    await executeKubectl(execute, ["--context", target.context, "--namespace", NAMESPACE, "apply", "--filename", manifest, "--validate=strict", "--request-timeout=30s"]);
+    return { status: "applied", scenario_id: entry.definition.scenario_id };
+  }
   if (action === "apply" || action === "cleanup") {
     await mutateFixture(action, entry, target.context, execute);
     return {
@@ -170,10 +178,11 @@ export async function runScenarioCommand(
     };
   }
 
+  if (action === "lifecycle-verify" && entry.lifecycle?.kind !== "correlated-deployment") throw new ScenarioCommandError("invalid_arguments", "Lifecycle verification is not supported for this case");
   return verifyScenario(entry, target.context, execute, {
     now: dependencies.now ?? Date.now,
     sleep: dependencies.sleep ?? defaultSleep,
-  });
+  }, action === "lifecycle-verify");
 }
 
 function resolveExecutionTarget(profile, context) {
@@ -324,7 +333,54 @@ function loadScenarioEntry(catalogDirectory, scenarioDirectoryName) {
   });
   validateImagePullRevisionPair(definition, deploymentManifests);
 
-  return { definition, manifestPaths };
+  return { definition, manifestPaths, ...loadLifecycle(scenarioDirectory, definition) };
+}
+
+// Lifecycle revisions are exact transformations of an already validated fixture. This
+// keeps the target, security context and image inside the catalog's mutation boundary.
+function loadLifecycle(directory, definition) {
+  const filename = path.join(directory, "lifecycle.json");
+  try { lstatSync(filename); } catch (error) { if (error.code === "ENOENT") return {}; throw error; }
+  assertRegularFileWithoutSymlinkComponents(directory, filename);
+  const lifecycle = parseJsonFile(filename);
+  assertPlainObject(lifecycle);
+  assertExactKeys(lifecycle, ["schema_version", "lifecycle_version", "kind", "observation_seconds", ...(lifecycle.kind === "persistent-pvc" ? [] : ["recovery_timeout_seconds"])]);
+  const kinds = new Map([
+    ["liveness-probe-misconfigured", "correlated-deployment"],
+    ["crash-loop-backoff", "reconfigured-deployment"],
+    ["pvc-binding-pending", "persistent-pvc"],
+    ["service-selector-mismatch", "persistent-service"],
+  ]);
+  if (lifecycle.schema_version !== 1 || lifecycle.lifecycle_version !== 1 || lifecycle.kind !== kinds.get(definition.scenario_id) ||
+      !Number.isSafeInteger(lifecycle.observation_seconds) || lifecycle.observation_seconds < (lifecycle.kind === "correlated-deployment" ? 1260 : 660) ||
+      lifecycle.observation_seconds > 1800 || (lifecycle.kind !== "persistent-pvc" && (!Number.isSafeInteger(lifecycle.recovery_timeout_seconds) ||
+      lifecycle.recovery_timeout_seconds < 600 || lifecycle.recovery_timeout_seconds > 1800))) throw new Error();
+  const lifecycleManifestPaths = {};
+  const baseName = definition.target.kind === "Service" ? "service.yaml" : "deployment.yaml";
+  if (lifecycle.kind === "persistent-pvc") return { lifecycle, lifecycleManifestPaths };
+  const basePath = path.join(directory, "manifests", baseName);
+  const base = loadSingleManifest(basePath);
+  const variants = lifecycle.kind === "correlated-deployment"
+    ? [["lifecycle-apply", "lifecycle-deployment.yaml"], ["recover", "recovered-deployment.yaml"]]
+    : lifecycle.kind === "reconfigured-deployment"
+      ? [["reconfigure", "reconfigured-deployment.yaml"], ["recover", "recovered-deployment.yaml"]]
+      : [["recover", "recovered-service.yaml"]];
+  for (const [action, name] of variants) {
+    const expected = structuredClone(base);
+    if (lifecycle.kind === "persistent-service") expected.spec.selector.app = "service-selector-backend";
+    else {
+      const container = expected.spec.template.spec.containers.find((item) => item.name === "workload");
+      if (action === "reconfigure") container.resources.requests.cpu = "20m";
+      else if (lifecycle.kind === "reconfigured-deployment") container.args = ["pause"];
+      else if (action === "lifecycle-apply") container.readinessProbe.tcpSocket.port = 8081;
+      else container.livenessProbe.tcpSocket.port = 8080;
+    }
+    const variantPath = path.join(directory, "manifests", name);
+    assertRegularFileWithoutSymlinkComponents(directory, variantPath);
+    if (!isDeepStrictEqual(loadSingleManifest(variantPath), expected)) throw new Error();
+    lifecycleManifestPaths[action] = variantPath;
+  }
+  return { lifecycle, lifecycleManifestPaths };
 }
 
 function validateScenarioDefinition(definition, directoryName) {
@@ -996,7 +1052,7 @@ async function applyImagePullFixture(entry, context, execute) {
   ]);
 }
 
-async function verifyScenario(entry, context, execute, clock) {
+async function verifyScenario(entry, context, execute, clock, correlated = false) {
   const verifier = entry.definition.deterministic_verifier;
   const startedAt = normalizeTimestamp(clock.now());
   const deadline = startedAt + verifier.timeout_seconds * 1000;
@@ -1032,7 +1088,7 @@ async function verifyScenario(entry, context, execute, clock) {
 
   while (true) {
     try {
-      return await verifyOnce(entry.definition, context, executeBeforeDeadline);
+      return await verifyOnce(entry.definition, context, executeBeforeDeadline, correlated);
     } catch (error) {
       if (!(error instanceof VerificationPending)) throw error;
       lastReason = error.reason;
@@ -1049,7 +1105,7 @@ async function verifyScenario(entry, context, execute, clock) {
   }
 }
 
-async function verifyOnce(definition, context, executeKubectlQuery) {
+async function verifyOnce(definition, context, executeKubectlQuery, correlated) {
   if (definition.deterministic_verifier.kind === "crash_loop_backoff") {
     return verifyCrashLoopOnce(definition, context, executeKubectlQuery);
   }
@@ -1064,7 +1120,7 @@ async function verifyOnce(definition, context, executeKubectlQuery) {
     definition.deterministic_verifier.kind === "readiness_probe_failure" ||
     definition.deterministic_verifier.kind === "liveness_probe_failure"
   ) {
-    return verifyProbeFailureOnce(definition, context, executeKubectlQuery);
+    return verifyProbeFailureOnce(definition, context, executeKubectlQuery, correlated);
   }
   if (definition.deterministic_verifier.kind === "pvc_pending") {
     return verifyPvcPendingOnce(definition, context, executeKubectlQuery);
@@ -1271,6 +1327,7 @@ async function verifyProbeFailureOnce(
   definition,
   context,
   executeKubectlQuery,
+  correlated,
 ) {
   const verifier = definition.deterministic_verifier.kind;
   const failing = await readOwnedDeploymentPods(
@@ -1278,7 +1335,7 @@ async function verifyProbeFailureOnce(
     context,
     executeKubectlQuery,
   );
-  requireProbeDeployment(failing.deployment, verifier, "failing");
+  requireProbeDeployment(failing.deployment, verifier, correlated ? "correlated" : "failing");
   const events = await readScenarioEvents(context, executeKubectlQuery);
   const expectedEventPrefix =
     verifier === "readiness_probe_failure"
@@ -1411,7 +1468,7 @@ function requireProbeDeployment(deployment, verifier, control) {
   });
   requireUpstreamTcpProbe(workload.readinessProbe, {
     port:
-      verifier === "readiness_probe_failure" && control === "failing"
+      control === "correlated" ? 8081 : verifier === "readiness_probe_failure" && control === "failing"
         ? "missing-health"
         : "health",
     initialDelaySeconds: 1,
@@ -2298,7 +2355,7 @@ function assertAction(action) {
   if (!VALID_ACTIONS.has(action)) {
     throw new ScenarioCommandError(
       "invalid_arguments",
-      "Expected one scenario action: list, apply, verify, or cleanup",
+      "Expected a supported scenario action",
     );
   }
 }

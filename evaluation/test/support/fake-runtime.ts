@@ -136,6 +136,7 @@ function lifecycleFrames(scenario: HarnessScenario, options: HarnessContext["opt
     ...fields,
   });
   const frames: Array<[string, string]> = [
+    ...(scenario.previousIncidentId === undefined ? [] : [["alert.associated", eventData({ runId: null, runKind: null, targetUid: "recreated-target-uid", fingerprint: "0123456789abcdef", startsAt: "2026-09-05T00:00:00.000000000Z", source: { type: "alertmanager", ref: scenario.alertId, revision: "12" } })] as [string, string]]),
     ["incident.created", eventData({ attempt: 1, incidentStatus: "RECEIVED", runStatus: "QUEUED" })],
     ["run.started", eventData({ attempt: 1, incidentStatus: "TRIAGING", runStatus: "RUNNING" })],
     terminalFrame(terminal, repair, eventData, options),
@@ -180,6 +181,7 @@ function incidentList(url: URL, context: HarnessContext): Response {
         .map((scenario) => ({ id: scenario.incidentId, updatedAt: scenario.updatedAt })),
     )
     .concat(controlScenario === undefined ? [] : [{ id: controlScenario.controlIncidentId, updatedAt: controlScenario.updatedAt }]);
+  scenarioItems.push(...scenarios.filter((scenario) => scenario.previousIncidentId).map((scenario) => ({ id: scenario.previousIncidentId!, updatedAt: scenario.updatedAt })));
   if (options.paginatedIncidents === true) {
     const retainedItems = Array.from({ length: 101 }, (_, index) => ({
       id: `50000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -364,7 +366,7 @@ function incidentDetail(scenario: HarnessScenario, isOtherIncident: boolean, isC
     repair: options.repairDrift === true && terminal.outcome !== "diagnosed" ? { drift: true } : repair,
     alertSignal: { status: scenario.resolved ? "RESOLVED" : "FIRING", startsAt: "2026-09-05T00:00:00.000000000Z", endsAt: scenario.resolved ? "2026-09-05T01:00:00.000000000Z" : null,
       lastReceivedAt: scenario.repeated ? "2026-09-05T00:00:01.000Z" : "2026-09-05T00:00:00.000Z" },
-    eventCursor: repair === null ? "3" : "6",
+    eventCursor: String((repair === null ? 3 : 6) + (scenario.previousIncidentId === undefined ? 0 : 1)),
   });
 }
 
@@ -390,10 +392,13 @@ export function runtimeResponse(url: URL, init: RequestInit | undefined, headers
 
   const match = url.pathname.match(/^\/api\/v1\/incidents\/([^/]+)(.*)$/);
   if (match === null) return new Response(null, { status: 404 });
-  const scenario = [...scenarioById.values()].find(
-    (candidate) => candidate.incidentId === match[1] || candidate.otherIncidentId === match[1] || candidate.controlIncidentId === match[1],
+  const matchedScenario = [...scenarioById.values()].find(
+    (candidate) => candidate.incidentId === match[1] || candidate.previousIncidentId === match[1] || candidate.otherIncidentId === match[1] || candidate.controlIncidentId === match[1],
   );
-  if (scenario === undefined) return new Response(null, { status: 404 });
+  if (matchedScenario === undefined) return new Response(null, { status: 404 });
+  const scenario = matchedScenario.previousIncidentId === match[1]
+    ? { ...matchedScenario, incidentId: match[1], previousIncidentId: undefined }
+    : matchedScenario;
   const isOtherIncident = scenario.otherIncidentId === match[1];
   const isControlIncident = scenario.controlIncidentId === match[1];
   const suffix = match[2];
